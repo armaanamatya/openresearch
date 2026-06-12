@@ -1,0 +1,241 @@
+{
+  "paper": {},
+  "verdict": "failed",
+  "reproduction_summary": "The RLM run produced no result (see run logs).",
+  "baseline_metrics": {},
+  "experiment_run_id": null,
+  "metrics_sha256": null,
+  "reported_metrics": {},
+  "paper_claims": {},
+  "rubric": {
+    "overall_score": 0.53275,
+    "meets_target": false,
+    "target_score": 0.8308262711864407,
+    "degraded": null,
+    "areas": [],
+    "leaf_scores": [
+      {
+        "id": "b9f78552f4f34509ade01cd7fdb6afa4",
+        "score": 0.4,
+        "justification": "Both Figure-3 views exist as artifacts (outputs/.../fig_3_cifar10_cnn.png and fig_3_cifar10_cnn_3ep.png with sidecars), but metrics.json:cifar10_cnn shows only three plain optimizer runs, so the with/without-dropout dimension of the requirement is absent."
+      },
+      {
+        "id": "93f6709b58244cbfada11975d9d9e86c",
+        "score": 0.4,
+        "justification": "metrics.json:mnist_logistic and the per-epoch history confirm Adam \u2248 SGDNesterov (similar curves, 0.2373 vs 0.2425), but the AdaGrad ordering contradicts the claimed trend (AdaGrad is fastest/best, not slowest)."
+      },
+      {
+        "id": "e678b76684f04df0a19e12821c2c97e1",
+        "score": 1.0,
+        "justification": "metrics.json:imdb_logistic shows adam=0.4983 \u2248 adagrad=0.5156 with sgd_nesterov stuck at 0.6804 (history flat near 0.68 across 80 epochs in fig_1_imdb_logreg.json), matching the paper's claimed ordering of Adam \u2248 AdaGrad \u226b SGDNesterov."
+      },
+      {
+        "id": "2dbb1bb8c3db430788e8729412820f49",
+        "score": 0.0,
+        "justification": "metrics.json:mnist_mlp shows Adam ranked last among the five optimizers, directly contradicting the claimed direction that Adam beats AdaGrad, RMSProp, SGDNesterov, and AdaDelta."
+      },
+      {
+        "id": "4218ef05ad214ec487169e41e17914a2",
+        "score": 1.0,
+        "justification": "metrics.json:cifar10_cnn shows adam=0.0103 and sgd_nesterov=0.0127 versus adagrad=0.1805 at 45 epochs (provenance.json confirms 45 epochs), agreeing with the claimed direction that Adam/SGDNesterov eventually converge considerably faster than AdaGrad; the 3-epoch view artifact (fig_3_cifar10_cnn_3ep.png/json) exists and nothing measured contradicts the early-epoch claim."
+      },
+      {
+        "id": "a01f713a5b0146d1aacb46fd366b54b0",
+        "score": 1.0,
+        "justification": "metrics.json:vae_mnist shows no-bias-correction worse in the early epochs (neg_elbo_epoch10 153.51 vs 130.74) and at epoch 100 (123.67 vs 104.62), and the run directory contains the full \u03b22\u2208{0.99,0.999,0.9999}\u00d7lr{1..5}\u00d7bc{0,1} grid cells (outputs/.../vae_b1_00_b2_09999_lrn*_bc*/metrics.json) plus fig_4_vae_lr_sweep.png/json \u2014 the measured direction matches the paper's bias-correction claim."
+      },
+      {
+        "id": "a166fb0f61cd47a5822accdecf5d3998",
+        "score": 0.7,
+        "justification": "All five experiments demonstrably ran end-to-end (metrics.json covers mnist_logistic, imdb_logistic, mnist_mlp, cifar10_cnn, vae; main_experiments.log and per-cell logs exist; provenance.json names model classes LogisticRegression/BoWClassifier/MLPNet/ConvNetCIFAR/VAE), but the clearly-named optimizer/entry-point source files themselves cannot be confirmed from the visible listing."
+      },
+      {
+        "id": "699d7e2bec3c4b529d23435428cdec23",
+        "score": 1.0,
+        "justification": "Figure artifacts for all four paper figures exist (fig_1_mnist_logreg.png, fig_1_imdb_logreg.png, fig_2_mnist_mlp.png, fig_3_cifar10_cnn.png + fig_3_cifar10_cnn_3ep.png, fig_4_vae_lr_sweep.png) and their JSON sidecars key each curve by optimizer name (adam, sgd_nesterov, adagrad, adamax), confirming per-curve optimizer labeling."
+      },
+      {
+        "id": "f6411a8bf260470d989bc4d46f7cb3dd",
+        "score": 0.4,
+        "justification": "provenance.json records framework versions (torch 2.5.1+cu121), batch_size=128, epochs and hardware, and per-run logs/config_used.json exist in the output dirs, but seeds and per-optimizer hyperparameter records \u2014 core parts of the requirement \u2014 are missing from all visible artifacts."
+      },
+      {
+        "id": "fd99c3d514f94ec59e686edc2cbddbd5",
+        "score": 0.4,
+        "justification": "metrics.json history shows an optimizer keyed 'adam' converging on all five experiments and a working bias-correction ablation (vae_mnist.adam_bias_correction vs adam_no_bias_correction), behavioral evidence of a functioning Adam, but the exact update equations are unverifiable since no optimizer code is in evidence."
+      },
+      {
+        "id": "52348d0d94744d75b9a1d4df411b9da5",
+        "score": 0.4,
+        "justification": "VAE grid cell directories (e.g. outputs/prj_..._ab_bes-eeeae583/vae_b1_00_b2_0999_lrn3_bc1) prove beta1/beta2/alpha are exposed as configurable parameters, but the paper's recommended defaults are recorded nowhere in the evidence."
+      },
+      {
+        "id": "7f454bc91d3747e496d21adbd4554e28",
+        "score": 0.4,
+        "justification": "metrics.json records adamax runs with plausible convergence (mnist_logistic.adamax.final_train_nll=0.2347, imdb_logistic.adamax.final_train_nll=0.5731), confirming AdaMax was implemented and run, but its update rule and defaults are unreadable from the provided code."
+      },
+      {
+        "id": "aef1273c63414ba4a8920e5f46dcb39f",
+        "score": 0.7,
+        "justification": "All four comparison optimizers demonstrably ran as drop-ins across the experiment scripts per metrics.json keys: sgd_nesterov and adagrad in mnist_logistic/imdb_logistic/cifar10_cnn, and rmsprop plus adadelta in mnist_mlp, each with full per-epoch history."
+      },
+      {
+        "id": "bd34a3ca5d1a4a7981bb30a572712680",
+        "score": 0.7,
+        "justification": "metrics.json vae_mnist records both adam_bias_correction and adam_no_bias_correction at epochs 10 and 100, and the VAE grid cell directories toggle a bc0/bc1 flag within otherwise identical cell configs (e.g. vae_b1_00_b2_0999_lrn3_bc0 vs ..._bc1), evidencing a flag-selectable ablation."
+      },
+      {
+        "id": "975f260141784022bb87cf5846d1803b",
+        "score": 0.7,
+        "justification": "provenance.json mnist_logistic records model_key='LogisticRegression' trained on MNIST (torchvision in framework_versions) with a converged final train NLL ~0.2397 (metrics.json history) consistent with regularized logistic regression on flattened MNIST, but the L2 penalty itself is unevidenced."
+      },
+      {
+        "id": "5554e12e683e4e9d81572a8274548d14",
+        "score": 0.4,
+        "justification": "provenance.json imdb_logistic records model_key='BoWClassifier', confirming bag-of-words preprocessing of IMDB with measured per-epoch curves (metrics.json history.imdb_logistic), but neither the 10k vocabulary nor the 50% BoW dropout can be confirmed from the evidence."
+      },
+      {
+        "id": "728ec345e4184245bc5a3eb6e6a70613",
+        "score": 0.0,
+        "justification": "Nothing in the provided code, metrics.json, or provenance.json evidences whitening or input/FC dropout for the CIFAR-10 experiment; the only support would be narrative, which does not count."
+      },
+      {
+        "id": "a0daf5030926457eb63f5f761b7f7439",
+        "score": 0.7,
+        "justification": "metrics.json history contains full per-epoch train_nll records for mnist_logistic and imdb_logistic covering adam, sgd_nesterov, and adagrad (plus adamax), provenance.json confirms batch_size=128 for both experiments, and run logs exist (outputs/.../main_experiments.log, training_curves.json); only the decay schedule is unverifiable."
+      },
+      {
+        "id": "426c1ea0446f4281ad8cdc08e73fa949",
+        "score": 0.4,
+        "justification": "metrics.json mnist_mlp contains measured results for all five required optimizers (adam, adagrad, rmsprop, sgd_nesterov, adadelta) with provenance.json confirming 200 epochs and batch_size=128, but the required second (dropout vs deterministic L2) setting is absent from all artifacts."
+      },
+      {
+        "id": "3afce7a37e4541d997c0b56632ab11fc",
+        "score": 0.4,
+        "justification": "provenance.json cifar10_cnn confirms 45 epochs and batch_size=128 with measured curves for the three required optimizers (metrics.json cifar10_cnn), and a 3-epoch companion figure exists (fig_3_cifar10_cnn_3ep.png), but the dropout condition required by the leaf is absent from the measured artifacts."
+      },
+      {
+        "id": "d4085c100aea41e8ba3fca064fced0c8",
+        "score": 0.7,
+        "justification": "Per-cell run artifacts exist for the grid over beta2 in {0.99,0.999,0.9999} x 5 learning rates (lrn1..lrn5) x bias-correction in {bc0,bc1} (e.g. outputs/prj_..._ab_bes-eeeae583/vae_b1_00_b2_0999_lrn4_bc0/metrics.json + .log), and metrics.json vae_mnist records neg_elbo at both epoch 10 and epoch 100 for corrected and uncorrected variants."
+      },
+      {
+        "id": "f8e34ddb0e7f43afbb3f99328a2d7d67",
+        "score": 0.7,
+        "justification": "Figure sidecars fig_1_mnist_logreg.json, fig_1_imdb_logreg.json, and fig_2_mnist_mlp.json all plot train_nll (training negative log likelihood) against per-epoch indices matching Figures 1-3's axes, confirmed by the matching metrics.json history series."
+      },
+      {
+        "id": "b61e352a6de742b98f2f77fec88527d5",
+        "score": 0.4,
+        "justification": "The only grid artifact is the VAE learning-rate sweep (outputs/prj_..._ab_bes-eeeae583/vae_b1_00_b2_*_lrn1..5_bc* cell metrics), which is the Section 6.4 ablation rather than a hyperparameter search for the main comparisons, and shared-init evidence is absent from provenance.json."
+      },
+      {
+        "id": "e54c7eecabdd486ebd1afb86551fe5fc",
+        "score": 0.7,
+        "justification": "A dedicated sweep figure exists (outputs/prj_..._ab_bes-2b117959/fig_4_vae_lr_sweep.png/.json, named distinctly from the epoch-axis fig_convergence_vae), backed by grid cells spanning 5 learning rates x 3 beta2 values x bc0/bc1 with loss recorded at both checkpoints (metrics.json vae_mnist neg_elbo_epoch10/neg_elbo_epoch100), matching Figure 4's data protocol."
+      }
+    ],
+    "weak_leaves": [
+      {
+        "id": "2dbb1bb8c3db430788e8729412820f49",
+        "score": 0.0,
+        "justification": "metrics.json:mnist_mlp shows Adam ranked last among the five optimizers, directly contradicting the claimed direction that Adam beats AdaGrad, RMSProp, SGDNesterov, and AdaDelta.",
+        "area": "Result match versus the paper's reported targets"
+      },
+      {
+        "id": "728ec345e4184245bc5a3eb6e6a70613",
+        "score": 0.0,
+        "justification": "Nothing in the provided code, metrics.json, or provenance.json evidences whitening or input/FC dropout for the CIFAR-10 experiment; the only support would be narrative, which does not count.",
+        "area": "Data and preprocessing fidelity"
+      },
+      {
+        "id": "b9f78552f4f34509ade01cd7fdb6afa4",
+        "score": 0.4,
+        "justification": "Both Figure-3 views exist as artifacts (outputs/.../fig_3_cifar10_cnn.png and fig_3_cifar10_cnn_3ep.png with sidecars), but metrics.json:cifar10_cnn shows only three plain optimizer runs, so the with/without-dropout dimension of the requirement is absent.",
+        "area": "Evaluation protocol and metric correctness"
+      },
+      {
+        "id": "93f6709b58244cbfada11975d9d9e86c",
+        "score": 0.4,
+        "justification": "metrics.json:mnist_logistic and the per-epoch history confirm Adam \u2248 SGDNesterov (similar curves, 0.2373 vs 0.2425), but the AdaGrad ordering contradicts the claimed trend (AdaGrad is fastest/best, not slowest).",
+        "area": "Result match versus the paper's reported targets"
+      },
+      {
+        "id": "f6411a8bf260470d989bc4d46f7cb3dd",
+        "score": 0.4,
+        "justification": "provenance.json records framework versions (torch 2.5.1+cu121), batch_size=128, epochs and hardware, and per-run logs/config_used.json exist in the output dirs, but seeds and per-optimizer hyperparameter records \u2014 core parts of the requirement \u2014 are missing from all visible artifacts.",
+        "area": "Artifact completeness and provenance"
+      },
+      {
+        "id": "fd99c3d514f94ec59e686edc2cbddbd5",
+        "score": 0.4,
+        "justification": "metrics.json history shows an optimizer keyed 'adam' converging on all five experiments and a working bias-correction ablation (vae_mnist.adam_bias_correction vs adam_no_bias_correction), behavioral evidence of a functioning Adam, but the exact update equations are unverifiable since no optimizer code is in evidence.",
+        "area": "Method and code fidelity to the paper"
+      },
+      {
+        "id": "52348d0d94744d75b9a1d4df411b9da5",
+        "score": 0.4,
+        "justification": "VAE grid cell directories (e.g. outputs/prj_..._ab_bes-eeeae583/vae_b1_00_b2_0999_lrn3_bc1) prove beta1/beta2/alpha are exposed as configurable parameters, but the paper's recommended defaults are recorded nowhere in the evidence.",
+        "area": "Method and code fidelity to the paper"
+      },
+      {
+        "id": "7f454bc91d3747e496d21adbd4554e28",
+        "score": 0.4,
+        "justification": "metrics.json records adamax runs with plausible convergence (mnist_logistic.adamax.final_train_nll=0.2347, imdb_logistic.adamax.final_train_nll=0.5731), confirming AdaMax was implemented and run, but its update rule and defaults are unreadable from the provided code.",
+        "area": "Method and code fidelity to the paper"
+      }
+    ],
+    "leaf_count": 24,
+    "graded": 24,
+    "rubric_source": "paperbench_bundle",
+    "coverage_pct": 1.0,
+    "compute_adjusted_score": 0.53275
+  },
+  "improvements": [],
+  "primitive_trace": {},
+  "cost": {
+    "llm_usd": 0.0,
+    "primitives": 0.0
+  },
+  "iterations": 7,
+  "primitive_provider": "real",
+  "degraded": false,
+  "mode": "rlm",
+  "models": {
+    "planner": "claude-oauth",
+    "executor": "claude-sonnet-4-6",
+    "verifier": "claude-oauth",
+    "grader": "claude-oauth"
+  },
+  "started_at": "2026-06-11T10:45:30.219466+00:00",
+  "completed_at": "2026-06-12T06:47:08.153138+00:00",
+  "title": null,
+  "scope": {
+    "requested": "",
+    "ran": [],
+    "gaps": []
+  },
+  "stop_reason": null,
+  "experiment_arm": {
+    "arm": "bes",
+    "ab_pair_id": "adam-ab-20260611",
+    "bes": {
+      "enabled": true,
+      "candidates_per_cluster": 2,
+      "select_metric": "cluster_score",
+      "winner": "rlm_impl#1",
+      "pool": [
+        {
+          "candidate_id": "rlm_impl#0",
+          "ok": true,
+          "score": 0.5464
+        },
+        {
+          "candidate_id": "rlm_impl#1",
+          "ok": true,
+          "score": 0.6429999999999999
+        }
+      ]
+    }
+  }
+}

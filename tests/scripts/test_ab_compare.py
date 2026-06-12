@@ -147,3 +147,22 @@ def test_arm_own_report_preferred_over_seeded_ancestor(tmp_path: Path):
     assert cmp["bes"]["project_id"] == "prj_y_bes"
     assert cmp["bes"]["overall_score"] == pytest.approx(0.7378)  # the arm's own, not 0.7395
     assert cmp["control"]["project_id"] == "prj_y_ctl"
+
+
+def test_paper_and_pair_id_match_as_union(tmp_path: Path):
+    """1412.6980 regression: control matches by paper only (pre-stamp), the
+    BES arm by pair only (override lineage shipped paper.id=None)."""
+    _write_report(tmp_path, "prj_ctl_old", arm=None, score=0.716)  # paper 1412.6806 default
+    # Rewrite its paper id to the target paper.
+    import json as _j
+    fp = tmp_path / "prj_ctl_old" / "final_report.json"
+    r = _j.loads(fp.read_text()); r["paper"]["id"] = "1412.6980"; fp.write_text(_j.dumps(r))
+    _write_report(tmp_path, "prj_bes_arm", arm="bes", score=0.53, pair_id="adam-ab-1")
+    r = _j.loads((tmp_path / "prj_bes_arm" / "final_report.json").read_text())
+    r["paper"]["id"] = None
+    (tmp_path / "prj_bes_arm" / "final_report.json").write_text(_j.dumps(r))
+
+    cmp = ab_compare.build_comparison(tmp_path, paper="1412.6980", pair_id="adam-ab-1")
+    assert cmp["control"]["project_id"] == "prj_ctl_old"
+    assert cmp["bes"]["project_id"] == "prj_bes_arm"
+    assert cmp["deltas"]["overall_score"] == pytest.approx(-0.186)

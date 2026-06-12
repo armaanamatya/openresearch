@@ -1,0 +1,403 @@
+{
+  "iteration": 5,
+  "overall_score": 0.71605,
+  "target_score": 0.6,
+  "meets_target": true,
+  "leaf_count": 24,
+  "graded": 24,
+  "rubric_source": "paperbench_bundle",
+  "degraded": false,
+  "compute_adjusted_score": 0.71605,
+  "compute_scope": null,
+  "coverage_pct": 1.0,
+  "areas": [
+    {
+      "area": "Method and code fidelity to the paper",
+      "score": 0.91,
+      "weight": 0.35,
+      "leaves": [
+        {
+          "id": "fd99c3d514f94ec59e686edc2cbddbd5",
+          "label": "The Adam optimizer implementation contains the exact update equations of Algorithm 1 (Section 2): m_t = \u03b21\u00b7m_{t-1} + (1-\u03b21)\u00b7g_t, v_t = \u03b22\u00b7v_",
+          "score": 0.7,
+          "status": "partial",
+          "why": "provenance.json (mnist_logreg.per_optimizer.adam: lr=0.001, betas=[0.9,0.999], eps=1e-8) and code/optimizers.py's AdamNoBiasCorrection (m.mul_(beta1).add_(grad,...), v.mul_(beta2).addcmul_(grad,grad,...) with zeros_like init) confirm the Algorithm-1 recursion family ran, but the "
+        },
+        {
+          "id": "52348d0d94744d75b9a1d4df411b9da5",
+          "label": "The Adam implementation exposes and defaults to the paper's recommended hyperparameters from Algorithm 1 (Section 2): \u03b1 = 0.001, \u03b21 = 0.9, \u03b2",
+          "score": 1.0,
+          "status": "pass",
+          "why": "provenance.json experiments.mnist_logreg.per_optimizer.adam records exactly lr=0.001, betas=[0.9, 0.999], eps=1e-08, matching the paper's Algorithm 1 defaults."
+        },
+        {
+          "id": "7f454bc91d3747e496d21adbd4554e28",
+          "label": "The AdaMax variant of Algorithm 2 (Section 7.1) is implemented with the infinity-norm recursion u_t = max(\u03b22\u00b7u_{t-1}, |g_t|), update \u03b8_t = \u03b8",
+          "score": 1.0,
+          "status": "pass",
+          "why": "code/optimizers.py AdaMax.step implements u.mul_(beta2); torch.maximum(u, grad.abs(), out=u) (no bias correction on u) with step_size = lr/(1-beta1**t) and defaults lr=0.002, betas=(0.9, 0.999), exactly Algorithm 2."
+        },
+        {
+          "id": "aef1273c63414ba4a8920e5f46dcb39f",
+          "label": "All comparison optimizers named in Section 6 are implemented: SGD with Nesterov momentum, AdaGrad with update \u03b8_{t+1} = \u03b8_t - \u03b1\u00b7g_t/\u221a(\u03a3_{i=1",
+          "score": 1.0,
+          "status": "pass",
+          "why": "provenance.json records sgd_nesterov (momentum=0.9, nesterov=true), adagrad, rmsprop, and adadelta/adadelta_dropout (mnist_mlp.per_optimizer) all with measured final_train_loss values, and per-cell artifact dirs (e.g. outputs/.../mnist_mlp_dropout_adadelta, cifar10_dropout_rmspro"
+        },
+        {
+          "id": "bd34a3ca5d1a4a7981bb30a572712680",
+          "label": "The Section 6.4 ablation variant is implemented as Adam with the bias-correction divisors (1-\u03b21^t) and (1-\u03b22^t) removed \u2014 equivalent to RMSP",
+          "score": 1.0,
+          "status": "pass",
+          "why": "code/optimizers.py AdamNoBiasCorrection is a separate Optimizer class identical to Adam with the (1-\u03b21^t)/(1-\u03b22^t) divisors removed (comment 'NO bias correction \u2014 use m_t, v_t directly'), and fig_fig4_vae_lr_sweep.json contains paired no-correction/bias-corrected series confirmin"
+        }
+      ],
+      "compute_adjusted_score": 0.91
+    },
+    {
+      "area": "Data and preprocessing fidelity",
+      "score": 0.7899999999999999,
+      "weight": 0.12,
+      "leaves": [
+        {
+          "id": "975f260141784022bb87cf5846d1803b",
+          "label": "The logistic regression experiment loads MNIST and classifies directly on the 784-dimension flattened image vectors with L2 regularization, ",
+          "score": 1.0,
+          "status": "pass",
+          "why": "provenance.json mnist_logreg records weight_decay=0.0005 (L2 regularization) for the MNIST logistic-regression experiment, and metrics.json mnist_logreg test_accuracy \u224892.6% is exactly the signature of a linear classifier on flattened 784-d MNIST inputs."
+        },
+        {
+          "id": "5554e12e683e4e9d81572a8274548d14",
+          "label": "The IMDB movie review dataset (Maas et al., 2011) is preprocessed into bag-of-words feature vectors over the 10,000 most frequent words, and",
+          "score": 1.0,
+          "status": "pass",
+          "why": "provenance.json experiments.imdb_bow records vocab_size=10000 and dropout=0.5, with measured per-optimizer convergence series confirming the BoW IMDB experiment actually ran."
+        },
+        {
+          "id": "728ec345e4184245bc5a3eb6e6a70613",
+          "label": "The CIFAR-10 experiment applies whitening preprocessing to the input images and applies dropout noise to the input layer and the fully conne",
+          "score": 0.4,
+          "status": "partial",
+          "why": "Cell dirs outputs/prj_...-75b91ab0/cifar10_dropout_*/cifar10_nodropout_* show a dropout condition was attempted, but neither the manifest nor metrics.json evidence whitening or the dropout placement Section 6.3 specifies."
+        }
+      ],
+      "compute_adjusted_score": 0.7899999999999999
+    },
+    {
+      "area": "Experiment execution and reproducibility",
+      "score": 0.625,
+      "weight": 0.18,
+      "leaves": [
+        {
+          "id": "a0daf5030926457eb63f5f761b7f7439",
+          "label": "Executed run artifacts (logs plus per-epoch training-cost records) exist for the Section 6.1 logistic regression on MNIST and IMDB with mini",
+          "score": 0.7,
+          "status": "partial",
+          "why": "metrics.json holds per-epoch train_loss histories for mnist_logreg adam/sgd_nesterov/adagrad, provenance.json records batch_size=128 for both mnist_logreg and imdb_bow plus lr_schedule='1/sqrt(t)' for MNIST, and per-cell logs (mnist_logreg_adam.log, imdb_adagrad.log, etc.) exist."
+        },
+        {
+          "id": "426c1ea0446f4281ad8cdc08e73fa949",
+          "label": "Executed run artifacts exist for the Section 6.2 multi-layer neural network on MNIST \u2014 two fully connected hidden layers with 1000 hidden un",
+          "score": 0.7,
+          "status": "partial",
+          "why": "provenance.json experiments.mnist_mlp records batch_size=128 with measured final_train_loss and convergence series for both dropout (adagrad_dropout, rmsprop_dropout, adadelta_dropout, adam_dropout, sgd_momentum_dropout) and deterministic no-dropout variants, and matching cell di"
+        },
+        {
+          "id": "3afce7a37e4541d997c0b56632ab11fc",
+          "label": "Executed run artifacts exist for the Section 6.3 CIFAR-10 CNN with the c64-c64-c128-1000 architecture (three alternating stages of 5x5 convo",
+          "score": 0.4,
+          "status": "partial",
+          "why": "Per-cell dirs/logs (cifar10_dropout_adagrad, cifar10_nodropout_adam, cifar10_dropout_sgd_nesterov, etc.) show the runs were launched, but the empty fig3 sidecar series and absent cifar10 metrics/manifest entries leave no measured evidence of completed Section 6.3 runs."
+        },
+        {
+          "id": "d4085c100aea41e8ba3fca064fced0c8",
+          "label": "Executed run artifacts exist for the Section 6.4 VAE bias-correction grid \u2014 single hidden layer of 500 softplus units and a 50-dimensional s",
+          "score": 0.7,
+          "status": "partial",
+          "why": "fig_fig4_vae_lr_sweep.json contains measured ELBO values for \u03b21\u2208{0.0,0.9} \u00d7 \u03b22\u2208{0.99,0.999,0.9999} \u00d7 {no-correction, bias-corrected} \u00d7 {10, 100} epoch checkpoints across log10(\u03b1) \u2208 [-5,-2], evidencing most of the Section 6.4 grid was executed."
+        }
+      ],
+      "compute_adjusted_score": 0.625
+    },
+    {
+      "area": "Evaluation protocol and metric correctness",
+      "score": 0.55,
+      "weight": 0.15,
+      "leaves": [
+        {
+          "id": "f8e34ddb0e7f43afbb3f99328a2d7d67",
+          "label": "Training cost is measured as the training negative log likelihood and plotted against 'iterations over entire dataset' (epochs), matching th",
+          "score": 0.7,
+          "status": "partial",
+          "why": "fig_fig1_mnist_logreg.json and fig_fig1_imdb_bow.json show y='training cost (NLL)' vs x='epoch' with full per-epoch series, and fig_fig2_mnist_mlp.json records axis.y.scale='log' matching Figure 2, though its series block is empty."
+        },
+        {
+          "id": "b61e352a6de742b98f2f77fec88527d5",
+          "label": "Per Section 6, all optimizers in a given experiment use the same parameter initialization, and hyper-parameters such as learning rate and mo",
+          "score": 0.4,
+          "status": "partial",
+          "why": "The only recorded hyperparameter sweep is the Section 6.4 LR grid in fig_fig4_vae_lr_sweep.json; identical init across optimizers and a dense grid with selected-best settings for the main experiments are absent from provenance.json and metrics.json."
+        },
+        {
+          "id": "e54c7eecabdd486ebd1afb86551fe5fc",
+          "label": "The Section 6.4 evaluation plots loss (y-axis) versus log10(\u03b1) (x-axis) for each (\u03b21, \u03b22) combination, with separate curves/panels for bias-",
+          "score": 0.7,
+          "status": "partial",
+          "why": "fig_fig4_vae_lr_sweep.json plots against x='log10(\u03b1)' with separate measured series per (\u03b21,\u03b22) combination for bias-corrected vs no-correction at both _10 and _100 epoch checkpoints (e.g. 'b1=0.9_b2=0.99_no-correction_100'), matching Figure 4's protocol structure."
+        },
+        {
+          "id": "b9f78552f4f34509ade01cd7fdb6afa4",
+          "label": "The CIFAR-10 evaluation produces both views from Figure 3: training cost over the first 3 epochs and training cost over the full 45 epochs, ",
+          "score": 0.4,
+          "status": "partial",
+          "why": "CIFAR-10 cells were executed for 6 optimizers in both conditions (outputs/prj_6d41d2f09c026403-75b91ab0/cifar10_{dropout,nodropout}_*/metrics.json) but the required 3-epoch view is absent and the fig3 sidecars carry no curve data."
+        }
+      ],
+      "compute_adjusted_score": 0.55
+    },
+    {
+      "area": "Result match versus the paper's reported targets",
+      "score": 0.515,
+      "weight": 0.15,
+      "leaves": [
+        {
+          "id": "93f6709b58244cbfada11975d9d9e86c",
+          "label": "On MNIST logistic regression (Figure 1 left, Section 6.1), the produced curves show Adam converging at a rate similar to SGD with Nesterov m",
+          "score": 1.0,
+          "status": "pass",
+          "why": "metrics.json per_model.mnist_logreg shows adam final_train_loss=0.2352 \u2248 sgd_nesterov 0.2376, both well below adagrad 0.2603, and the provenance.json convergence sampled series show adagrad above adam/sgd at every sampled epoch \u2014 matching the paper's Figure 1-left trend."
+        },
+        {
+          "id": "e678b76684f04df0a19e12821c2c97e1",
+          "label": "On IMDB BoW logistic regression with 50% dropout (Figure 1 right, Section 6.1), the produced curves show Adam converging as fast as Adagrad,",
+          "score": 0.4,
+          "status": "partial",
+          "why": "provenance.json imdb_bow convergence/finals show Adam clearly beating SGDNesterov (0.250 vs 0.297) as claimed, but AdaGrad (0.318) lands below SGDNesterov, inverting half the claimed ordering."
+        },
+        {
+          "id": "2dbb1bb8c3db430788e8729412820f49",
+          "label": "On the MNIST multilayer network with dropout (Figure 2a, Section 6.2), the produced curves show Adam achieving better (lower) training cost ",
+          "score": 0.2,
+          "status": "fail",
+          "why": "provenance.json experiments.mnist_mlp.per_optimizer measured finals contradict the Figure 2a claim: Adam-with-dropout ranks worse than AdaGrad, AdaDelta, and SGD-momentum, beating only RMSProp."
+        },
+        {
+          "id": "4218ef05ad214ec487169e41e17914a2",
+          "label": "On the CIFAR-10 ConvNet over 45 epochs (Figure 3 right, Section 6.3), the produced curves show Adam and SGDNesterov eventually converging co",
+          "score": 0.2,
+          "status": "fail",
+          "why": "Execution is evidenced only by per-cell outputs (outputs/prj_6d41d2f09c026403-75b91ab0/cifar10_*_{adam,adagrad,sgd_nesterov}/metrics.json in the listing), but no measured CIFAR-10 number or curve is readable anywhere, so the claimed trend is unverifiable."
+        },
+        {
+          "id": "a01f713a5b0146d1aacb46fd366b54b0",
+          "label": "In the VAE bias-correction study (Figure 4, Section 6.4), the produced results show that \u03b22 values close to 1 (especially \u03b22 = 0.9999) witho",
+          "score": 0.7,
+          "status": "partial",
+          "why": "fig_fig4_vae_lr_sweep.json measured series support the instability claim \u2014 b2=0.9999_no-correction terminates at log10(\u03b1)=-4 (missing -3 point) and b2=0.999_no-correction_10 gives -140.80 at -3 vs -109.86 bias-corrected \u2014 but the universal-dominance claim does not hold at the sma"
+        }
+      ],
+      "compute_adjusted_score": 0.515
+    },
+    {
+      "area": "Artifact completeness and provenance",
+      "score": 0.61,
+      "weight": 0.05,
+      "leaves": [
+        {
+          "id": "a166fb0f61cd47a5822accdecf5d3998",
+          "label": "The repository contains runnable entry-point scripts covering all four Section 6 experiments (MNIST/IMDB logistic regression, MNIST multilay",
+          "score": 0.7,
+          "status": "partial",
+          "why": "code/optimizers.py implements AdaMax (Algorithm 2) and AdamNoBiasCorrection, and all four Section-6 experiment families demonstrably ran through the train_cell.py entry point (cell outputs for mnist_logreg_*, imdb_*, mnist_mlp_*, cifar10_* plus the populated fig_fig4 VAE sweep si"
+        },
+        {
+          "id": "699d7e2bec3c4b529d23435428cdec23",
+          "label": "Generated figure files reproducing the curves of Figures 1, 2, 3, and 4 are saved as artifacts with per-curve optimizer labels (e.g. 'Adam',",
+          "score": 0.4,
+          "status": "partial",
+          "why": "PNG artifacts exist for Figures 1\u20134 (outputs/fix_run/fig_fig1..fig_fig4*.png) and fig1/fig4 sidecars carry labeled series (e.g. 'AdaGrad' in fig_fig1_mnist_logreg.json), but the Figure 2 and Figure 3 sidecars contain no series at all."
+        },
+        {
+          "id": "f6411a8bf260470d989bc4d46f7cb3dd",
+          "label": "Provenance artifacts exist: a dependency specification (e.g. requirements.txt or environment file) pinning library versions, recorded random",
+          "score": 0.7,
+          "status": "partial",
+          "why": "provenance.json records seed=42, batch_size=128, hardware=cuda, torch 2.5.1+cu121, and full Adam hyperparameters (lr=0.001, betas=[0.9,0.999], eps=1e-08) for mnist_logreg, and per-cell logs plus config_used.json exist per run (outputs/prj_6d41d2f09c026403-75b91ab0/*.log, outputs/"
+        }
+      ],
+      "compute_adjusted_score": 0.61
+    }
+  ],
+  "leaf_scores": [
+    {
+      "id": "fd99c3d514f94ec59e686edc2cbddbd5",
+      "score": 0.7,
+      "justification": "provenance.json (mnist_logreg.per_optimizer.adam: lr=0.001, betas=[0.9,0.999], eps=1e-8) and code/optimizers.py's AdamNoBiasCorrection (m.mul_(beta1).add_(grad,...), v.mul_(beta2).addcmul_(grad,grad,...) with zeros_like init) confirm the Algorithm-1 recursion family ran, but the bias-corrected Adam implementation cannot be directly inspected."
+    },
+    {
+      "id": "52348d0d94744d75b9a1d4df411b9da5",
+      "score": 1.0,
+      "justification": "provenance.json experiments.mnist_logreg.per_optimizer.adam records exactly lr=0.001, betas=[0.9, 0.999], eps=1e-08, matching the paper's Algorithm 1 defaults."
+    },
+    {
+      "id": "7f454bc91d3747e496d21adbd4554e28",
+      "score": 1.0,
+      "justification": "code/optimizers.py AdaMax.step implements u.mul_(beta2); torch.maximum(u, grad.abs(), out=u) (no bias correction on u) with step_size = lr/(1-beta1**t) and defaults lr=0.002, betas=(0.9, 0.999), exactly Algorithm 2."
+    },
+    {
+      "id": "aef1273c63414ba4a8920e5f46dcb39f",
+      "score": 1.0,
+      "justification": "provenance.json records sgd_nesterov (momentum=0.9, nesterov=true), adagrad, rmsprop, and adadelta/adadelta_dropout (mnist_mlp.per_optimizer) all with measured final_train_loss values, and per-cell artifact dirs (e.g. outputs/.../mnist_mlp_dropout_adadelta, cifar10_dropout_rmsprop) show each was usable as a drop-in optimizer across the experiment scripts."
+    },
+    {
+      "id": "bd34a3ca5d1a4a7981bb30a572712680",
+      "score": 1.0,
+      "justification": "code/optimizers.py AdamNoBiasCorrection is a separate Optimizer class identical to Adam with the (1-\u03b21^t)/(1-\u03b22^t) divisors removed (comment 'NO bias correction \u2014 use m_t, v_t directly'), and fig_fig4_vae_lr_sweep.json contains paired no-correction/bias-corrected series confirming both variants ran."
+    },
+    {
+      "id": "975f260141784022bb87cf5846d1803b",
+      "score": 1.0,
+      "justification": "provenance.json mnist_logreg records weight_decay=0.0005 (L2 regularization) for the MNIST logistic-regression experiment, and metrics.json mnist_logreg test_accuracy \u224892.6% is exactly the signature of a linear classifier on flattened 784-d MNIST inputs."
+    },
+    {
+      "id": "5554e12e683e4e9d81572a8274548d14",
+      "score": 1.0,
+      "justification": "provenance.json experiments.imdb_bow records vocab_size=10000 and dropout=0.5, with measured per-optimizer convergence series confirming the BoW IMDB experiment actually ran."
+    },
+    {
+      "id": "728ec345e4184245bc5a3eb6e6a70613",
+      "score": 0.4,
+      "justification": "Cell dirs outputs/prj_...-75b91ab0/cifar10_dropout_*/cifar10_nodropout_* show a dropout condition was attempted, but neither the manifest nor metrics.json evidence whitening or the dropout placement Section 6.3 specifies."
+    },
+    {
+      "id": "a0daf5030926457eb63f5f761b7f7439",
+      "score": 0.7,
+      "justification": "metrics.json holds per-epoch train_loss histories for mnist_logreg adam/sgd_nesterov/adagrad, provenance.json records batch_size=128 for both mnist_logreg and imdb_bow plus lr_schedule='1/sqrt(t)' for MNIST, and per-cell logs (mnist_logreg_adam.log, imdb_adagrad.log, etc.) exist."
+    },
+    {
+      "id": "426c1ea0446f4281ad8cdc08e73fa949",
+      "score": 0.7,
+      "justification": "provenance.json experiments.mnist_mlp records batch_size=128 with measured final_train_loss and convergence series for both dropout (adagrad_dropout, rmsprop_dropout, adadelta_dropout, adam_dropout, sgd_momentum_dropout) and deterministic no-dropout variants, and matching cell dirs mnist_mlp_dropout_*/mnist_mlp_nodropout_* (incl. sgd_nesterov) exist."
+    },
+    {
+      "id": "3afce7a37e4541d997c0b56632ab11fc",
+      "score": 0.4,
+      "justification": "Per-cell dirs/logs (cifar10_dropout_adagrad, cifar10_nodropout_adam, cifar10_dropout_sgd_nesterov, etc.) show the runs were launched, but the empty fig3 sidecar series and absent cifar10 metrics/manifest entries leave no measured evidence of completed Section 6.3 runs."
+    },
+    {
+      "id": "d4085c100aea41e8ba3fca064fced0c8",
+      "score": 0.7,
+      "justification": "fig_fig4_vae_lr_sweep.json contains measured ELBO values for \u03b21\u2208{0.0,0.9} \u00d7 \u03b22\u2208{0.99,0.999,0.9999} \u00d7 {no-correction, bias-corrected} \u00d7 {10, 100} epoch checkpoints across log10(\u03b1) \u2208 [-5,-2], evidencing most of the Section 6.4 grid was executed."
+    },
+    {
+      "id": "f8e34ddb0e7f43afbb3f99328a2d7d67",
+      "score": 0.7,
+      "justification": "fig_fig1_mnist_logreg.json and fig_fig1_imdb_bow.json show y='training cost (NLL)' vs x='epoch' with full per-epoch series, and fig_fig2_mnist_mlp.json records axis.y.scale='log' matching Figure 2, though its series block is empty."
+    },
+    {
+      "id": "b61e352a6de742b98f2f77fec88527d5",
+      "score": 0.4,
+      "justification": "The only recorded hyperparameter sweep is the Section 6.4 LR grid in fig_fig4_vae_lr_sweep.json; identical init across optimizers and a dense grid with selected-best settings for the main experiments are absent from provenance.json and metrics.json."
+    },
+    {
+      "id": "e54c7eecabdd486ebd1afb86551fe5fc",
+      "score": 0.7,
+      "justification": "fig_fig4_vae_lr_sweep.json plots against x='log10(\u03b1)' with separate measured series per (\u03b21,\u03b22) combination for bias-corrected vs no-correction at both _10 and _100 epoch checkpoints (e.g. 'b1=0.9_b2=0.99_no-correction_100'), matching Figure 4's protocol structure."
+    },
+    {
+      "id": "b9f78552f4f34509ade01cd7fdb6afa4",
+      "score": 0.4,
+      "justification": "CIFAR-10 cells were executed for 6 optimizers in both conditions (outputs/prj_6d41d2f09c026403-75b91ab0/cifar10_{dropout,nodropout}_*/metrics.json) but the required 3-epoch view is absent and the fig3 sidecars carry no curve data."
+    },
+    {
+      "id": "93f6709b58244cbfada11975d9d9e86c",
+      "score": 1.0,
+      "justification": "metrics.json per_model.mnist_logreg shows adam final_train_loss=0.2352 \u2248 sgd_nesterov 0.2376, both well below adagrad 0.2603, and the provenance.json convergence sampled series show adagrad above adam/sgd at every sampled epoch \u2014 matching the paper's Figure 1-left trend."
+    },
+    {
+      "id": "e678b76684f04df0a19e12821c2c97e1",
+      "score": 0.4,
+      "justification": "provenance.json imdb_bow convergence/finals show Adam clearly beating SGDNesterov (0.250 vs 0.297) as claimed, but AdaGrad (0.318) lands below SGDNesterov, inverting half the claimed ordering."
+    },
+    {
+      "id": "2dbb1bb8c3db430788e8729412820f49",
+      "score": 0.2,
+      "justification": "provenance.json experiments.mnist_mlp.per_optimizer measured finals contradict the Figure 2a claim: Adam-with-dropout ranks worse than AdaGrad, AdaDelta, and SGD-momentum, beating only RMSProp."
+    },
+    {
+      "id": "4218ef05ad214ec487169e41e17914a2",
+      "score": 0.2,
+      "justification": "Execution is evidenced only by per-cell outputs (outputs/prj_6d41d2f09c026403-75b91ab0/cifar10_*_{adam,adagrad,sgd_nesterov}/metrics.json in the listing), but no measured CIFAR-10 number or curve is readable anywhere, so the claimed trend is unverifiable."
+    },
+    {
+      "id": "a01f713a5b0146d1aacb46fd366b54b0",
+      "score": 0.7,
+      "justification": "fig_fig4_vae_lr_sweep.json measured series support the instability claim \u2014 b2=0.9999_no-correction terminates at log10(\u03b1)=-4 (missing -3 point) and b2=0.999_no-correction_10 gives -140.80 at -3 vs -109.86 bias-corrected \u2014 but the universal-dominance claim does not hold at the smallest learning rates."
+    },
+    {
+      "id": "a166fb0f61cd47a5822accdecf5d3998",
+      "score": 0.7,
+      "justification": "code/optimizers.py implements AdaMax (Algorithm 2) and AdamNoBiasCorrection, and all four Section-6 experiment families demonstrably ran through the train_cell.py entry point (cell outputs for mnist_logreg_*, imdb_*, mnist_mlp_*, cifar10_* plus the populated fig_fig4 VAE sweep sidecar)."
+    },
+    {
+      "id": "699d7e2bec3c4b529d23435428cdec23",
+      "score": 0.4,
+      "justification": "PNG artifacts exist for Figures 1\u20134 (outputs/fix_run/fig_fig1..fig_fig4*.png) and fig1/fig4 sidecars carry labeled series (e.g. 'AdaGrad' in fig_fig1_mnist_logreg.json), but the Figure 2 and Figure 3 sidecars contain no series at all."
+    },
+    {
+      "id": "f6411a8bf260470d989bc4d46f7cb3dd",
+      "score": 0.7,
+      "justification": "provenance.json records seed=42, batch_size=128, hardware=cuda, torch 2.5.1+cu121, and full Adam hyperparameters (lr=0.001, betas=[0.9,0.999], eps=1e-08) for mnist_logreg, and per-cell logs plus config_used.json exist per run (outputs/prj_6d41d2f09c026403-75b91ab0/*.log, outputs/fix_run/config_used.json), but a pinned dependency file is not evidenced."
+    }
+  ],
+  "weak_leaves": [
+    {
+      "id": "2dbb1bb8c3db430788e8729412820f49",
+      "score": 0.2,
+      "justification": "provenance.json experiments.mnist_mlp.per_optimizer measured finals contradict the Figure 2a claim: Adam-with-dropout ranks worse than AdaGrad, AdaDelta, and SGD-momentum, beating only RMSProp.",
+      "area": "Result match versus the paper's reported targets"
+    },
+    {
+      "id": "4218ef05ad214ec487169e41e17914a2",
+      "score": 0.2,
+      "justification": "Execution is evidenced only by per-cell outputs (outputs/prj_6d41d2f09c026403-75b91ab0/cifar10_*_{adam,adagrad,sgd_nesterov}/metrics.json in the listing), but no measured CIFAR-10 number or curve is readable anywhere, so the claimed trend is unverifiable.",
+      "area": "Result match versus the paper's reported targets"
+    },
+    {
+      "id": "728ec345e4184245bc5a3eb6e6a70613",
+      "score": 0.4,
+      "justification": "Cell dirs outputs/prj_...-75b91ab0/cifar10_dropout_*/cifar10_nodropout_* show a dropout condition was attempted, but neither the manifest nor metrics.json evidence whitening or the dropout placement Section 6.3 specifies.",
+      "area": "Data and preprocessing fidelity"
+    },
+    {
+      "id": "3afce7a37e4541d997c0b56632ab11fc",
+      "score": 0.4,
+      "justification": "Per-cell dirs/logs (cifar10_dropout_adagrad, cifar10_nodropout_adam, cifar10_dropout_sgd_nesterov, etc.) show the runs were launched, but the empty fig3 sidecar series and absent cifar10 metrics/manifest entries leave no measured evidence of completed Section 6.3 runs.",
+      "area": "Experiment execution and reproducibility"
+    },
+    {
+      "id": "b61e352a6de742b98f2f77fec88527d5",
+      "score": 0.4,
+      "justification": "The only recorded hyperparameter sweep is the Section 6.4 LR grid in fig_fig4_vae_lr_sweep.json; identical init across optimizers and a dense grid with selected-best settings for the main experiments are absent from provenance.json and metrics.json.",
+      "area": "Evaluation protocol and metric correctness"
+    },
+    {
+      "id": "b9f78552f4f34509ade01cd7fdb6afa4",
+      "score": 0.4,
+      "justification": "CIFAR-10 cells were executed for 6 optimizers in both conditions (outputs/prj_6d41d2f09c026403-75b91ab0/cifar10_{dropout,nodropout}_*/metrics.json) but the required 3-epoch view is absent and the fig3 sidecars carry no curve data.",
+      "area": "Evaluation protocol and metric correctness"
+    },
+    {
+      "id": "e678b76684f04df0a19e12821c2c97e1",
+      "score": 0.4,
+      "justification": "provenance.json imdb_bow convergence/finals show Adam clearly beating SGDNesterov (0.250 vs 0.297) as claimed, but AdaGrad (0.318) lands below SGDNesterov, inverting half the claimed ordering.",
+      "area": "Result match versus the paper's reported targets"
+    },
+    {
+      "id": "699d7e2bec3c4b529d23435428cdec23",
+      "score": 0.4,
+      "justification": "PNG artifacts exist for Figures 1\u20134 (outputs/fix_run/fig_fig1..fig_fig4*.png) and fig1/fig4 sidecars carry labeled series (e.g. 'AdaGrad' in fig_fig1_mnist_logreg.json), but the Figure 2 and Figure 3 sidecars contain no series at all.",
+      "area": "Artifact completeness and provenance"
+    }
+  ]
+}
