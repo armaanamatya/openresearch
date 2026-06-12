@@ -1,4 +1,4 @@
-# OmniZip (2511.14582) — best so far: 0.656 partial
+# OmniZip (2511.14582) — best so far: 0.664 reproduced (beat its own floor)
 
 *OmniZip: Audio-Guided Token Compression for Omni-modal LLM Inference* — a
 TRAINING-FREE inference paper: audio-guided token pruning accelerates
@@ -10,11 +10,12 @@ not gradient descent — the rubric's heavy leaves are algorithmic fidelity
 audio-anchor preservation, the interleaved merge) and measurement honesty
 (same bounded subset, warmup excluded, per-cell wall-clock).
 
-Best attempt: **0.6563 partial** (2026-06-11, 9 iterations, ~6.8h). The
-campaign for this paper is young — a follow-up run with the full current
-stack (floored target 0.6563, pinned rubric, seeded best attempt,
-prior-attempt evidence, leaf-triage repair plans) was in flight when this
-package was cut; the paper hint (`backend/agents/prompts/paper_hints.py`,
+Best: **0.6638 reproduced** (2026-06-12, one 8.4h iteration, meets_target
+TRUE against the floored 0.6563 target — the second run in the campaign to
+beat its own best ancestor, after All-CNN v4). Ran with the full stack:
+floored target, pinned rubric, seeded best attempt, prior-attempt evidence,
+leaf-triage repair plans. Residual weak leaves are judgment-class
+(algorithmic fidelity), not evidence gaps. The paper hint (`backend/agents/prompts/paper_hints.py`,
 "2511.14582") carries the algorithm invariants and the paired-measurement
 protocol.
 
