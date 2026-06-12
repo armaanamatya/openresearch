@@ -835,6 +835,17 @@ def _stale_partial_report(**overrides) -> RLMFinalReport:
     return RLMFinalReport(**base)
 
 
+def _write_evidence(project_dir: Path) -> None:
+    """One clean success+metrics row so the evidence gate (strict on this
+    line: no clean run_experiment evidence => verdict 'failed') sees a real
+    experiment behind the verdict. The ledger is unavailable in these tests,
+    so content-only evidence is authoritative (the gate's replay fallback)."""
+    project_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / "experiment_runs.jsonl").write_text(
+        json.dumps({"success": True, "metrics": {"per_model": {"m": {"acc": 0.9}}}}) + "\n"
+    )
+
+
 def _write_eval(project_dir: Path, **extra) -> None:
     payload = {
         "overall_score": 0.65632,
@@ -851,6 +862,7 @@ def _write_eval(project_dir: Path, **extra) -> None:
 class TestAuthoritativeRubricOverride:
     def test_eval_overrides_stale_scalars_and_floors_verdict(self, tmp_path):
         project_dir = tmp_path / "proj"
+        _write_evidence(project_dir)
         _write_eval(project_dir)
         report = _stale_partial_report()
 
@@ -863,6 +875,7 @@ class TestAuthoritativeRubricOverride:
 
     def test_hard_stop_keeps_partial_cap(self, tmp_path):
         project_dir = tmp_path / "proj"
+        _write_evidence(project_dir)
         _write_eval(project_dir)
         report = _stale_partial_report(
             stop_reason={"kind": "wall_clock_watchdog", "detail": "hard stop"},
@@ -878,6 +891,7 @@ class TestAuthoritativeRubricOverride:
 
     def test_degraded_run_keeps_partial_cap(self, tmp_path):
         project_dir = tmp_path / "proj"
+        _write_evidence(project_dir)
         _write_eval(project_dir)
         report = _stale_partial_report(degraded=True)
 
@@ -888,6 +902,7 @@ class TestAuthoritativeRubricOverride:
 
     def test_no_eval_file_leaves_report_untouched(self, tmp_path):
         project_dir = tmp_path / "proj"
+        _write_evidence(project_dir)
         report = _stale_partial_report()
 
         json_path, _ = write_final_report_rlm(report, project_dir)
