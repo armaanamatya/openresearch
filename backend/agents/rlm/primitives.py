@@ -6552,6 +6552,23 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             "invariant_results": scored.get("invariant_results", []),
             "invariant_gate_applied": bool(scored.get("invariant_gate_applied", False)),
         }
+        # Deterministic weak-leaf triage (2026-06-12): classify each weak leaf's
+        # justification against actual disk state into a cost-ordered repair
+        # plan (render/record/aggregate = no retraining; protocol/result = one
+        # targeted re-run) — the automated form of the operator steering that
+        # took the 06-11 Adam run 0.0→0.716. Attached to the result so the root
+        # acts on it THIS iteration; persisted for the implementer prompt hook.
+        try:
+            from backend.agents.rlm import leaf_triage as _lt
+
+            if _lt.is_enabled():
+                _triage = _lt.triage_weak_leaves(result["weak_leaves"], ctx.project_dir)
+                if _triage.get("plan"):
+                    result["leaf_repair_plan"] = _triage["plan"]
+                    result["leaf_repair_summary"] = _triage.get("summary", "")
+                    _lt.persist(ctx.project_dir, _triage)
+        except Exception:  # noqa: BLE001 — triage is advisory, never blocks verify
+            logger.debug("verify_against_rubric: leaf triage failed", exc_info=True)
         # Lane P phase B (codex review 2026-05-25): when metrics.json carries
         # an `experiments` dict with per-experiment {status, reason_class},
         # compute the scope-adjusted rubric and attach it alongside the raw
