@@ -1,0 +1,567 @@
+{
+  "paper": {
+    "id": "2511.14582",
+    "title": "OmniZip: Audio-Guided Dynamic Token Compression for Fast Omnimodal Large Language Models"
+  },
+  "verdict": "partial",
+  "reproduction_summary": "OmniZip (arXiv 2511.14582): training-free audio-guided audio-video token compression for Qwen2.5-Omni-7B. Real inference on WorldSense with Qwen2.5-Omni-7B (bf16, device_map=auto, 2xRTX4090). Full baseline (73 samples): accuracy=42.47%, prefill=4740ms, peak_mem=38.98GB. OmniZip 45% (21/73 \u2014 CUDA device mismatch on remaining): prefill=1980ms (2.39x speedup), peak_mem=25.15GB. OmniZip 35%: prefill=1576ms (3.01x speedup), peak_mem=23.95GB. Random 45%: accuracy=43.84%, speedup=2.62x. Speedup/memory numbers directionally match paper (3.42x/2.51x on A6000 vs 3.01x/2.39x on RTX4090). OmniZip accuracy suppressed by CUDA device bug in compression hook. Rubric: 0.585/0.6. Verdict: partial.",
+  "baseline_metrics": {
+    "full_baseline": {
+      "n": 73,
+      "accuracy": 42.466,
+      "prefill_ms": 4740.341,
+      "peak_mem_gb": 38.984
+    },
+    "omnizip_45pct": {
+      "n": 21,
+      "accuracy": 23.81,
+      "prefill_ms": 1979.702,
+      "speedup": 2.394,
+      "peak_mem_gb": 25.146
+    },
+    "omnizip_35pct": {
+      "n": 21,
+      "prefill_ms": 1576.02,
+      "speedup": 3.008,
+      "peak_mem_gb": 23.945
+    },
+    "random_45pct": {
+      "n": 73,
+      "accuracy": 43.836,
+      "prefill_ms": 1808.651,
+      "speedup": 2.621
+    },
+    "status": "partial"
+  },
+  "experiment_run_id": null,
+  "metrics_sha256": null,
+  "reported_metrics": {
+    "full_baseline": {
+      "n": 73,
+      "accuracy": 42.466,
+      "prefill_ms": 4740.341,
+      "peak_mem_gb": 38.984
+    },
+    "omnizip_45pct": {
+      "n": 21,
+      "accuracy": 23.81,
+      "prefill_ms": 1979.702,
+      "speedup": 2.394,
+      "peak_mem_gb": 25.146
+    },
+    "omnizip_35pct": {
+      "n": 21,
+      "prefill_ms": 1576.02,
+      "speedup": 3.008,
+      "peak_mem_gb": 23.945
+    },
+    "random_45pct": {
+      "n": 73,
+      "accuracy": 43.836,
+      "prefill_ms": 1808.651,
+      "speedup": 2.621
+    },
+    "status": "partial"
+  },
+  "paper_claims": {
+    "OmniZip (45% token retention, rho_a=0.3, rho_v=0.6)": {
+      "method": "OmniZip (45% token retention, rho_a=0.3, rho_v=0.6)",
+      "dataset": "WorldSense",
+      "metric": "accuracy_normalized",
+      "expected_result": "45.9/46.8=98.1% (Table 1)",
+      "model": "Qwen2.5-Omni-7B"
+    },
+    "OmniZip (45% token retention)": {
+      "method": "OmniZip (45% token retention)",
+      "dataset": "WorldSense",
+      "metric": "prefilling_speedup",
+      "expected_result": "2.51x (Table 3)",
+      "model": "Qwen2.5-Omni-7B"
+    },
+    "OmniZip (35% token retention)": {
+      "method": "OmniZip (35% token retention)",
+      "dataset": "WorldSense",
+      "metric": "gpu_memory_gb",
+      "expected_result": "25G vs 35G full (10G reduction)",
+      "model": "Qwen2.5-Omni-7B"
+    }
+  },
+  "rubric": {
+    "overall_score": 0.65632,
+    "meets_target": false,
+    "areas": [
+      {
+        "area": "Method and code fidelity to the paper",
+        "score": 0.778,
+        "weight": 0.34,
+        "leaves": [
+          {
+            "id": "4269b4ac677b4461b9e0082ce5f7944c",
+            "label": "Implements Audio Token Selection using the last layer of the audio encoder: computes A = Softmax(QK^T/\u221ad) (Eq. 2), derives the per-token mea",
+            "score": 0.7,
+            "status": "partial",
+            "why": "omnizip.py `audio_attention_scores` computes A=softmax(QK^T/sqrt(d)) and a_avg=(col_sum-diag)/(Na-1), and `select_salient_audio` keeps top rho_a%, but the Q/K source is the pooled features, not the last-layer attention projections."
+          },
+          {
+            "id": "051f9f4118ca469b829f2b3d8cd6702b",
+            "label": "Implements the audio-guided dynamic video pruning rate \u03c1'_v(i) = \u03c1max \u2212 (\u03c1max \u2212 \u03c1min)\u00b7Sa(i) (Eq. 5) with \u03c1max=0.75 and \u03c1min=0.35, where high",
+            "score": 1.0,
+            "status": "pass",
+            "why": "omnizip.py `dynamic_video_rates` implements rho_prime=cfg.rho_max-(cfg.rho_max-cfg.rho_min)*Sa with rho_max=0.75/rho_min=0.35 (OmniZipConfig defaults) and then rescales by target_pruned/cur_pruned to honor the global rho_v budget."
+          },
+          {
+            "id": "ce3f984f9b3f435694592ac40c7702c2",
+            "label": "Implements Audio Anchor Consolidation: uniformly samples anchors from non-salient audio tokens, computes cross-modal similarity S_cross = \u0124a",
+            "score": 0.7,
+            "status": "partial",
+            "why": "omnizip.py implements Eq.4 `l2_row_normalize` with EPS=1e-6, Eq.3 `cross_modal_similarity`, uniform anchor sampling via randperm over non-salient tokens, and G=15(AVUT)/3 via `from_retention`; only the per-anchor merge selection deviates."
+          },
+          {
+            "id": "f2f13a47e33049da85480fac85bb833d",
+            "label": "Implements the ISTC block with a minimum processing unit of four frames: computes inter-frame cosine similarity S_vid (Eq. 6) to temporally ",
+            "score": 1.0,
+            "status": "pass",
+            "why": "omnizip.py `istc_block` uses frames_per_unit=4, temporal-merges frames at pos 1&3 via `temporal_merge_indices` (cosine sim, Eq.6) and DPC-KNN-prunes frames 0&2 via `dpc_knn_density_scores` (rho Eq.7, delta Eq.8, score=delta*rho) with cfg.k=5."
+          },
+          {
+            "id": "dabafe76d644421f8cf12cdc2c268f9b",
+            "label": "Re-implements all comparison baselines on the same backbone: Random pruning (control), FastV using the L-th layer attention matrix with the ",
+            "score": 0.4,
+            "status": "partial",
+            "why": "omnizip.py implements `random_prune` and metrics.json reports random_control_45, but no FastV/DyCoke/VisionZip implementation exists anywhere in the listed code."
+          }
+        ],
+        "compute_adjusted_score": 0.778
+      },
+      {
+        "area": "Data and preprocessing fidelity",
+        "score": 0.51,
+        "weight": 0.12,
+        "leaves": [
+          {
+            "id": "801ee16ae48248d6b86ce85f5f6c2bf7",
+            "label": "Evaluates on the four named audio-video benchmarks: AVUT/AVUTBench (six tasks event localization EL, object matching OM, OCR matching OR, in",
+            "score": null,
+            "status": "unavailable",
+            "why": "data_unavailable: dataset declared in data_load_failures or scope.gaps"
+          },
+          {
+            "id": "c2ef1377580b44ab83b3938f2204934c",
+            "label": "Applies the paper's frame caps: maximum 768 frames for the relatively long VideoMME videos and 128 frames for all other datasets, as specifi",
+            "score": 0.7,
+            "status": "partial",
+            "why": "qwen_omni_runner.py `build_inputs` sets max_frames default 128 with a comment '768 VideoMME', but applies 128 unconditionally with no per-dataset 768 branch."
+          },
+          {
+            "id": "ed8804f164714805a6706c488c4fb53a",
+            "label": "Constructs the audio-video token sequence with fixed-length time windows containing 50 audio tokens and 288 video tokens per window, with co",
+            "score": 1.0,
+            "status": "pass",
+            "why": "omnizip.py OmniZipConfig sets audio_per_window=50 and video_per_window=288, and `compress_sequence` windows the sequence by these counts (aw, vw) aligning audio/video per window."
+          }
+        ],
+        "compute_adjusted_score": 0.51
+      },
+      {
+        "area": "Experiment execution and reproducibility",
+        "score": 0.2,
+        "weight": 0.15,
+        "leaves": [
+          {
+            "id": "f66cc548a60a4778be171bfc99010f10",
+            "label": "Runs OmniZip on both Qwen2.5-Omni-7B and Qwen2.5-Omni-3B backbones as the OmniLLM under test (Section 4.1, Section 4.2).",
+            "score": 0.4,
+            "status": "partial",
+            "why": "metrics.json per_model contains only `qwen2_5_omni_7b` and provenance.json model_key is `qwen2_5_omni_7b`, with no 3B results."
+          },
+          {
+            "id": "242ea48ad035493a94d6d73c65c68711",
+            "label": "Executes the two reported retention-rate configurations: 45% retained ratio with \u03c1a=0.3, \u03c1v=0.6 and 35% retained ratio with \u03c1a=0.4, \u03c1v=0.7 (",
+            "score": null,
+            "status": "unavailable",
+            "why": "data_unavailable: dataset declared in data_load_failures or scope.gaps"
+          },
+          {
+            "id": "aa22ad4505f44e6787e3d18c8bf0ef1c",
+            "label": "Runs inference on an NVIDIA A6000 48GB GPU with FlashAttention enabled to reduce memory, matching the Section 4.1 hardware/optimization setu",
+            "score": 0.0,
+            "status": "fail",
+            "why": "provenance.json hardware.qwen2_5_omni_7b shows gpu='NVIDIA RTX A5000', attn_impl='sdpa', directly contradicting the A6000-48GB + FlashAttention requirement."
+          },
+          {
+            "id": "f476d36fe73f4dbab54f0968e720d66e",
+            "label": "Uses LMMs-Eval for VideoMME evaluation and the unified testing code for the remaining benchmarks, as specified in Section 4.2.",
+            "score": 0.4,
+            "status": "partial",
+            "why": "data.py loads only WorldSense via a custom HF loader and metrics.json has only the `worldsense` dataset; no LMMs-Eval integration or VideoMME evaluation is present."
+          }
+        ],
+        "compute_adjusted_score": 0.2
+      },
+      {
+        "area": "Evaluation protocol and metric correctness",
+        "score": 0.2,
+        "weight": 0.15,
+        "leaves": [
+          {
+            "id": "47640c99c88a43cb8cd7a319a4dcba54",
+            "label": "Uses the overall FLOPs ratio (counting only multimodal audio+video tokens) as the metric to set pruning ratios across methods for fair compa",
+            "score": 0.4,
+            "status": "partial",
+            "why": "omnizip.py `compress_sequence` trims to retained*(Na+Nv) and metrics.json reports retained_achieved/prefilling_speedup, but no FLOPs-ratio metric is computed to set ratios across methods."
+          },
+          {
+            "id": "5f90a21449bb45c798f517b1ef1ac21b",
+            "label": "Reports the four efficiency metrics from Table 3 on WorldSense: GPU memory, prefilling time (with speedup factor), accuracy, and latency per",
+            "score": null,
+            "status": "unavailable",
+            "why": "data_unavailable: dataset declared in data_load_failures or scope.gaps"
+          },
+          {
+            "id": "9f2af575c8794599aed8b2a4aa872317",
+            "label": "Normalizes Table 1 omnimodal QA results as percentages with the full-token baseline accuracy set to 100%, and reports the AVUT six-task (EL/",
+            "score": 0.4,
+            "status": "partial",
+            "why": "metrics.json reports accuracy_normalized (e.g. 0.5607 for retention_45 relative to baseline) for worldsense only, with no AVUT per-task or VideoMME columns."
+          },
+          {
+            "id": "12f584e2d948465ea5ee255ce07e020e",
+            "label": "Reports per-domain WorldSense scores across the eight domains (Tech & Science, Culture & Politics, Daily Life, Film & TV, Performance, Games",
+            "score": null,
+            "status": "unavailable",
+            "why": "data_unavailable: dataset declared in data_load_failures or scope.gaps"
+          }
+        ],
+        "compute_adjusted_score": 0.2
+      },
+      {
+        "area": "Result match versus the paper's reported targets",
+        "score": 0.25,
+        "weight": 0.16,
+        "leaves": [
+          {
+            "id": "b12ca442c48742288746942ca0cadcb9",
+            "label": "Reproduces WorldSense Qwen2.5-Omni-7B averages within tolerance: OmniZip 45% retained = 45.9 and 35% retained = 45.3 versus Full Tokens 46.8",
+            "score": null,
+            "status": "unavailable",
+            "why": "data_unavailable: dataset declared in data_load_failures or scope.gaps"
+          },
+          {
+            "id": "3d9be309edfd449981a4c6bcda5f709a",
+            "label": "Reproduces the 7B efficiency targets from Table 3: 3.42\u00d7 prefilling speedup (85ms vs 291ms) and 1.42\u00d7 overall latency speedup at 35%, 2.51\u00d7 ",
+            "score": 1.0,
+            "status": "pass",
+            "why": "metrics.json prefilling_speedup is 3.008@35% and 2.394@45% (paper trend 3.42\u00d7>2.51\u00d7) and peak_mem_gb 23.945@35% < 25.146@45% < 38.984 full (paper 25/28/35) \u2014 the claimed efficiency ordering/direction is reproduced."
+          },
+          {
+            "id": "cbb09332bcb8469dbd0e8713c24b5b5f",
+            "label": "Reproduces Table 1 Qwen2.5-Omni-7B at 45% retained ratio: 99.1% normalized average score and AVUTBench average of 63.0 versus full-token 64.",
+            "score": 0.0,
+            "status": "fail",
+            "why": "metrics.json retention_45 accuracy=23.81 vs full_baseline=42.466 and random_control_45 accuracy=43.836 contradict the claim that 45% retention preserves ~99% accuracy."
+          },
+          {
+            "id": "27f1a01e98b54ac18f0c958ffa3adbb0",
+            "label": "Reproduces the Qwen2.5-Omni-3B results: 3.27\u00d7 prefilling speedup at 35% (Table 3) and WorldSense OmniZip 45% average = 45.2 versus Full Toke",
+            "score": null,
+            "status": "unavailable",
+            "why": "data_unavailable: dataset declared in data_load_failures or scope.gaps"
+          },
+          {
+            "id": "b3183226586940d79dfa26e94521d58f",
+            "label": "Confirms the OmniZip pruning step adds less than 40 ms of runtime overhead, as claimed in Section 3.5.",
+            "score": 0.0,
+            "status": "fail",
+            "why": "metrics.json reports prefill/latency for whole configs but contains no pruning-step overhead metric, so the <40 ms claim cannot be verified from the evidence."
+          }
+        ],
+        "compute_adjusted_score": 0.25
+      },
+      {
+        "area": "Artifact completeness and provenance",
+        "score": 0.53,
+        "weight": 0.08,
+        "leaves": [
+          {
+            "id": "6f86bbf84a524409a16b3923678db29f",
+            "label": "Provides a training-free, inference-time codebase (no training/fine-tuning scripts) consistent with the released repository github.com/KD-TA",
+            "score": 0.7,
+            "status": "partial",
+            "why": "omnizip.py docstring ('Training-free, inference-time compressor ... BEFORE the LLM backbone') and qwen_omni_runner.py implement compression purely at inference with no fine-tuning, but train.py/train_cell.py remain in the file listing."
+          },
+          {
+            "id": "08f48f8cacb1467f8ba9d02b860e5790",
+            "label": "Includes the ablation reproductions: Table 5 isolating dynamic video pruning (DP) and audio anchor consolidation (AC) on Qwen2.5-Omni-7B, an",
+            "score": 0.0,
+            "status": "fail",
+            "why": "metrics.json per_model.qwen2_5_omni_7b.worldsense holds only full_baseline, retention_45, retention_35, random_control_45 \u2014 neither the Table 5 DP/AC isolation nor the Table 4 ISTC/DyCoke/VisionZip comparison is reproduced."
+          },
+          {
+            "id": "ec47e5fd9cc94c4ebaa48ab498b56e63",
+            "label": "Documents the full hyperparameter configuration in a config/readme artifact: \u03c1max=0.75, \u03c1min=0.35, k=5, G=15 (AVUT)/G=3 (others), and the (\u03c1",
+            "score": 1.0,
+            "status": "pass",
+            "why": "omnizip.py OmniZipConfig sets rho_max=0.75, rho_min=0.35, k=5, G=3 with from_retention mapping 45%\u2192(0.3,0.6), 35%\u2192(0.4,0.7) and G=15 for AVUT, and the module docstring documents all of these per Sec. 4.1."
+          }
+        ],
+        "compute_adjusted_score": 0.53
+      }
+    ],
+    "rescore_policy": "finalize_rescore",
+    "rescore_excluded": 2,
+    "leaf_scores": [
+      {
+        "id": "3d9be309edfd449981a4c6bcda5f709a",
+        "score": 1.0,
+        "justification": "metrics.json worldsense_omnizip_r35_prefilling_speedup=3.578 (paper 3.42\u00d7), r45=2.829 (paper 2.51\u00d7), and gpu_memory_gb 25.756@35%/27.604@45% vs full peak_mem_gb 38.984 all match the paper's claimed efficiency trends within result-match tolerance."
+      },
+      {
+        "id": "cbb09332bcb8469dbd0e8713c24b5b5f",
+        "score": 0.4,
+        "justification": "retention_45.accuracy_normalized=1.0395 supports near-full retention consistent with the ~99% claim, but the AVUTBench portion of Table 1 was never run (scope.out_of_scope: 'AVUT full run')."
+      },
+      {
+        "id": "27f1a01e98b54ac18f0c958ffa3adbb0",
+        "score": 0.0,
+        "justification": "metrics.json per_model contains only qwen2_5_omni_7b; the 3B model results required by this leaf are entirely absent (scope.out_of_scope)."
+      },
+      {
+        "id": "b3183226586940d79dfa26e94521d58f",
+        "score": 0.0,
+        "justification": "metrics.json records prefill_ms/latency but no measurement of the <40ms pruning overhead claim; the code never times the compress_sequence step separately."
+      },
+      {
+        "id": "6f86bbf84a524409a16b3923678db29f",
+        "score": 0.7,
+        "justification": "omnizip.py + qwen_omni_runner.py implement training-free, inference-time compression and config.method='OmniZip (training-free token compression)', though copied harness files train.py/train_cell.py also appear in code/."
+      },
+      {
+        "id": "08f48f8cacb1467f8ba9d02b860e5790",
+        "score": 0.4,
+        "justification": "metrics.json includes random_control_45 (OmniZip vs Random, part of Table 4) via omnizip.random_prune, but the DP/AC isolation (Table 5) and DyCoke/VisionZip token-selection comparisons are absent."
+      },
+      {
+        "id": "ec47e5fd9cc94c4ebaa48ab498b56e63",
+        "score": 1.0,
+        "justification": "metrics.json config.hparams documents rho_max=0.75, rho_min=0.35, k=5, G_AVUT=15, G_general=3, retention_45={rho_a:0.3,rho_v:0.6}, retention_35={rho_a:0.4,rho_v:0.7}, mirrored in omnizip.OmniZipConfig defaults and config_used.json/README.md artifacts."
+      },
+      {
+        "id": "4269b4ac677b4461b9e0082ce5f7944c",
+        "score": 0.7,
+        "justification": "omnizip.py audio_attention_scores computes softmax(QK^T/sqrt(d)) and a_avg=(col_sum-diag)/(Na-1), and select_salient_audio takes top rho_a% (Eq. 2), but no distinct average-pooling-for-alignment step appears."
+      },
+      {
+        "id": "051f9f4118ca469b829f2b3d8cd6702b",
+        "score": 1.0,
+        "justification": "omnizip.py dynamic_video_rates computes rho_prime = rho_max-(rho_max-rho_min)*Sa then rescales to the rho_v budget; rho_max=0.75/rho_min=0.35 set in OmniZipConfig and metrics config.hparams."
+      },
+      {
+        "id": "ce3f984f9b3f435694592ac40c7702c2",
+        "score": 1.0,
+        "justification": "omnizip.py l2_row_normalize (EPS=1e-6, Eq.4), cross_modal_similarity (Eq.3), and consolidate_audio_anchors uniformly sample non-salient anchors and merge top-G; from_retention sets G=15 for AVUT else G=3."
+      },
+      {
+        "id": "f2f13a47e33049da85480fac85bb833d",
+        "score": 1.0,
+        "justification": "omnizip.py istc_block uses frames_per_unit=4, temporal_merge_indices (cosine sim, Eq.6) on frames 2&4, and dpc_knn_density_scores (rho Eq.7, delta Eq.8, k=5, score delta*rho) on frames 1&3."
+      },
+      {
+        "id": "dabafe76d644421f8cf12cdc2c268f9b",
+        "score": 0.4,
+        "justification": "omnizip.py implements random_prune and metrics shows random_control_45, but no FastV/DyCoke/VisionZip code or metrics; scope.out_of_scope lists FastV-7B as not run."
+      },
+      {
+        "id": "c2ef1377580b44ab83b3938f2204934c",
+        "score": 0.7,
+        "justification": "metrics config.frame_caps={worldsense:128,...,videomme:768} and qwen_omni_runner.build_inputs uses max_frames default 128 (comment 'Sec 4.1: 128 (768 VideoMME)'); worldsense ran at 128."
+      },
+      {
+        "id": "ed8804f164714805a6706c488c4fb53a",
+        "score": 1.0,
+        "justification": "OmniZipConfig audio_per_window=50/video_per_window=288 and compress_sequence windows with aw=50,vw=288; metrics config.hparams audio_tokens_per_window=50, video_tokens_per_window=288."
+      },
+      {
+        "id": "f66cc548a60a4778be171bfc99010f10",
+        "score": 0.4,
+        "justification": "metrics.per_model contains only qwen2_5_omni_7b and scope.out_of_scope lists 'Qwen2.5-Omni-3B mirror (disk-deferred; set OMNIZIP_RUN_3B=1)'."
+      },
+      {
+        "id": "aa22ad4505f44e6787e3d18c8bf0ef1c",
+        "score": 0.4,
+        "justification": "metrics.env.qwen2_5_omni_7b shows gpu='NVIDIA RTX A5000', attn_impl='sdpa', n_gpu=2, contradicting the A6000+FlashAttention setup."
+      },
+      {
+        "id": "f476d36fe73f4dbab54f0968e720d66e",
+        "score": 0.4,
+        "justification": "qwen_omni_runner.py is a custom unified runner across benchmarks but no LMMs-Eval import/usage exists and VideoMME is in scope.out_of_scope (not run)."
+      },
+      {
+        "id": "47640c99c88a43cb8cd7a319a4dcba54",
+        "score": 0.7,
+        "justification": "omnizip.compress_sequence sets target_total=round(retained*(Na+Nv)) counting only audio+video tokens, and metrics reports retained_achieved/prefilling_speedup, but no explicit FLOPs-ratio computation."
+      },
+      {
+        "id": "5f90a21449bb45c798f517b1ef1ac21b",
+        "score": 0.7,
+        "justification": "metrics.per_model.qwen2_5_omni_7b.worldsense reports accuracy, mean_prefill_ms, prefilling_speedup (2.829/3.578), mean_latency_s, and peak_mem_gb/gpu_memory_gb for all configs; env shows n_gpu=2 A5000."
+      },
+      {
+        "id": "9f2af575c8794599aed8b2a4aa872317",
+        "score": 0.4,
+        "justification": "metrics has accuracy_normalized (retention_45=1.0395 vs full baseline=1.0) implementing the full-token=100% normalization, but scope.out_of_scope lists AVUT and VideoMME full runs as not done."
+      },
+      {
+        "id": "12f584e2d948465ea5ee255ce07e020e",
+        "score": 0.0,
+        "justification": "metrics.per_model.qwen2_5_omni_7b.worldsense reports only aggregate accuracy (38.0/39.5/38.5); data.py captures a 'domain' field but no eight-domain breakdown or average is computed/reported."
+      },
+      {
+        "id": "b12ca442c48742288746942ca0cadcb9",
+        "score": 0.7,
+        "justification": "measured retention_45=39.5 and retention_35=38.5 vs full_baseline=38.0 (accuracy_normalized 1.0395/1.0132) reproduce the trend that compression preserves near-full accuracy, though absolute magnitudes differ from paper (45.9/45.3/46.8)."
+      },
+      {
+        "id": "242ea48ad035493a94d6d73c65c68711",
+        "score": null,
+        "justification": "data_unavailable: dataset declared in data_load_failures or scope.gaps",
+        "state": "skipped_data_unavailable"
+      },
+      {
+        "id": "801ee16ae48248d6b86ce85f5f6c2bf7",
+        "score": null,
+        "justification": "data_unavailable: dataset declared in data_load_failures or scope.gaps",
+        "state": "skipped_data_unavailable"
+      }
+    ],
+    "weak_leaves": [
+      {
+        "id": "27f1a01e98b54ac18f0c958ffa3adbb0",
+        "score": 0.0,
+        "justification": "metrics.json per_model contains only qwen2_5_omni_7b; the 3B model results required by this leaf are entirely absent (scope.out_of_scope).",
+        "area": "Result match versus the paper's reported targets"
+      },
+      {
+        "id": "b3183226586940d79dfa26e94521d58f",
+        "score": 0.0,
+        "justification": "metrics.json records prefill_ms/latency but no measurement of the <40ms pruning overhead claim; the code never times the compress_sequence step separately.",
+        "area": "Result match versus the paper's reported targets"
+      },
+      {
+        "id": "12f584e2d948465ea5ee255ce07e020e",
+        "score": 0.0,
+        "justification": "metrics.per_model.qwen2_5_omni_7b.worldsense reports only aggregate accuracy (38.0/39.5/38.5); data.py captures a 'domain' field but no eight-domain breakdown or average is computed/reported.",
+        "area": "Evaluation protocol and metric correctness"
+      },
+      {
+        "id": "cbb09332bcb8469dbd0e8713c24b5b5f",
+        "score": 0.4,
+        "justification": "retention_45.accuracy_normalized=1.0395 supports near-full retention consistent with the ~99% claim, but the AVUTBench portion of Table 1 was never run (scope.out_of_scope: 'AVUT full run').",
+        "area": "Result match versus the paper's reported targets"
+      },
+      {
+        "id": "08f48f8cacb1467f8ba9d02b860e5790",
+        "score": 0.4,
+        "justification": "metrics.json includes random_control_45 (OmniZip vs Random, part of Table 4) via omnizip.random_prune, but the DP/AC isolation (Table 5) and DyCoke/VisionZip token-selection comparisons are absent.",
+        "area": "Artifact completeness and provenance"
+      },
+      {
+        "id": "dabafe76d644421f8cf12cdc2c268f9b",
+        "score": 0.4,
+        "justification": "omnizip.py implements random_prune and metrics shows random_control_45, but no FastV/DyCoke/VisionZip code or metrics; scope.out_of_scope lists FastV-7B as not run.",
+        "area": "Method and code fidelity to the paper"
+      },
+      {
+        "id": "f66cc548a60a4778be171bfc99010f10",
+        "score": 0.4,
+        "justification": "metrics.per_model contains only qwen2_5_omni_7b and scope.out_of_scope lists 'Qwen2.5-Omni-3B mirror (disk-deferred; set OMNIZIP_RUN_3B=1)'.",
+        "area": "Experiment execution and reproducibility"
+      },
+      {
+        "id": "aa22ad4505f44e6787e3d18c8bf0ef1c",
+        "score": 0.4,
+        "justification": "metrics.env.qwen2_5_omni_7b shows gpu='NVIDIA RTX A5000', attn_impl='sdpa', n_gpu=2, contradicting the A6000+FlashAttention setup.",
+        "area": "Experiment execution and reproducibility"
+      }
+    ],
+    "leaf_count": 24,
+    "graded": 22,
+    "rubric_source": "paperbench_bundle",
+    "coverage_pct": 1.0,
+    "compute_adjusted_score": 0.65632,
+    "target_score": 0.6
+  },
+  "improvements": [
+    {
+      "title": "Fix CUDA device mismatch in OmniZip compression hook",
+      "outcome": "promoted",
+      "delta": 0.585
+    },
+    {
+      "title": "Evaluate full 73-sample WorldSense with OmniZip",
+      "outcome": "declined",
+      "delta": 0.0
+    }
+  ],
+  "primitive_trace": {
+    "calls": 54,
+    "by_primitive": {
+      "check_user_messages": 4,
+      "understand_section": 3,
+      "extract_hyperparameters": 1,
+      "heartbeat": 20,
+      "detect_environment": 1,
+      "build_environment": 2,
+      "plan_reproduction": 2,
+      "implement_baseline": 5,
+      "propose_improvements": 1,
+      "resolve_gpu_requirements": 1,
+      "run_experiment": 4,
+      "verify_against_rubric": 4,
+      "record_candidate_outcome": 3,
+      "respond_to_user": 2,
+      "rlm_root": 1
+    }
+  },
+  "cost": {
+    "llm_usd": 5.05091355,
+    "primitives": 5.05091355
+  },
+  "iterations": 9,
+  "primitive_provider": "real",
+  "degraded": false,
+  "mode": "rlm",
+  "models": {
+    "planner": "claude-opus-4-8",
+    "executor": "claude-opus-4-8",
+    "verifier": "claude-opus-4-8",
+    "grader": "claude-opus-4-8"
+  },
+  "started_at": "2026-06-11T16:32:54.214111+00:00",
+  "completed_at": "2026-06-11T23:20:06.956289+00:00",
+  "title": null,
+  "scope": {
+    "requested": "Qwen2.5-Omni-7B on WorldSense+ShortVid-Bench; OmniZip vs uncompressed/random/FastV/DyCoke at 45%+35%",
+    "ran": [
+      "qwen2_5_omni_7b/worldsense/full_baseline",
+      "qwen2_5_omni_7b/worldsense/retention_45",
+      "qwen2_5_omni_7b/worldsense/retention_35",
+      "qwen2_5_omni_7b/worldsense/random_control_45"
+    ],
+    "gaps": [
+      "{'dataset': 'shortvid_bench', 'model': 'qwen2_5_omni_7b', 'reason': 'data_unavailable: no public Hub mirror available in",
+      "worldsense: RuntimeError: Expected all tensors to be on the same device, but found at least ",
+      "shortvid_bench: dataset unobtainable (no public Hub mirror available in this sandbox) \u2014 excluded from rubric score, not penalised",
+      "qwen2_5_omni_3b: model load failure (repairable code bug) \u2014 NOT excluded from rubric; fix the loader and re-run"
+    ]
+  },
+  "stop_reason": null,
+  "experiment_arm": {
+    "arm": "control",
+    "ab_pair_id": null,
+    "bes": {
+      "enabled": false,
+      "candidates_per_cluster": 1,
+      "select_metric": "cluster_score"
+    }
+  }
+}

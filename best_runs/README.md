@@ -18,6 +18,7 @@ End-to-end reproductions from the OpenResearch agent — three clean single runs
 | [SDAR: Self-Distilled Agentic RL (2605.15155)](sdar/) — 4-attempt campaign | partial | 0.363 | 10 | 197m |
 | [All-CNN — with/without-BES A/B, 2 paired runs (2026-06-11)](allcnn_ab/) | A/B | **+0.085 BES** | 10+10 | ~13.4h ×2 |
 | [Adam — with/without-BES A/B, confounded (2026-06-12)](adam_ab/) | A/B | −0.183 BES¹ | 6+7 | 14.6h / 20h |
+| [OmniZip: Audio-Guided Token Compression (2511.14582)](omnizip/) | partial | 0.656 | 9 | 6h47m |
 
 Each subdirectory carries the final report (`final_report.json` + `.md`), the auto-derived rubric, the leaf-by-leaf grading, the environment spec, the generated training code, and the telemetry sidecars (token counts, per-primitive timing, cost ledger, every `run_experiment` result).
 

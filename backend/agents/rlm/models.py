@@ -524,9 +524,22 @@ def resolve_root_model(name: str | None) -> RootModel:
                 f"model via {_ENV_ROOT_MODEL} / --model."
             )
         # Don't fall through to the env-var loop below for this branch.
+        # Optional root-model pin (2026-06-12): REPROLAB_RLM_ROOT_MODEL_NAME
+        # overrides the OAuth root's model id (e.g. an Opus id for a ratcheted
+        # climb attempt where the sonnet root repeatedly lost the plot after
+        # context resets) without a registry edit. Unset/empty = registry
+        # default. OAuth serves any Claude id the subscription carries.
+        _root_pin = os.environ.get("REPROLAB_RLM_ROOT_MODEL_NAME", "").strip()
+        _pinned_bk = dict(entry.backend_kwargs)
+        if _root_pin:
+            _pinned_bk["model_name"] = _root_pin
+            logger.info(
+                "resolve_root_model: OAuth root model pinned to %r via "
+                "REPROLAB_RLM_ROOT_MODEL_NAME", _root_pin,
+            )
         return replace(
             entry,
-            backend_kwargs=dict(entry.backend_kwargs),
+            backend_kwargs=_pinned_bk,
             sub_backend_kwargs=dict(entry.sub_backend_kwargs),
         )
 

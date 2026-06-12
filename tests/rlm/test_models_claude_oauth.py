@@ -107,3 +107,33 @@ class TestDefaultFallsThroughToQwen3CoderWhenNoCredentials:
         # qwen3-coder requires OPENROUTER_API_KEY which is unset — expect ValueError.
         with pytest.raises(ValueError):
             mod.resolve_root_model(None)
+
+
+class TestOAuthRootModelPin:
+    """REPROLAB_RLM_ROOT_MODEL_NAME pins the OAuth root's model id."""
+
+    def test_pin_overrides_oauth_root_model(self, monkeypatch):
+        from backend.agents.runtime import factory as _factory
+        monkeypatch.setattr(_factory, "has_provider_credentials", lambda p: True)
+        monkeypatch.setenv("REPROLAB_RLM_ROOT_MODEL_NAME", "claude-opus-4-8")
+        from backend.agents.rlm.models import resolve_root_model
+        entry = resolve_root_model("claude-oauth")
+        assert entry.backend_kwargs["model_name"] == "claude-opus-4-8"
+        # sub-backend (navigation) stays untouched
+        assert entry.sub_backend_kwargs["model_name"].startswith("claude-haiku")
+
+    def test_no_pin_keeps_registry_default(self, monkeypatch):
+        from backend.agents.runtime import factory as _factory
+        monkeypatch.setattr(_factory, "has_provider_credentials", lambda p: True)
+        monkeypatch.delenv("REPROLAB_RLM_ROOT_MODEL_NAME", raising=False)
+        from backend.agents.rlm.models import resolve_root_model
+        entry = resolve_root_model("claude-oauth")
+        assert entry.backend_kwargs["model_name"] == "claude-sonnet-4-6"
+
+    def test_pin_does_not_mutate_registry(self, monkeypatch):
+        from backend.agents.runtime import factory as _factory
+        monkeypatch.setattr(_factory, "has_provider_credentials", lambda p: True)
+        monkeypatch.setenv("REPROLAB_RLM_ROOT_MODEL_NAME", "claude-opus-4-8")
+        from backend.agents.rlm.models import ROOT_MODELS, resolve_root_model
+        resolve_root_model("claude-oauth")
+        assert ROOT_MODELS["claude-oauth"].backend_kwargs["model_name"] == "claude-sonnet-4-6"
