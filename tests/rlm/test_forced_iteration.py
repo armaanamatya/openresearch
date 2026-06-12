@@ -532,3 +532,20 @@ def test_floor_hard_refusal_cap_still_wins(monkeypatch) -> None:
     policy.refusal_count = 16
     refuse, _ = policy.should_refuse()
     assert refuse is False
+
+
+def test_floor_hard_refuses_no_verify_finalize_past_floor(monkeypatch) -> None:
+    # 2026-06-12 attempt 3: a root that never verifies has no score/target and
+    # the rubric-less accept shipped a fabricated report under a hard floor.
+    monkeypatch.setenv("REPROLAB_FLOOR_HARD", "1")
+    policy = _make_policy(score=None, target=None, iteration=5, min_iterations=2)
+    refuse, msg = policy.should_refuse()
+    assert refuse is True
+    assert "NEVER recorded a rubric score" in msg
+
+
+def test_no_verify_finalize_still_accepted_without_floor_hard(monkeypatch) -> None:
+    monkeypatch.delenv("REPROLAB_FLOOR_HARD", raising=False)
+    policy = _make_policy(score=None, target=None, iteration=5, min_iterations=2)
+    refuse, _ = policy.should_refuse()
+    assert refuse is False

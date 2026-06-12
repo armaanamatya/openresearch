@@ -275,6 +275,25 @@ class ForcedIterationPolicy:
                     "Do NOT call FINAL_VAR until verify_against_rubric has returned a score."
                 )
                 return (True, msg)
+            # 2.1 Hard-floor mode also closes the no-verify exit (2026-06-12
+            # OmniZip attempt 3): a root that NEVER calls verify_against_rubric
+            # carries no score/target, sails past the iteration floor, and the
+            # rubric-less accept below would ship a fabricated report under a
+            # 0.656 best-attempt floor. With REPROLAB_FLOOR_HARD on, at least
+            # one real verification is required before any finalize; checks
+            # 0/0.3/0.4/0.5 (wall clock, budget, terminal, refusal cap) still
+            # dominate above.
+            if os.environ.get("REPROLAB_FLOOR_HARD", "").strip() in ("1", "true", "yes"):
+                msg = (
+                    f"FINAL_VAR refused (hard floor) at iteration {cur}: this run has "
+                    "NEVER recorded a rubric score — there is no evidence to report. "
+                    "Call verify_against_rubric (it scores the on-disk evidence) to "
+                    "establish the real score, then continue the loop until it reaches "
+                    "the best-attempt floor. Claims in a final report must trace to "
+                    "experiments that actually ran."
+                )
+                self._pending_refusal_code = "floor_hard"
+                return (True, msg)
             return (False, None)
 
         # 3. Score satisfies target — accept.
