@@ -193,19 +193,38 @@ def build_comparison(
     """The full comparison payload (also the JSON artifact)."""
     rows: list[dict] = []
     for run_dir, report in _load_candidates(runs_root):
-        if paper and _paper_id(report) != paper:
-            continue
-        if pair_id:
-            stamp = report.get("experiment_arm")
-            if not (isinstance(stamp, dict) and stamp.get("ab_pair_id") == pair_id):
+        # Matching: with BOTH selectors, a run matches on EITHER — the
+        # 1412.6980 pair's control predates the stamp (matches by paper only)
+        # while its BES arm shipped paper.id=None on the override lineage
+        # (matches by pair only). AND-semantics would pair neither.
+        paper_ok = bool(paper) and _paper_id(report) == paper
+        stamp = report.get("experiment_arm")
+        pair_ok = bool(pair_id) and (
+            isinstance(stamp, dict) and stamp.get("ab_pair_id") == pair_id
+        )
+        if paper and pair_id:
+            if not (paper_ok or pair_ok):
                 continue
+        elif paper and not paper_ok:
+            continue
+        elif pair_id and not pair_ok:
+            continue
         rows.append(_summarise(run_dir, report))
 
     by_arm: dict[str, list[dict]] = {}
     for row in rows:
         by_arm.setdefault(row["arm"], []).append(row)
 
-    control = _pick(by_arm.get("control", []) + ([] if pair_id else by_arm.get("unstamped", [])), select)
+    # Unstamped runs may stand in as control when pairing involves a paper
+    # selector (pre-stamp reports are the historical controls). Only a PURE
+    # pair-id pairing excludes them — there an unstamped run can't be tied to
+    # the pair at all.
+    allow_unstamped = not pair_id or bool(paper)
+    control = _pick(
+        by_arm.get("control", [])
+        + (by_arm.get("unstamped", []) if allow_unstamped else []),
+        select,
+    )
     bes = _pick(by_arm.get("bes", []), select)
 
     deltas: dict[str, float | None] = {}

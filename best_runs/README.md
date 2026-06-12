@@ -9,6 +9,7 @@ End-to-end reproductions from the OpenResearch agent — clean single runs (All-
 | Auto-Encoding Variational Bayes (Kingma & Welling, 2013) | partial | 0.646 | 3 | 30m |
 | [SDAR: Self-Distilled Agentic RL (2605.15155)](sdar/) — 4-attempt campaign | partial | 0.363 | 10 | 197m |
 | [All-CNN — with/without-BES A/B, 2 paired runs (2026-06-11)](allcnn_ab/) | A/B | **+0.085 BES** | 10+10 | ~13.4h ×2 |
+| [Adam — with/without-BES A/B, confounded (2026-06-12)](adam_ab/) | A/B | −0.183 BES¹ | 6+7 | 14.6h / 20h |
 
 Each subdirectory carries the final report (`final_report.json` + `.md`), the auto-derived rubric, the leaf-by-leaf grading, the environment spec, the generated training code, and the telemetry sidecars (token counts, per-primitive timing, cost ledger, every `run_experiment` result).
 
@@ -214,6 +215,19 @@ vae/
 ```
 
 ---
+
+## Adam A/B — the confounded counterpoint (`adam_ab/`)
+
+Second pair, same day, opposite sign: control 0.716 vs BES 0.5327 (Δ −0.183)
+— **but the control was operator-steered four times mid-run while the BES arm
+ran autonomous**, and the control's relaunch had dropped three rail flags.
+The BES pool itself discriminated strongly (fidelity-first 0.643 vs 0.546, a
+10× wider spread than All-CNN's — Adam's implementation variance is real).
+Campaign verdict so far: **1 clean BES win, 1 confounded loss** — the repo's
+≥3-pairs-before-default-flip policy exists for exactly this. The steering
+playbook that powered the control's recovery is now automated
+(`leaf_triage.py`), so the next pair compares like with like. Full confound
+annotations: [`adam_ab/README.md`](adam_ab/README.md).
 
 ## All-CNN A/B — first controlled BES measurement (`allcnn_ab/`)
 

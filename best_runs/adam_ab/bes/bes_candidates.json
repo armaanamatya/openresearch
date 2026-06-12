@@ -1,0 +1,25 @@
+{
+  "enabled": true,
+  "n_requested": 2,
+  "select_metric": "cluster_score",
+  "winner": "rlm_impl#1",
+  "candidates": [
+    {
+      "candidate_id": "rlm_impl#0",
+      "ok": true,
+      "score": 0.5464,
+      "failed_leaf_count": 15,
+      "angle": "",
+      "dir": "/home/sww35/openresearch/runs/prj_6d41d2f09c026403_ab_bes/candidates/rlm_impl_0"
+    },
+    {
+      "candidate_id": "rlm_impl#1",
+      "ok": true,
+      "score": 0.6429999999999999,
+      "failed_leaf_count": 14,
+      "angle": "CANDIDATE ANGLE (fidelity-first): where the paper's specification and implementa",
+      "dir": "/home/sww35/openresearch/runs/prj_6d41d2f09c026403_ab_bes/candidates/rlm_impl_1"
+    }
+  ],
+  "created_at": "2026-06-11T11:38:23.649209+00:00"
+}

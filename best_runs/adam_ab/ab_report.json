@@ -1,0 +1,112 @@
+{
+  "key": "adam-ab-20260611",
+  "paper": "1412.6980",
+  "pair_id": "adam-ab-20260611",
+  "select": "latest",
+  "generated_at": "2026-06-12T06:49:44.147501+00:00",
+  "arms_found": {
+    "bes": 1,
+    "unstamped": 1
+  },
+  "control": {
+    "project_id": "prj_6d41d2f09c026403",
+    "arm": "unstamped",
+    "ab_pair_id": null,
+    "overall_score": 0.71605,
+    "compute_adjusted_score": 0.71605,
+    "verdict": "reproduced",
+    "meets_target": true,
+    "iterations": 6,
+    "wall_clock_s": 52458.391514,
+    "cost_usd": 2.9167809,
+    "completed_at": "2026-06-11T10:44:32.615628+00:00",
+    "bes": {}
+  },
+  "bes": {
+    "project_id": "prj_6d41d2f09c026403_ab_bes",
+    "arm": "bes",
+    "ab_pair_id": "adam-ab-20260611",
+    "overall_score": 0.53275,
+    "compute_adjusted_score": 0.53275,
+    "verdict": "failed",
+    "meets_target": false,
+    "iterations": 7,
+    "wall_clock_s": 72097.933672,
+    "cost_usd": 0.0,
+    "completed_at": "2026-06-12T06:47:08.153138+00:00",
+    "bes": {
+      "enabled": true,
+      "candidates_per_cluster": 2,
+      "select_metric": "cluster_score",
+      "winner": "rlm_impl#1",
+      "pool": [
+        {
+          "candidate_id": "rlm_impl#0",
+          "ok": true,
+          "score": 0.5464
+        },
+        {
+          "candidate_id": "rlm_impl#1",
+          "ok": true,
+          "score": 0.6429999999999999
+        }
+      ]
+    }
+  },
+  "deltas": {
+    "overall_score": -0.18330000000000002,
+    "compute_adjusted_score": -0.18330000000000002,
+    "wall_clock_s": 19639.542157999997,
+    "cost_usd": -2.9167809
+  },
+  "top_leaf_moves": [
+    {
+      "leaf": "4218ef05ad214ec487169e41e17914a2",
+      "control": 0.2,
+      "bes": 1.0,
+      "delta": 0.8
+    },
+    {
+      "leaf": "7f454bc91d3747e496d21adbd4554e28",
+      "control": 1.0,
+      "bes": 0.4,
+      "delta": -0.6
+    },
+    {
+      "leaf": "52348d0d94744d75b9a1d4df411b9da5",
+      "control": 1.0,
+      "bes": 0.4,
+      "delta": -0.6
+    },
+    {
+      "leaf": "e678b76684f04df0a19e12821c2c97e1",
+      "control": 0.4,
+      "bes": 1.0,
+      "delta": 0.6
+    },
+    {
+      "leaf": "699d7e2bec3c4b529d23435428cdec23",
+      "control": 0.4,
+      "bes": 1.0,
+      "delta": 0.6
+    },
+    {
+      "leaf": "5554e12e683e4e9d81572a8274548d14",
+      "control": 1.0,
+      "bes": 0.4,
+      "delta": -0.6
+    },
+    {
+      "leaf": "93f6709b58244cbfada11975d9d9e86c",
+      "control": 1.0,
+      "bes": 0.4,
+      "delta": -0.6
+    },
+    {
+      "leaf": "728ec345e4184245bc5a3eb6e6a70613",
+      "control": 0.4,
+      "bes": 0.0,
+      "delta": -0.4
+    }
+  ]
+}
