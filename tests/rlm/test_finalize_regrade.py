@@ -106,10 +106,27 @@ def test_flag_disables(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_converged_cell_count_excludes_chance(tmp_path):
-    assert fr._converged_cell_count(_grid_metrics(13, 1)) == 13
+def test_converged_cell_count_allcnn_shape(tmp_path):
+    # All-CNN per_model[model][env][baseline] = {test_error_pct, ...}; dead
+    # cells still count (the grader judges quality, the gate counts evidence).
+    assert fr._converged_cell_count(_grid_metrics(13, 1)) == 14
     assert fr._converged_cell_count({"per_model": {}}) == 0
     assert fr._converged_cell_count({}) == 0
+
+
+def test_converged_cell_count_adam_flat_map_shape():
+    # Adam per_model[family] = {optimizer: bare_scalar} — no metric key (rule b).
+    m = {"per_model": {
+        "mnist_logreg": {"adam": 0.33, "sgd_nesterov": 0.31, "adagrad": 0.41},
+        "cifar10_cnn": {"adam": 0.53, "sgd_nesterov": 0.12},
+        "vae": {"adam_bc": 104.1, "rmsprop": 126.9},
+    }}
+    assert fr._converged_cell_count(m) == 3  # one measured leaf per family
+
+
+def test_converged_cell_count_ignores_empty_and_nonnumeric():
+    assert fr._converged_cell_count({"per_model": {"x": {"note": "pending"}}}) == 0
+    assert fr._converged_cell_count({"per_model": {"x": {}}}) == 0
 
 
 # ---------------------------------------------------------------------------

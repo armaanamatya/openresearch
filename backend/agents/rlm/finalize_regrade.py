@@ -50,39 +50,66 @@ def _mtime(path: Path) -> float | None:
         return None
 
 
-def _converged_cell_count(metrics: dict) -> int:
-    """Count per-cell leaves carrying a real (non-chance) result.
+# Recognized scalar-metric keys across every paper shape we grade — All-CNN
+# (test_error_pct/test_accuracy), Adam (test_accuracy/final_nll/elbo per
+# family×optimizer), SDAR (metric), VAE (elbo_final/final_nll). The regrade
+# gate only needs "is there ≥1 real measured number here worth grading" — it
+# does NOT judge quality (the LLM grader does), so it must be SHAPE-ROBUST
+# rather than assume a fixed per_model[model][env][baseline] depth (the
+# 2026-06-13 Adam v10 miss: a populated per_model[family][optimizer] shape
+# read as 0 evidence under the old rigid 3-level walk, self-skipping the
+# regrade on the very run that earned a 78-cell grid and never graded it).
+_METRIC_KEYS: frozenset[str] = frozenset({
+    "test_error_pct", "test_accuracy", "accuracy", "train_accuracy", "metric",
+    "final_nll", "nll", "elbo", "elbo_final", "final_train_loss", "val_accuracy",
+    "test_nll", "reward", "score",
+})
 
-    A robust 'how much real evidence is here' proxy that does not depend on the
-    rubric: walk per_model[model][env][baseline] and count leaves with a
-    finite metric that isn't pinned at chance.
+
+def _metric_bearing_leaves(node: Any, _depth: int = 0) -> int:
+    """Recursively count measured leaves under per_model (shape-agnostic).
+
+    A dict is one measured leaf when EITHER:
+      (a) it carries a recognized metric KEY with a finite value
+          (All-CNN: ``{test_error_pct, test_accuracy, ...}``), or
+      (b) it is a flat label→number map — numeric values, no nested dicts
+          (Adam: ``per_model[family] = {adam: 0.33, sgd_nesterov: 0.31, ...}``
+          where the optimizer name maps straight to a scalar, no metric key).
+    Otherwise recurse into nested dicts. Depth-bounded. Counts measured
+    EVIDENCE, not quality (the grader judges quality); the gate only needs > 0
+    to justify one LLM grading call. The (b) rule is the 2026-06-13 Adam v10
+    fix: its populated 5-family per_model read as 0 under a metric-key-only
+    walk, self-skipping the regrade on a 78-cell ungraded grid.
     """
+    if not isinstance(node, dict) or _depth > 8:
+        return 0
+    # (a) explicit metric key.
+    for k, v in node.items():
+        if k in _METRIC_KEYS:
+            try:
+                float(v)
+                return 1
+            except (TypeError, ValueError):
+                continue
+    vals = list(node.values())
+    if vals and not any(isinstance(v, dict) for v in vals):
+        # (b) flat {label: number} leaf — count iff ≥1 value is numeric.
+        for v in vals:
+            try:
+                float(v)
+                return 1
+            except (TypeError, ValueError):
+                continue
+        return 0
+    return sum(_metric_bearing_leaves(v, _depth + 1) for v in vals)
+
+
+def _converged_cell_count(metrics: dict) -> int:
+    """How many measured leaves the on-disk grid carries (shape-robust)."""
     pm = metrics.get("per_model") if isinstance(metrics, dict) else None
     if not isinstance(pm, dict):
         return 0
-    n = 0
-    for model in pm.values():
-        if not isinstance(model, dict):
-            continue
-        for env in model.values():
-            if not isinstance(env, dict):
-                continue
-            for leaf in env.values():
-                if not isinstance(leaf, dict):
-                    continue
-                err = leaf.get("test_error_pct")
-                acc = leaf.get("test_accuracy") or leaf.get("metric")
-                try:
-                    if err is not None:
-                        # Error rate is authoritative — a dead cell sits at chance
-                        # (~90% here); don't let a low accuracy field re-count it.
-                        if float(err) < 80.0:
-                            n += 1
-                    elif acc is not None and float(acc) > 0.0:
-                        n += 1
-                except (TypeError, ValueError):
-                    continue
-    return n
+    return sum(_metric_bearing_leaves(model) for model in pm.values())
 
 
 def should_regrade(project_dir: Path, *, recorded_score: float | None,
