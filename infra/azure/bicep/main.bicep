@@ -34,10 +34,10 @@ param tags object = {
   managedBy: 'bicep-l0'
 }
 
-@description('Create the tfstate resource group as well as the main RG.')
-param createTfstateRg bool = true
+@description('Create a legacy tfstate resource group alongside the main RG. Defaults off — Bicep deployment stacks store state server-side and need no tfstate storage account. Set true only when a legacy Terraform workflow still needs the tfstate RG to exist.')
+param createTfstateRg bool = false
 
-@description('Name of the Terraform remote-state resource group (bootstrap).')
+@description('Name of the legacy tfstate resource group. Only relevant when createTfstateRg = true.')
 param tfstateRgName string = 'rg-reprolab-tfstate'
 
 // Optional: empty skips the operator grants entirely (e.g. when only the OIDC

@@ -1,39 +1,34 @@
 // ──────────────────────────────────────────────────────────────────────────────
-// L1 infrastructure parameters — DeepInvent environment
+// L1 infrastructure parameters — AIONIC environment
+//
+// SAFE TO COMMIT: contains only resource names, CIDRs, and region — no secrets.
+// Read by .github/workflows/infra-deploy.yml (gated deploy job).
 //
 // Usage:
-//   cp infra.bicepparam.example infra.bicepparam
-//   # Fill in every <PLACEHOLDER> below
 //   az stack group create \
-//     --name openresearch-infra \
-//     --resource-group <RESOURCE_GROUP_NAME> \
+//     --name openresearch-l1 \
+//     --resource-group rg-sciartgen-external \
 //     --template-file infra.bicep \
 //     --parameters infra.bicepparam \
 //     --deny-settings-mode none \
 //     --action-on-unmanage detachAll
-//
-// COMMIT the filled infra.bicepparam: it contains only resource names, CIDRs,
-// and operator IPs — no secrets — and the deploy workflow reads it from the
-// repo (the gated deploy job is a no-op until it exists on main).
 //
 // ──────────────────────────────────────────────────────────────────────────────
 
 using 'infra.bicep'
 
 // Short alphanumeric prefix prepended to every resource name (≤8 chars, lowercase).
-// Example: 'repro'
-param prefix = '<PREFIX>'
+param prefix = 'sciart'
 
 // Azure region for all resources.
-// Must be a region with Standard_NC24ads_A100_v4 quota available.
-// Common choices: eastus, westus3, swedencentral, northeurope
-param location = '<AZURE_REGION>'
+// westus3 has Standard_NC24ads_A100_v4 quota available.
+param location = 'westus3'
 
 // Tags applied to every resource.
 param tags = {
   project:     'reprolab'
   environment: 'production'
-  client:      'deepinvent'
+  client:      'aionic'
   managedBy:   'bicep-l1'
 }
 
@@ -46,14 +41,12 @@ param vnetCidr = '10.0.0.0/16'
 param aksSubnetCidr = '10.0.0.0/22'
 
 // Operator egress CIDR(s) permitted to reach the AKS public API server.
-// Required — the API server is public but IP-restricted.
-// At minimum include your current public IP: az rest --method get --url 'https://ipinfo.io/ip'
+// fill: az rest --method get --url https://ipinfo.io/ip  → then use <ip>/32
 param authorizedIpRanges = ['<OPERATOR_EGRESS_CIDR>']
 
 // ─── AKS cluster ──────────────────────────────────────────────────────────────
 
-// Kubernetes version. Pin to a version available in the chosen region:
-//   az aks get-versions --location <AZURE_REGION> --query 'orchestrators[*].orchestratorVersion'
+// pin: az aks get-versions --location westus3 --query 'values[].patchVersions' -o table
 param kubernetesVersion = '<K8S_VERSION>'
 
 // VM SKU for the system (CPU) node pool.
@@ -65,16 +58,9 @@ param systemNodeMax = 3
 
 // ─── GPU node pools ───────────────────────────────────────────────────────────
 //
-// Default: single A100-80 pool (one vCPU quota ask: 24 × maxNodes vCPUs in
-// StandardNCADSA100v4Family).  Start with maxNodes=1 until quota is approved.
-// Add NC48/NC96/A10 entries (each needs separate quota) for the escalation ladder.
-//
-// Pool name formula: "<prefix><poolSuffix>" must be ≤12 lowercase-alnum chars.
-// With prefix "repro" (5 chars):
-//   repro + a10080  = reproa10080 (11 chars) ✓
-//   repro + a100x2  = reproa100x2 (11 chars) ✓
-//   repro + a100x4  = reproa100x4 (11 chars) ✓
-//   repro + a10     = reproa10    (8 chars)  ✓
+// Single A100-80 pool. Start with maxNodes=1 until quota is approved.
+// Pool name formula: "<prefix><poolSuffix>" ≤12 lowercase-alnum chars.
+// sciart (6) + a10080 (6) = sciarta10080 (12 chars) ✓
 
 param gpuSkus = [
   {
@@ -94,26 +80,19 @@ param gpuSkus = [
   //   maxNodes:     2
   //   osDiskSizeGb: 256
   // }
-  // {
-  //   shortName:    'azure_a10_24'
-  //   vmSize:       'Standard_NV36ads_A10_v5'
-  //   gpuCount:     1
-  //   poolSuffix:   'a10'
-  //   maxNodes:     2
-  //   osDiskSizeGb: 256
-  // }
 ]
 
 // ─── Container registry ───────────────────────────────────────────────────────
 
-// ACR SKU. Standard is sufficient. Premium adds geo-replication + Private Link.
+// Standard is sufficient for a single-region production deployment.
 param acrSku = 'Standard'
 
 // ─── Storage ──────────────────────────────────────────────────────────────────
 
 // Globally unique storage account name (3-24 lowercase alphanum, no hyphens).
-// Convention: <prefix>sa<random> e.g. "reprolabsa"
-param storageAccountName = '<STORAGE_ACCOUNT_NAME>'
+// NOTE: must be globally unique across all Azure subscriptions.
+// If 'sciartgenreprolab' is taken, operator may append digits (e.g. sciartgenreprolab2).
+param storageAccountName = 'sciartgenreprolab'
 
 // Blob container name (artifact bus).
 param blobContainerName = 'reprolab-artifacts'
@@ -124,21 +103,17 @@ param filesShareName = 'reprolab-cache'
 // Files share quota in GiB. 512 GiB covers a full SDAR run.
 param filesShareQuotaGb = 512
 
-// Set to true for high-parallelism deployments (≥8 concurrent cells) to enable
-// a dedicated Premium FileStorage account (~100k IOPS vs ~1k IOPS on Standard).
-// Cost: ~$52/month for 512 GiB in eastus (provisioned/GiB) vs ~$10/month.
+// false = Standard FileStorage (~$10/month for 512 GiB).
+// true  = Premium FileStorage (~$52/month, ~100k IOPS) — set for ≥8 concurrent cells.
 param filesPremium = false
 
-// Required when filesPremium = true. Globally unique name for the Premium
-// FileStorage account. Convention: append 'prem' to storageAccountName.
+// Required when filesPremium = true. Leave empty for Standard (the default).
 param filesPremiumStorageAccountName = ''
 
 // ─── Workload identity ────────────────────────────────────────────────────────
 
-// Kubernetes namespace where the workload-identity ServiceAccount lives.
 // Must match Helm L2 values.yaml → workloadIdentity.namespace.
 param workloadIdentityNamespace = 'reprolab'
 
-// Name of the Kubernetes ServiceAccount annotated with the workload MI client ID.
 // Must match Helm L2 values.yaml → workloadIdentity.serviceAccountName.
 param workloadIdentityServiceAccount = 'reprolab-sa'

@@ -214,7 +214,7 @@ Out-of-the-box an arbitrary arXiv ID/PDF runs end-to-end: ingest → auto-genera
 - `docs/superpowers/specs/2026-05-23-dynamic-gpu-selection-design.md` — dynamic-GPU resolver + RunPod escalation.
 - `docs/superpowers/specs/2026-05-31-oom-gpu-capacity-remediation-design.md` — one-GPU-per-cell `run_matrix` + capacity gate + OOM shrink-retry + STOP.
 - `docs/superpowers/specs/2026-05-31-root-harness-hardening-design.md` — root-harness hardening invariants (Gap A/B, projection, blacklist).
-- `docs/superpowers/specs/2026-06-03-azure-aks-gpu-backend-design.md` — Azure AKS GPU execution backend (Terraform/Helm IaC, in-Job OOM, blob I/O); `cloud-aware gpu_catalog`/`gpu_resolver` + `gpu_plan` threading.
+- `docs/superpowers/specs/2026-06-03-azure-aks-gpu-backend-design.md` — Azure AKS GPU execution backend (Bicep/Helm IaC, in-Job OOM, blob I/O); `cloud-aware gpu_catalog`/`gpu_resolver` + `gpu_plan` threading.
 - `docs/superpowers/specs/2026-06-07-rubric-scoring-harness-fairness-design.md` — scoring-fairness layer (anchored grader, provenance manifest, execution-smoke, theory-leaf exclusion).
 - `docs/superpowers/specs/2026-05-28-rlm-stability-remediation-design.md` — five P0/P1 fixes (REPL safe-builtins, traceback surfacing, shell-env precedence BUG-LR-014, forced-iteration None-score, premature-exit detector).
 - `docs/superpowers/specs/2026-05-28-subscription-cost-reduction-design.md` — sub-agent token-burn + retry-burst elimination.

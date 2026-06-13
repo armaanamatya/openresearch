@@ -109,7 +109,7 @@ _SENTINEL_OOM_OUTCOME = "oom_shrink_exhausted"
 _SETTINGS_DEFAULTS: dict[str, Any] = {
     "azure_namespace": "reprolab",
     "azure_service_account": "reprolab-sa",
-    "azure_node_pool_name": "gpunodes",
+    "azure_node_pool_name": "gpua100",
     # P1-fix-5: empty string fallback — ERROR clearly at submit if blank rather
     # than silently using a floating :latest tag.
     "azure_base_image": "",
@@ -1255,7 +1255,10 @@ def run_matrix(
     # Read settings defensively.
     namespace: str = _setting("azure_namespace", "reprolab")
     service_account: str = _setting("azure_service_account", "reprolab-sa")
-    node_pool_name: str = _setting("azure_node_pool_name", "gpunodes")
+    # node_pool_name is bookkeeping/capacity-only — the real GPU scheduler selector
+    # is the `reprolab/sku` node label; operators set OPENRESEARCH_AZURE_NODE_POOL_NAME
+    # to the actual deployed pool (e.g. sciarta10080) or let scripts/azure_wire_env.sh fill it.
+    node_pool_name: str = _setting("azure_node_pool_name", "gpua100")
     # P1-fix-5: default is "" — _build_job_manifest raises clearly if still empty.
     base_image: str = _setting("azure_base_image", "")
     storage_account: str = _setting("azure_storage_account", "")
