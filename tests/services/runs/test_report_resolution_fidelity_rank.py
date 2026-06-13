@@ -74,3 +74,31 @@ def test_two_axis_fidelity_key_ranks_by_impl_then_fidelity():
     assert two_axis_fidelity_key(_two_axis("faithful", 0.9, 0.5)) == (2, 0.9)
     assert two_axis_fidelity_key(_two_axis("partial", 0.8, 0.8)) == (1, 0.8)
     assert two_axis_fidelity_key(_two_axis("broken", 0.7, 0.95)) == (0, 0.7)
+
+
+def test_legacy_record_not_buried_under_lower_two_axis(tmp_path):
+    """2026-06-13 Adam: a legacy 0.83 'reproduced' record must not lose to a
+    two-axis PARTIAL-fidelity 0.73 attempt just for predating the schema."""
+    _attempt(tmp_path, "legacy_record", _legacy(0.83, verdict="reproduced"))
+    _attempt(tmp_path, "two_axis_partial",
+             _two_axis("partial", fidelity=0.75, overall=0.73))
+    best = resolve_best_report(tmp_path)
+    assert best.report["rubric"]["overall_score"] == 0.83
+
+
+def test_verified_faithful_two_axis_still_beats_higher_legacy(tmp_path):
+    """A5 preserved at the top: a verified-faithful result is surfaced even
+    over a higher-scoring legacy report (fidelity is the trust signal)."""
+    _attempt(tmp_path, "legacy_high", _legacy(0.90, verdict="reproduced"))
+    _attempt(tmp_path, "faithful_low", _two_axis("faithful", fidelity=0.85, overall=0.60))
+    best = resolve_best_report(tmp_path)
+    assert best.report.get("implementation_verdict") == "faithful"
+
+
+def test_broken_two_axis_still_loses_to_legacy(tmp_path):
+    """A5 preserved at the bottom: a broken build never beats a clean legacy
+    record on raw score alone."""
+    _attempt(tmp_path, "legacy_mid", _legacy(0.70, verdict="reproduced"))
+    _attempt(tmp_path, "broken_high", _two_axis("broken", fidelity=0.50, overall=0.85))
+    best = resolve_best_report(tmp_path)
+    assert best.report["rubric"]["overall_score"] == 0.70
