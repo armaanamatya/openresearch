@@ -99,6 +99,9 @@ def normalized_score(
 
 
 _IMPL_RANK_ORDER: dict[str, int] = {"faithful": 2, "partial": 1, "broken": 0}
+# A legacy report's fidelity is unmeasured → rank it at the neutral 'partial'
+# tier so it competes with two-axis reports by score (see resolve_best_report).
+_LEGACY_FIDELITY_TIER: int = _IMPL_RANK_ORDER["partial"]
 
 
 def two_axis_fidelity_key(report: dict) -> tuple[int, float] | None:
@@ -235,10 +238,22 @@ def resolve_best_report(run_dir: Path) -> ResolvedReport:
             score_key = (ns, 0)
         # A5 — fidelity-first for two-axis reports: a faithful attempt (even one
         # that refutes the paper) outranks a broken-but-high-score attempt, so
-        # the honest negative result is the one surfaced.  Legacy reports get a
-        # neutral (-1, score) prefix → their score ordering is unchanged.
+        # the honest negative result is the one surfaced.
+        #
+        # Legacy reports have UNMEASURED fidelity. Placing them at the NEUTRAL
+        # 'partial' tier (1 in _IMPL_RANK_ORDER) — not the old (-1) sentinel —
+        # lets a legacy report compete with two-axis reports BY SCORE, the only
+        # signal commensurable across schemas, instead of being categorically
+        # buried below EVERY two-axis report. The old (-1) sentinel slammed a
+        # legitimate legacy 0.8308 'reproduced' Adam record under a two-axis
+        # PARTIAL-fidelity 0.7364 attempt purely because the record predates the
+        # two-axis schema (2026-06-13). Behaviour preserved at both extremes: a
+        # verified-FAITHFUL two-axis attempt (tier 2) still outranks a legacy
+        # report, and a verified-BROKEN one (tier 0) still loses to it; only the
+        # same-tier (partial-vs-legacy) cross-schema case now breaks by score.
+        # Legacy-vs-legacy and two-axis-vs-two-axis orderings are unchanged.
         ta = two_axis_fidelity_key(report)
-        fidelity_key = ta if ta is not None else (-1, score_key[0])
+        fidelity_key = ta if ta is not None else (_LEGACY_FIDELITY_TIER, score_key[0])
         # Tie-break 1: completed_at (lexicographic; None sorts last).
         completed_at = report.get("completed_at") or ""
         # Tie-break 2: file mtime (newer = better).
