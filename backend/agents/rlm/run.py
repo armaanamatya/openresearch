@@ -2148,6 +2148,31 @@ def _finalize(
     except Exception:  # noqa: BLE001 — producers are best-effort; never block finalize
         logger.warning("_finalize: two-axis producers failed (non-fatal)", exc_info=True)
 
+    # Finalize-time freshness re-grade (2026-06-13): if the complete on-disk
+    # grid landed AFTER the last verify_against_rubric and the recorded grade is
+    # below target, re-grade the full evidence and adopt it only if higher
+    # (best-of-run MAX). Closes the stale-partial-grade gap that shipped All-CNN
+    # v5 at 0.558 when its 13/14-converged grid had earned ~0.73 ungraded.
+    # Flag-gated default ON; fail-soft. Runs BEFORE write so the report ships
+    # the recovered score (and write_final_report_rlm re-applies the floor).
+    try:
+        from backend.agents.rlm import finalize_regrade as _fr
+        if not run_failed and _fr.is_enabled():
+            _fresh = _fr.maybe_regrade(ctx, report)
+            if _fresh is not None:
+                emit("run_warning", {
+                    "code": "finalize_regrade_adopted",
+                    "message": (
+                        "finalize re-graded the complete on-disk grid (it grew "
+                        "after the last verify) and adopted the higher score "
+                        f"{_fresh.get('overall_score')}."
+                    ),
+                })
+                if report.verdict == "failed" and bool(_fresh.get("meets_target")):
+                    report.verdict = "reproduced"
+    except Exception:  # noqa: BLE001 — re-grade is advisory, never blocks finalize
+        logger.warning("_finalize: finalize_regrade failed (non-fatal)", exc_info=True)
+
     json_path, _md_path = write_final_report_rlm(report, project_dir)
 
     # Write worker reports summary at run finalization
