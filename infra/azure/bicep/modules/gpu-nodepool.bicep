@@ -11,7 +11,7 @@
 //   reprolab/sku               = <catalog short_name>   e.g. "azure_a100_80"
 //   nvidia.com/gpu             = <gpu_count>            e.g. "1"
 //   reprolab/node-type         = "gpu"
-//   kubernetes.azure.com/scalesetpriority = "regular"
+// (No kubernetes.azure.com/* label — that prefix is AKS-reserved.)
 //
 // Taint: nvidia.com/gpu=present:NoSchedule (same key on every pool).
 
@@ -61,7 +61,7 @@ param tags object = {}
 //   priority = "Regular", eviction_policy = null (Regular nodes have no eviction policy)
 //   os_disk_size_gb = var.os_disk_size_gb
 //   node_taints = ["nvidia.com/gpu=present:NoSchedule"]
-//   node_labels = { reprolab/sku, reprolab/node-type, nvidia.com/gpu, kubernetes.azure.com/scalesetpriority }
+//   node_labels = { reprolab/sku, reprolab/node-type, nvidia.com/gpu }
 
 resource gpuNodePool 'Microsoft.ContainerService/managedClusters/agentPools@2024-02-01' = {
   // clusterId is a full resource ID; extract just the cluster resource name via split.
@@ -85,11 +85,14 @@ resource gpuNodePool 'Microsoft.ContainerService/managedClusters/agentPools@2024
     nodeTaints: [
       'nvidia.com/gpu=present:NoSchedule'
     ]
+    // NOTE: do NOT set any 'kubernetes.azure.com/*' node label here — that prefix
+    // is reserved by AKS and the API rejects the pool create
+    // (InvalidNodeLabelKey). AKS sets scalesetpriority automatically (and only
+    // for Spot pools); a Regular pool simply has no such label.
     nodeLabels: {
-      'reprolab/sku':                          skuLabel
-      'reprolab/node-type':                    'gpu'
-      'nvidia.com/gpu':                        string(gpuCount)
-      'kubernetes.azure.com/scalesetpriority': 'regular'
+      'reprolab/sku':       skuLabel
+      'reprolab/node-type': 'gpu'
+      'nvidia.com/gpu':     string(gpuCount)
     }
   }
 }

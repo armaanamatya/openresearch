@@ -47,7 +47,8 @@ param authorizedIpRanges = ['<OPERATOR_EGRESS_CIDR>']
 // ─── AKS cluster ──────────────────────────────────────────────────────────────
 
 // pin: az aks get-versions --location westus3 --query 'values[].patchVersions' -o table
-param kubernetesVersion = '<K8S_VERSION>'
+// 1.34 is GA in westus3 (1.31–1.35 available 2026-06); one minor behind latest for stability.
+param kubernetesVersion = '1.34'
 
 // VM SKU for the system (CPU) node pool.
 param systemNodeSku = 'Standard_D4s_v5'

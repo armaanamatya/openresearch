@@ -1,46 +1,42 @@
 # ---------------------------------------------------------------------------
-# cpu-stub-job.yaml — CPU-only validation fallback (quota-blocked path)
+# cpu-stub-job.yaml — CPU-only Workload Identity + Blob write smoke test
 #
 # PURPOSE:
-#   Validate the Blob bus, Azure Files PVC mount, Workload Identity token
-#   injection, and Job watch plumbing WITHOUT consuming any
-#   nvidia.com/gpu quota.  Use this when the A100 quota request is still
-#   pending or when you want fast CI-style feedback.
-#
-#   This is the "Phase-1a CPU fallback" described in the design doc §11:
-#   "if quota is not granted within the engagement window, Phase 1a/1b can
-#    be validated on a CPU node + a fake-GPU stub Job to prove the wiring".
-#
-# WHAT IT PROVES:
-#   1. Workload Identity token is injected (azure.workload.identity/use: "true").
-#   2. DefaultAzureCredential can acquire a Blob token and write a marker blob.
-#   3. The Azure Files PVC mounts at /mnt/reprolab-cache with read-write access.
-#   4. The orchestrator's k8s_job_cell_runner job-watch loop can detect
-#      Job success and pull artifacts from Blob.
-#   5. ResourceQuota allows the Job (GPU quota not consumed).
+#   Validate in one Job that:
+#     1. Workload Identity token is injected (azure.workload.identity/use: "true").
+#     2. DefaultAzureCredential can acquire a Blob token and write a canned
+#        metrics.json marker under smoke/cpu-stub/metrics.json.
+#     3. The Azure Files PVC mounts at /mnt/reprolab-cache with read-write access.
+#     4. The orchestrator's k8s_job_cell_runner job-watch loop can detect Job
+#        success and pull artifacts from Blob.
+#     5. ResourceQuota allows the Job (GPU quota NOT consumed).
 #
 # WHAT IT DOES NOT PROVE:
 #   - GPU scheduling (use hello-gpu-job.yaml for that once quota is granted).
 #   - CUDA execution or nvidia-smi availability.
 #
 # USAGE:
-#   kubectl apply -f smoke/cpu-stub-job.yaml -n <namespace>
-#   kubectl get jobs -n <namespace> -w
-#   kubectl logs -n <namespace> job/cpu-stub-smoke -f
+#   # Fill STORAGE_ACCOUNT and BLOB_CONTAINER env vars below, then:
+#   kubectl apply -f smoke/cpu-stub-job.yaml -n reprolab
+#   kubectl get jobs -n reprolab -w
+#   kubectl logs -n reprolab job/cpu-stub-smoke -f
 #
-# SUCCESS CRITERIA:
+# VERIFICATION:
 #   Job status = Completed; logs contain "Blob write OK" and "Files PVC OK".
-#   A marker blob appears under smoke/ in your Blob container.
+#   Confirm the marker blob exists:
+#     az storage blob show \
+#       --account-name <STORAGE_ACCOUNT> \
+#       --container-name <BLOB_CONTAINER> \
+#       --name smoke/cpu-stub/metrics.json \
+#       --auth-mode login
 #
-# FILL BEFORE RUNNING — substitute from `terraform output`:
-#   STORAGE_ACCOUNT = terraform output -raw storage_account_name
-#   BLOB_CONTAINER  = terraform output -raw blob_container_name
-#   MI_CLIENT_ID    = terraform output -raw workload_identity_client_id
-#   IMAGE           = any image that has azure-identity + azure-storage-blob
-#                     (the aks-cell-base image works; or use python:3.12-slim
-#                     with pip install azure-identity azure-storage-blob)
-#   NAMESPACE       = the value of .Values.namespace
-#   SERVICE_ACCOUNT = the value of .Values.serviceAccountName
+# FILL BEFORE RUNNING — substitute from Bicep stack outputs:
+#   STORAGE_ACCOUNT  = az deployment group show -g <rg> -n openresearch-infra \
+#                        --query properties.outputs.storageAccountNameOut.value -o tsv
+#   BLOB_CONTAINER   = az deployment group show -g <rg> -n openresearch-infra \
+#                        --query properties.outputs.blobContainerNameOut.value -o tsv
+#   (MI_CLIENT_ID is injected automatically by the workload-identity webhook via
+#    the annotated ServiceAccount — no explicit env var is needed.)
 # ---------------------------------------------------------------------------
 apiVersion: batch/v1
 kind: Job
@@ -62,21 +58,22 @@ spec:
         # projected OIDC token volume unless this label is present on the pod.
         azure.workload.identity/use: "true"
     spec:
-      # Use the Workload-Identity-annotated SA.
-      # Value MUST match .Values.serviceAccountName (default: reprolab-sa).
-      # Terraform federated-credential subject: system:serviceaccount:<ns>:reprolab-sa
+      # Use the Workload-Identity-annotated ServiceAccount (reprolab-sa).
+      # Matches .Values.serviceAccountName and the Bicep federated-credential subject:
+      #   system:serviceaccount:reprolab:reprolab-sa
       serviceAccountName: reprolab-sa
       restartPolicy: Never
 
-      # NO nodeSelector — runs on the system (CPU) node pool.
-      # NO GPU taint toleration — confirms CPU node scheduling works.
+      # NO nodeSelector — let the scheduler place this on the system (CPU) pool.
+      # NO GPU taint toleration — confirms CPU-only node scheduling works.
 
       containers:
         - name: cpu-stub
-          # Can use the AKS cell base image (which has Azure SDK installed),
-          # or any Python image after pip-installing azure-identity + azure-storage-blob.
-          # Replace with the ACR image or a plain python:3.12-slim image.
-          image: "REPLACE_WITH_IMAGE"
+          # python:3.12-slim is sufficient; azure-identity + azure-storage-blob are
+          # pip-installed at startup if not already present (fallback path below).
+          # For faster execution: replace with the ACR cell-base image which has them
+          # pre-installed: sciartacr.azurecr.io/aks-cell-base:<sha>
+          image: "python:3.12-slim"
           imagePullPolicy: IfNotPresent
 
           # CPU-only — no nvidia.com/gpu resource.
@@ -89,17 +86,15 @@ spec:
               memory: "512Mi"
 
           env:
-            - name: AZURE_CLIENT_ID
-              # [TF: workload_identity_client_id]
-              value: "REPLACE_WITH_MI_CLIENT_ID"
+            # FILL: storage account name (Bicep output storageAccountNameOut)
             - name: REPROLAB_STORAGE_ACCOUNT
-              # [TF: storage_account_name]
               value: "REPLACE_WITH_STORAGE_ACCOUNT"
+            # FILL: blob container name (Bicep output blobContainerNameOut)
             - name: REPROLAB_BLOB_CONTAINER
-              # [TF: blob_container_name]
               value: "REPLACE_WITH_BLOB_CONTAINER"
+            # Fixed target blob — this is the canonical smoke artifact path.
             - name: SMOKE_BLOB_NAME
-              value: "smoke/cpu-stub-smoke-marker.txt"
+              value: "smoke/cpu-stub/metrics.json"
 
           volumeMounts:
             - name: reprolab-cache
@@ -113,28 +108,30 @@ spec:
             - |
               echo "=== cpu-stub-smoke starting ==="
 
-              # 1. Write and read a test file on the Azure Files PVC.
-              echo "--- Files PVC write ---"
-              TMPFILE="/mnt/reprolab-cache/cpu-stub-test-$(date +%s).txt"
-              echo "cpu-stub hello at $(date)" > "${TMPFILE}"
+              # 1. Verify Azure Files PVC is mounted with read-write access.
+              echo "--- Files PVC write test ---"
+              TMPFILE="/mnt/reprolab-cache/cpu-stub-test-$$.txt"
+              echo "cpu-stub hello at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${TMPFILE}"
               cat "${TMPFILE}"
               rm "${TMPFILE}"
               echo "Files PVC OK"
 
-              # 2. Write a marker blob using Workload Identity.
+              # 2. Write a canned metrics.json to Blob using Workload Identity.
+              # The DefaultAzureCredential chain picks up the projected OIDC token
+              # injected by the Workload Identity webhook — no static secret needed.
               echo "--- Blob write via Workload Identity ---"
               python3 - <<'PYEOF'
-              import os, sys, datetime
+              import os, sys, json, datetime
 
-              account = os.environ["REPROLAB_STORAGE_ACCOUNT"]
-              container = os.environ["REPROLAB_BLOB_CONTAINER"]
-              blob_name = os.environ["SMOKE_BLOB_NAME"]
+              account    = os.environ["REPROLAB_STORAGE_ACCOUNT"]
+              container  = os.environ["REPROLAB_BLOB_CONTAINER"]
+              blob_name  = os.environ["SMOKE_BLOB_NAME"]
 
               try:
                   from azure.identity import DefaultAzureCredential
                   from azure.storage.blob import BlobServiceClient
               except ImportError:
-                  # Fallback: install on the fly if using a minimal image.
+                  # Fallback: install on the fly when using python:3.12-slim.
                   import subprocess
                   subprocess.check_call([
                       sys.executable, "-m", "pip", "install", "-q",
@@ -144,13 +141,24 @@ spec:
                   from azure.identity import DefaultAzureCredential
                   from azure.storage.blob import BlobServiceClient
 
-              cred = DefaultAzureCredential()
-              url = f"https://{account}.blob.core.windows.net"
+              cred   = DefaultAzureCredential()
+              url    = f"https://{account}.blob.core.windows.net"
               client = BlobServiceClient(account_url=url, credential=cred)
-              cc = client.get_container_client(container)
-              marker = f"cpu-stub-smoke OK at {datetime.datetime.utcnow().isoformat()}"
-              cc.upload_blob(blob_name, marker.encode(), overwrite=True)
-              print(f"Uploaded marker: blob://{container}/{blob_name}")
+              cc     = client.get_container_client(container)
+
+              # Write a canned metrics.json — same shape as a real cell output.
+              # A downstream k8s_job_cell_runner that watches this Job can parse
+              # this blob to prove end-to-end artifact bus fidelity.
+              metrics = {
+                  "smoke": True,
+                  "source": "cpu-stub-smoke",
+                  "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                  "accuracy": 1.0,
+                  "note": "Canned smoke marker — not a real training result.",
+              }
+              payload = json.dumps(metrics, indent=2).encode()
+              cc.upload_blob(blob_name, payload, overwrite=True)
+              print(f"Uploaded metrics.json to blob://{container}/{blob_name}")
               print("Blob write OK")
               PYEOF
 

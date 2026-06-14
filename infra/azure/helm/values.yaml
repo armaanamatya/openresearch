@@ -144,3 +144,132 @@ devicePlugin:
 
   # Image repository (override if mirroring to ACR).
   repository: nvcr.io/nvidia/k8s-device-plugin
+
+# ---------------------------------------------------------------------------
+# Orchestrator — in-cluster ReproLab reasoning loop (Deployment + CronJob)
+#
+# DISABLED BY DEFAULT — existing installs are unchanged.  Enable with:
+#   helm upgrade reprolab-aks ./infra/azure/helm \
+#     --set orchestrator.enabled=true \
+#     --set orchestrator.deployment.enabled=true \
+#     --set orchestrator.image=<acr>.azurecr.io/reprolab-orchestrator:<sha> \
+#     --set orchestrator.paper=2605.15155 \
+#     --set orchestrator.keyVaultName=<kv-name> \
+#     --set orchestrator.identityClientId=<orchestrator-mi-client-id> \
+#     --set orchestrator.tenantId=<aad-tenant-id> \
+#     --set orchestrator.env.resourceGroup=rg-sciartgen-external \
+#     --set orchestrator.env.region=westus3 \
+#     --set orchestrator.env.aksCluster=sciart-aks \
+#     --set orchestrator.env.acrLoginServer=sciartacr.azurecr.io \
+#     --set orchestrator.env.storageAccount=sciartgenreprolab \
+#     --set orchestrator.env.blobContainer=reprolab-artifacts \
+#     --set orchestrator.env.filesShare=reprolab-cache \
+#     --set orchestrator.env.nodePoolName=sciarta10080 \
+#     --set orchestrator.env.baseImage=sciartacr.azurecr.io/aks-cell-base:<sha>
+#
+# Prerequisites (before enabling):
+#   1. Bicep L1 deployed (keyvault + orchestratorIdentity outputs available).
+#   2. Two secrets set in Key Vault:
+#        az keyvault secret set --vault-name <kv> --name azure-openai-api-key --value <...>
+#        az keyvault secret set --vault-name <kv> --name anthropic-api-key --value <...>
+#   3. Secrets Store CSI driver + Azure Key Vault provider installed cluster-wide.
+#   4. Orchestrator container image pushed to ACR with backend installed.
+#
+# MODEL NOTE:
+#   Default model is "azure" (AOAI root via AZURE_OPENAI_API_KEY from Key Vault)
+#   which is the only fully headless option for unattended in-AKS runs.
+#   --model claude-oauth requires the Claude desktop credential, which is NOT
+#   available inside a pod; use it only for local smokes (see STREAM-E-NOTES.md).
+# ---------------------------------------------------------------------------
+orchestrator:
+  # Master gate — set to true to deploy the ServiceAccount, SecretProviderClass,
+  # and whichever of Deployment / CronJob are individually enabled below.
+  enabled: false
+
+  # Container image for both the Deployment and CronJob.
+  # Must be a PINNED ACR tag (never :latest) built from the repo root.
+  # Example: sciartacr.azurecr.io/reprolab-orchestrator:sha-abc1234
+  image: ""
+
+  # arXiv ID or local PDF path passed to `python -m backend.cli reproduce <paper>`.
+  paper: ""
+
+  # Root model for the reasoning loop.
+  # "azure"      — uses AZURE_OPENAI_API_KEY from Key Vault; fully headless (default).
+  # "claude-oauth" — uses the Claude desktop credential; NOT available in a pod.
+  model: azure
+
+  # Key Vault name (Bicep output keyVaultNameOut).
+  # Used by the SecretProviderClass to locate the vault.
+  keyVaultName: ""
+
+  # Client ID of the orchestrator user-assigned managed identity
+  # (Bicep output orchestratorIdentityClientId).
+  # Annotated on the ServiceAccount for Workload Identity token injection.
+  identityClientId: ""
+
+  # AAD tenant ID of the subscription.
+  # Obtain with: az account show --query tenantId -o tsv
+  tenantId: ""
+
+  # ── Deployment (always-on / interactive run) ────────────────────────────────
+  deployment:
+    # Set to true to deploy the long-running Deployment.  Requires orchestrator.enabled=true.
+    enabled: false
+
+  # ── CronJob (scheduled / nightly batch) ────────────────────────────────────
+  cronjob:
+    # Set to true to deploy the CronJob.  Requires orchestrator.enabled=true.
+    enabled: false
+    # Cron schedule in UTC.  Default: 02:00 UTC daily.
+    schedule: "0 2 * * *"
+
+  # ── OPENRESEARCH_AZURE_* environment variables ──────────────────────────────
+  # All default to empty; the orchestrator will fail fast with a clear message
+  # if a required value is missing (see config.py / aks_job_backend.py).
+  # Fill from Bicep outputs after `az stack group create`.
+  env:
+    # Azure resource group containing AKS, ACR, Storage, and Key Vault.
+    # Bicep: resourceGroup().name (always the target RG)
+    resourceGroup: ""
+
+    # Azure region (e.g. westus3).
+    # Bicep param: location
+    region: ""
+
+    # AKS cluster name.
+    # Bicep output: clusterName
+    aksCluster: ""
+
+    # ACR login server hostname (e.g. sciartacr.azurecr.io).
+    # Bicep output: acrLoginServer
+    acrLoginServer: ""
+
+    # Storage account name hosting the Blob artifact container.
+    # Bicep output: storageAccountNameOut
+    storageAccount: ""
+
+    # Blob container for run artifacts.
+    # Bicep param: blobContainerName (default reprolab-artifacts)
+    blobContainer: ""
+
+    # Azure Files share name (RWX HF_HOME + pip cache).
+    # Bicep param: filesShareName (default reprolab-cache)
+    filesShare: ""
+
+    # Kubernetes namespace where training-cell Jobs are submitted.
+    # Must match .Values.namespace (default reprolab).
+    namespace: ""
+
+    # Kubernetes ServiceAccount name for training-cell Jobs (NOT the orchestrator SA).
+    # Must match .Values.serviceAccountName (default reprolab-sa).
+    serviceAccount: ""
+
+    # GPU node pool name used for nodeSelector on training-cell Jobs.
+    # Formula: <prefix><poolSuffix> from Bicep gpuSkus (e.g. sciarta10080).
+    nodePoolName: ""
+
+    # Pre-baked ACR base image for training-cell Jobs.
+    # Must be a PINNED tag — never :latest.
+    # Example: sciartacr.azurecr.io/aks-cell-base:sha-abc1234
+    baseImage: ""
