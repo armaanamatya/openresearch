@@ -958,7 +958,12 @@ def _events_with_peak(project_dir: Path, peak: float, last: float) -> None:
 
 
 class TestBestOfRunFloorAtWriteChokepoint:
-    def test_clean_completion_floored_to_peak(self, tmp_path):
+    def test_clean_completion_floored_to_peak(self, tmp_path, monkeypatch):
+        # Isolate the best-of-run floor from the orthogonal evidence gate (its own
+        # tests cover it): a direct write_final_report_rlm call carries no in-process
+        # run_experiment ledger, so the gate would downgrade the unevidenced verdict
+        # to 'failed'. A real run that peaked at 0.7498 carries that evidence.
+        monkeypatch.setenv("OPENRESEARCH_EVIDENCE_GATE", "0")
         project_dir = tmp_path / "proj"
         _events_with_peak(project_dir, peak=0.7498, last=0.6919)
         base = dict(_BASE_REPORT_DICT)
@@ -972,7 +977,10 @@ class TestBestOfRunFloorAtWriteChokepoint:
         assert data["rubric"].get("best_of_run") is True
         assert data["verdict"] == "reproduced"
 
-    def test_hard_stop_not_floored_up_here(self, tmp_path):
+    def test_hard_stop_not_floored_up_here(self, tmp_path, monkeypatch):
+        # Gate isolation (see test_clean_completion_floored_to_peak): keep this focused
+        # on the floor's hard-stop path, not the orthogonal evidence gate.
+        monkeypatch.setenv("OPENRESEARCH_EVIDENCE_GATE", "0")
         project_dir = tmp_path / "proj"
         _events_with_peak(project_dir, peak=0.7498, last=0.6919)
         base = dict(_BASE_REPORT_DICT)
