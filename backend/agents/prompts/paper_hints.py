@@ -220,6 +220,53 @@ PAPER_HINTS: dict[str, PaperHint] = {
             seeds=[1],
         ),
     ),
+    "1512.03385": PaperHint(
+        guidance=(
+            "ResNet / Deep Residual Learning (1512.03385) — the rubric's dominant "
+            "lever is the CIFAR-10 DEGRADATION CONTRAST (Section 4.2, Table 6): "
+            "train BOTH plain and residual nets at MULTIPLE depths and show "
+            "residual learning SOLVES degradation — plain nets get WORSE as they "
+            "deepen (plain-56 test error > plain-44 > plain-32 > plain-20), while "
+            "ResNets get BETTER (resnet-110 6.43% < resnet-56 6.97% < resnet-44 "
+            "7.17% < resnet-32 7.51% < resnet-20 8.75%). The CONTRAST is the "
+            "claim — a grid of only ResNets, or only one depth, cannot show it.\n"
+            "ARCHITECTURE (CIFAR ResNet, 6n+2 weighted layers): first 3x3 conv -> "
+            "16 filters; then 3 stages of 2n stacked 3x3-conv blocks on feature "
+            "maps 32/16/8 with filters 16/32/64 (stride-2 at stage boundaries); "
+            "global-average-pool -> 10-way FC -> softmax. n in {3,5,7,9,18} -> "
+            "depth {20,32,44,56,110}. Shortcuts are IDENTITY (option A, "
+            "parameter-free; zero-pad the extra channels at dimension increases) "
+            "— NOT 1x1-conv projection. He/MSRA init. NO dropout, NO ZCA.\n"
+            "RECIPE: SGD momentum 0.9, weight_decay 1e-4, batch 128, lr 0.1 "
+            "divided by 10 at 32k and 48k iterations, terminate at 64k iterations "
+            "(~164 epochs). Preprocess: per-pixel MEAN subtraction ONLY (NOT "
+            "GCN/ZCA — different from All-CNN). Augment: 4-pixel zero-pad then "
+            "random 32x32 crop + horizontal flip on TRAIN; test on the single "
+            "original 32x32 view. ResNet-110 ONLY: warm up at lr 0.01 until train "
+            "error < 80% (~400 iters), THEN set lr 0.1 and resume the schedule — "
+            "at depth 110 a plain 0.1 start diverges.\n"
+            "STRUCTURE: emit cells.json with ONE cell per (arch, depth) and "
+            "EXPLICIT model_key/env/baseline axes (e.g. model_key='resnet_56', "
+            "env='cifar10', baseline='resnet'; model_key='plain_56', env='cifar10', "
+            "baseline='plain'); train_cell.py writes a FLAT per-cell metrics.json "
+            "with test_error_pct. Aggregate per_model ATOMICALLY as cells finish so "
+            "a timeout truncates the tail, not finished work. Minimum faithful "
+            "grid: plain {20,32,44,56} + resnet {20,32,44,56,110} (9 cells) — the "
+            "plain side is REQUIRED to show degradation; resnet-110 is the headline.\n"
+            "OUT OF SCOPE on this budget: the paper's ImageNet ResNets "
+            "(18/34/50/101/152) take days — implement the CIFAR nets only; if the "
+            "rubric has ImageNet leaves leave them honestly ungraded (do NOT fake "
+            "or train ImageNet). CHEAP RUBRIC EVIDENCE: (a) record per-depth "
+            "param_count under per_model[*].param_count (resnet-110 ~1.7M params); "
+            "(b) emit provenance.json with the lr schedule, batch, weight_decay, "
+            "and per-cell final test_error_pct + epochs_run; (c) if a PRIOR-ATTEMPT "
+            "MEASURED EVIDENCE block is present, restore paper-grade configs verbatim."
+        ),
+        default_scope=ScopeSpec(
+            datasets=[DatasetSlice(name="CIFAR-10")],
+            seeds=[1],
+        ),
+    ),
     "1412.6980": PaperHint(
         guidance=(
             "Adam (1412.6980) — PRIORITY #1: reproduce ALL SIX experiment families and "
