@@ -121,7 +121,7 @@ _SETTINGS_DEFAULTS: dict[str, Any] = {
     "azure_max_nodes": 4,
     "azure_per_gpu_vram_gb": 80.0,
     "azure_gpu_usd_per_hour": 3.67,
-    "azure_pending_timeout_seconds": 900,
+    "azure_pending_timeout_seconds": 1500,
     "azure_boot_timeout_seconds": 900,
     "azure_gpu_skus": [],        # provisioned SKU short_names (list[str])
     "dynamic_gpu_max_escalations": 2,
@@ -508,7 +508,6 @@ def _build_job_manifest(
     env_vars = [
         {"name": "OPENRESEARCH_CELL_ID",               "value": cell_id},
         {"name": "OPENRESEARCH_CELL_PARAMS",            "value": cell_params_json},
-        {"name": "OPENRESEARCH_CELL_OUTPUT_DIR",        "value": f"/mnt/outputs/{cell_id}"},
         {"name": "OPENRESEARCH_CELL_MAX_OOM_RETRIES",   "value": str(max_oom_retries)},
         # P0-fix-1: standardised on OPENRESEARCH_AZURE_* names the entrypoint reads.
         {"name": "OPENRESEARCH_AZURE_STORAGE_ACCOUNT",  "value": storage_account},
@@ -528,16 +527,6 @@ def _build_job_manifest(
         env_vars.append({"name": "OPENRESEARCH_CELL_FINGERPRINT", "value": fingerprint})
     if now_iso:
         env_vars.append({"name": "OPENRESEARCH_CELL_NOW_ISO", "value": now_iso})
-    # Image-compat shim (audit 2026-06-10): the entrypoint baked into a PINNED
-    # ACR image may predate the REPROLAB_->OPENRESEARCH_ rename and read the
-    # legacy names. Inject both spellings until every base image is rebuilt
-    # (the in-repo aks_cell_entrypoint.py reads the canonical names).
-    env_vars.extend(
-        {"name": "OPENRESEARCH_" + e["name"][len("OPENRESEARCH_"):], "value": e["value"]}
-        for e in list(env_vars)
-        if e["name"].startswith("OPENRESEARCH_")
-    )
-
     # GPU count: from plan when available, else 1.
     gpu_count_str: str
     if gpu_plan is not None:
@@ -1062,10 +1051,10 @@ def _run_cell_job(
             files_cache_enabled=bool(_setting("azure_files_cache_enabled", True)),
             # P1-fix-9: OOM shrink ratios forwarded from settings.
             oom_batch_scale_step1=float(
-                _setting("azure_cell_oom_batch_scale_step1", 0.5)
+                _setting("azure_oom_batch_scale_step1", 0.5)
             ),
             oom_batch_scale_floor=float(
-                _setting("azure_cell_oom_batch_scale_floor", 0.25)
+                _setting("azure_oom_batch_scale_floor", 0.25)
             ),
             bootstrap_pip_timeout_s=int(
                 _setting("azure_bootstrap_pip_timeout_s", 600)
@@ -1290,7 +1279,7 @@ def run_matrix(
     # P1-fix-5: align with config.py default of 4 (was incorrectly 8 here).
     azure_max_nodes: int = int(_setting("azure_max_nodes", 4))
     gpu_usd_per_hour: float = float(_setting("azure_gpu_usd_per_hour", 3.67))
-    pending_timeout_s: float = float(_setting("azure_pending_timeout_seconds", 900))
+    pending_timeout_s: float = float(_setting("azure_pending_timeout_seconds", 1500))
     provisioned_skus: list[str] = list(_setting("azure_gpu_skus", []) or [])
     max_escalations: int = int(_setting("dynamic_gpu_max_escalations", 2))
 

@@ -5521,16 +5521,17 @@ def run_experiment(
         env_id = build["image_tag"] or ("__local__" if build.get("skipped") else "")
 
     # A2-H2: guard empty env_id (reachable only when no Dockerfile was on disk
-    # to rebuild from AND the build was not skipped for local-sandbox mode).
-    # We exempt the local-sandbox path: build_environment deliberately returns
-    # image_tag="" there (see build_environment local-short-circuit above), and
-    # _execute_in_sandbox routes to LocalProcessBackend via sandbox_mode, making
-    # env_id irrelevant.
-    _is_local_sb = (
-        str(getattr(getattr(ctx, "sandbox_mode", None), "value",
-                    getattr(ctx, "sandbox_mode", None) or "")).lower() == "local"
-    )
-    if not _is_local_sb and (not env_id or not str(env_id).strip()):
+    # to rebuild from AND the build was not skipped for an imageless sandbox).
+    # We exempt the local AND azure sandboxes: build_environment deliberately
+    # returns image_tag="" for both (local has no Docker daemon; azure's image is
+    # pre-baked in ACR), and both route on sandbox_mode — LocalProcessBackend /
+    # AksJobBackend + the cells route's azure_base_image — never on env_id. An
+    # empty env_id must not hard-block them, or the azure cells route would be
+    # refused before it is ever reached.
+    _sb_mode_str = str(getattr(getattr(ctx, "sandbox_mode", None), "value",
+                               getattr(ctx, "sandbox_mode", None) or "")).lower()
+    _is_local_sb = (_sb_mode_str == "local")
+    if _sb_mode_str not in ("local", "azure") and (not env_id or not str(env_id).strip()):
         return _persist_experiment_result(ctx, {
             "success": False,
             "metrics": {},
@@ -5673,7 +5674,7 @@ def run_experiment(
         from backend.services.runtime.gpu_capacity import describe_capacity
         _caps = describe_capacity(ctx)
         if (
-            _caps.backend_kind in ("local", "docker")
+            _caps.backend_kind in ("local", "docker", "azure")
             and not _caps.is_empty
             and (Path(code_path) / "cells.json").is_file()
             and (Path(code_path) / "train_cell.py").is_file()

@@ -477,3 +477,83 @@ def test_provisioned_skus_low_confidence_fallback_filters_ladder():
     # x2/x4 are not in provisioned_skus → must not appear in ladder
     assert "azure_a100_80x2" not in plan.ladder_remaining
     assert "azure_a100_80x4" not in plan.ladder_remaining
+
+
+# ---------------------------------------------------------------------------
+# P1 fix: fallback primary pick must target a provisioned pool
+# ---------------------------------------------------------------------------
+
+def test_azure_fallback_picks_provisioned_sku_when_estimate_none():
+    """No estimate + provisioned_skus=("azure_a100_80",) → fallback must pick azure_a100_80.
+
+    Previously the fallback path called _by_short_name(_AZURE_FALLBACK_SHORT_NAME)
+    unconditionally, returning azure_a10_24 even when that pool is not provisioned,
+    causing the K8s Job to hang Pending.
+    """
+    plan = resolve(
+        GpuRequirements(
+            estimated_vram_gb=None,
+            paper_gpu_string=None,
+            paper_gpu_count=1,
+            reasoning="no estimate",
+            confidence=0.9,
+        ),
+        dynamic_gpu_enabled=True,
+        force_single_gpu=True,
+        max_gpu_usd_per_hour=20.0,
+        headroom_multiplier=1.25,
+        fallback_vram_gb=24,
+        provider="azure",
+        provisioned_skus=("azure_a100_80",),
+    )
+    assert plan.short_name == "azure_a100_80"
+    assert plan.gpu_count == 1
+    assert plan.source == "fallback"
+
+
+def test_azure_fallback_low_confidence_picks_provisioned():
+    """Low-confidence estimate + provisioned_skus=("azure_a100_80",) → picks azure_a100_80.
+
+    Confidence below _CONFIDENCE_FLOOR (0.4) also hits the fallback branch; the
+    primary pick must still target the provisioned pool, not the unconstrained default.
+    """
+    plan = resolve(
+        GpuRequirements(
+            estimated_vram_gb=80,
+            paper_gpu_string="1x A100",
+            paper_gpu_count=1,
+            reasoning="low confidence",
+            confidence=0.1,  # below _CONFIDENCE_FLOOR=0.4
+        ),
+        dynamic_gpu_enabled=True,
+        force_single_gpu=True,
+        max_gpu_usd_per_hour=20.0,
+        headroom_multiplier=1.25,
+        fallback_vram_gb=24,
+        provider="azure",
+        provisioned_skus=("azure_a100_80",),
+    )
+    assert plan.short_name == "azure_a100_80"
+    assert plan.source == "fallback"
+
+
+def test_azure_fallback_unconstrained_preserves_a10():
+    """No estimate + provisioned_skus=() → unchanged behavior: global fallback azure_a10_24."""
+    plan = resolve(
+        GpuRequirements(
+            estimated_vram_gb=None,
+            paper_gpu_string=None,
+            paper_gpu_count=1,
+            reasoning="no estimate unconstrained",
+            confidence=0.9,
+        ),
+        dynamic_gpu_enabled=True,
+        force_single_gpu=True,
+        max_gpu_usd_per_hour=20.0,
+        headroom_multiplier=1.25,
+        fallback_vram_gb=24,
+        provider="azure",
+        provisioned_skus=(),
+    )
+    assert plan.short_name == "azure_a10_24"
+    assert plan.source == "fallback"

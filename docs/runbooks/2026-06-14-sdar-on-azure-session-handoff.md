@@ -15,6 +15,28 @@ land, the run is four scripts: bootstrap → preflight → run → monitor (§5)
 **local reasoning loop (claude-oauth) + GPU training cells on Azure AKS, blob-only,
 1× A100-80GB, smallest-two, capped ~$15-25.**
 
+> **Hardening pass — 2026-06-14 (edge-case audit + offline validation).** A full
+> edge-case walk of the compute path found a **P0**: the cells-route dispatch gate in
+> `run_experiment` (`primitives.py`) enumerated only `("local","docker")`, so
+> `--sandbox azure` would have **silently run the monolithic legacy path** and never
+> dispatched a cell Job — the whole one-Job-per-cell design was dead code for azure
+> (a sibling empty-`env_id` guard exempted only `local`, blocking azure even after the
+> tuple fix). Fixed + 6 robustness fixes landed and offline-validated (no live GPU):
+> azure resolver fallback now targets a **provisioned** SKU (was hard-coding the
+> unprovisioned `azure_a10_24` → Pending hang); AKS entrypoint passes
+> `--cell-id`/`--output-dir` argv for cross-backend `train_cell.py` parity; preflight
+> hard-fails when the **local `az login` identity** lacks `Storage Blob Data
+> Contributor` (the local code-upload 403s without it); Helm fails closed on an empty
+> `workloadIdentity.clientId` and gates the dead orchestrator Role/RoleBinding; runner
+> config-key drift fixed (OOM-scale keys, pending-timeout 900→1500) + dead env/shim
+> removed. Validation: **2959 backend tests + the azure suite green, ruff clean, helm
+> lint + fail-closed proof, bicep build OK**, plus a capstone test proving the
+> blob-only manifest (emptyDir + `reprolab/sku=azure_a100_80` + gpu=1 + env contract)
+> reaches `create_namespaced_job` through the real `run_matrix` dispatch. The path is
+> now **code-correct + first-try-ready**; the live run is still **3-gate-blocked**
+> (cluster torn down, GPU quota 0/0, no kubelogin — all confirmed in-session). Lesson:
+> `docs/archive/learn.md` 2026-06-14.
+
 ## 1. Locked decisions — do NOT re-litigate
 
 | Axis | Decision | Why |

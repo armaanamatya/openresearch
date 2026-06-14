@@ -39,6 +39,26 @@ class GpuResolutionError(RuntimeError):
     """Raised when no SKU can satisfy (VRAM + $/hr cap + cloud_type) constraints."""
 
 
+def _azure_default_sku(provisioned_skus: tuple[str, ...] | None) -> "GpuSku":
+    """Default azure SKU for the no-/low-confidence fallback, honoring provisioning.
+
+    When provisioned_skus is set, return the CHEAPEST provisioned SKU (so the
+    fallback Job targets a node pool that actually exists); otherwise the global
+    azure fallback. Fixes the unschedulable-pool hang when only a larger SKU is
+    provisioned.
+    """
+    if provisioned_skus:
+        candidates: list[GpuSku] = []
+        for name in provisioned_skus:
+            try:
+                candidates.append(_by_short_name(name, provider="azure"))
+            except GpuResolutionError:
+                pass
+        if candidates:
+            return min(candidates, key=lambda s: (s.approx_usd_per_hr, s.short_name))
+    return _by_short_name(_AZURE_FALLBACK_SHORT_NAME, provider="azure")
+
+
 def resolve(
     requirements: GpuRequirements,
     *,
@@ -228,7 +248,7 @@ def _resolve_azure(
 
     # Dynamic disabled → informational from cheapest azure SKU.
     if not dynamic_gpu_enabled:
-        sku = _by_short_name(_AZURE_FALLBACK_SHORT_NAME, provider="azure")
+        sku = _azure_default_sku(provisioned_skus)
         return _build_plan(sku, gpu_count=sku.gpu_count, source="informational",
                            requirements=requirements, ladder=(), now_iso=now_iso)
 
@@ -237,7 +257,7 @@ def _resolve_azure(
 
     # Fallback path: no estimate OR confidence too low → cheapest azure SKU.
     if estimate is None or confidence < _CONFIDENCE_FLOOR:
-        sku = _by_short_name(_AZURE_FALLBACK_SHORT_NAME, provider="azure")
+        sku = _azure_default_sku(provisioned_skus)
         full_ladder = _azure_ladder(min_effective_vram=sku.vram_gb * sku.gpu_count,
                                     max_per_gpu_usd=None,
                                     force_single_gpu=force_single_gpu,

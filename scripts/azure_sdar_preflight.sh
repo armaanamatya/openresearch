@@ -77,8 +77,24 @@ if [[ -n "${OPENRESEARCH_AZURE_STORAGE_ACCOUNT:-}" ]] && az storage account show
   ok "storage account $OPENRESEARCH_AZURE_STORAGE_ACCOUNT exists"
   CONTAINER="${OPENRESEARCH_AZURE_BLOB_CONTAINER:-reprolab-artifacts}"
   if az storage container show --account-name "$OPENRESEARCH_AZURE_STORAGE_ACCOUNT" --name "$CONTAINER" --auth-mode login >/dev/null 2>&1; then
-    ok "blob container $CONTAINER reachable via your identity"
-  else warn "could not confirm blob container $CONTAINER via --auth-mode login — the workload MI (not you) needs Storage Blob Data Contributor; see the runbook §7 Blob-403 row"; fi
+    ok "blob container $CONTAINER exists"
+    # Data-plane probe: verify the LOCAL az login identity has Storage Blob Data Contributor
+    # (DefaultAzureCredential→AzureCliCredential is what azure_sdar_run.sh uses for code
+    # upload and metrics download; a missing role causes 403 BEFORE any Job submits).
+    if az storage blob list \
+         --account-name "$OPENRESEARCH_AZURE_STORAGE_ACCOUNT" \
+         --container-name "$CONTAINER" \
+         --auth-mode login \
+         --num-results 1 \
+         -o none 2>/dev/null; then
+      ok "blob data-plane access OK as current identity"
+    else
+      bad "az login identity lacks Storage Blob Data Contributor on $CONTAINER — local code-upload/metrics-download will 403; grant: az role assignment create --assignee <your-objectId> --role 'Storage Blob Data Contributor' --scope <storage-account-resource-id>"
+    fi
+    # NOTE: the cell Pods' workload MI is a SEPARATE identity from your az login
+    # identity and also needs Storage Blob Data Contributor on this container.
+    warn "verify that the cell workload MI (not your az login identity) also has Storage Blob Data Contributor on $CONTAINER — the check above proves only your local identity; see the runbook §7 Blob-403 row"
+  else bad "blob container $CONTAINER not found or not reachable — confirm it was created by the Bicep stack"; fi
 else bad "storage account ${OPENRESEARCH_AZURE_STORAGE_ACCOUNT:-<unset>} not found"; fi
 
 # 10. python deps in the venv

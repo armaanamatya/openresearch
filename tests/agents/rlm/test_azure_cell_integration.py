@@ -921,3 +921,111 @@ class TestSeamCompatibility:
         leaf = agg["per_model"]["qwen3_1_7b"]["search_qa"]["sdar"]
         assert leaf["status"] == "failed"
         assert leaf["metric"] is None  # None metrics → null metric in leaf
+
+
+# ===========================================================================
+# 5. Blob-only manifest dispatch — the load-bearing SDAR-on-Azure invariant.
+#    run_matrix (the real dispatch entry) must thread the blob-only settings
+#    into the Job manifest that reaches create_namespaced_job: an EMPTYDIR
+#    cache (NOT a Files PVC), the reprolab/sku nodeSelector, nvidia.com/gpu=1,
+#    the pinned ACR image, and the canonical env contract — with no dead
+#    OPENRESEARCH_CELL_OUTPUT_DIR and no duplicate (no-op shim) env names.
+# ===========================================================================
+
+class TestBlobOnlyManifestDispatch:
+    """Capstone: assert the manifest actually submitted on the blob-only profile.
+
+    The per-field manifest unit tests in test_k8s_job_cell_runner.py call
+    ``_build_job_manifest`` directly; this proves ``run_matrix`` (the real
+    dispatch path) threads the blob-only settings all the way into the body
+    handed to ``create_namespaced_job``.
+    """
+
+    _BASE_IMAGE = "sciartacr.azurecr.io/reprolab-cell:testsha"
+    _SKU = "azure_a100_80"
+
+    def _blob_only_settings(self) -> dict[str, Any]:
+        return {
+            "azure_namespace": "reprolab",
+            "azure_service_account": "reprolab-sa",
+            "azure_node_pool_name": "sciarta10080",
+            "azure_base_image": self._BASE_IMAGE,
+            "azure_storage_account": "sciartgenreprolab",
+            "azure_blob_container": "reprolab-artifacts",
+            "azure_max_nodes": 4,
+            "azure_gpu_usd_per_hour": 3.67,
+            "azure_pending_timeout_seconds": 1500,
+            "azure_gpu_skus": [self._SKU],
+            "dynamic_gpu_max_escalations": 2,
+            "azure_files_share": "reprolab-cache",
+            "azure_files_cache_enabled": False,   # ← blob-only: forces emptyDir
+            "azure_ttl_seconds_after_finished": 3600,
+            "azure_job_backoff_limit": 0,
+            "azure_cache_mount_path": "/mnt/reprolab-cache",
+            "azure_oom_batch_scale_step1": 0.5,
+            "azure_oom_batch_scale_floor": 0.25,
+            "azure_bootstrap_pip_timeout_s": 600,
+            "azure_watch_poll_interval_s": 0.01,
+        }
+
+    def _dispatch_one(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+        settings = self._blob_only_settings()
+        monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: settings.get(name, default))
+        # Keep hermetic: never construct a real ContainerClient.
+        monkeypatch.setattr(kjcr, "_make_blob_client", lambda *a, **k: None)
+        _patch_blob(monkeypatch, default_metrics=_CELL_METRICS_FIXTURE)
+
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+
+        cells = [_cell("qwen3_1_7b", "search_qa", "sdar")]
+        run_matrix(cells, tmp_path / "train_cell.py", output_root=tmp_path / "out")
+        assert k8s.batch.created_jobs, "no Job was submitted"
+        return k8s.batch.created_jobs[0]
+
+    def test_blob_only_cache_is_emptydir_not_pvc(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        manifest = self._dispatch_one(tmp_path, monkeypatch)
+        volumes = manifest["spec"]["template"]["spec"]["volumes"]
+        cache = next(v for v in volumes if v["name"] == "reprolab-cache")
+        assert cache == {"name": "reprolab-cache", "emptyDir": {}}, (
+            "blob-only path must mount an ephemeral emptyDir, never a Files PVC"
+        )
+        assert "persistentVolumeClaim" not in cache
+
+    def test_node_selector_image_and_gpu_request(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        manifest = self._dispatch_one(tmp_path, monkeypatch)
+        spec = manifest["spec"]["template"]["spec"]
+        assert spec["nodeSelector"] == {"reprolab/sku": self._SKU}
+        container = spec["containers"][0]
+        assert container["image"] == self._BASE_IMAGE
+        assert container["resources"]["requests"]["nvidia.com/gpu"] == "1"
+        assert container["resources"]["limits"]["nvidia.com/gpu"] == "1"
+        assert any(t.get("key") == "nvidia.com/gpu" for t in spec["tolerations"])
+        vm = container["volumeMounts"][0]
+        assert vm["name"] == "reprolab-cache"
+        assert vm["mountPath"] == "/mnt/reprolab-cache"
+
+    def test_env_contract_and_no_dead_or_duplicate_vars(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        manifest = self._dispatch_one(tmp_path, monkeypatch)
+        env = manifest["spec"]["template"]["spec"]["containers"][0]["env"]
+        names = [e["name"] for e in env]
+        required = {
+            "OPENRESEARCH_CELL_ID", "OPENRESEARCH_CELL_PARAMS",
+            "OPENRESEARCH_AZURE_STORAGE_ACCOUNT", "OPENRESEARCH_AZURE_BLOB_CONTAINER",
+            "OPENRESEARCH_BLOB_CODE_PREFIX", "OPENRESEARCH_BLOB_OUTPUT_PREFIX",
+            "OPENRESEARCH_CACHE_MOUNT",
+        }
+        assert required <= set(names), f"missing env vars: {required - set(names)}"
+        # FIX-10: the dead /mnt/outputs CELL_OUTPUT_DIR injection is gone.
+        assert "OPENRESEARCH_CELL_OUTPUT_DIR" not in names
+        # FIX-8: the no-op alias shim is gone → no duplicate env names.
+        assert len(names) == len(set(names)), f"duplicate env names: {names}"
+        # The cell Pod carries the workload-identity label so it can auth to Blob.
+        labels = manifest["spec"]["template"]["metadata"]["labels"]
+        assert labels.get("azure.workload.identity/use") == "true"
