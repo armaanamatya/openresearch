@@ -14,8 +14,8 @@
 # It is the ACR cell image tag built by scripts/azure_build_cell_image.sh.
 # Set it separately after building the image.
 #
-# Subscription used in this project:
-#   51008c59-ebf4-4699-8f2c-896724144d42  (AIONIC / rg-sciartgen-external)
+# Subscription: the script uses your active az context. Set it first with
+#   az account set --subscription <id>   (no subscription ID is hardcoded here).
 
 set -euo pipefail
 

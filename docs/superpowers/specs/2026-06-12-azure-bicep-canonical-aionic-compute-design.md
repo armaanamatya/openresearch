@@ -12,7 +12,7 @@ unattended/scheduled runs. Driver (confirmed): A100-80 memory + off-my-hardware 
 client requirement + unattended.
 
 **What already exists in the subscription** (portal, 2026-06-12):
-- Subscription **AIONIC Azure** `51008c59-ebf4-4699-8f2c-896724144d42`, tenant AIONIC.
+- Subscription **AIONIC Azure** (subscription + tenant IDs via `az account show`; kept out of git).
 - Resource group **`rg-sciartgen-external`** in **`westus3`**; operator holds
   **Contributor-only** on it (no Owner, no User Access Administrator, no Entra rights).
 - Storage account `sciartgentfstate` (a Terraform-state account — becomes vestigial

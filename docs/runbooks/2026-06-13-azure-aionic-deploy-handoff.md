@@ -12,11 +12,11 @@ This runbook records the real first deploy: what stood up, the three IaC bugs fi
 
 | Field | Value |
 |-------|-------|
-| Subscription | `AIONIC Azure` — `51008c59-ebf4-4699-8f2c-896724144d42` |
-| Tenant | `d2e5fcd3-3272-4e3b-ba15-b42c271cb0df` (`marcusaionicml.onmicrosoft.com`) |
+| Subscription | `AIONIC Azure` — ID via `az account show --query id -o tsv` |
+| Tenant | AIONIC — ID via `az account show --query tenantId -o tsv` |
 | Resource group | `rg-sciartgen-external` (westus3) — **shared**; also holds `sciartgen-azure-openai` (AOAI, eastus) + `sciartgentfstate`. Never delete the RG. |
 | Stack name | `openresearch-l1` |
-| Operator (deploying user) | objectId `5709e8a6-5c55-4628-a828-23529030815c` |
+| Operator (deploying user) | objectId via `az ad signed-in-user show --query id -o tsv` |
 
 Deployed resources (22): AKS `sciart-aks` + GPU pool `sciarta10080` (A100-80, scale-to-zero), ACR `sciartacr`, storage `sciartgenreprolab` (+ blob `reprolab-artifacts`, files `reprolab-cache`), VNet/subnet/NSG `sciart-*`, Log Analytics `sciart-law` + diagnostics, workload identities `sciart-workload-mi` + `sciart-orch-workload-mi` (+ federated creds), and the 4 role assignments the operator condition permits.
 
@@ -46,7 +46,7 @@ Also added in this branch (Stream E + deploy enablement):
 
 ```bash
 az login --use-device-code
-az account set --subscription 51008c59-ebf4-4699-8f2c-896724144d42
+az account set --subscription <SUBSCRIPTION_ID>   # see: az account show --query id -o tsv
 
 # operator egress /32 locks the public AKS API server:
 EGRESS=$(curl -s https://ipinfo.io/ip)
@@ -75,12 +75,12 @@ Prerequisites that are NOT operator-gated: `az`/`kubectl`/`helm`/`jq` installed;
 The operator has RG **Contributor** + a **constrained RBAC-Administrator** whose ABAC condition only permits assigning AcrPull (`7f951dda`), Storage Blob Data Contributor (`ba92f5b4`), and Storage File SMB Contributor (`0c867c2a`) — to ServicePrincipals. So the operator can build infra but cannot use the cluster or assign other roles. These require an AIONIC subscription admin / User Access Administrator:
 
 ```bash
-SUB=51008c59-ebf4-4699-8f2c-896724144d42
+SUB=$(az account show --query id -o tsv)
 RG=rg-sciartgen-external
 
 # (A) Kubernetes API access for the operator (kubectl + Job submission)
 az role assignment create \
-  --assignee 5709e8a6-5c55-4628-a828-23529030815c \
+  --assignee "$(az ad signed-in-user show --query id -o tsv)" \
   --role "Azure Kubernetes Service RBAC Cluster Admin" \
   --scope /subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.ContainerService/managedClusters/sciart-aks
 
