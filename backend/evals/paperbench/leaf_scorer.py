@@ -190,6 +190,74 @@ def _is_degraded_run(run_dir: Path) -> bool:
 _MAX_FILE_BYTES = 32 * 1024          # 32 KB per file (D2: 6 KB truncated models.py/optimizers.py and docked faithful runs)
 _MAX_TOTAL_EVIDENCE_BYTES = 200 * 1024  # 200 KB total (the default Sonnet/Opus grader handles this comfortably)
 _MAX_PROVENANCE_BYTES = 16 * 1024    # 16 KB for the provenance manifest (already series-summarized by provenance.py)
+_MAX_METRICS_BYTES = 96 * 1024       # metrics.json is the KEYSTONE evidence (the RESULTS); generous budget AFTER compaction
+_COMPACT_LIST_KEEP = 12              # numeric series longer than this collapse to {len,first,last,min,max}
+
+
+def _summarize_long_list(v: list):
+    """Collapse a long series to a compact summary; pass short/non-numeric lists through.
+
+    An epoch-wise ``train_loss_history`` / ``test_acc_history`` / reward curve is
+    typically hundreds of floats — verbatim it dwarfs the per-model scalar RESULTS
+    (``test_error_pct``, ``best_lr``) that the grader actually scores on. A
+    ``{len,first,last,min,max}`` summary preserves what a convergence claim needs
+    ("reaches a given loss in fewer steps", "final error 9%") at ~1% of the bytes.
+    """
+    if len(v) <= _COMPACT_LIST_KEEP:
+        return v
+    nums = [x for x in v if isinstance(x, (int, float)) and not isinstance(x, bool)]
+    if nums and len(nums) == len(v):
+        return {"_series": {"len": len(v), "first": v[0], "last": v[-1],
+                            "min": min(nums), "max": max(nums)}}
+    # Long non-numeric list (e.g. per-step logs): keep head + tail, note the elision.
+    head, tail = 6, 6
+    return v[:head] + [f"...({len(v) - head - tail} more elided)..."] + v[-tail:]
+
+
+def _compact_metrics_for_grader(obj):
+    """Recursively shrink a metrics structure so EVERY model's scalar results survive
+    the grader's byte budget — not just the first one or two before truncation bites.
+
+    Wide grids (SDAR 3×3, Adam 6×6, All-CNN 14 models) each carry per-epoch history
+    arrays; serialized verbatim a 14-model run is ~340 KB and the raw-truncation at
+    ``_MAX_FILE_BYTES`` cut off everything past ``a_strided`` — so the grader never saw
+    the paper's HEADLINE result (e.g. All-CNN-C) and scored it "central claim unverified"
+    although the cell ran. This collapses long numeric series (see ``_summarize_long_list``)
+    while preserving every scalar. Fully key-name agnostic → general to any paper, not a
+    CIFAR/All-CNN special case.
+    """
+    if isinstance(obj, dict):
+        return {k: _compact_metrics_for_grader(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        summarized = _summarize_long_list(obj)
+        if isinstance(summarized, list):
+            return [_compact_metrics_for_grader(x) for x in summarized]
+        return summarized
+    return obj
+
+
+# Filenames carrying the algorithm/result the grader most needs to SEE — these win
+# the evidence budget over alphabetical luck (a `model.py`/`optimizers.py` that sorts
+# late must not be starved by earlier-sorting helpers on a large multi-file repo).
+_LOADBEARING_NAME_RE = re.compile(
+    r"(model|train|optim|loss|net|arch|env|main|run|config|data|eval|metric|cell)", re.IGNORECASE
+)
+
+
+def _code_file_priority(path: Path) -> tuple[int, int, str]:
+    """Sort key (lower first) for code-file evidence: load-bearing names first, then
+    smaller files (so more distinct artifacts fit), then path for determinism.
+
+    The old lexicographic walk let *position in an arbitrary order* decide whether a
+    real artifact reached the grader — the same failure mode as the metrics truncation,
+    one level up. Ranking by load-bearing-ness makes evidence selection content-driven.
+    """
+    bearing = 0 if _LOADBEARING_NAME_RE.search(path.name) else 1
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = 1 << 30
+    return (bearing, size, str(path))
 
 
 def _latest_metrics_path(run_dir: Path) -> Path | None:
@@ -311,6 +379,15 @@ def _gather_evidence(run_dir: Path) -> str:
                 for k in ("reproduction_summary", "baseline_metrics", "verdict", "paper")
                 if k in report
             }
+            # baseline_metrics mirrors the aggregate metrics.json (per_model + 350-epoch
+            # history arrays = ~175 KB on a wide grid) — verbatim it alone nearly exhausts
+            # the 200 KB total evidence budget, starving the code-file evidence below.
+            # Compact it the same way as metrics.json (G1), key-name agnostic.
+            if isinstance(snippet.get("baseline_metrics"), (dict, list)):
+                try:
+                    snippet["baseline_metrics"] = _compact_metrics_for_grader(snippet["baseline_metrics"])
+                except Exception:
+                    pass
             text = f"=== final_report.json (key fields) ===\n{json.dumps(snippet, indent=2)}\n"
             parts.append(text)
             total += len(text)
@@ -327,8 +404,21 @@ def _gather_evidence(run_dir: Path) -> str:
     if metrics_path is not None:
         try:
             metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-            body = json.dumps(metrics, indent=2)[:_MAX_FILE_BYTES]
-            text = f"=== latest experiment metrics.json (measured run results) ===\n{body}\n"
+            # Compact long per-epoch series so EVERY model's scalar results reach the
+            # grader (G1: the raw 32 KB truncation hid every result past the first
+            # 1-2 models on wide grids). Fall back to the legacy raw-truncation if
+            # compaction ever fails — strictly never worse than before.
+            try:
+                compact = _compact_metrics_for_grader(metrics)
+                body = json.dumps(compact, indent=2)
+                label = "measured run results; long curves -> {len,first,last,min,max}"
+                if len(body) > _MAX_METRICS_BYTES:
+                    body = body[:_MAX_METRICS_BYTES]
+                    label += "; truncated"
+            except Exception:
+                body = json.dumps(metrics, indent=2)[:_MAX_FILE_BYTES]
+                label = "measured run results; raw, truncated"
+            text = f"=== latest experiment metrics.json ({label}) ===\n{body}\n"
             parts.append(text)
             total += len(text)
         except Exception as exc:
@@ -369,16 +459,18 @@ def _gather_evidence(run_dir: Path) -> str:
         parts.append(listing)
         total += len(listing)
 
-    # Key code files
+    # Key code files — ranked by load-bearing-ness (Finding 1), NOT lexicographic, so
+    # the algorithm/result files reach the grader even on a large multi-file repo where
+    # the 200 KB total budget binds before an alphabetically-late `model.py` is read.
     if code_dir.exists() and total < _MAX_TOTAL_EVIDENCE_BYTES:
         priority_extensions = {".py", ".sh", ".yaml", ".yml", ".toml", ".cfg", ".txt"}
-        for path in sorted(code_dir.rglob("*")):
+        code_candidates = [
+            p for p in code_dir.rglob("*")
+            if p.is_file() and p.suffix in priority_extensions
+        ]
+        for path in sorted(code_candidates, key=_code_file_priority):
             if total >= _MAX_TOTAL_EVIDENCE_BYTES:
                 break
-            if not path.is_file():
-                continue
-            if path.suffix not in priority_extensions:
-                continue
             try:
                 raw = path.read_bytes()[:_MAX_FILE_BYTES]
                 content = raw.decode("utf-8", errors="replace")

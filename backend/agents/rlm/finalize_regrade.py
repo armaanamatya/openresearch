@@ -216,6 +216,12 @@ def maybe_regrade(ctx: Any, report: Any) -> dict | None:
             run_dir=project_dir,
             llm_client=llm_client,
             rubric_source=source,
+            # NOT degraded by construction: the _converged_cell_count gate above proved
+            # real converged cells. Without this explicit False, score_reproduction's
+            # degraded=None auto-detect reads a stale on-disk final_report.json and, on
+            # an empty-baseline_metrics / verdict="failed" report, caps EVERY leaf at 0.35
+            # — nuking the very complete-grid grade this regrade exists to recover.
+            degraded=False,
             invariants=list(getattr(ctx, "paper_hint_invariants", None) or []),
         )
         fresh_score = fresh.get("overall_score")
@@ -361,6 +367,7 @@ def regrade_for_hard_stop(project_dir: Path | str, llm_client: Any) -> dict | No
         fresh = score_reproduction(
             rubric_tree=rubric, run_dir=project_dir, llm_client=llm_client,
             rubric_source=source,
+            degraded=False,  # converged cells proven above; see maybe_regrade for the 0.35-cap rationale
         )
         if fresh.get("overall_score") is None:
             return None

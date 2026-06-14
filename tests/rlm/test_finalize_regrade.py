@@ -178,6 +178,26 @@ def test_adopts_strictly_higher_regrade(tmp_path, monkeypatch):
     assert saved["overall_score"] == pytest.approx(0.731)
 
 
+def test_regrade_passes_degraded_false(tmp_path, monkeypatch):
+    """The _converged_cell_count gate proves real converged cells, so the regrade
+    MUST pass degraded=False explicitly. Otherwise score_reproduction's degraded=None
+    auto-detect reads a stale failed/empty-baseline final_report.json and caps every
+    leaf at 0.35 — nuking the very complete-grid grade the regrade exists to recover."""
+    monkeypatch.delenv(fr.ENV_FLAG, raising=False)
+    now = time.time()
+    p = _project(tmp_path, graded_at=now - 9 * 3600, metrics_at=now)
+    captured: dict = {}
+
+    def _spy(**kw):
+        captured.update(kw)
+        return {"overall_score": 0.80, "target_score": 0.7437,
+                "graded": 22, "leaf_count": 22, "leaf_scores": [], "areas": []}
+
+    monkeypatch.setattr("backend.evals.paperbench.leaf_scorer.score_reproduction", _spy)
+    fr.maybe_regrade(_ctx(p, 0.80), _report())
+    assert captured.get("degraded") is False
+
+
 def test_keeps_recorded_when_regrade_not_higher(tmp_path, monkeypatch):
     monkeypatch.delenv(fr.ENV_FLAG, raising=False)
     now = time.time()
