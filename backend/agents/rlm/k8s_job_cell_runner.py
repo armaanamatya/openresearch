@@ -116,6 +116,7 @@ _SETTINGS_DEFAULTS: dict[str, Any] = {
     "azure_storage_account": "",
     "azure_blob_container": "reprolab-artifacts",
     "azure_files_share": "reprolab-cache",
+    "azure_files_cache_enabled": True,
     # P1-fix-5: aligns with config.py default of 4.
     "azure_max_nodes": 4,
     "azure_per_gpu_vram_gb": 80.0,
@@ -419,6 +420,26 @@ def _check_budget(
 # K8s Job manifest builder
 # ---------------------------------------------------------------------------
 
+def _cache_volume_spec(
+    *, namespace: str, files_share: str, files_cache_enabled: bool
+) -> dict[str, Any]:
+    """Return the K8s volume dict named 'reprolab-cache'.
+
+    PVC (<namespace>-files-pvc) when the Azure Files cache is enabled AND a
+    share name is configured; otherwise an ephemeral emptyDir so the cell Pod
+    never blocks on a missing PVC (spec 2026-06-14 §4.1, blob-only path).
+    """
+    if files_cache_enabled and files_share.strip():
+        return {
+            "name": "reprolab-cache",
+            # claimName MUST match the Helm PVC metadata.name in
+            # infra/azure/helm/templates/pvc-cache.yaml (and the smoke-job
+            # claimNames) — both are the literal "reprolab-cache".
+            "persistentVolumeClaim": {"claimName": "reprolab-cache"},
+        }
+    return {"name": "reprolab-cache", "emptyDir": {}}
+
+
 def _build_job_manifest(
     *,
     job_name: str,
@@ -448,6 +469,9 @@ def _build_job_manifest(
     # pip bootstrap timeout
     bootstrap_pip_timeout_s: int = 600,
     default_sku: str = "azure_a100_80",
+    # Spec 2026-06-14 §4.1: blob-only fallback. When False (or files_share is
+    # empty) the cache volume is an ephemeral emptyDir, not the Azure Files PVC.
+    files_cache_enabled: bool = True,
 ) -> dict[str, Any]:
     """Build the K8s Job manifest dict for a single training cell.
 
@@ -466,8 +490,6 @@ def _build_job_manifest(
             "k8s_job_cell_runner: azure_base_image is empty — set OPENRESEARCH_AZURE_BASE_IMAGE "
             "or the azure_base_image config field before submitting AKS Jobs."
         )
-
-    pvc_name = f"{namespace}-files-pvc"
 
     # P0-fix-1: env-var NAMES must exactly match what aks_cell_entrypoint.py reads.
     # Canonical contract (runner injects → entrypoint reads):
@@ -553,10 +575,11 @@ def _build_job_manifest(
             "tolerations": [gpu_toleration],
             "nodeSelector": node_selector,
             "volumes": [
-                {
-                    "name": "reprolab-cache",
-                    "persistentVolumeClaim": {"claimName": pvc_name},
-                }
+                _cache_volume_spec(
+                    namespace=namespace,
+                    files_share=files_share,
+                    files_cache_enabled=files_cache_enabled,
+                )
             ],
             "containers": [
                 {
@@ -1036,6 +1059,7 @@ def _run_cell_job(
             ttl_seconds_after_finished=int(_setting("azure_ttl_seconds_after_finished", 3600)),
             backoff_limit=int(_setting("azure_job_backoff_limit", 0)),
             cache_mount_path=str(_setting("azure_cache_mount_path", "/mnt/reprolab-cache")),
+            files_cache_enabled=bool(_setting("azure_files_cache_enabled", True)),
             # P1-fix-9: OOM shrink ratios forwarded from settings.
             oom_batch_scale_step1=float(
                 _setting("azure_cell_oom_batch_scale_step1", 0.5)

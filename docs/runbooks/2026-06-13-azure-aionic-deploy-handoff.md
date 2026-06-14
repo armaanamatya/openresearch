@@ -112,6 +112,8 @@ Operator-side, once (A) lands: install kubelogin — `az aks install-cli` — th
 
 Next validation after the admin grants: build the cell image (`scripts/azure_build_cell_image.sh sciartacr`), run the Blob-only CPU-stub (STREAM-E-NOTES §4), then one SDAR cell, then the smallest-two matrix.
 
+Next: run SDAR → `docs/runbooks/2026-06-14-sdar-on-azure-run.md`
+
 ---
 
 ## 6. Cost + teardown

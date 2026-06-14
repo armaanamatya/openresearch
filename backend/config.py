@@ -235,6 +235,16 @@ class Settings(BaseSettings):
     azure_storage_account: str = Field(default="", description="Azure storage account name (Blob + Files)")
     azure_blob_container: str = Field(default="reprolab-artifacts", description="Blob container for run artifacts")
     azure_files_share: str = Field(default="reprolab-cache", description="Azure Files share for HF_HOME + pip cache")
+    azure_files_cache_enabled: bool = Field(
+        default=True,
+        description=(
+            "When True (default), AKS cell Jobs mount the Azure Files PVC "
+            "(<namespace>-files-pvc) at azure_cache_mount_path as the HF/pip "
+            "cache. When False — or when azure_files_share is empty — the cell "
+            "Job uses an ephemeral emptyDir instead, so no Files share / "
+            "Storage Account Key Operator grant is required (blob-only path)."
+        ),
+    )
     azure_acr_login_server: str = Field(default="", description="ACR login server (e.g. myregistry.azurecr.io)")
     azure_aks_cluster: str = Field(default="", description="AKS cluster name")
     azure_namespace: str = Field(default="reprolab", description="Kubernetes namespace for Job submission")

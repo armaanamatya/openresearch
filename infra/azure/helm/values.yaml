@@ -57,6 +57,11 @@ storage:
   # StorageClass reclaim policy: Retain keeps the underlying share on chart delete.
   reclaimPolicy: Retain
 
+  # Spec 2026-06-14 §4.2: set false for the blob-only path (no Azure Files
+  # PVC/StorageClass, so no Storage Account Key Operator grant needed).
+  filesCache:
+    enabled: true
+
 # ---------------------------------------------------------------------------
 # GPU node pool — sourced from the `gpu_nodepool` Terraform module.
 #
