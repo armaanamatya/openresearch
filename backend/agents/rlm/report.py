@@ -1185,6 +1185,41 @@ def write_final_report_rlm(
     except Exception:  # noqa: BLE001 — merge is best-effort, never crashes the write
         logger.exception("report: rubric_evaluation.json merge failed (non-fatal)")
 
+    # --- Best-of-run floor at the write chokepoint (2026-06-13 OmniZip) -----
+    # build_final_report applies _apply_best_of_run_floor, but the root-assembled
+    # clean-completion path calls write_final_report_rlm DIRECTLY and bypassed it:
+    # OmniZip attempt 6 peaked at 0.7498 (a real verify) then a buggy iteration-4
+    # per-domain step re-verified with stale results at 0.6919, and the report
+    # shipped the regression instead of the peak. Flooring HERE — the single
+    # chokepoint every report write passes through — closes that gap. Clean
+    # completions only (stop_reason None, not degraded): hard-stops already get
+    # their floor + verdict cap via _salvage_partial_report and must not be
+    # floored up to "reproduced" here. Idempotent: a no-op when the report
+    # already carries the run's best recorded score.
+    try:
+        if report.stop_reason is None and not report.degraded:
+            _floored = _apply_best_of_run_floor(dict(report.rubric or {}), project_dir)
+            if _floored.get("best_of_run"):
+                _o, _t = _floored.get("overall_score"), _floored.get("target_score")
+                try:
+                    if _o is not None and _t is not None:
+                        _floored["meets_target"] = bool(float(_o) >= float(_t))
+                except (TypeError, ValueError):
+                    pass
+                report.rubric = _floored
+                logger.info(
+                    "report: best-of-run floor raised overall_score to %.4f at the "
+                    "write chokepoint (clean completion shipped below its peak)",
+                    float(_o) if _o is not None else -1.0,
+                )
+                if (
+                    _floored.get("meets_target") is True
+                    and report.verdict == "partial"
+                ):
+                    report.verdict = "reproduced"
+    except Exception:  # noqa: BLE001 — floor is best-effort, never crashes the write
+        logger.exception("report: best-of-run write-chokepoint floor failed (non-fatal)")
+
     # --- JSON (canonical) ---
     # Two-axis reproducibility verdict (live finalize path, U11): when enabled and the
     # producer artifacts exist, attach implementation/replication verdicts + schema=2 and

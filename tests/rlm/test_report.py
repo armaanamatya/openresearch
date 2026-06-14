@@ -940,3 +940,57 @@ class TestAuthoritativeRubricOverride:
         assert data["rubric"]["overall_score"] == pytest.approx(0.65632)
         assert data["rubric"]["target_score"] == 0.6
         assert data["rubric"]["meets_target"] is True
+
+
+# --- best-of-run floor at the write chokepoint (2026-06-13 OmniZip 0.7498→0.6919) ---
+
+def _events_with_peak(project_dir: Path, peak: float, last: float) -> None:
+    project_dir.mkdir(parents=True, exist_ok=True)
+    lines = [
+        json.dumps({"event": "rubric_score", "score": peak}),
+        json.dumps({"event": "rubric_score", "score": last}),
+    ]
+    (project_dir / "dashboard_events.jsonl").write_text("\n".join(lines) + "\n")
+
+
+class TestBestOfRunFloorAtWriteChokepoint:
+    def test_clean_completion_floored_to_peak(self, tmp_path):
+        project_dir = tmp_path / "proj"
+        _events_with_peak(project_dir, peak=0.7498, last=0.6919)
+        base = dict(_BASE_REPORT_DICT)
+        base["verdict"] = "partial"
+        base["rubric"] = {"overall_score": 0.6919, "target_score": 0.6638,
+                          "meets_target": True, "areas": []}
+        report = RLMFinalReport(**base)
+        json_path, _ = write_final_report_rlm(report, project_dir)
+        data = json.loads(json_path.read_text())
+        assert data["rubric"]["overall_score"] == pytest.approx(0.7498)
+        assert data["rubric"].get("best_of_run") is True
+        assert data["verdict"] == "reproduced"
+
+    def test_hard_stop_not_floored_up_here(self, tmp_path):
+        project_dir = tmp_path / "proj"
+        _events_with_peak(project_dir, peak=0.7498, last=0.6919)
+        base = dict(_BASE_REPORT_DICT)
+        base["verdict"] = "partial"
+        base["rubric"] = {"overall_score": 0.6919, "target_score": 0.6638,
+                          "meets_target": True, "areas": []}
+        report = RLMFinalReport(**base)
+        report.stop_reason = {"kind": "wall_clock_watchdog", "detail": "x"}
+        json_path, _ = write_final_report_rlm(report, project_dir)
+        data = json.loads(json_path.read_text())
+        # write chokepoint floor is clean-completion only; hard-stop unchanged here
+        assert data["rubric"]["overall_score"] == pytest.approx(0.6919)
+        assert data["verdict"] == "partial"
+
+    def test_no_floor_when_report_already_at_peak(self, tmp_path):
+        project_dir = tmp_path / "proj"
+        _events_with_peak(project_dir, peak=0.70, last=0.70)
+        base = dict(_BASE_REPORT_DICT)
+        base["rubric"] = {"overall_score": 0.70, "target_score": 0.6,
+                          "meets_target": True, "areas": []}
+        report = RLMFinalReport(**base)
+        json_path, _ = write_final_report_rlm(report, project_dir)
+        data = json.loads(json_path.read_text())
+        assert data["rubric"]["overall_score"] == pytest.approx(0.70)
+        assert data["rubric"].get("best_of_run") is not True
