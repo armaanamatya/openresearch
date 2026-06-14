@@ -25,6 +25,9 @@ venv/
 .coverage
 htmlcov/
 
+# Local data/tool cache (e.g. dataset + HF caches; ~500 MB — never commit)
+/.cache/
+
 # mypy
 .mypy_cache/
 
