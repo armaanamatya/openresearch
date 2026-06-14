@@ -212,3 +212,75 @@ def test_never_raises(tmp_path, monkeypatch):
     monkeypatch.delenv(fr.ENV_FLAG, raising=False)
     bad_ctx = SimpleNamespace(project_dir="/nonexistent/xyz", llm_client=None)
     assert fr.maybe_regrade(bad_ctx, _report()) is None
+
+
+# ---------------------------------------------------------------------------
+# regrade_and_emit — always emits a reason (observability)
+# ---------------------------------------------------------------------------
+
+
+def test_regrade_and_emit_emits_skip_reason(tmp_path, monkeypatch):
+    monkeypatch.delenv(fr.ENV_FLAG, raising=False)
+    now = time.time()
+    p = _project(tmp_path, graded_at=now - 10, metrics_at=now)  # fresh → skip
+    events = []
+    fr.regrade_and_emit(_ctx(p, 0.5), _report(), lambda e, pl: events.append((e, pl["code"])))
+    assert ("run_warning", "finalize_regrade_skipped") in events
+
+
+def test_regrade_and_emit_emits_adopt(tmp_path, monkeypatch):
+    monkeypatch.delenv(fr.ENV_FLAG, raising=False)
+    now = time.time()
+    p = _project(tmp_path, graded_at=now - 9 * 3600, metrics_at=now)
+    monkeypatch.setattr(
+        "backend.evals.paperbench.leaf_scorer.score_reproduction",
+        lambda **kw: {"overall_score": 0.73, "target_score": 0.7437, "leaf_scores": [], "areas": []},
+    )
+    events = []
+    fr.regrade_and_emit(_ctx(p, 0.73), _report(), lambda e, pl: events.append(pl["code"]))
+    assert "finalize_regrade_adopted" in events
+
+
+def test_regrade_and_emit_disabled_is_silent(tmp_path, monkeypatch):
+    monkeypatch.setenv(fr.ENV_FLAG, "0")
+    events = []
+    assert fr.regrade_and_emit(_ctx(tmp_path, 0.5), _report(), lambda e, pl: events.append(e)) is None
+    assert events == []
+
+
+# ---------------------------------------------------------------------------
+# regrade_for_hard_stop — re-grade a completed grid with no ctx
+# ---------------------------------------------------------------------------
+
+
+def test_hard_stop_regrade_grades_completed_grid(tmp_path, monkeypatch):
+    monkeypatch.delenv(fr.ENV_FLAG, raising=False)
+    p = _project(tmp_path, graded_at=None, metrics_at=time.time())
+    (p / "rubric_evaluation.json").unlink(missing_ok=True)
+    monkeypatch.setattr(
+        "backend.evals.paperbench.leaf_scorer.score_reproduction",
+        lambda **kw: {"overall_score": 0.71, "target_score": 0.7437},
+    )
+    fresh = fr.regrade_for_hard_stop(p, llm_client=object())
+    assert fresh["overall_score"] == pytest.approx(0.71)
+    # Persisted so the salvage floor + report merge read it.
+    assert json.loads((p / "rubric_evaluation.json").read_text())["overall_score"] == pytest.approx(0.71)
+
+
+def test_hard_stop_regrade_skips_without_client(tmp_path, monkeypatch):
+    monkeypatch.delenv(fr.ENV_FLAG, raising=False)
+    p = _project(tmp_path, graded_at=None, metrics_at=time.time())
+    assert fr.regrade_for_hard_stop(p, llm_client=None) is None
+
+
+def test_hard_stop_regrade_skips_empty_grid(tmp_path, monkeypatch):
+    monkeypatch.delenv(fr.ENV_FLAG, raising=False)
+    p = _project(tmp_path, graded_at=None, metrics_at=time.time())
+    (p / "code" / "metrics.json").write_text(json.dumps({"per_model": {}}))
+    called = []
+    monkeypatch.setattr(
+        "backend.evals.paperbench.leaf_scorer.score_reproduction",
+        lambda **kw: called.append(1) or {"overall_score": 0.9},
+    )
+    assert fr.regrade_for_hard_stop(p, llm_client=object()) is None
+    assert called == []
