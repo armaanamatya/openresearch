@@ -124,15 +124,26 @@ def should_regrade(project_dir: Path, *, recorded_score: float | None,
     if recorded_score is None:
         # No grade recorded at all but a grid exists → grade it.
         return True, "no_recorded_grade"
-    if target is not None and recorded_score >= target:
-        return False, "already_meets_target"
     eval_mtime = _mtime(eval_path)
     metrics_mtime = _mtime(code_metrics)
     if eval_mtime is None:
         return True, "no_prior_eval_file"
+    # The target gate is now SUBORDINATE to evidence freshness: skip-at-target
+    # only when there is no MATERIAL new evidence since the grade. When the grid
+    # grew after the grade we re-grade EVEN at/above target — a complete grid can
+    # out-score the partial that first reached the floored target (record-chase /
+    # maximization); best-of-run MAX in maybe_regrade only adopts a strictly-higher
+    # result, so a no-improvement regrade is discarded. 2026-06-14 Codex review:
+    # the old early `already_meets_target` return capped a maximization run at the
+    # floor and never re-graded a grown grid past it.
     if metrics_mtime is None:
+        if target is not None and recorded_score >= target:
+            return False, "already_meets_target"
         return False, "metrics_unstat"
     if metrics_mtime - eval_mtime < _STALENESS_MARGIN_S:
+        # No material new evidence since the grade — the common no-op.
+        if target is not None and recorded_score >= target:
+            return False, "already_meets_target"
         return False, "grade_is_fresh"
     return True, f"evidence_grew_{int(metrics_mtime - eval_mtime)}s_after_grade"
 

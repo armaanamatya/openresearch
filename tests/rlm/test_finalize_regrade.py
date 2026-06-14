@@ -68,13 +68,26 @@ def test_skips_when_grade_is_fresh(tmp_path, monkeypatch):
     assert reason == "grade_is_fresh"
 
 
-def test_skips_when_already_meets_target(tmp_path, monkeypatch):
+def test_skips_when_already_meets_target_and_fresh(tmp_path, monkeypatch):
+    # At/above target with NO material new evidence since the grade → skip (no-op).
     monkeypatch.delenv(fr.ENV_FLAG, raising=False)
     now = time.time()
-    p = _project(tmp_path, graded_at=now - 9 * 3600, metrics_at=now)
+    p = _project(tmp_path, graded_at=now - 10, metrics_at=now)  # within margin
     fire, reason = fr.should_regrade(p, recorded_score=0.78, target=0.7437)
     assert fire is False
     assert reason == "already_meets_target"
+
+
+def test_regrades_past_target_when_evidence_grew(tmp_path, monkeypatch):
+    # Maximization (2026-06-14 Codex review): a grid that GREW after the grade is
+    # re-graded EVEN at/above the floored target — best-of-run MAX adopts only if
+    # the fresh grade is strictly higher, so the floor can never be lost.
+    monkeypatch.delenv(fr.ENV_FLAG, raising=False)
+    now = time.time()
+    p = _project(tmp_path, graded_at=now - 9 * 3600, metrics_at=now)  # grew
+    fire, reason = fr.should_regrade(p, recorded_score=0.78, target=0.7437)
+    assert fire is True
+    assert "evidence_grew" in reason
 
 
 def test_fires_when_no_recorded_grade(tmp_path, monkeypatch):
