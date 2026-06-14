@@ -48,9 +48,15 @@ _COST_ORDER = {"none": 0, "targeted_rerun": 1, "review": 2}
 
 _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # Result contradicts the paper — almost always one cell's hyperparameters.
+    # Checked FIRST so an inversion verdict wins over an incidental "dropout"/
+    # "whitening" word that would otherwise misroute it to protocol_gap (verified
+    # 2026-06-14: "the dropout cell inverts it" + "ranking 5th ... inverting the
+    # claim" classified as protocol_gap/review, so the recourse never fired).
     ("result_quality", re.compile(
-        r"contradict|ranked (last|worst)|does not (hold|match|reach)|wrong "
-        r"(ordering|direction)|opposite (of|to)|underperform|fails? the paper'?s",
+        r"contradict|invert(s|ed|ing)?|revers(e|es|ed|ing)|"
+        r"rank(s|ed|ing)? (last|worst|[0-9])|ranked? [0-9]+(st|nd|rd|th)|"
+        r"does not (hold|match|reach)|wrong (ordering|direction)|"
+        r"opposite (of|to)|underperform|fails? the paper'?s",
         re.IGNORECASE)),
     # A figure/table artifact the grader looked for and did not find.
     ("render_artifact", re.compile(
