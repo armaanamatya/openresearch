@@ -68,13 +68,26 @@ def test_skips_when_grade_is_fresh(tmp_path, monkeypatch):
     assert reason == "grade_is_fresh"
 
 
-def test_skips_when_already_meets_target(tmp_path, monkeypatch):
+def test_skips_when_already_meets_target_and_fresh(tmp_path, monkeypatch):
+    # At/above target with NO material new evidence since the grade → skip (no-op).
     monkeypatch.delenv(fr.ENV_FLAG, raising=False)
     now = time.time()
-    p = _project(tmp_path, graded_at=now - 9 * 3600, metrics_at=now)
+    p = _project(tmp_path, graded_at=now - 10, metrics_at=now)  # within margin
     fire, reason = fr.should_regrade(p, recorded_score=0.78, target=0.7437)
     assert fire is False
     assert reason == "already_meets_target"
+
+
+def test_regrades_past_target_when_evidence_grew(tmp_path, monkeypatch):
+    # Maximization (2026-06-14 Codex review): a grid that GREW after the grade is
+    # re-graded EVEN at/above the floored target — best-of-run MAX adopts only if
+    # the fresh grade is strictly higher, so the floor can never be lost.
+    monkeypatch.delenv(fr.ENV_FLAG, raising=False)
+    now = time.time()
+    p = _project(tmp_path, graded_at=now - 9 * 3600, metrics_at=now)  # grew
+    fire, reason = fr.should_regrade(p, recorded_score=0.78, target=0.7437)
+    assert fire is True
+    assert "evidence_grew" in reason
 
 
 def test_fires_when_no_recorded_grade(tmp_path, monkeypatch):
@@ -163,6 +176,26 @@ def test_adopts_strictly_higher_regrade(tmp_path, monkeypatch):
     # Persisted for the report merge.
     saved = json.loads((p / "rubric_evaluation.json").read_text())
     assert saved["overall_score"] == pytest.approx(0.731)
+
+
+def test_regrade_passes_degraded_false(tmp_path, monkeypatch):
+    """The _converged_cell_count gate proves real converged cells, so the regrade
+    MUST pass degraded=False explicitly. Otherwise score_reproduction's degraded=None
+    auto-detect reads a stale failed/empty-baseline final_report.json and caps every
+    leaf at 0.35 — nuking the very complete-grid grade the regrade exists to recover."""
+    monkeypatch.delenv(fr.ENV_FLAG, raising=False)
+    now = time.time()
+    p = _project(tmp_path, graded_at=now - 9 * 3600, metrics_at=now)
+    captured: dict = {}
+
+    def _spy(**kw):
+        captured.update(kw)
+        return {"overall_score": 0.80, "target_score": 0.7437,
+                "graded": 22, "leaf_count": 22, "leaf_scores": [], "areas": []}
+
+    monkeypatch.setattr("backend.evals.paperbench.leaf_scorer.score_reproduction", _spy)
+    fr.maybe_regrade(_ctx(p, 0.80), _report())
+    assert captured.get("degraded") is False
 
 
 def test_keeps_recorded_when_regrade_not_higher(tmp_path, monkeypatch):

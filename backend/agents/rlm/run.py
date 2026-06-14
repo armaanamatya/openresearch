@@ -253,7 +253,8 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
     # configured default. Scope is ONLY the Claude client paths below —
     # navigation sub-calls (llm_query/rlm_query) ride the rlm sub-backend /
     # accelerator and the root loop rides backend_kwargs, both unaffected.
-    # Unset/empty = today's behavior (CLI default model).
+    # Unset/empty → ClaudeLlmClient falls back to default_oauth_model() (Sonnet),
+    # NOT the bundled CLI's mutable default (the 2026-06-14 Fable-5 wedge fix).
     _pinned_model = os.environ.get("OPENRESEARCH_PRIMITIVE_LLM_MODEL", "").strip() or None
 
     # 1. claude-oauth — explicit OAuth path, no api_key in kwargs
@@ -2116,6 +2117,35 @@ async def run_pipeline_rlm(
     run_failed = False
     fatal_abort: _FatalPrimitiveAbort | None = None
     try:
+        # Boot model-availability preflight (2026-06-14): fail FAST with a clean
+        # fatal report if the primitive/grader model is unavailable, instead of
+        # wedging on every primitive call for hours. The default_oauth_model pin
+        # already prevents the CLI-default deferral that caused the Fable-5 outage;
+        # this is the backstop for the rarer case where the PINNED model is itself
+        # down. Fail-soft on ambiguous/transient probe errors (a network blip never
+        # aborts a good run); abort ONLY on the definitive 'unavailable' block.
+        if _os.environ.get("REPROLAB_MODEL_PREFLIGHT", "1").strip() not in ("0", "false", ""):
+            from backend.services.context.workspace.tools.rlm_query import (
+                preflight_model_available,
+            )
+            _pf_ok, _pf_detail = preflight_model_available(llm_client)
+            if not _pf_ok:
+                raise _FatalPrimitiveAbort(
+                    primitive_name="model_preflight",
+                    result={
+                        "error": (
+                            f"primitive/grader model {llm_model!r} is unavailable — "
+                            f"aborted before GPU work: {_pf_detail}"
+                        ),
+                        "failure_class": "model_unavailable",
+                        "suggested_fix": (
+                            "Set REPROLAB_OAUTH_FALLBACK_MODEL to an available Claude "
+                            "model id, or REPROLAB_MODEL_PREFLIGHT=0 to bypass."
+                        ),
+                    },
+                )
+            logger.info("model preflight: %r available", llm_model)
+
         def _run_completion_on_worker() -> Any:
             # The forced-iteration policy stack is THREAD-LOCAL (forced_iteration._LOCAL),
             # and the FINAL_VAR interceptor (LocalREPL._final_var) executes on whatever

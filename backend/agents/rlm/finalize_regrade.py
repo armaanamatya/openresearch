@@ -124,15 +124,26 @@ def should_regrade(project_dir: Path, *, recorded_score: float | None,
     if recorded_score is None:
         # No grade recorded at all but a grid exists → grade it.
         return True, "no_recorded_grade"
-    if target is not None and recorded_score >= target:
-        return False, "already_meets_target"
     eval_mtime = _mtime(eval_path)
     metrics_mtime = _mtime(code_metrics)
     if eval_mtime is None:
         return True, "no_prior_eval_file"
+    # The target gate is now SUBORDINATE to evidence freshness: skip-at-target
+    # only when there is no MATERIAL new evidence since the grade. When the grid
+    # grew after the grade we re-grade EVEN at/above target — a complete grid can
+    # out-score the partial that first reached the floored target (record-chase /
+    # maximization); best-of-run MAX in maybe_regrade only adopts a strictly-higher
+    # result, so a no-improvement regrade is discarded. 2026-06-14 Codex review:
+    # the old early `already_meets_target` return capped a maximization run at the
+    # floor and never re-graded a grown grid past it.
     if metrics_mtime is None:
+        if target is not None and recorded_score >= target:
+            return False, "already_meets_target"
         return False, "metrics_unstat"
     if metrics_mtime - eval_mtime < _STALENESS_MARGIN_S:
+        # No material new evidence since the grade — the common no-op.
+        if target is not None and recorded_score >= target:
+            return False, "already_meets_target"
         return False, "grade_is_fresh"
     return True, f"evidence_grew_{int(metrics_mtime - eval_mtime)}s_after_grade"
 
@@ -205,6 +216,12 @@ def maybe_regrade(ctx: Any, report: Any) -> dict | None:
             run_dir=project_dir,
             llm_client=llm_client,
             rubric_source=source,
+            # NOT degraded by construction: the _converged_cell_count gate above proved
+            # real converged cells. Without this explicit False, score_reproduction's
+            # degraded=None auto-detect reads a stale on-disk final_report.json and, on
+            # an empty-baseline_metrics / verdict="failed" report, caps EVERY leaf at 0.35
+            # — nuking the very complete-grid grade this regrade exists to recover.
+            degraded=False,
             invariants=list(getattr(ctx, "paper_hint_invariants", None) or []),
         )
         fresh_score = fresh.get("overall_score")
@@ -350,6 +367,7 @@ def regrade_for_hard_stop(project_dir: Path | str, llm_client: Any) -> dict | No
         fresh = score_reproduction(
             rubric_tree=rubric, run_dir=project_dir, llm_client=llm_client,
             rubric_source=source,
+            degraded=False,  # converged cells proven above; see maybe_regrade for the 0.35-cap rationale
         )
         if fresh.get("overall_score") is None:
             return None

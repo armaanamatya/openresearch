@@ -1674,7 +1674,14 @@ _AREA_REPAIR_HINTS: dict[str, str] = {
         "key names the rubric checklist above expects.",
     "Result match versus the paper's reported targets":
         "run paper-faithful epoch / step counts so the numbers actually approach the paper's reported "
-        "values.  This area is scored from the actual numbers in metrics.json against the paper's targets.",
+        "values.  If the paper COMPARES methods/conditions (optimizers, ablations, baselines) and your "
+        "measured ordering INVERTS the paper's claim, the usual cause is an UNFAIR comparison — each "
+        "method must run at ITS OWN best hyperparameters (tune per-condition learning rate; keep "
+        "everything else identical), never one shared setting that makes the favored method plateau.  "
+        "Tune-then-run: a short per-condition lr sweep, select each at its best by final training loss, "
+        "then compare at the selected values (the grid stays the same size).  If a FAIR comparison still "
+        "inverts, that is an honest faithful-negative — record it truthfully, never fabricate agreement.  "
+        "This area is scored from the actual numbers in metrics.json against the paper's targets.",
     "Artifact completeness and provenance":
         "emit figures (matplotlib .png), a README.md describing the run, config_used.json with every "
         "hyperparameter, and per-epoch / per-step training curves so the run is independently verifiable.",
@@ -2426,6 +2433,19 @@ def _compute_constraint_guidance(
             guidance += _lt_block(project_dir)
         except Exception:  # noqa: BLE001 — advisory, never fatal
             logger.debug("leaf_triage guidance block skipped", exc_info=True)
+
+    # 6.8 Fidelity-certificate invariant tests (2026-06-14, gated on
+    # REPROLAB_TWO_AXIS_VERDICT): ask the agent to write code/test_reproduction.py
+    # so the certificate can go green and the two-axis verdict can reach
+    # faithful/contradicted instead of always 'inconclusive'. No-op (empty string)
+    # when the flag is off, so default behaviour is byte-for-byte unchanged.
+    try:
+        from backend.agents.rlm.fidelity_certificate_builder import (
+            invariant_test_guidance_block as _cert_block,
+        )
+        guidance += _cert_block(arxiv_id)
+    except Exception:  # noqa: BLE001 — advisory, never fatal
+        logger.debug("fidelity_certificate guidance block skipped", exc_info=True)
 
     # 7. Per-run extra guidance (REPROLAB_/OPENRESEARCH_BASELINE_EXTRA_GUIDANCE —
     # the read below accepts both prefixes).

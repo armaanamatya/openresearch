@@ -5261,7 +5261,43 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     except Exception:  # noqa: BLE001 — the smoke gate must never block a legit run
         logger.debug("run_experiment: cell pre-grid smoke gate raised (non-blocking)", exc_info=True)
 
-    if _sb_key_ecm == "azure":
+    # Staged-search (tune-then-run, 2026-06-14 Codex review): if cells.json declares
+    # a `search` section, the HARNESS runs the bounded candidate phase, selects each
+    # group's winner by the declared metric, budget-preflights against the remaining
+    # wall-clock, and runs ONE full cell per group at the tuned params — so the LLM
+    # can never blow the grid into a wall-clock-killing cross-product (the exact Adam
+    # failure). Shape-gated + local/docker only; no `search` key → the legacy
+    # single-phase dispatch below runs byte-for-byte unchanged.
+    matrix_result = None
+    if _sb_key_ecm != "azure":
+        _staged_groups = []
+        try:
+            from backend.agents.rlm import staged_search as _ss
+            _cells_doc = json.loads((code / "cells.json").read_text(encoding="utf-8"))
+            _staged_groups = _ss.parse_search_spec(_cells_doc)
+        except Exception:  # noqa: BLE001 — a malformed/absent manifest → legacy path
+            _staged_groups = []
+        if _staged_groups:
+            def _ss_emit(_c: str, _m: str, **_x) -> None:
+                try:
+                    _emit_dashboard_event(
+                        ctx, event_type="run_warning",
+                        payload={"code": _c, "message": _m, **_x})
+                except Exception:  # noqa: BLE001 — emit is best-effort
+                    pass
+            _reserve_ss = float(
+                os.environ.get("REPROLAB_MATRIX_FINALIZE_RESERVE_S", "2700") or 2700)
+            _staged_out = _ss.run_staged_search(
+                _staged_groups, str(code / "train_cell.py"),
+                output_root=str(artifact_root), gpus=gpus or None,
+                remaining_s=_matrix_overall_s, reserve_s=_reserve_ss,
+                per_cell_timeout_s=timeout_s, gpus_per_cell=_gpus_per_cell,
+                now_iso=datetime.now(timezone.utc).isoformat(), emit=_ss_emit,
+            )
+            matrix_result = _staged_out.get("results") or {}
+            kept = _staged_out.get("kept_cells") or []
+
+    if matrix_result is None and _sb_key_ecm == "azure":
         with k8s_job_cell_runner.bind_run_context(
             run_budget=_run_budget_ecm, event_sink=_event_sink_ecm, gpu_plan=_ecm_gpu_plan
         ):
@@ -5276,7 +5312,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
                 force_cells=_force_cells or None,
                 now_iso=datetime.now(timezone.utc).isoformat(),
             )
-    else:
+    elif matrix_result is None:
         matrix_result = gpu_cell_runner.run_matrix(
             kept, str(code / "train_cell.py"),
             output_root=str(artifact_root),
