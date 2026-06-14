@@ -256,4 +256,124 @@ def maybe_regrade(ctx: Any, report: Any) -> dict | None:
         return None
 
 
-__all__ = ["ENV_FLAG", "is_enabled", "maybe_regrade", "should_regrade"]
+def regrade_and_emit(ctx: Any, report: Any, emit: Any) -> dict | None:
+    """maybe_regrade + ALWAYS emit the decision (fire/skip + reason).
+
+    The single entry point every ctx-bearing finalize path calls. Observability
+    is unconditional: a skip emits ``finalize_regrade_skipped`` with the gate
+    reason so a stale/zero final is never silent about WHY it wasn't recovered
+    (the 2026-06-13 All-CNN v6 / Adam v10 debugging gap — both shipped 0 with a
+    complete grid and no trace of whether the regrade ran). Flips the report
+    verdict failed→reproduced when an adopted score meets target. Never raises.
+    """
+    try:
+        if not is_enabled():
+            return None
+        # Compute the gate reason up front for observability.
+        project_dir = Path(ctx.project_dir)
+        rubric_block = dict(getattr(report, "rubric", None) or {})
+        rec = rubric_block.get("overall_score")
+        try:
+            rec_f = float(rec) if rec is not None else None
+        except (TypeError, ValueError):
+            rec_f = None
+        try:
+            tgt_f = float(rubric_block.get("target_score")) if rubric_block.get("target_score") is not None else None
+        except (TypeError, ValueError):
+            tgt_f = None
+        fire, reason = should_regrade(project_dir, recorded_score=rec_f, target=tgt_f)
+
+        fresh = maybe_regrade(ctx, report) if fire else None
+        if fresh is not None:
+            _safe_emit(emit, "run_warning", {
+                "code": "finalize_regrade_adopted",
+                "message": (
+                    "finalize re-graded the complete on-disk grid (it grew after "
+                    f"the last verify) and adopted the higher score {fresh.get('overall_score')}."
+                ),
+            })
+            try:
+                if report.verdict == "failed" and bool(fresh.get("meets_target")):
+                    report.verdict = "reproduced"
+            except Exception:  # noqa: BLE001
+                pass
+            return fresh
+        _safe_emit(emit, "run_warning", {
+            "code": "finalize_regrade_skipped",
+            "message": (
+                f"finalize re-grade did not change the score (gate: {reason}; "
+                f"recorded={rec_f})."
+            ),
+        })
+        return None
+    except Exception:  # noqa: BLE001 — observability must never break finalize
+        logger.warning("finalize_regrade: regrade_and_emit failed (non-fatal)", exc_info=True)
+        return None
+
+
+def _safe_emit(emit: Any, event: str, payload: dict) -> None:
+    try:
+        if callable(emit):
+            emit(event, payload)
+    except Exception:  # noqa: BLE001
+        logger.debug("finalize_regrade: emit failed", exc_info=True)
+
+
+def regrade_for_hard_stop(project_dir: Path | str, llm_client: Any) -> dict | None:
+    """Re-grade the completed grid on the hard-stop path (no ctx available).
+
+    The watchdog/SIGTERM salvage finalizer (``_hard_stop_with_report``) has no
+    RunContext — only project_dir and a captured llm_client. It salvages the
+    best RECORDED score, which is ZERO for a run that completed its grid but
+    never verified (Adam's long runs that hit the wall-clock). This grades the
+    on-disk grid directly so salvage can floor to it. Returns the fresh grade
+    dict (with overall_score) when the grid carries real evidence, else None.
+    Never raises.
+    """
+    try:
+        if not is_enabled() or llm_client is None:
+            return None
+        project_dir = Path(project_dir)
+        if not (project_dir / "code" / "metrics.json").is_file():
+            return None
+        try:
+            metrics = json.loads((project_dir / "code" / "metrics.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if _converged_cell_count(metrics) <= 0:
+            return None
+        rubric, source = _load_rubric(project_dir)
+        if rubric is None:
+            return None
+        from backend.evals.paperbench.leaf_scorer import score_reproduction
+
+        fresh = score_reproduction(
+            rubric_tree=rubric, run_dir=project_dir, llm_client=llm_client,
+            rubric_source=source,
+        )
+        if fresh.get("overall_score") is None:
+            return None
+        try:
+            (project_dir / "rubric_evaluation.json").write_text(
+                json.dumps(fresh, indent=2), encoding="utf-8"
+            )
+        except OSError:
+            pass
+        logger.info(
+            "finalize_regrade: hard-stop re-graded completed grid → %.4f",
+            float(fresh["overall_score"]),
+        )
+        return fresh
+    except Exception:  # noqa: BLE001 — salvage re-grade is best-effort
+        logger.warning("finalize_regrade: hard-stop re-grade failed (non-fatal)", exc_info=True)
+        return None
+
+
+__all__ = [
+    "ENV_FLAG",
+    "is_enabled",
+    "maybe_regrade",
+    "regrade_and_emit",
+    "regrade_for_hard_stop",
+    "should_regrade",
+]

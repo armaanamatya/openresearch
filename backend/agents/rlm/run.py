@@ -878,6 +878,14 @@ def _finalize_fatal_primitive_abort(
         mode="rlm",
         completed_at=datetime.now(timezone.utc).isoformat(),
     )
+    # Re-grade the completed grid before shipping a fatal-abort partial — the
+    # abort may follow a finished grid that was never graded (same coverage as
+    # _finalize; this path also has ctx). Best-effort.
+    try:
+        from backend.agents.rlm import finalize_regrade as _fr
+        _fr.regrade_and_emit(ctx, report, emit)
+    except Exception:  # noqa: BLE001
+        logger.warning("_finalize_fatal_primitive_abort: regrade failed (non-fatal)", exc_info=True)
     json_path, _md_path = write_final_report_rlm(report, project_dir)
 
     try:
@@ -952,6 +960,7 @@ def _hard_stop_with_report(
     status_error: str,
     exit_code: int,
     stop_kind: str = "hard_stop",
+    llm_client: Any = None,
 ) -> None:
     """Ship a partial report, emit ``run_complete``, flip demo_status, and
     hard-exit — the single "never die without a report" path shared by the wall-clock
@@ -959,8 +968,31 @@ def _hard_stop_with_report(
     failure writing one artifact never blocks the others or the exit. The report
     carries the run's best recorded rubric score + a reconciled verdict (salvage,
     2026-06-09) instead of an unconditional scoreless ``failed``.
+
+    ``llm_client`` (captured at run start) lets the salvage RE-GRADE the
+    completed-but-never-verified grid before flooring — Adam's long runs hit
+    the wall-clock here, and a grid that finished without a verify has a best
+    RECORDED score of zero, so without this the watchdog ships 0 over a grid
+    that earned its score (2026-06-13).
     """
     report = RLMFinalReport(verdict="failed", reproduction_summary=summary, iterations=done)
+    # Re-grade the completed grid FIRST so the salvage floor can see it (writes
+    # rubric_evaluation.json, which _salvage_partial_report's best-of-run floor
+    # and write_final_report_rlm's merge both read).
+    try:
+        from backend.agents.rlm import finalize_regrade as _fr
+        _fresh = _fr.regrade_for_hard_stop(project_dir, llm_client)
+        if _fresh is not None:
+            _fr_emit = emit if callable(emit) else (lambda *a, **k: None)
+            _fr_emit("run_warning", {
+                "code": "finalize_regrade_hardstop",
+                "message": (
+                    "hard-stop re-graded the completed grid → "
+                    f"{_fresh.get('overall_score')} (was un-graded)."
+                ),
+            })
+    except Exception:  # noqa: BLE001 — salvage re-grade is best-effort
+        logger.warning("hard-stop: regrade_for_hard_stop failed (non-fatal)", exc_info=True)
     salvaged_score = _salvage_partial_report(
         report, project_dir, stop_kind=stop_kind, stop_detail=status_error,
     )
@@ -993,6 +1025,7 @@ def _arm_watchdog(
     project_dir: Path,
     emit: Any,
     iteration_count: Any,
+    llm_client: Any = None,
 ) -> threading.Timer | None:
     """Arm the process-level wall-clock backstop (design spec §8, Codex H2).
 
@@ -1042,6 +1075,7 @@ def _arm_watchdog(
             ),
             exit_code=_WATCHDOG_EXIT_CODE,
             stop_kind="wall_clock_watchdog",
+            llm_client=llm_client,
         )
 
     timer = threading.Timer(deadline_s + _WATCHDOG_GRACE_S, _fire)
@@ -1055,6 +1089,7 @@ def _install_sigterm_finalizer(
     project_dir: Path,
     emit: Any,
     iteration_count: Any,
+    llm_client: Any = None,
 ) -> Any:
     """On SIGTERM, ship a partial report before exiting instead of dying silently.
 
@@ -1089,6 +1124,7 @@ def _install_sigterm_finalizer(
             status_error="run terminated by SIGTERM",
             exit_code=143,  # 128 + SIGTERM(15)
             stop_kind="sigterm",
+            llm_client=llm_client,
         )
 
     try:
@@ -1773,12 +1809,14 @@ async def run_pipeline_rlm(
         project_dir=project_dir,
         emit=emit,
         iteration_count=lambda: rlm_logger.iteration_count,
+        llm_client=llm_client,
     )
     # Ship a partial report on a graceful SIGTERM kill too (not just on a hang).
     _prev_sigterm = _install_sigterm_finalizer(
         project_dir=project_dir,
         emit=emit,
         iteration_count=lambda: rlm_logger.iteration_count,
+        llm_client=llm_client,
     )
 
     # 10.5. Lane H — wire the forced-iteration policy so FINAL_VAR is refused
@@ -2155,21 +2193,14 @@ def _finalize(
     # v5 at 0.558 when its 13/14-converged grid had earned ~0.73 ungraded.
     # Flag-gated default ON; fail-soft. Runs BEFORE write so the report ships
     # the recovered score (and write_final_report_rlm re-applies the floor).
+    # Finalize-time freshness re-grade (single shared entry point; always emits
+    # the fire/skip reason for observability). Wired into every ctx-bearing
+    # finalize path so a long run that grades late — or never — still ships the
+    # score its completed grid earned (2026-06-13 v5/v6/v10).
     try:
         from backend.agents.rlm import finalize_regrade as _fr
-        if not run_failed and _fr.is_enabled():
-            _fresh = _fr.maybe_regrade(ctx, report)
-            if _fresh is not None:
-                emit("run_warning", {
-                    "code": "finalize_regrade_adopted",
-                    "message": (
-                        "finalize re-graded the complete on-disk grid (it grew "
-                        "after the last verify) and adopted the higher score "
-                        f"{_fresh.get('overall_score')}."
-                    ),
-                })
-                if report.verdict == "failed" and bool(_fresh.get("meets_target")):
-                    report.verdict = "reproduced"
+        if not run_failed:
+            _fr.regrade_and_emit(ctx, report, emit)
     except Exception:  # noqa: BLE001 — re-grade is advisory, never blocks finalize
         logger.warning("_finalize: finalize_regrade failed (non-fatal)", exc_info=True)
 
