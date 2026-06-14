@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -88,6 +89,70 @@ _DEFAULT_CHUNK_SIZE = 12_000         # chars per chunk when splitting
 _DEFAULT_MAX_DEPTH = 3               # how deep recursion can go
 _DEFAULT_SELECTION_TOP_K = 5         # how many chunks to drill into
 _DEFAULT_MAX_LLM_CALLS = 24          # hard cap to prevent runaway cost
+
+# --- OAuth/CLI-subscription model pin -------------------------------------
+# The bundled claude CLI's *default* model is mutable and outside our control:
+# it can silently resolve to a model the subscription cannot serve. Observed
+# 2026-06-14 — the default resolved to the then-unavailable Fable 5, so every
+# model=None SDK call returned a "model unavailable" block instead of JSON;
+# plan_reproduction/verify raised "no JSON object in LLM response", the run
+# wedged for ~14 min until the CLI default self-healed, and BOTH live runs
+# shipped a 0. Passing an EXPLICIT model on every OAuth call removes that
+# dependency entirely — the CLI's mutable default is never consulted.
+_DEFAULT_OAUTH_MODEL = "claude-sonnet-4-6"
+
+
+def default_oauth_model() -> str:
+    """Explicit model for the CLI-subscription path when none is pinned.
+
+    NEVER returns None. A None model defers to the bundled claude CLI's
+    mutable default, which can resolve to an unavailable model and wedge the
+    whole run (the 2026-06-14 Fable-5 outage). The default is the OAuth
+    root/grader model (Sonnet — ROOT_MODELS['claude-oauth'] backend + the
+    CLAUDE.md quality-critical-grader rule). REPROLAB_OAUTH_FALLBACK_MODEL
+    repoints it if Sonnet itself ever becomes unavailable.
+    """
+    return os.environ.get("REPROLAB_OAUTH_FALLBACK_MODEL", "").strip() or _DEFAULT_OAUTH_MODEL
+
+
+class ModelUnavailableError(RuntimeError):
+    """The configured CLI-subscription model returned an 'unavailable' block
+    instead of real content. Lets the boot preflight fail a run FAST (with a
+    report) rather than wedge on every primitive call (the Fable-5 outage)."""
+
+
+# The bundled claude CLI emits this phrase when its selected model is blocked
+# or absent: "There's an issue with the selected model (X). It may not exist or
+# you may not have access." Matching the specific phrase (not the bare word
+# "model") keeps the detector free of false positives on normal reproduction
+# text — a planning response that merely mentions a model is not a block.
+_MODEL_UNAVAILABLE_MARKER = "issue with the selected model"
+
+
+def is_model_unavailable_response(text: str | None) -> bool:
+    """True when an SDK completion is the CLI's 'model unavailable' block rather
+    than real content. Conservative — matches the specific block phrasing only."""
+    return bool(text) and _MODEL_UNAVAILABLE_MARKER in text.lower()
+
+
+def preflight_model_available(client: Any, *, attempts: int = 2) -> tuple[bool, str]:
+    """Probe ``client``'s model with a tiny completion. Returns (available, detail).
+
+    ``available`` is False ONLY when EVERY attempt returns the definitive 'model
+    unavailable' block; a transient empty/errored response yields True
+    (fail-soft, so a network blip never aborts a good run). ``detail`` carries
+    the block text (truncated) for the caller's error message.
+    """
+    detail = ""
+    for _ in range(max(1, attempts)):
+        try:
+            resp = client.complete(system="", user="Reply with the single token: OK")
+        except Exception as exc:  # transport blip — ambiguous; treat as available
+            return True, f"probe errored, treated as available: {exc}"
+        if not is_model_unavailable_response(resp):
+            return True, (resp or "")[:80]
+        detail = resp or ""
+    return False, detail[:200]
 
 
 class LlmClient(Protocol):
@@ -504,7 +569,11 @@ class ClaudeLlmClient:
     """
 
     def __init__(self, model: str | None = None, max_turns: int = 1) -> None:
-        self._model = model
+        # NEVER store a None model: a None model reaches ClaudeAgentOptions as
+        # model=None, which makes the bundled CLI pick its mutable default —
+        # the Fable-5 wedge (see default_oauth_model). An explicit model id
+        # makes every OAuth call independent of the CLI's configured default.
+        self._model = model or default_oauth_model()
         self._max_turns = max_turns
         # Last-call token usage — populated by _async_complete, consumed by
         # callers (e.g. binding.py's _ledger) for cost-ledger recording.
@@ -588,6 +657,16 @@ class ClaudeLlmClient:
                 )
                 return ""
             self._last_usage = usage
+            if is_model_unavailable_response(text):
+                # The pinned model returned the CLI 'unavailable' block instead of
+                # content. Make it LOUD (never a silent 0 like the 2026-06-14 v6
+                # run): the caller will see an unparseable turn, and this names why.
+                logger.warning(
+                    "rlm_query: model %r returned the CLI 'model unavailable' block "
+                    "instead of content — this turn is effectively empty. Set "
+                    "REPROLAB_OAUTH_FALLBACK_MODEL to an available model. Head: %s",
+                    self._model, (text or "")[:120],
+                )
             return text
         finally:
             ex.shutdown(wait=False)

@@ -40,7 +40,7 @@ ENV_FLAG = "REPROLAB_LEAF_TRIAGE"
 STATE_FILE = "leaf_triage.json"
 
 _MAX_DIRECTIVES = 8
-_MAX_DIRECTIVE_CHARS = 320
+_MAX_DIRECTIVE_CHARS = 450  # result_quality carries the fullest recourse (fair-comparison + honest-negative)
 _WEAK_THRESHOLD = 0.6
 
 # Repair classes, cheapest first. Order is the plan's sort key.
@@ -101,10 +101,12 @@ _DIRECTIVES: dict[str, str] = {
         "whole matrix."
     ),
     "result_quality": (
-        "TARGETED re-run: the result contradicts the paper — check the "
-        "hyperparameters for THAT cell against the champion configs in your "
-        "PRIOR-ATTEMPT MEASURED EVIDENCE (a bad lr is the usual cause) and "
-        "re-run only that cell."
+        "FAIR-COMPARISON re-run: the result contradicts the paper. Usual cause = "
+        "an UNTUNED per-condition hyperparameter — each optimizer/method/ablation "
+        "needs ITS OWN best lr; a shared lr makes the favored method plateau and "
+        "inverts the ordering. Sweep per-condition lr, report each at its best, "
+        "re-run that cell. If a FAIR sweep still inverts, that is an honest "
+        "faithful-negative — never fabricate agreement."
     ),
     "review": (
         "Needs judgment — read the justification; no deterministic repair "

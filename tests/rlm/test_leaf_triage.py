@@ -91,7 +91,11 @@ def test_result_quality(tmp_path):
         [_leaf(0.0, "Adam ranked last among the five optimizers, directly contradicting the paper")], p)
     d = out["plan"][0]
     assert d["repair_class"] == "result_quality"
-    assert "champion" in d["directive"].lower()
+    # Recourse names the general fixable cause (per-condition HP tuning) AND the
+    # honest-negative path (recourse-first + two-axis), not truncated.
+    assert "per-condition" in d["directive"]
+    assert "faithful-negative" in d["directive"]
+    assert len(d["directive"]) <= leaf_triage._MAX_DIRECTIVE_CHARS
 
 
 def test_protocol_gap(tmp_path):

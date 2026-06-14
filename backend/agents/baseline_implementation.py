@@ -2416,6 +2416,19 @@ def _compute_constraint_guidance(
         except Exception:  # noqa: BLE001 — advisory, never fatal
             logger.debug("leaf_triage guidance block skipped", exc_info=True)
 
+    # 6.8 Fidelity-certificate invariant tests (2026-06-14, gated on
+    # REPROLAB_TWO_AXIS_VERDICT): ask the agent to write code/test_reproduction.py
+    # so the certificate can go green and the two-axis verdict can reach
+    # faithful/contradicted instead of always 'inconclusive'. No-op (empty string)
+    # when the flag is off, so default behaviour is byte-for-byte unchanged.
+    try:
+        from backend.agents.rlm.fidelity_certificate_builder import (
+            invariant_test_guidance_block as _cert_block,
+        )
+        guidance += _cert_block(arxiv_id)
+    except Exception:  # noqa: BLE001 — advisory, never fatal
+        logger.debug("fidelity_certificate guidance block skipped", exc_info=True)
+
     # 7. Per-run extra guidance from REPROLAB_BASELINE_EXTRA_GUIDANCE env var.
     # Generic paper-agnostic hook so an operator can scope a specific run
     # without modifying source. Common uses:

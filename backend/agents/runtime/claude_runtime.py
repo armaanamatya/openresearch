@@ -35,6 +35,7 @@ from backend.agents.runtime.base import (
     StreamUsage,
 )
 from backend.agents.telemetry import coerce_usage
+from backend.services.context.workspace.tools.rlm_query import default_oauth_model
 
 
 class ClaudeAgentRuntime:
@@ -72,7 +73,7 @@ class ClaudeAgentRuntime:
                 description=sub_agent.description or sub_agent.instructions[:200],
                 prompt=_with_guard_prompt(sub_agent.instructions, sub_agent),
                 tools=_tools_for_agent(sub_agent, mcp_tool_extensions),
-                model=sub_agent.model or None,
+                model=sub_agent.model or default_oauth_model(),
                 maxTurns=sub_agent.max_turns,
                 permissionMode=sub_agent.permission_mode,
             )
@@ -239,7 +240,7 @@ def _agent_options_kwargs(
     by the caller (it needs the SDK ``AgentDefinition`` type).
     """
     kwargs: dict[str, Any] = {
-        "model": agent.model or None,
+        "model": agent.model or default_oauth_model(),
         # KEEP bypassPermissions: headless runs have no approver; the real
         # controls are allowed_tools + sandbox + RuntimeGuard (invariant 4 targets
         # a future external-CLI shell-out, not the harness's own sub-agents).

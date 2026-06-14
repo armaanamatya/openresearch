@@ -252,6 +252,52 @@ def _run_tests(code_dir: Path, *, timeout_s: int, extra_env: dict[str, str] | No
 # Invariant-constant extraction from PAPER_HINTS
 # ---------------------------------------------------------------------------
 
+def invariant_test_guidance_block(arxiv_id: str | None = None) -> str:
+    """Implementer-prompt directive: write ``code/test_reproduction.py`` — the
+    fidelity certificate's executable evidence.
+
+    Returns ``""`` unless ``REPROLAB_TWO_AXIS_VERDICT`` is on (default behaviour
+    is byte-for-byte unchanged when off). Paper-agnostic: when PAPER_HINTS
+    registers invariants for ``arxiv_id`` it names them so the agent asserts the
+    exact equations; otherwise it asks for the paper's core invariants
+    generically. A missing/failing test file degrades gracefully — the
+    certificate stays not-green → ``implementation_verdict`` caps at ``partial``,
+    never a crash and never a false ``faithful``.
+    """
+    if not _is_enabled():
+        return ""
+    block = (
+        "\n\nFIDELITY CERTIFICATE — also write `code/test_reproduction.py` (executable, "
+        "REQUIRED for a faithful verdict):\n"
+        "  A tiny assert/pytest file that IMPORTS your REAL train.py / model code (never a "
+        "copy) and checks the paper's CORE algorithmic invariants actually execute — the exact "
+        "equations, layer ordering, normalisation, gating, and tensor shapes the rubric "
+        "inspects. Run it on CPU with tiny/synthetic data in under 2 minutes; exit 0 iff the "
+        "build is faithful. This is the machine-checkable proof that WE built the method "
+        "correctly: without it the reproducibility verdict stays 'inconclusive' even when your "
+        "metrics are perfect, and a genuine paper-vs-result disagreement cannot be credited as "
+        "an honest finding instead of a failure.\n"
+        "  Patterns: assert a forward pass returns the documented output shape; assert the "
+        "loss/gate/update formula equals the paper's at a known input; assert a documented "
+        "constant (beta, lambda, lr schedule, momentum) is wired where the equation needs it. "
+        "Seed everything so it is deterministic.\n"
+    )
+    try:
+        names = [
+            str(s["invariant_name"])
+            for s in _get_paper_hints_constants(arxiv_id)
+            if s.get("invariant_name")
+        ]
+        if names:
+            block += (
+                "  This paper's registered invariants to assert explicitly: "
+                + ", ".join(names) + ".\n"
+            )
+    except Exception:  # noqa: BLE001 — naming is advisory, never fatal
+        pass
+    return block
+
+
 def _get_paper_hints_constants(arxiv_id: str | None) -> list[dict[str, Any]]:
     """Return registered invariant constant specs for mutation testing.
 
