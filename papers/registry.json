@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "description": "Bundled reproduction targets shipped in-repo so they are available + selectable on a fresh clone with no network fetch. Resolved by backend/services/ingestion/paper_registry.py and surfaced as CLI aliases + the GET /papers preset list. PDFs are rendered from each paper's parsed full text (text-only — the reproduction pipeline is text-based).",
+  "papers": [
+    {
+      "id": "sdar",
+      "title": "Self-Distilled Agentic Reinforcement Learning",
+      "arxiv_id": "2605.15155",
+      "aliases": ["sdar", "2605.15155", "self-distilled", "self distilled"],
+      "pdf": "papers/sdar.pdf",
+      "hint": "2605.15155",
+      "datasets": ["ALFWorld", "Search-QA", "WebShop"],
+      "default": true,
+      "note": "The future-dated arXiv id does not fetch from arxiv.org; bundling is what makes SDAR reproducible offline (this is the gap that produced degraded 469-char runs)."
+    },
+    {
+      "id": "adam",
+      "title": "Adam: A Method for Stochastic Optimization",
+      "arxiv_id": "1412.6980",
+      "aliases": ["adam", "1412.6980"],
+      "pdf": "papers/adam.pdf",
+      "hint": "1412.6980",
+      "datasets": ["MNIST", "IMDB", "CIFAR-10"],
+      "default": true
+    },
+    {
+      "id": "allcnn",
+      "title": "Striving for Simplicity: The All Convolutional Net",
+      "arxiv_id": "1412.6806",
+      "aliases": ["allcnn", "all-cnn", "all_cnn", "1412.6806"],
+      "pdf": "papers/allcnn.pdf",
+      "hint": "1412.6806",
+      "datasets": ["CIFAR-10", "CIFAR-100"],
+      "default": true
+    }
+  ]
+}
