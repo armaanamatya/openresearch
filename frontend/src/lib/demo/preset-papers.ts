@@ -7,4 +7,5 @@ export const PRESET_PAPERS: ReadonlyArray<{ id: string; arxivId: string; title: 
   { id: "sdar",   arxivId: "2605.15155", title: "Self-Distilled Agentic Reinforcement Learning",     short: "SDAR (bundled)" },
   { id: "adam",   arxivId: "1412.6980",  title: "Adam: A Method for Stochastic Optimization",         short: "Adam (bundled)" },
   { id: "allcnn", arxivId: "1412.6806",  title: "Striving for Simplicity: The All Convolutional Net", short: "All-CNN (bundled)" },
+  { id: "omnizip", arxivId: "2511.14582", title: "OmniZip: Audio-Guided Dynamic Token Compression",      short: "OmniZip (bundled)" },
 ];

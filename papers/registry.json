@@ -32,6 +32,17 @@
       "hint": "1412.6806",
       "datasets": ["CIFAR-10", "CIFAR-100"],
       "default": true
+    },
+    {
+      "id": "omnizip",
+      "title": "OmniZip: Audio-Guided Dynamic Token Compression for Fast Omnimodal Large Language Models",
+      "arxiv_id": "2511.14582",
+      "aliases": ["omnizip", "omni-zip", "omni zip", "2511.14582"],
+      "pdf": "papers/omnizip.pdf",
+      "hint": "2511.14582",
+      "datasets": ["WorldSense"],
+      "default": true,
+      "note": "Omnimodal (audio+video) — uses Qwen2.5-Omni-7B; a cell may need >1 GPU (set REPROLAB_FORCE_SINGLE_GPU=false)."
     }
   ]
 }
