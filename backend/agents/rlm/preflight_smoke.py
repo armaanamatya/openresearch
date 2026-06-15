@@ -127,9 +127,15 @@ print("PREFLIGHT IMPORT SMOKE OK — %d dependency root(s) resolve" % len(probed
 
 
 def is_enabled() -> bool:
-    """True when ``REPROLAB_PREFLIGHT_SMOKE`` is truthy (default OFF — opt-in)."""
-    return os.environ.get("REPROLAB_PREFLIGHT_SMOKE", "").strip().lower() in (
-        "1", "true", "yes", "on",
+    """True unless ``REPROLAB_PREFLIGHT_SMOKE`` is explicitly disabled.
+
+    Default ON since 2026-06-15 (issue #5): a CPU-only import probe that catches a
+    missing dependency in seconds before any GPU dispatch (the Adam run logged
+    missing_module ×3 among 20 failed experiment runs). Set the flag to
+    ``0``/``false``/``no``/``off`` (or empty) to disable.
+    """
+    return os.environ.get("REPROLAB_PREFLIGHT_SMOKE", "on").strip().lower() not in (
+        "0", "false", "no", "off", "",
     )
 
 

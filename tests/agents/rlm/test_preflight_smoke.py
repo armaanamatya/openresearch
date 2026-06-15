@@ -88,13 +88,15 @@ def test_smoke_skips_relative_imports(tmp_path: Path):
 
 
 def test_is_enabled_reads_flag(monkeypatch):
+    # Default ON since 2026-06-15 (issue #5): unset → enabled.
     monkeypatch.delenv("REPROLAB_PREFLIGHT_SMOKE", raising=False)
-    assert preflight_smoke.is_enabled() is False
+    assert preflight_smoke.is_enabled() is True
     for v in ("1", "true", "yes", "on", "ON"):
         monkeypatch.setenv("REPROLAB_PREFLIGHT_SMOKE", v)
         assert preflight_smoke.is_enabled() is True
-    monkeypatch.setenv("REPROLAB_PREFLIGHT_SMOKE", "0")
-    assert preflight_smoke.is_enabled() is False
+    for v in ("0", "false", "no", "off", ""):
+        monkeypatch.setenv("REPROLAB_PREFLIGHT_SMOKE", v)
+        assert preflight_smoke.is_enabled() is False
 
 
 def test_smoke_command_carries_marker(tmp_path: Path):

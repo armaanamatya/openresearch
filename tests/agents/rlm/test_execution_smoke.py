@@ -15,6 +15,7 @@ from backend.agents.rlm import execution_smoke
 
 
 def test_is_enabled_reads_flag(monkeypatch):
+    # Opt-in (default OFF): unset → disabled; enabled only on explicit truthy.
     monkeypatch.delenv("REPROLAB_EXECUTION_SMOKE", raising=False)
     assert execution_smoke.is_enabled() is False
     for v in ("1", "true", "yes", "on", "ON"):
