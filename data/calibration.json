@@ -1,5 +1,36 @@
 {
   "schema_version": 2,
-  "based_on_n_preserved_runs": 0,
-  "per_primitive": {}
+  "based_on_n_preserved_runs": 7,
+  "per_primitive": {
+    "plan_reproduction": {
+      "avg_input_tokens": 2.4285714285714284,
+      "avg_output_tokens": 7354.857142857143,
+      "n_samples": 7
+    },
+    "baseline-implementation": {
+      "avg_input_tokens": 61.75,
+      "avg_output_tokens": 54947.8125,
+      "n_samples": 16
+    },
+    "implement_baseline": {
+      "avg_input_tokens": 1.6666666666666667,
+      "avg_output_tokens": 13810.333333333334,
+      "n_samples": 3
+    },
+    "verify_against_rubric": {
+      "avg_input_tokens": 1.2,
+      "avg_output_tokens": 12847.5,
+      "n_samples": 10
+    },
+    "propose_improvements": {
+      "avg_input_tokens": 2.2,
+      "avg_output_tokens": 4397.0,
+      "n_samples": 5
+    },
+    "rlm_root": {
+      "avg_input_tokens": 38.6,
+      "avg_output_tokens": 48934.0,
+      "n_samples": 5
+    }
+  }
 }
