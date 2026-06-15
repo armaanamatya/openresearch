@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import signal
 import threading
 from dataclasses import dataclass
@@ -594,6 +595,38 @@ def _assert_paper_text_precondition(project_dir: Path, *, allow_lossy: bool) -> 
         "paper text degraded — proceeding with lossy workspace fallback "
         f"(parsed_full_text.txt missing or <1KB at {parsed_path})"
     )
+
+
+def _assert_disk_headroom(runs_root: Path, *, min_gb: float) -> str | None:
+    """Fail-fast gate for low disk on the runs root (2026-06-15).
+
+    A run that starts on a near-full disk cannot write checkpoints / metrics → its
+    GPU cells HANG and ORPHAN (the 2026-06-15 incident: ``/home`` hit 100%, SDAR's
+    training subprocesses hung holding 17 GB of VRAM each, the run died with NO final
+    report). Aborting at run start — before any GPU work — is far cheaper than an
+    orphaned 14h run. Raises ``RuntimeError`` when critically low; returns a warning
+    reason when headroom is thin-but-OK; ``min_gb <= 0`` disables the gate. Paper-
+    agnostic: every run gets the same protection.
+    """
+    if min_gb <= 0:
+        return None
+    try:
+        free_gb = shutil.disk_usage(runs_root).free / (1024 ** 3)
+    except OSError:
+        return None  # cannot stat the mount → never block on a bookkeeping failure
+    if free_gb < min_gb:
+        raise RuntimeError(
+            f"Only {free_gb:.1f} GB free on the runs root ({runs_root}) — below the "
+            f"{min_gb:.0f} GB floor. A run on a near-full disk hangs/orphans on "
+            f"checkpoint writes. Free space, point --runs-root at a disk with room "
+            f"(e.g. --runs-root /scratch/runs), or set REPROLAB_MIN_DISK_GB=0 to override."
+        )
+    if free_gb < min_gb * 2:
+        return (
+            f"low disk headroom: {free_gb:.1f} GB free on the runs root ({runs_root}); "
+            f"floor is {min_gb:.0f} GB — a long run may exhaust it."
+        )
+    return None
 
 
 def _write_demo_status(
@@ -1400,6 +1433,17 @@ async def run_pipeline_rlm(
     _settings_for_gate = get_settings()
     _allow_lossy = getattr(_settings_for_gate, "allow_lossy_paper_text", True)
     _paper_degraded_reason = _assert_paper_text_precondition(project_dir, allow_lossy=_allow_lossy)
+
+    # Disk-headroom preflight (2026-06-15): abort before any GPU work when the runs
+    # root is near-full, so a run can't hang/orphan on checkpoint writes (the SDAR
+    # disk-100% incident). Paper-agnostic; REPROLAB_MIN_DISK_GB=0 disables it.
+    try:
+        _min_disk_gb = float(os.environ.get("REPROLAB_MIN_DISK_GB", "10") or "10")
+    except ValueError:
+        _min_disk_gb = 10.0
+    _disk_warn_reason = _assert_disk_headroom(runs_root, min_gb=_min_disk_gb)
+    if _disk_warn_reason:
+        logger.warning("%s", _disk_warn_reason)
 
     # Archive prior-attempt artifacts before touching anything else.
     # Fires only when final_report.json exists (a completed prior run);

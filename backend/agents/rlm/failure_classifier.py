@@ -181,8 +181,12 @@ def _suggest(klass: str, *, extra: str = "") -> str:
             "every training cell failed with a non-OOM error (a code bug in the per-cell "
             "trainer — TypeError / AttributeError / bad arg / import error) and ZERO cells "
             "produced metrics. Read the cell stderr in the logs, fix the train_cell.py bug "
-            "it names, and re-run the matrix. This is NOT a scope reduction and NOT an OOM "
-            "— do not shrink the grid or de-scope a model/env; fix the code",
+            "it names, and re-run the matrix. A COMMON cause is argparse rejecting the cell "
+            "runner's flags: 'unrecognized arguments: --cell-id' means train_cell.py did not "
+            "DEFINE --cell-id / --output-dir (the runner ALWAYS passes them) — add "
+            "parser.add_argument('--cell-id') and ('--output-dir'); do not rename them. This "
+            "is NOT a scope reduction and NOT an OOM — do not shrink the grid or de-scope a "
+            "model/env; fix the code",
         "nccl_timeout":
             "a distributed collective (NCCL) timed out — one rank hung or died while the "
             "others waited (the rank-0 watchdog fires at ~600s). Ensure every rank runs the "
