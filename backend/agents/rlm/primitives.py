@@ -4977,6 +4977,26 @@ def _merge_hybrid_results(grid_result: dict, cmd_result: dict, code_path: str) -
         return cmd_result
 
 
+def _resolve_hint_lr_search(arxiv_id: str | None) -> dict | None:
+    """Return the active paper hint's ``lr_search`` dict (Issue #1), or None.
+
+    Fail-soft: any lookup error → None (the cell route runs whatever ``search`` the
+    agent emitted, or the legacy path). Version suffix ("v2") is stripped to match
+    the bare PAPER_HINTS keys.
+    """
+    if not arxiv_id:
+        return None
+    try:
+        import re as _re
+        from backend.agents.prompts.paper_hints import PAPER_HINTS
+        raw = str(arxiv_id).strip()
+        hint = PAPER_HINTS.get(_re.sub(r"v\d+$", "", raw)) or PAPER_HINTS.get(raw)
+        ls = getattr(hint, "lr_search", None) if hint is not None else None
+        return ls if isinstance(ls, dict) and ls else None
+    except Exception:  # noqa: BLE001 — hint resolution must never break the run
+        return None
+
+
 def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: float | None, run_id: str) -> dict:
     """Run the training matrix one-GPU-per-cell via ``gpu_cell_runner`` (comp 4).
 
@@ -5175,6 +5195,26 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         try:
             from backend.agents.rlm import staged_search as _ss
             _cells_doc = json.loads((code / "cells.json").read_text(encoding="utf-8"))
+            # Issue #1 (2026-06-15): harness auto-synthesis. If the agent emitted no
+            # `search` block BUT the active paper hint declares an lr_search grid,
+            # synthesize the staged search from the emitted cells × the grid — so a
+            # per-model LR search fires even when the agent ships one fixed lr (the
+            # observed All-CNN failure: every model at lr=0.05, base-A 15.61% vs 12.5%).
+            if isinstance(_cells_doc, dict) and not _cells_doc.get("search"):
+                _hint_ls = _resolve_hint_lr_search(getattr(ctx, "arxiv_id", None))
+                if _hint_ls:
+                    _synth = _ss.synthesize_search_from_hint(_cells_doc.get("cells") or [], _hint_ls)
+                    if _synth:
+                        _cells_doc["search"] = _synth
+                        try:
+                            _emit_dashboard_event(
+                                ctx, event_type="run_warning",
+                                payload={"code": "search_synthesized",
+                                         "message": (f"harness synthesized {len(_synth)} lr-search "
+                                                     "group(s) from the paper hint (agent emitted no "
+                                                     "search block)")})
+                        except Exception:  # noqa: BLE001 — emit is best-effort
+                            pass
             _staged_groups = _ss.parse_search_spec(_cells_doc)
         except Exception:  # noqa: BLE001 — a malformed/absent manifest → legacy path
             _staged_groups = []

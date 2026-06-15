@@ -42,6 +42,7 @@ Design:
 
 from __future__ import annotations
 
+import copy
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -162,6 +163,89 @@ def extract_select_value(metrics: dict | None, metric_key: str) -> float | None:
     return None
 
 
+def _set_both(cell: dict, key: str, value: Any) -> None:
+    """Write a param to BOTH ``cell[key]`` and ``cell["params"][key]``.
+
+    The cell runner serializes the WHOLE cell to ``REPROLAB_CELL_PARAMS`` and a
+    given paper's ``train_cell.py`` may read its lr/epochs from EITHER the top level
+    (All-CNN) OR ``["params"]`` (Adam). Writing both makes the synthesized cell
+    train at the intended value regardless of which shape the trainer reads, and
+    lets ``materialize_full_cells`` (which copies from ``["params"]``) find it.
+    """
+    cell[key] = value
+    p = cell.get("params")
+    if not isinstance(p, dict):
+        p = {}
+    p[key] = value
+    cell["params"] = p
+
+
+def _read_either(cell: dict, key: str) -> Any:
+    """Read ``cell[key]`` falling back to ``cell["params"][key]`` (None if neither)."""
+    if key in cell:
+        return cell[key]
+    p = cell.get("params")
+    if isinstance(p, dict) and key in p:
+        return p[key]
+    return None
+
+
+def synthesize_search_from_hint(cells: list[dict], lr_search: dict) -> list[dict]:
+    """Build a ``search`` array from a paper-hint ``lr_search`` spec + the agent's
+    emitted full cells — Issue #1 (2026-06-15).
+
+    One search GROUP per emitted cell: ``candidates`` = that cell cloned across the
+    hint grid at ``probe_epochs`` (searched value written to BOTH shapes via
+    ``_set_both``); ``promote`` = the agent's full cell (its real epochs preserved,
+    normalized into ``["params"]`` so the budget preflight sees the true cost);
+    ``param_from_winner = [param_key]`` so the harness promotes the TUNED value.
+
+    Returns ``[]`` when the spec or cells are unusable — the caller then runs the
+    legacy path (or whatever ``search`` the agent emitted). Never raises. This is
+    the harness-synthesis half of the "both" decision: papers that declare
+    ``lr_search`` get the staged route even when the agent emits a single fixed lr.
+    """
+    try:
+        grid = [g for g in (lr_search.get("grid") or []) if isinstance(g, (int, float))]
+        if not grid or not isinstance(cells, list) or not cells:
+            return []
+        param_key = str(lr_search.get("param_key") or "lr")
+        epochs_key = str(lr_search.get("epochs_key") or "epochs")
+        probe_epochs = lr_search.get("probe_epochs") or 8
+        select_metric = str(lr_search.get("select_metric") or "final_train_loss")
+        objective = str(lr_search.get("select_objective") or "min").lower()
+        if objective not in ("min", "max"):
+            objective = "min"
+        search: list[dict] = []
+        for cell in cells:
+            if not isinstance(cell, dict) or not cell.get("id"):
+                continue
+            base_id = str(cell["id"])
+            agent_epochs = _read_either(cell, epochs_key)
+            candidates: list[dict] = []
+            for val in grid:
+                c = copy.deepcopy(cell)
+                c["id"] = f"{base_id}__{param_key}_{val}"
+                _set_both(c, param_key, val)
+                _set_both(c, epochs_key, probe_epochs)
+                candidates.append(c)
+            promote = copy.deepcopy(cell)
+            if agent_epochs is not None:
+                _set_both(promote, epochs_key, agent_epochs)  # mirror for the budget calc
+            search.append({
+                "group": base_id,
+                "select_metric": select_metric,
+                "select_objective": objective,
+                "candidates": candidates,
+                "promote": promote,
+                "param_from_winner": [param_key],
+            })
+        return search
+    except Exception:  # noqa: BLE001 — synthesis must never break the run; fall back to legacy.
+        logger.exception("synthesize_search_from_hint failed; falling back to legacy path")
+        return []
+
+
 def select_winner(group: SearchGroup, candidate_results: dict[str, dict]) -> dict | None:
     """Deterministically pick the winning candidate CELL for ``group``.
 
@@ -207,6 +291,8 @@ def materialize_full_cells(
         for k in g.param_from_winner:
             if k in win_params:
                 params[k] = win_params[k]
+                cell[k] = win_params[k]  # Issue #1: also top-level, so a trainer that
+                #                          reads the WHOLE cell (All-CNN) honors the tune.
         cell["params"] = params
         cell.setdefault("id", g.group)
         cell["_tuned_from"] = str(win.get("id") or "")  # provenance for the report

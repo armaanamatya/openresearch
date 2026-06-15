@@ -219,6 +219,20 @@ PAPER_HINTS: dict[str, PaperHint] = {
             ],
             seeds=[1],
         ),
+        # Issue #1 (2026-06-15): harness-synthesized per-model LR search. The paper
+        # selects γ PER MODEL from {0.25,0.1,0.05,0.01}; the prior runs shipped one
+        # fixed lr=0.05 (base-A 15.61% vs paper 12.5%, All-CNN-C inverted). With this
+        # declared, the harness AUTO-SYNTHESIZES the cells.json `search` block from
+        # the agent's emitted cells × this grid even if the agent emits a single lr —
+        # one short 8-epoch probe per (model,variant), winner promoted to the full run.
+        lr_search={
+            "grid": [0.25, 0.1, 0.05, 0.01],
+            "param_key": "lr",
+            "epochs_key": "epochs",
+            "probe_epochs": 8,
+            "select_metric": "final_train_loss",
+            "select_objective": "min",
+        },
     ),
     "1512.03385": PaperHint(
         guidance=(

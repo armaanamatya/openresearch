@@ -1125,6 +1125,21 @@ class PaperHint(BaseModel):
     # ``rubric_guard.assert_metrics_schema(structured_evidence=...)``; ENFORCED only when
     # ``REPROLAB_FIDELITY_EVIDENCE`` is set, so None / unset flag is a no-op.
     structured_evidence: dict | None = None
+    # Issue #1 (2026-06-15): harness-synthesized staged LR search. When a paper's
+    # results require a PER-MODEL learning-rate search (the paper tunes γ per model
+    # and reports each at its best — All-CNN, Adam), declaring this lets the harness
+    # AUTO-SYNTHESIZE the cells.json ``search`` block from the agent's emitted cells
+    # × this grid, so the staged-search route fires even when the agent emits a
+    # single fixed lr (the observed All-CNN failure: every model run at lr=0.05,
+    # base-A 15.61% vs paper 12.5%). Shape:
+    #   {"grid": [0.25, 0.1, 0.05, 0.01],   # values to search
+    #    "param_key": "lr",                  # cell param varied (set at top-level AND ["params"])
+    #    "epochs_key": "epochs",             # epochs param shrunk for the probe phase
+    #    "probe_epochs": 8,                  # short probe budget per candidate
+    #    "select_metric": "final_train_loss",# candidate metrics.json key compared
+    #    "select_objective": "min"}          # min | max
+    # None / absent ⇒ no synthesis (the agent may still emit its own ``search``).
+    lr_search: dict | None = None
 
 
 # ---------------------------------------------------------------------------
