@@ -159,6 +159,15 @@ PAPER_HINTS: dict[str, PaperHint] = {
             "ConvPool-CNN / All-CNN variants (12 combos; headline: All-CNN-C "
             "~9.1% test error without augmentation, and the strided/all-conv "
             "variants matching or beating their pooling counterparts).\n"
+            "FIDELITY CHECK (the prior-run ordering INVERTED): if your measured "
+            "All-CNN-C is WORSE than ConvPool-CNN-C or the base CNN (a prior run "
+            "got All-CNN-C 14.8% vs ConvPool 11.3% vs base 12.2% — the paper's "
+            "ordering REVERSED), that is an IMPLEMENTATION bug — augmentation "
+            "order (see below), the strided-conv replacement geometry (the "
+            "stride-2 3x3 conv must preserve the pooling layer's receptive "
+            "field), or dropout placement — NOT an honest negative. Debug the "
+            "recipe until the all-conv variants match-or-beat their pooling "
+            "counterparts as the paper claims, before accepting the result.\n"
             "LEARNING-RATE PROTOCOL (the #1 prior-run killer — single global "
             "lr=0.05 dead-trained ConvPool/base variants on three attempts): "
             "the paper selects gamma PER MODEL from {0.25, 0.1, 0.05, 0.01}. "
@@ -169,6 +178,15 @@ PAPER_HINTS: dict[str, PaperHint] = {
             "[200, 250, 300], 350 epochs total, dropout 20% on input + 50% "
             "after pooling (or its replacement), global-contrast-normalization "
             "+ ZCA whitening.\n"
+            "AUGMENTATION ORDER (critical — a prior run's AUGMENTED runs scored "
+            "WORSE than no-aug, the exact signature of this bug): apply "
+            "augmentation (4px reflect-pad then random 32x32 crop; horizontal "
+            "flip) to the RAW image FIRST, THEN GCN + ZCA-whiten the augmented "
+            "image. NEVER augment an already-whitened tensor — ZCA encodes the "
+            "train-set pixel covariance, so cropping/flipping a whitened tensor "
+            "corrupts those statistics and makes augmentation HURT instead of "
+            "help. The paper's 9.08% All-CNN-C with augmentation requires "
+            "correct-order augmentation.\n"
             "STRUCTURE: emit cells.json with ONE cell per (model, variant, "
             "dataset) and EXPLICIT model_key/env/baseline axes per cell (e.g. "
             "model_key='c_allcnn', env='cifar10_noaug', baseline='allcnn') "
@@ -191,13 +209,65 @@ PAPER_HINTS: dict[str, PaperHint] = {
             "PRIOR-ATTEMPT MEASURED EVIDENCE block is present in this prompt, "
             "treat it as ground truth: restore configs that hit paper-grade "
             "errors verbatim, and only probe lr for cells with no working "
-            "config in ANY attempt."
+            "config in ANY attempt; "
+            "(d) emit provenance.json recording, per cell, the SEARCHED lr set "
+            "+ each probed rate's result + the SELECTED lr, plus the final "
+            "optimizer hyperparameters (momentum, weight_decay, the "
+            "[200,250,300] decay schedule) — the eval-protocol and searched-set "
+            "rubric leaves credit the recorded search, not just the winning lr."
         ),
         default_scope=ScopeSpec(
             datasets=[
                 DatasetSlice(name="CIFAR-10"),
                 DatasetSlice(name="CIFAR-100"),
             ],
+            seeds=[1],
+        ),
+    ),
+    "1512.03385": PaperHint(
+        guidance=(
+            "ResNet / Deep Residual Learning (1512.03385) — the rubric's dominant "
+            "lever is the CIFAR-10 DEGRADATION CONTRAST (Section 4.2, Table 6): "
+            "train BOTH plain and residual nets at MULTIPLE depths and show "
+            "residual learning SOLVES degradation — plain nets get WORSE as they "
+            "deepen (plain-56 test error > plain-44 > plain-32 > plain-20), while "
+            "ResNets get BETTER (resnet-110 6.43% < resnet-56 6.97% < resnet-44 "
+            "7.17% < resnet-32 7.51% < resnet-20 8.75%). The CONTRAST is the "
+            "claim — a grid of only ResNets, or only one depth, cannot show it.\n"
+            "ARCHITECTURE (CIFAR ResNet, 6n+2 weighted layers): first 3x3 conv -> "
+            "16 filters; then 3 stages of 2n stacked 3x3-conv blocks on feature "
+            "maps 32/16/8 with filters 16/32/64 (stride-2 at stage boundaries); "
+            "global-average-pool -> 10-way FC -> softmax. n in {3,5,7,9,18} -> "
+            "depth {20,32,44,56,110}. Shortcuts are IDENTITY (option A, "
+            "parameter-free; zero-pad the extra channels at dimension increases) "
+            "— NOT 1x1-conv projection. He/MSRA init. NO dropout, NO ZCA.\n"
+            "RECIPE: SGD momentum 0.9, weight_decay 1e-4, batch 128, lr 0.1 "
+            "divided by 10 at 32k and 48k iterations, terminate at 64k iterations "
+            "(~164 epochs). Preprocess: per-pixel MEAN subtraction ONLY (NOT "
+            "GCN/ZCA — different from All-CNN). Augment: 4-pixel zero-pad then "
+            "random 32x32 crop + horizontal flip on TRAIN; test on the single "
+            "original 32x32 view. ResNet-110 ONLY: warm up at lr 0.01 until train "
+            "error < 80% (~400 iters), THEN set lr 0.1 and resume the schedule — "
+            "at depth 110 a plain 0.1 start diverges.\n"
+            "STRUCTURE: emit cells.json with ONE cell per (arch, depth) and "
+            "EXPLICIT model_key/env/baseline axes (e.g. model_key='resnet_56', "
+            "env='cifar10', baseline='resnet'; model_key='plain_56', env='cifar10', "
+            "baseline='plain'); train_cell.py writes a FLAT per-cell metrics.json "
+            "with test_error_pct. Aggregate per_model ATOMICALLY as cells finish so "
+            "a timeout truncates the tail, not finished work. Minimum faithful "
+            "grid: plain {20,32,44,56} + resnet {20,32,44,56,110} (9 cells) — the "
+            "plain side is REQUIRED to show degradation; resnet-110 is the headline.\n"
+            "OUT OF SCOPE on this budget: the paper's ImageNet ResNets "
+            "(18/34/50/101/152) take days — implement the CIFAR nets only; if the "
+            "rubric has ImageNet leaves leave them honestly ungraded (do NOT fake "
+            "or train ImageNet). CHEAP RUBRIC EVIDENCE: (a) record per-depth "
+            "param_count under per_model[*].param_count (resnet-110 ~1.7M params); "
+            "(b) emit provenance.json with the lr schedule, batch, weight_decay, "
+            "and per-cell final test_error_pct + epochs_run; (c) if a PRIOR-ATTEMPT "
+            "MEASURED EVIDENCE block is present, restore paper-grade configs verbatim."
+        ),
+        default_scope=ScopeSpec(
+            datasets=[DatasetSlice(name="CIFAR-10")],
             seeds=[1],
         ),
     ),

@@ -1,0 +1,223 @@
+{
+  "id": "a7c391b677c84c908ec28ab38be7d8f2",
+  "requirements": "Reproduce: paper_text",
+  "weight": 1.0,
+  "task_category": null,
+  "finegrained_task_category": null,
+  "sub_tasks": [
+    {
+      "id": "d33bf196dcf9481fa56b5997beaff7e6",
+      "requirements": "Method and code fidelity to the paper",
+      "weight": 0.34188034188034194,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "3f4574786b374b8b803db0727eaeb1bc",
+          "requirements": "The code implements the residual building block y = F(x, {W_i}) + x (Equation 1) with parameter-free identity shortcuts for same-dimension connections, and y = F(x, {W_i}) + W_s*x (Equation 2) with W_s implemented as 1\u00d71 convolutions with stride 2 for dimension-matching projection shortcuts, as described in Section 3.1.",
+          "weight": 0.25,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "c57a133793424261abcdac8928c40fca",
+          "requirements": "The bottleneck building block for ResNet-50, ResNet-101, and ResNet-152 is implemented as a stack of three layers (1\u00d71 conv, 3\u00d73 conv, 1\u00d71 conv) where the 1\u00d71 layers reduce and then restore dimensions, with parameter-free identity shortcuts for non-dimension-changing connections and option B projection shortcuts (1\u00d71 conv) used only for increasing dimensions, as described in Section 3.4 and Table 1.",
+          "weight": 0.25,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "bbf595cc32914f6b83681df37ed94522",
+          "requirements": "Batch normalization (BN) is applied right after each convolution and before activation throughout all plain and residual network models, with He et al. [13] weight initialization and no dropout used at any point, as specified in Section 3.3.",
+          "weight": 0.15,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "c4d6f7f9bb084fcf8f236bd3ee4af7db",
+          "requirements": "Shortcut option A (zero-padding for increasing dimensions, zero extra parameters) and option B (1\u00d71 projection convolutions with stride 2 for increasing dimensions only, identity shortcuts otherwise) are both correctly implemented as distinct configurations; the plain network baselines use 3\u00d73 filters, stride-2 downsampling convolutions, and end with a global average pooling layer followed by a 1000-way fully-connected softmax layer for ImageNet, as described in Sections 3.2 and 3.3.",
+          "weight": 0.2,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "eedaa801badd4d729e51650313425a6f",
+          "requirements": "The CIFAR-10 architecture follows the 6n+2 stacked weighted layer formula with 3\u00d73 convolutions on feature maps of sizes {32\u00d732, 16\u00d716, 8\u00d78}, filter counts {16, 32, 64} respectively, 2n layers per map size, 3n total identity shortcuts (option A in all cases), subsampling via stride-2 convolutions, and ending with global average pooling, a 10-way fully-connected layer, and softmax, as specified in Section 4.2.",
+          "weight": 0.15,
+          "task_category": "Method and code fidelity to the paper",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "547de4e74b65458faa30619726c536b6",
+      "requirements": "Data and preprocessing fidelity",
+      "weight": 0.12820512820512822,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "6f5150fbc6b54f61be774e2f7211339b",
+          "requirements": "ImageNet training preprocessing applies scale augmentation by randomly sampling the shorter side in [256, 480], takes a 224\u00d7224 random crop from the image or its horizontal flip, subtracts the per-pixel mean, and applies the standard color augmentation from Krizhevsky et al. [21], as described in Section 3.3.",
+          "weight": 0.4,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "d8388776b33f49dead51bf662308174a",
+          "requirements": "CIFAR-10 training augmentation pads 4 pixels on each side of each 32\u00d732 image and randomly samples a 32\u00d732 crop from the padded image or its horizontal flip; test evaluation uses only a single view of the original 32\u00d732 image without any augmentation, as specified in Section 4.2.",
+          "weight": 0.35,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "9bb8cbea1b2d4f55b5b0dbb540c4ba3b",
+          "requirements": "ImageNet comparison-study evaluation uses standard 10-crop testing; best-result evaluation uses the fully-convolutional form with scores averaged over multiple scales where the shorter side is in {224, 256, 384, 480, 640}, as described in Section 3.3.",
+          "weight": 0.25,
+          "task_category": "Data and preprocessing fidelity",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "a2c13ad113d548768fb11b2f6c50692a",
+      "requirements": "Experiment execution and reproducibility",
+      "weight": 0.15384615384615385,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "8333b3fcbaed4344a55b8657f7dc8160",
+          "requirements": "ImageNet training uses SGD with mini-batch size 256, initial learning rate 0.1 divided by 10 when the error plateaus, training for up to 60\u00d710^4 iterations, weight decay 0.0001, momentum 0.9, He et al. [13] initialization, BN after each conv and before activation, and no dropout, as specified in Section 3.3.",
+          "weight": 0.4,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "3eae937aaaee47fd90ed2a8defd0da62",
+          "requirements": "CIFAR-10 training uses mini-batch size 128 on two GPUs, initial learning rate 0.1 divided by 10 at 32k and 48k iterations, training terminated at 64k iterations, a 45k/5k train/validation split used to determine the schedule, weight decay 0.0001, momentum 0.9, He et al. [13] initialization, BN, and no dropout, as specified in Section 4.2.",
+          "weight": 0.35,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "578ef601459e496bbc30c741c7aa8d39",
+          "requirements": "ResNet-110 (n=18) training uses a warm-up phase with learning rate 0.01 until training error falls below 80% (approximately 400 iterations), after which the learning rate returns to 0.1 and the standard CIFAR-10 schedule (divide by 10 at 32k and 48k, stop at 64k) continues; ResNet-110 is run 5 independent times and reported as 'best (mean \u00b1 std)', as described in Section 4.2.",
+          "weight": 0.25,
+          "task_category": "Experiment execution and reproducibility",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "f1e8f8b88f4147aea9870da2d9a61665",
+      "requirements": "Evaluation protocol and metric correctness",
+      "weight": 0.12820512820512822,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "f36dcb7490bd46a2836a111242310edd",
+          "requirements": "ImageNet evaluation reports both top-1 and top-5 error rates (%) using 10-crop testing on the 50k ImageNet 2012 validation set (1000-class, 1.28M training images) for comparison studies, and reports final ensemble results on the 100k test images as submitted to the ILSVRC test server, as described in Section 3.3.",
+          "weight": 0.35,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "78800a349d10436c82b568a29709b5f8",
+          "requirements": "CIFAR-10 evaluation reports classification error (%) on the 10k test images using a single view of the original 32\u00d732 image; for ResNet-110 specifically, the result must be reported as 'best (mean \u00b1 std)' across 5 independent runs matching the protocol of Srivastava et al. [43], as specified in Section 4.2 and Table 6.",
+          "weight": 0.3,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "2e209dc20a1a4c8b9fb06fd1b1b38ee8",
+          "requirements": "MS COCO detection evaluation reports both the PASCAL VOC metric (mAP@IoU=0.5) and the standard COCO metric (mAP@IoU=[.5:.05:.95]) on the 40k validation set, and reports final single-model and 3-model ensemble results on the 20k test-dev set submitted to the evaluation server, as described in the detection appendix.",
+          "weight": 0.35,
+          "task_category": "Evaluation protocol and metric correctness",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "756206e580cd47bab9a67753961f025f",
+      "requirements": "Result match versus the paper's reported targets",
+      "weight": 0.18803418803418806,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "aa8453d00aee431fa8de81c23177ee25",
+          "requirements": "On the ImageNet 2012 validation set with 10-crop testing (Table 2), the 34-layer ResNet reduces top-1 error by 3.5% compared to the plain-34 network, and the 34-layer ResNet outperforms the 18-layer ResNet by 2.8%, as reported in Section 3.3.",
+          "weight": 0.25,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "90ec66ebff364f9da843094ae92ad04f",
+          "requirements": "ResNet-152 achieves a single-model top-5 validation error of 4.49% on ImageNet; an ensemble of 6 ResNet models (including two 152-layer models) achieves 3.57% top-5 error on the ImageNet test set, winning 1st place in ILSVRC 2015 classification, as reported in Section 3.4 and Table 5.",
+          "weight": 0.3,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "f49ff1e3335244218e63235bf82349a3",
+          "requirements": "On the CIFAR-10 test set (Table 6), ResNet-110 (n=18, 6\u00d718+2=110 layers) achieves a best test error of 6.43%, and ResNet-1202 (n=200) achieves a test error of 7.93%, as reported in Section 4.2.",
+          "weight": 0.25,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "e32a57ef1cd04b3cbf65e46f5dea3358",
+          "requirements": "On MS COCO validation (Table 8), replacing VGG-16 with ResNet-101 in Faster R-CNN yields a 6.0% absolute increase in mAP@[.5:.05:.95], constituting a 28% relative improvement, with the gain attributed solely to the learned representations of the deeper network, as reported in Section 5.",
+          "weight": 0.2,
+          "task_category": "Result match versus the paper's reported targets",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    },
+    {
+      "id": "f8f306ef02da4b41a229f19604f2260a",
+      "requirements": "Artifact completeness and provenance",
+      "weight": 0.05982905982905984,
+      "task_category": null,
+      "finegrained_task_category": null,
+      "sub_tasks": [
+        {
+          "id": "c219649dd3234a9483faf60b2fb528a4",
+          "requirements": "The repository contains source code implementing all six ImageNet ResNet variants (ResNet-18, ResNet-34, ResNet-50, ResNet-101, ResNet-152) and the plain-18 and plain-34 baselines, with architectures matching Table 1 including the 3.8B FLOPs ResNet-50, the 11.3B FLOPs ResNet-152, and the corresponding plain counterparts referenced in Section 3.2.",
+          "weight": 0.5,
+          "task_category": "Artifact completeness and provenance",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        },
+        {
+          "id": "d0b66674be524e5f940259b627494b9d",
+          "requirements": "The repository contains CIFAR-10 experiment code for all reported depth configurations n\u2208{3, 5, 7, 9, 18, 200} yielding ResNet-20/32/44/56/110/1202, along with training logs or checkpoint files and a metrics file recording final test errors reproducible against Table 6 values, as reported in Section 4.2.",
+          "weight": 0.5,
+          "task_category": "Artifact completeness and provenance",
+          "finegrained_task_category": null,
+          "sub_tasks": []
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,122 @@
+{
+  "cells": [
+    {
+      "id": "plain_20__cifar10__plain__s42",
+      "model_id": "cifar_plain_n3",
+      "model_key": "plain_20",
+      "baseline": "plain",
+      "env": "cifar10",
+      "seed": 42,
+      "n": 3,
+      "depth": 20,
+      "use_residual": false,
+      "shortcut_option": "A",
+      "est_vram_gb": 2.0
+    },
+    {
+      "id": "plain_32__cifar10__plain__s42",
+      "model_id": "cifar_plain_n5",
+      "model_key": "plain_32",
+      "baseline": "plain",
+      "env": "cifar10",
+      "seed": 42,
+      "n": 5,
+      "depth": 32,
+      "use_residual": false,
+      "shortcut_option": "A",
+      "est_vram_gb": 2.0
+    },
+    {
+      "id": "plain_44__cifar10__plain__s42",
+      "model_id": "cifar_plain_n7",
+      "model_key": "plain_44",
+      "baseline": "plain",
+      "env": "cifar10",
+      "seed": 42,
+      "n": 7,
+      "depth": 44,
+      "use_residual": false,
+      "shortcut_option": "A",
+      "est_vram_gb": 2.0
+    },
+    {
+      "id": "plain_56__cifar10__plain__s42",
+      "model_id": "cifar_plain_n9",
+      "model_key": "plain_56",
+      "baseline": "plain",
+      "env": "cifar10",
+      "seed": 42,
+      "n": 9,
+      "depth": 56,
+      "use_residual": false,
+      "shortcut_option": "A",
+      "est_vram_gb": 2.5
+    },
+    {
+      "id": "resnet_20__cifar10__resnet__s42",
+      "model_id": "cifar_resnet_n3",
+      "model_key": "resnet_20",
+      "baseline": "resnet",
+      "env": "cifar10",
+      "seed": 42,
+      "n": 3,
+      "depth": 20,
+      "use_residual": true,
+      "shortcut_option": "A",
+      "est_vram_gb": 2.0
+    },
+    {
+      "id": "resnet_32__cifar10__resnet__s42",
+      "model_id": "cifar_resnet_n5",
+      "model_key": "resnet_32",
+      "baseline": "resnet",
+      "env": "cifar10",
+      "seed": 42,
+      "n": 5,
+      "depth": 32,
+      "use_residual": true,
+      "shortcut_option": "A",
+      "est_vram_gb": 2.0
+    },
+    {
+      "id": "resnet_44__cifar10__resnet__s42",
+      "model_id": "cifar_resnet_n7",
+      "model_key": "resnet_44",
+      "baseline": "resnet",
+      "env": "cifar10",
+      "seed": 42,
+      "n": 7,
+      "depth": 44,
+      "use_residual": true,
+      "shortcut_option": "A",
+      "est_vram_gb": 2.0
+    },
+    {
+      "id": "resnet_56__cifar10__resnet__s42",
+      "model_id": "cifar_resnet_n9",
+      "model_key": "resnet_56",
+      "baseline": "resnet",
+      "env": "cifar10",
+      "seed": 42,
+      "n": 9,
+      "depth": 56,
+      "use_residual": true,
+      "shortcut_option": "A",
+      "est_vram_gb": 2.5
+    },
+    {
+      "id": "resnet_110__cifar10__resnet__s42",
+      "model_id": "cifar_resnet_n18",
+      "model_key": "resnet_110",
+      "baseline": "resnet",
+      "env": "cifar10",
+      "seed": 42,
+      "n": 18,
+      "depth": 110,
+      "use_residual": true,
+      "shortcut_option": "A",
+      "warmup": true,
+      "est_vram_gb": 4.0
+    }
+  ]
+}
