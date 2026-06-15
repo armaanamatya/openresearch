@@ -515,6 +515,88 @@ def _leaf_mentions_dataset(leaf: dict[str, Any], dataset_tokens: frozenset[str])
     return dataset_tokens.issubset(text_tokens)
 
 
+# ---------------------------------------------------------------------------
+# Issue #2 (2026-06-15): data-unavailable detection missed a downstream leaf.
+# The ImageNet load failure is logged as "ImageNet" but the eval-protocol leaf
+# says "ILSVRC-2012" — {imagenet} ⊄ leaf tokens (ZERO overlap) — so the leaf was
+# scored 0.0 instead of excluded (~0.05 on All-CNN). Two complementary, SAFE
+# loosenings, both gated by an evidence guard (never exclude a leaf that has a
+# successful on-disk metric — it ran, score it):
+#   (a) a curated true-synonym alias map (the only thing that bridges a
+#       zero-overlap synonym like imagenet↔ilsvrc), and
+#   (b) a tight token-OVERLAP tier (all-but-one distinctive token) for multi-token
+#       names where the leaf uses a subset of the dataset name.
+# Applied ONLY to the new tiers — the existing superset pass is untouched (0-regress).
+_DATASET_ALIASES: dict[frozenset[str], tuple[frozenset[str], ...]] = {
+    frozenset({"imagenet"}): (frozenset({"ilsvrc"}), frozenset({"ilsvrc2012"})),
+    frozenset({"ilsvrc"}): (frozenset({"imagenet"}),),
+}
+
+# Generic tokens that carry no dataset identity on their own. NOTE: digit tokens
+# like "10"/"100" are deliberately NOT generic — they distinguish cifar10/cifar100.
+_GENERIC_DATASET_TOKENS: frozenset[str] = frozenset({
+    "dataset", "data", "set", "train", "training", "val", "validation", "test",
+    "eval", "evaluation", "split", "image", "images", "the", "of", "on", "for",
+})
+
+
+def _alias_token_sets(failed_token_sets: list[frozenset[str]]) -> list[frozenset[str]]:
+    """Expand failed-dataset token sets with their curated true synonyms.
+
+    Only hand-verified zero-overlap synonyms (imagenet↔ilsvrc) are added, so the
+    extra match surface is tiny and never a broad category.
+    """
+    extra: list[frozenset[str]] = []
+    for ts in failed_token_sets:
+        for key, aliases in _DATASET_ALIASES.items():
+            if key.issubset(ts):
+                extra.extend(aliases)
+    return extra
+
+
+def _distinctive(tokens: frozenset[str]) -> frozenset[str]:
+    """Identity-bearing tokens of a name (drop generic filler + 1-char noise)."""
+    return frozenset(t for t in tokens if t not in _GENERIC_DATASET_TOKENS and len(t) > 1)
+
+
+def _successful_metric_subjects(metrics_data: dict[str, Any]) -> list[frozenset[str]]:
+    """Distinctive token sets of every subject with a SUCCESSFUL on-disk metric.
+
+    The evidence GUARD for the loosened (alias / overlap) matching: a leaf that
+    demonstrably names a subject which RAN is never excluded — it must be scored on
+    its real result, not skipped. Subject identity = model_key/env/dataset/baseline/
+    variant/letter of each ok per_model cell.
+    """
+    subjects: list[frozenset[str]] = []
+    per_model = metrics_data.get("per_model")
+    if not isinstance(per_model, dict):
+        return subjects
+    for mkey, envs in per_model.items():
+        if not isinstance(envs, dict):
+            continue
+        for env, baselines in envs.items():
+            if not isinstance(baselines, dict):
+                continue
+            for bname, cell in baselines.items():
+                if not isinstance(cell, dict):
+                    continue
+                if str(cell.get("status", "")).lower() not in {"ok", "success", "succeeded", "completed"}:
+                    continue
+                toks: set[str] = set()
+                for part in (mkey, env, bname, cell.get("dataset"), cell.get("letter"), cell.get("variant")):
+                    if isinstance(part, str):
+                        toks |= {t for t in re.split(r"[^a-z0-9]+", part.lower()) if t}
+                d = _distinctive(frozenset(toks))
+                if d:
+                    subjects.append(d)
+    return subjects
+
+
+def _leaf_has_disk_evidence(leaf_tokens: frozenset[str], subjects: list[frozenset[str]]) -> bool:
+    """True iff some successful metric subject is fully named within the leaf text."""
+    return any(subj and subj.issubset(leaf_tokens) for subj in subjects)
+
+
 def _normalise_model_name(name: str) -> str:
     """Lowercase + strip for case-insensitive model-name comparison."""
     return name.strip().lower()
@@ -900,6 +982,32 @@ def _detect_data_unavailable_leaves(
             if ds_tokens and _leaf_mentions_dataset(leaf, ds_tokens):
                 unavailable_ids.add(lid)
                 break
+
+    # --- Issue #2 (2026-06-15): curated-synonym (alias) tier ---
+    # Bridges the one failure mode the token-superset pass structurally cannot:
+    # a leaf that names an unavailable dataset by a true SYNONYM with ZERO token
+    # overlap (imagenet↔ilsvrc — the All-CNN ILSVRC-2012 eval-protocol leaf, scored
+    # 0.0 instead of excluded). Matched as a SUPERSET of the curated alias set, so
+    # {ilsvrc} fires ONLY on a leaf that literally says "ilsvrc" — never on an
+    # All-CNN-C / CIFAR leaf. (A broad token-OVERLAP tier was prototyped and
+    # REJECTED: gap prose like "ImageNet All-CNN-B" mixes the dataset with the model
+    # name, so overlap on {all,cnn} wrongly excluded the central All-CNN-C fidelity
+    # leaf — i.e. it GAMED the score. The deterministic re-grade caught it.)
+    # The evidence guard remains as defense-in-depth: never exclude a leaf that
+    # names a subject with a successful on-disk metric.
+    alias_sets = _alias_token_sets(all_unavailable_token_sets)
+    if alias_sets:
+        subjects = _successful_metric_subjects(metrics_data)
+        for leaf in leaves:
+            lid = str(leaf.get("id", ""))
+            if lid in metrics_shape_covered or lid in unavailable_ids:
+                continue
+            text = " ".join([str(leaf.get("id", "")), str(leaf.get("requirements", ""))]).lower()
+            leaf_tokens = frozenset(t for t in re.split(r"[^a-z0-9]+", text) if t)
+            if _leaf_has_disk_evidence(leaf_tokens, subjects):
+                continue  # GUARD: it ran — score it, never skip.
+            if any(a and a.issubset(leaf_tokens) for a in alias_sets):
+                unavailable_ids.add(lid)
 
     return unavailable_ids
 
