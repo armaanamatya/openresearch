@@ -611,7 +611,12 @@ def _assert_disk_headroom(runs_root: Path, *, min_gb: float) -> str | None:
     if min_gb <= 0:
         return None
     try:
-        free_gb = shutil.disk_usage(runs_root).free / (1024 ** 3)
+        # f_bavail (blocks available to NON-root), NOT shutil.disk_usage().free /
+        # f_bfree, which counts root-reserved space a non-root run cannot write to —
+        # on a near-full disk that gap is the difference between "passes the gate" and
+        # "actually has room to write checkpoints".
+        st = os.statvfs(runs_root)
+        free_gb = st.f_bavail * st.f_frsize / (1024 ** 3)
     except OSError:
         return None  # cannot stat the mount → never block on a bookkeeping failure
     if free_gb < min_gb:
