@@ -217,6 +217,157 @@ def emit_provenance(
     return target
 
 
+# ---------------------------------------------------------------------------
+# Issue #3 (2026-06-15): HARNESS-OWNED provenance producer for the cell route.
+# emit_provenance (above) is AGENT-facing — the agent must call it. When the agent
+# doesn't (the observed case: All-CNN/Adam leaves stuck at 0.7, "weight_decay stated
+# not verifiable", "no artifacts confirm the lr search"), the recipe never reaches
+# the grader. This builds provenance.json from the MECHANICAL facts the harness
+# already controls — the emitted cells (cells.json) + the actual per-cell params in
+# the aggregated metrics.json + the staged-search grid — so the eval-protocol leaves
+# can confirm the recipe even when the agent skips emit_provenance. Merges (never
+# overwrites) an agent-emitted file: agent semantic fields win, the harness fills the
+# mechanical params the agent omitted. Fail-soft; stdlib-only.
+# ---------------------------------------------------------------------------
+_PROVENANCE_PARAM_KEYS: tuple[str, ...] = (
+    "lr", "best_lr", "weight_decay", "dropout", "dropout_p", "momentum", "epochs",
+    "epochs_total", "epochs_run", "seed", "batch_size", "augment", "use_zca", "num_classes",
+)
+
+
+def _safe_load_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — missing/malformed → None (fail-soft).
+        return None
+
+
+def _latest_metrics(code_dir: Path) -> dict | None:
+    """Newest-by-mtime aggregated metrics.json under code/ (or code/outputs/*/)."""
+    cands: list[Path] = list((code_dir / "outputs").rglob("metrics.json")) if (code_dir / "outputs").is_dir() else []
+    top = code_dir / "metrics.json"
+    if top.is_file():
+        cands.append(top)
+    best: Path | None = None
+    best_mtime = -1.0
+    for p in cands:
+        try:
+            mt = p.stat().st_mtime
+        except OSError:
+            continue
+        if mt > best_mtime:
+            best_mtime, best = mt, p
+    if best is None:
+        return None
+    d = _safe_load_json(best)
+    return d if isinstance(d, dict) else None
+
+
+def _lookup_cell_metric(per_model: Any, mk: Any, env: Any, baseline: Any) -> dict | None:
+    """per_model[mk][env][baseline] when all three axes resolve, else None."""
+    try:
+        node = per_model[mk][env][baseline]
+        return node if isinstance(node, dict) else None
+    except (KeyError, TypeError):
+        return None
+
+
+def _summarize_lr_search(search: Any, per_model: Any) -> dict | None:
+    """Record the searched grid per group (the eval-protocol leaf wants the SEARCH
+    confirmed, not just the winning lr)."""
+    if not isinstance(search, list) or not search:
+        return None
+    grid: set[float] = set()
+    groups: list[dict] = []
+    for g in search:
+        if not isinstance(g, dict):
+            continue
+        gid = g.get("group") or (g.get("promote") or {}).get("id")
+        cand_lrs: list[float] = []
+        for c in (g.get("candidates") or []):
+            if not isinstance(c, dict):
+                continue
+            v = (c.get("params") or {}).get("lr", c.get("lr"))
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                cand_lrs.append(float(v))
+                grid.add(float(v))
+        if gid is not None:
+            groups.append({"group": str(gid), "searched_lr": sorted(set(cand_lrs))})
+    return {"grid": sorted(grid), "groups": groups} if grid else None
+
+
+def build_cell_provenance(
+    code_dir: str | Path,
+    *,
+    run_id: str | None = None,
+    generated_at: str | None = None,
+) -> Path:
+    """Write a HARNESS-owned ``provenance.json`` from cells.json + metrics.json.
+
+    Returns the path (even on error — fail-soft). See the module-level note above.
+    """
+    code = Path(code_dir)
+    cells_doc = _safe_load_json(code / "cells.json")
+    if isinstance(cells_doc, dict):
+        cells = cells_doc.get("cells")
+        search = cells_doc.get("search")
+    elif isinstance(cells_doc, list):
+        cells, search = cells_doc, None
+    else:
+        cells, search = None, None
+    metrics = _latest_metrics(code)
+    per_model = metrics.get("per_model") if isinstance(metrics, dict) else None
+
+    experiments: dict[str, Any] = {}
+    for cell in (cells or []):
+        if not isinstance(cell, dict) or not cell.get("id"):
+            continue
+        cid = str(cell["id"])
+        rec: dict[str, Any] = {}
+        for axis in ("model_key", "env", "baseline"):
+            if cell.get(axis) is not None:
+                rec[axis] = cell[axis]
+        flat = {
+            **(cell.get("params") if isinstance(cell.get("params"), dict) else {}),
+            **{k: v for k, v in cell.items() if k != "params"},
+        }
+        for k in _PROVENANCE_PARAM_KEYS:
+            if k in flat:
+                rec[k] = flat[k]
+        mrec = _lookup_cell_metric(per_model, rec.get("model_key"), rec.get("env"), rec.get("baseline"))
+        if isinstance(mrec, dict):
+            for k in _PROVENANCE_PARAM_KEYS:
+                if k in mrec and k not in rec:
+                    rec[k] = mrec[k]
+        experiments[cid] = rec
+
+    # Merge an agent-emitted provenance.json (agent semantic fields preserved).
+    existing = _safe_load_json(code / "provenance.json")
+    if isinstance(existing, dict) and isinstance(existing.get("experiments"), dict):
+        for eid, arec in existing["experiments"].items():
+            if isinstance(arec, dict):
+                experiments[str(eid)] = {**experiments.get(str(eid), {}), **arec}
+
+    payload: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "source": "harness_cell_provenance",
+        "run_id": run_id,
+        "generated_at": generated_at,
+        "experiments": {k: _summarize_experiment(v) for k, v in experiments.items()},
+    }
+    lr_search = _summarize_lr_search(search, per_model)
+    if lr_search:
+        payload["lr_search"] = lr_search
+
+    target = code / "provenance.json"
+    try:
+        code.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    except Exception:  # noqa: BLE001 — fail-soft: never break the run.
+        pass
+    return target
+
+
 def emit_figure_sidecar(
     png_path: str | Path,
     *,

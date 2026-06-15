@@ -5030,6 +5030,17 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
             (code / "metrics.json").write_text(blob, encoding="utf-8")
         except OSError as exc:  # noqa: BLE001 — persistence failure must not crash the run
             logger.warning("cell-matrix: failed to persist aggregated metrics.json: %s", exc)
+        # Issue #3 (2026-06-15): harness-owned provenance manifest from cells.json +
+        # the aggregated metrics — so the eval-protocol leaves can confirm the recipe
+        # (per-cell lr/epochs/seed/batch + the searched lr grid) EVEN WHEN the agent
+        # never called emit_provenance. Only for real aggregated metrics (per_model
+        # present), never the pre-grid smoke block. Fail-soft; merges an agent file.
+        if isinstance(m, dict) and m.get("per_model"):
+            try:
+                from backend.agents.rlm import provenance as _prov
+                _prov.build_cell_provenance(code, run_id=run_id)
+            except Exception:  # noqa: BLE001 — provenance must never break the run
+                logger.debug("cell-matrix: provenance build failed (non-fatal)", exc_info=True)
 
     try:
         manifest = json.loads((code / "cells.json").read_text(encoding="utf-8"))
