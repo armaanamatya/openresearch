@@ -1,0 +1,51 @@
+# commands.log — Deep Residual Learning Reproduction
+# Paper: He et al. 2016, arXiv:1512.03385
+# Mode: Implement From Paper (no usable reference repo)
+# ────────────────────────────────────────────────────────────────────────────
+
+# Assumptions applied: ENV001, ENV002, ENV-RT1
+
+# Smoke test (pre-run check, any cell)
+python train_cell.py
+# env: REPROLAB_SMOKE_STEPS=1  REPROLAB_CELL_PARAMS='{"id":"resnet_56__cifar10__resnet__s42","model_key":"resnet_56","baseline":"resnet","env":"cifar10","n":9,"depth":56,"use_residual":true,"shortcut_option":"A","seed":42,"est_vram_gb":2.5}'
+
+# Full cell training (each cell run by harness via cells.json + train_cell.py):
+python train_cell.py
+# env: REPROLAB_CELL_PARAMS='<cells.json entry as JSON>' REPROLAB_CELL_OUTPUT_DIR='/artifacts/cells/<cell_id>'
+
+# Cells in order (harness runs up to 3 in parallel, one per GPU):
+# 1. plain_20__cifar10__plain__s42     (n=3,  depth=20, plain)
+# 2. plain_32__cifar10__plain__s42     (n=5,  depth=32, plain)
+# 3. plain_44__cifar10__plain__s42     (n=7,  depth=44, plain)
+# 4. plain_56__cifar10__plain__s42     (n=9,  depth=56, plain)
+# 5. resnet_20__cifar10__resnet__s42   (n=3,  depth=20, resnet)
+# 6. resnet_32__cifar10__resnet__s42   (n=5,  depth=32, resnet)
+# 7. resnet_44__cifar10__resnet__s42   (n=7,  depth=44, resnet)
+# 8. resnet_56__cifar10__resnet__s42   (n=9,  depth=56, resnet)
+# 9. resnet_110__cifar10__resnet__s42  (n=18, depth=110, resnet, warmup)
+
+# Aggregation / finalization (after all cells complete):
+python train.py --aggregate-only
+
+# Standalone fallback (if cells.json runner unavailable):
+python train.py
+# Runs resnet_56 + plain_56, then aggregates
+
+# Expected outputs (each cell):
+#   $OUTPUT_DIR/metrics.json              (global, updated atomically after each cell)
+#   $CELL_OUTPUT_DIR/metrics.json         (per-cell flat dict)
+#   $CELL_OUTPUT_DIR/checkpoint_best_<key>.pt
+#   $CELL_OUTPUT_DIR/checkpoint_final_<key>.pt
+#   $CELL_OUTPUT_DIR/training_curves.json
+#   $CELL_OUTPUT_DIR/fig_<key>.png + .json sidecar
+#   $CELL_OUTPUT_DIR/provenance.json
+#   $CELL_OUTPUT_DIR/config_used.json
+#   $OUTPUT_DIR/README.md
+
+# Environment variables used:
+#   OUTPUT_DIR               - global writable artifact dir
+#   REPROLAB_CELL_OUTPUT_DIR - per-cell writable dir
+#   REPROLAB_CELL_PARAMS     - JSON of cells.json entry
+#   REPROLAB_SMOKE_STEPS     - if set, run smoke test only
+#   REPROLAB_CELL_BATCH_SCALE - float [0,1] to scale batch size (OOM retry)
+#   HF_HOME                  - huggingface cache (not used; CIFAR-10 via torchvision)

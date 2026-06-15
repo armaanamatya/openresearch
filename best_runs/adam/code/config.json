@@ -1,53 +1,86 @@
 {
-  "adam":         {"lr": 0.001, "beta1": 0.9, "beta2": 0.999, "eps": 1e-8},
-  "adamax":       {"lr": 0.002, "beta1": 0.9, "beta2": 0.999},
-  "sgd_nesterov": {"lr": 0.01,  "momentum": 0.9, "nesterov": true},
-  "adagrad":      {"lr": 0.01,  "eps": 1e-8},
-  "rmsprop":      {"lr": 0.001, "alpha": 0.99, "eps": 1e-8},
-  "adadelta":     {"lr": 1.0,   "rho": 0.95, "eps": 1e-6},
+  "paper": "Kingma & Ba (2014) Adam: A Method for Stochastic Optimization",
+  "arxiv_id": "1412.6980",
+  "assumptions_applied": ["ENV001", "ENV002", "ENV003"],
 
-  "mnist_logistic": {
-    "batch_size": 128,
-    "epochs_gpu": 200,
-    "epochs_cpu": 10,
-    "lr_decay": "alpha_t = alpha / sqrt(t)"
+  "adam": {
+    "lr": 0.001,
+    "betas": [0.9, 0.999],
+    "eps": 1e-8,
+    "comment": "Algorithm 1 defaults from Section 2 caption"
   },
-  "imdb_logistic": {
+  "adamax": {
+    "lr": 0.002,
+    "betas": [0.9, 0.999],
+    "comment": "Algorithm 2 defaults from Section 7.1"
+  },
+  "sgd_nesterov": {
+    "lr": 0.01,
+    "momentum": 0.9
+  },
+  "adagrad": {
+    "lr": 0.01,
+    "eps": 1e-8
+  },
+  "rmsprop": {
+    "lr": 0.001,
+    "rho": 0.9,
+    "eps": 1e-8
+  },
+  "adadelta": {
+    "rho": 0.95,
+    "eps": 1e-6
+  },
+
+  "lr_grid_adam": [0.0001, 0.001, 0.003],
+  "lr_grid_sgd":  [0.001, 0.01, 0.1],
+  "lr_grid_ada":  [0.001, 0.01, 0.1],
+  "momentum_grid": [0.5, 0.9],
+
+  "mnist_lr": {
     "batch_size": 128,
-    "epochs_gpu": 100,
-    "epochs_cpu": 5,
-    "vocab_size": 10000,
+    "iterations_cpu": 300,
+    "iterations_gpu": 2000,
+    "weight_decay": 1e-5,
+    "stepsize_decay": "1/sqrt(t)",
+    "comment": "Section 6.1 — MNIST multi-class logistic regression"
+  },
+  "imdb_lr": {
+    "batch_size": 128,
+    "iterations_cpu": 100,
+    "iterations_gpu": 500,
+    "n_words": 10000,
+    "dropout_input": 0.5,
+    "weight_decay": 1e-5,
+    "stepsize_decay": "1/sqrt(t)",
+    "comment": "Section 6.1 — IMDB BoW sparse logistic regression"
+  },
+  "mlp_mnist": {
+    "batch_size": 128,
+    "hidden_size": 1000,
+    "n_layers": 2,
     "dropout": 0.5,
-    "lr_decay": "alpha_t = alpha / sqrt(t) for SGD+Nesterov and AdaGrad"
-  },
-  "mnist_mlp": {
-    "batch_size": 128,
-    "epochs_gpu": 200,
-    "epochs_cpu": 10,
-    "hidden_sizes": [1000, 1000],
-    "dropout": 0.5
+    "weight_decay": 1e-5,
+    "iterations_cpu": 300,
+    "iterations_gpu": 2000,
+    "comment": "Section 6.2 — 2-layer MLP with 1000 ReLU units each"
   },
   "cifar10_cnn": {
     "batch_size": 128,
-    "epochs_gpu": 45,
     "epochs_cpu": 3,
-    "architecture": "c64-c64-c128-1000",
-    "conv_kernel": "5x5",
-    "pool": "3x3 stride 2",
-    "whitening": true,
-    "input_dropout": 0.2,
-    "fc_dropout": 0.5
+    "epochs_gpu": 45,
+    "dropout_input": 0.2,
+    "dropout_fc": 0.5,
+    "comment": "Section 6.3 — c64-c64-c128-1000 ConvNet, 45 epochs"
   },
-  "vae_sweep": {
+  "vae_mnist": {
+    "batch_size": 100,
+    "latent_dim": 20,
+    "hidden_dim": 400,
+    "epochs_cpu": 5,
     "epochs_gpu": 100,
-    "epochs_cpu": 15,
-    "batch_size": 128,
-    "latent_dim": 50,
-    "hidden_dim": 500,
-    "hidden_activation": "softplus",
-    "beta1_values":   [0.0, 0.9],
-    "beta2_values":   [0.99, 0.999, 0.9999],
-    "log10_lr_values": [-5, -4, -3, -2, -1]
+    "comment": "Section 6.4 — VAE bias-correction comparison"
   },
+
   "seed": 42
 }

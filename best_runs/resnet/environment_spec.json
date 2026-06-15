@@ -1,0 +1,58 @@
+{
+  "dockerfile": "FROM python:3.11-slim\n\nRUN apt-get update && apt-get install -y --no-install-recommends \\\n    git \\\n    && rm -rf /var/lib/apt/lists/*\n\nRUN pip install --no-cache-dir torch==2.2.0 torchvision==0.17.0\nRUN pip install --no-cache-dir matplotlib==3.8.0 numpy==1.26.4 tqdm==4.66.0\n\nWORKDIR /workspace\nCOPY . /workspace/\n\nCMD [\"python\", \"train.py\"]\n",
+  "python_version": "3.11",
+  "framework": "pytorch",
+  "framework_version": "2.2.0",
+  "system_packages": [],
+  "pip_packages": {
+    "torch": "2.2.0",
+    "numpy": "1.26.4",
+    "torchvision": "0.17.0",
+    "matplotlib": "3.8.0",
+    "tqdm": "4.66.0"
+  },
+  "assumptions": [
+    {
+      "assumption_id": "ENV001",
+      "detail": "pytorch version not explicitly stated in paper",
+      "chosen_value": "2.2.0",
+      "evidence": [
+        "Inferred from paper date and compatibility"
+      ],
+      "risk": "medium",
+      "verified_by": null
+    },
+    {
+      "assumption_id": "ENV002",
+      "detail": "Python version not specified",
+      "chosen_value": "3.11",
+      "evidence": [
+        "Compatible with pytorch==2.2.0"
+      ],
+      "risk": "low",
+      "verified_by": null
+    },
+    {
+      "assumption_id": "ENV003",
+      "detail": "GPU requirement",
+      "chosen_value": "CPU only (no GPU required)",
+      "evidence": [
+        "No GPU mentioned in paper"
+      ],
+      "risk": "low",
+      "verified_by": null
+    },
+    {
+      "assumption_id": "ENV-RT1",
+      "detail": "Runtime hardware (harness-measured)",
+      "chosen_value": "3\u00d7 CUDA GPU available to this run (24 GB VRAM each). Regardless of what the paper mentions, prefer CUDA and scale experiments (epochs, model sizes, grids) to this hardware rather than planning CPU-only smoke runs.",
+      "evidence": [
+        "harness describe_capacity probe: 3 free GPU(s), per-GPU budget 24.0 GB"
+      ],
+      "risk": "low",
+      "verified_by": "harness"
+    }
+  ],
+  "compatibility_notes": "Generated for pytorch==2.2.0 on CPU.",
+  "extra": {}
+}

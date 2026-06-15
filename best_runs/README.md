@@ -1,18 +1,21 @@
 # Best runs
 
-End-to-end reproductions from the OpenResearch agent — clean single runs (All-CNN, Adam, VAE) and one multi-attempt campaign on the hard SDAR stress paper. PDF in, scored reproduction out, no human in the loop on the coding side.
+End-to-end reproductions from the OpenResearch agent — clean single runs (All-CNN, Adam, ResNet, VAE) and one multi-attempt campaign on the hard SDAR stress paper. PDF in, scored reproduction out, no human in the loop on the coding side.
 
 | Paper | Verdict | Rubric | Iter | Wall |
 |---|---|---:|---:|---:|
 | [Striving for Simplicity: The All Convolutional Net (Springenberg et al., 2014)](allcnn/) | reproduced | **0.744** | 14 | 7h25m |
-| Adam: A Method for Stochastic Optimization (Kingma & Ba, 2014) | reproduced | 0.741 | 19 | 16m |
+| [Adam: A Method for Stochastic Optimization (Kingma & Ba, 2014)](adam/) | reproduced | **0.831** | 4 | 2h36m |
+| [ResNet: Deep Residual Learning for Image Recognition (He et al., 2015)](resnet/) | reproduced | 0.620 | 4 | 1h55m |
 | Auto-Encoding Variational Bayes (Kingma & Welling, 2013) | partial | 0.646 | 3 | 30m |
 | [SDAR: Self-Distilled Agentic RL (2605.15155)](sdar/) — 4-attempt campaign | partial | 0.363 | 10 | 197m |
 | [All-CNN — with/without-BES A/B, 2 paired runs (2026-06-11)](allcnn_ab/) | A/B | **+0.085 BES** | 10+10 | ~13.4h ×2 |
 | [Adam — with/without-BES A/B, confounded (2026-06-12)](adam_ab/) | A/B | −0.183 BES¹ | 6+7 | 14.6h / 20h |
 | [OmniZip: Audio-Guided Token Compression (2511.14582)](omnizip/) | reproduced | **0.692** | 1 | 5h55m |
 
-Each subdirectory carries the final report (`final_report.json` + `.md`), the auto-derived rubric, the leaf-by-leaf grading, the environment spec, the generated training code, and the telemetry sidecars (token counts, per-primitive timing, cost ledger, every `run_experiment` result).
+Each subdirectory carries the final report (`final_report.json` + `.md`), the auto-derived rubric, the leaf-by-leaf grading, the environment spec, the generated training code (weights/`outputs/` excluded), and the telemetry sidecars (token counts, per-primitive timing, cost ledger, every `run_experiment` result).
+
+**Grading note (2026-06-14):** the Adam and All-CNN scores above were graded *before* the metrics-truncation fix (commit `f3a69ceb`, "G1") — the old grader serialized wide-grid `metrics.json` and hard-truncated it at 32 KB, hiding the later-sorted model results from the LLM grader. Re-grading the **same evidence** on the fixed grader lifts them: **Adam +0.0607 on identical leaves** (0.8164 → 0.8771), **All-CNN 0.744 → 0.762**. So the Rubric column is a floor; `rubric_evaluation_g1regrade.json` (where present) carries the fair re-grade. **ResNet** was graded by G1 natively — its 0.620 reflects the *auto-rubric* ceiling (no curated bundle), not truncation: the reproduction itself is unambiguous (resnet-110 **6.68% ≈ paper 6.43%**, plain nets degrade while ResNets improve with depth).
 
 The **SDAR campaign** (`sdar/`) is shaped differently: it packages four back-to-back attempts from 2026-05-31→06-01 — three infrastructure failures (GPU contention, a launch crash, a dead dataset endpoint) and one scored `partial` — each with its own run logs and token-usage logs. See [`sdar/README.md`](sdar/README.md) for the per-attempt breakdown and the campaign token table.
 

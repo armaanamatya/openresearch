@@ -1,0 +1,87 @@
+{
+  "paper": "He et al. 2016, Deep Residual Learning for Image Recognition, arXiv:1512.03385",
+  "section": "Section 4.2 CIFAR-10 experiments",
+  "architecture": {
+    "type": "CIFAR-ResNet / Plain-Net",
+    "formula": "6n+2 total weighted layers",
+    "first_conv": "3x3, 16 filters",
+    "stages": [
+      {"feature_map": "32x32", "filters": 16, "blocks": "2n"},
+      {"feature_map": "16x16", "filters": 32, "blocks": "2n"},
+      {"feature_map":  "8x8", "filters": 64, "blocks": "2n"}
+    ],
+    "pooling": "global average pool",
+    "classifier": "10-way FC",
+    "shortcut_option": "A",
+    "shortcut_option_A_note": "zero-padding identity, no extra parameters",
+    "shortcut_option_B_note": "1x1 conv projection with stride, only at dimension increases",
+    "initialization": "He/MSRA (kaiming_normal)",
+    "batch_norm": "after each conv, before activation",
+    "dropout": "none"
+  },
+  "depths": {
+    "n3_depth20": "ResNet-20 / Plain-20",
+    "n5_depth32": "ResNet-32 / Plain-32",
+    "n7_depth44": "ResNet-44 / Plain-44",
+    "n9_depth56": "ResNet-56 / Plain-56",
+    "n18_depth110": "ResNet-110 (ResNet only; warm-up required)"
+  },
+  "optimizer": {
+    "type": "SGD",
+    "momentum": 0.9,
+    "weight_decay": 0.0001,
+    "nesterov": false,
+    "initial_lr": 0.1,
+    "lr_schedule": "step",
+    "milestones_iters": [32000, 48000],
+    "gamma": 0.1,
+    "total_iters": 64000
+  },
+  "warmup": {
+    "applies_to": "resnet_110 only",
+    "warmup_lr": 0.01,
+    "switch_condition": "train_error < 80% (approx 400 iters)",
+    "note": "Paper: 'we start with a learning rate of 0.01 and train until the training error is below 80% (about 400 iterations), and then switch back to 0.1 and use the normal schedule'"
+  },
+  "training": {
+    "batch_size": 128,
+    "num_workers": 4,
+    "pin_memory": true
+  },
+  "data": {
+    "dataset": "CIFAR-10",
+    "train_size": 50000,
+    "test_size": 10000,
+    "train_augmentation": [
+      "zero-pad 4px on each side (constant fill=0)",
+      "random 32x32 crop",
+      "random horizontal flip"
+    ],
+    "test_augmentation": "none (single view of original 32x32)",
+    "normalization_mean": [0.4914, 0.4822, 0.4465],
+    "normalization_std": [0.2023, 0.1994, 0.2010],
+    "normalization_note": "per-channel (proxies per-pixel mean subtraction from paper)"
+  },
+  "out_of_scope": {
+    "imagenet": "Requires ~138 GB dataset + multi-day training",
+    "resnet_1202": "n=200; ~11x compute of resnet-110, beyond budget",
+    "resnet_110_5seeds": "Paper reports mean±std over 5 seeds; we run 1 seed"
+  },
+  "assumptions_applied": ["ENV001", "ENV002", "ENV-RT1"],
+  "expected_results": {
+    "resnet_20":  {"test_error_pct": 8.75},
+    "resnet_32":  {"test_error_pct": 7.51},
+    "resnet_44":  {"test_error_pct": 7.17},
+    "resnet_56":  {"test_error_pct": 6.97},
+    "resnet_110": {"test_error_pct": 6.43, "note": "best of 5 runs; mean=6.61±0.16"},
+    "plain_20":   {"test_error_pct": "~8.96 (paper Table 6)"},
+    "plain_32":   {"test_error_pct": "~7.68"},
+    "plain_44":   {"test_error_pct": "~7.42"},
+    "plain_56":   {"test_error_pct": "~7.93 (DEGRADATION: higher than plain-44!)"}
+  },
+  "degradation_contrast": {
+    "description": "The core claim: plain nets get worse with depth (degradation), ResNets get better",
+    "plain_trend": "plain-20 < plain-32 < plain-44; plain-56 regresses vs plain-44 (degradation)",
+    "resnet_trend": "resnet-110 < resnet-56 < resnet-44 < resnet-32 < resnet-20 (monotone improvement)"
+  }
+}

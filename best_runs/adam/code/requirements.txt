@@ -1,6 +1,8 @@
-# Adam paper reproduction — requirements
-# NOTE: torch, torchvision are PRE-INSTALLED on RunPod pytorch images — NOT listed here
+# Requirements for Adam paper reproduction (arXiv:1412.6980)
+# torch and accelerate are pre-installed in the venv; listed here for documentation only
+datasets==2.18.0
+huggingface-hub==0.21.4
 matplotlib==3.8.0
 numpy==1.26.4
+torchvision==0.17.0
 tqdm==4.66.0
-datasets==2.18.0
