@@ -48,6 +48,27 @@ def _scan_wsl_windows_credentials() -> str | None:
     return None
 
 
+def _bundled_claude_path() -> str | None:
+    """Path to the ``claude-agent-sdk``'s OWN bundled ``claude`` binary, if present
+    and executable.
+
+    The SDK spawns this bundled CLI for sub-agent calls (not the system ``claude``),
+    so its presence proves the runtime can run even when the system install is broken
+    or absent. Used as a fallback in the OAuth-detection gate so a corrupt system
+    ``claude`` (2026-06-15: symlinked to a Windows ``.exe``) can't hide a valid
+    subscription. Fail-soft: any import/stat error → None.
+    """
+    try:
+        import claude_agent_sdk  # noqa: PLC0415 — lazy; only needed for the fallback probe
+
+        candidate = os.path.join(os.path.dirname(claude_agent_sdk.__file__), "_bundled", "claude")
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    except Exception:  # noqa: BLE001 — detection must never raise.
+        return None
+    return None
+
+
 def _has_claude_subscription_oauth() -> bool:
     """Detect a working Claude Code subscription that ``claude-agent-sdk`` can use.
 
@@ -85,8 +106,17 @@ def _has_claude_subscription_oauth() -> bool:
     """
     # 1. POSIX user home — the canonical location the SDK reads from.
     if os.path.isfile(os.path.expanduser("~/.claude/.credentials.json")):
-        # On non-Windows, also verify claude binary is available.
-        if sys.platform == "win32" or shutil.which("claude") is not None:
+        # On non-Windows, also verify a claude binary the SDK can spawn is available
+        # — the system `claude` on PATH OR the claude-agent-sdk's OWN bundled binary.
+        # A broken/missing system install must not hide a valid OAuth session
+        # (2026-06-15: a botched npm update symlinked the system `claude` to a Windows
+        # `.exe`, so shutil.which found a non-executable binary and OAuth detection
+        # falsely returned False — killing every run at model resolution).
+        if (
+            sys.platform == "win32"
+            or shutil.which("claude") is not None
+            or _bundled_claude_path() is not None
+        ):
             return True
     # 2. Windows: check USERPROFILE path (Git Bash ~ may differ from USERPROFILE).
     if sys.platform == "win32":
