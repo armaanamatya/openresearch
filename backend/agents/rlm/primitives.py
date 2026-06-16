@@ -4430,6 +4430,71 @@ def _rubric_plateaued(history: list[float], window: int, epsilon: float) -> bool
     return (max(recent) - min(recent)) <= epsilon
 
 
+def _rubric_declining(history: list[float], window: int, epsilon: float) -> bool:
+    """True when recent iterations have made the rubric score WORSE.
+
+    Distinct from :func:`_rubric_plateaued` (flatline). Looks at the last
+    ``window`` recorded ``overall_score`` values and returns True when the
+    most-recent score sits more than ``epsilon`` BELOW the best score seen in
+    that window — i.e. a recent change regressed the result off its peak. This
+    is the overthinking / inverse-scaling signal (arXiv:2604.10739,
+    arXiv:2507.14417): once a run is past its peak, more iterations degrade
+    quality, so the honest move is to restore the best config and stop or change
+    approach rather than keep iterating the same direction. A flat or rising run
+    is never flagged (a flatline is ``_rubric_plateaued``'s job; a rising run is
+    real progress). Requires at least ``window`` samples so a single early dip
+    while still climbing is not mistaken for a regression. Mutually exclusive
+    with ``_rubric_plateaued`` by construction: a decline of more than epsilon
+    implies a spread of more than epsilon, so the score did not flatline.
+
+    Two conditions, both required, so a *recovering* run (dipped then climbed
+    back, e.g. ``[0.62, 0.40, 0.61]``) is NOT nagged: the latest score is
+    (a) more than epsilon BELOW the window peak (off its recent best) AND
+    (b) more than epsilon below the immediately preceding score (the last step
+    itself regressed).
+    """
+    if window <= 1 or epsilon < 0 or len(history) < window:
+        return False
+    recent = history[-window:]
+    off_peak = (max(recent) - recent[-1]) > epsilon
+    last_step_down = (recent[-2] - recent[-1]) > epsilon
+    return off_peak and last_step_down
+
+
+def _decline_advisory_note(
+    history: list[float],
+    window: int,
+    epsilon: float,
+    *,
+    meets_target: bool,
+    current_iteration: int,
+    min_iterations: int,
+    overall_score: float,
+    target: float,
+) -> str | None:
+    """Build the regression ``convergence_note``, or None when it should not fire.
+
+    Fires only when the run is below target, past the iteration floor, and
+    :func:`_rubric_declining` (the score peaked and recent changes made it
+    worse). Pure + deterministic — no env reads, no I/O — so the full firing
+    decision is unit-testable without the LLM grader. The
+    ``REPROLAB_RUBRIC_DECLINE_ADVISORY`` flag gate stays at the call site; the
+    advisory is a tool-result observation the root reads, never a forced stop.
+    """
+    if meets_target or current_iteration < min_iterations:
+        return None
+    if not _rubric_declining(history, window, epsilon):
+        return None
+    best = max(history[-window:])
+    return (
+        f"REGRESSING: rubric overall_score has DECLINED to ~{overall_score:.3f} from a recent "
+        f"high of ~{best:.3f} over the last {window} verifications (< target {target:.3f}). Your "
+        "recent changes are net-negative — more iterations past the peak degrade the result. "
+        "RESTORE your best-scoring configuration and either call FINAL_VAR with it or change the "
+        "APPROACH (a materially different hypothesis); do NOT keep iterating the same direction."
+    )
+
+
 # Top-level metrics keys that are run metadata / sidecar blocks, never an
 # experiment family — excluded from per_model derivation.
 _PER_MODEL_RESERVED_KEYS: frozenset[str] = frozenset({
@@ -6803,6 +6868,35 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
                     "attached convergence_note.",
                     getattr(ctx, "run_id", getattr(ctx, "project_id", "?")), overall_score, _win,
                 )
+            # §3.5 (2026-06-16 grader-noise companion): a DECLINING trajectory is
+            # the overthinking / inverse-scaling signal the flatline check above
+            # misses — the score peaked and recent changes made it WORSE, yet the
+            # run keeps looping to the cap, degrading further. When enabled, advise
+            # the root to RESTORE its best config rather than repeat the
+            # net-negative change. Flag-gated default-OFF so the existing plateau
+            # behaviour is byte-identical when unset; purely advisory (a note in
+            # the verify result, never a forced stop — the hard rails are the
+            # iteration cap + wall-clock watchdog). The note is a tool-result
+            # observation, not the root's own prose — the framing the
+            # self-correction literature (arXiv:2606.05976) says maximises uptake.
+            elif _os.environ.get("REPROLAB_RUBRIC_DECLINE_ADVISORY", "").strip() in (
+                "1", "true", "yes",
+            ):
+                _decline_note = _decline_advisory_note(
+                    _hist, _win, _eps,
+                    meets_target=meets_target,
+                    current_iteration=_cur_iter,
+                    min_iterations=_floor,
+                    overall_score=overall_score,
+                    target=target,
+                )
+                if _decline_note:
+                    result["convergence_note"] = _decline_note
+                    logger.info(
+                        "verify_against_rubric[%s]: rubric declining over %d iters — "
+                        "attached regression convergence_note.",
+                        getattr(ctx, "run_id", getattr(ctx, "project_id", "?")), _win,
+                    )
         except Exception:  # noqa: BLE001 — convergence hint is augmenting, never fatal
             logger.exception("verify_against_rubric: plateau detection failed")
 
