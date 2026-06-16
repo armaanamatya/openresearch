@@ -1,0 +1,19 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Partial GCS backend configuration for the DeepInvent environment.
+#
+# Usage:
+#   cp backend.hcl.example backend.hcl
+#   # Fill in the placeholders below
+#   terraform init -backend-config=envs/deepinvent/backend.hcl
+#
+# The state bucket must be created by the bootstrap module BEFORE running
+# terraform init here.
+#
+# NEVER commit backend.hcl (contains project-specific names).
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Name of the GCS bucket created by the bootstrap module.
+bucket = "your-prefix-tfstate"
+
+# Object-name prefix for this environment's state within the bucket.
+prefix = "deepinvent/state"

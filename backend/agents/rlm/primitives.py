@@ -5513,7 +5513,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         from backend.agents.rlm import execution_smoke as _execution_smoke_cm
         if (
             _execution_smoke_cm.is_enabled()
-            and _sb_key_ecm != "azure"
+            and _sb_key_ecm not in ("azure", "gcp")
             and gpus
             and len(kept) > 1
         ):
@@ -5534,7 +5534,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     # failure). Shape-gated + local/docker only; no `search` key → the legacy
     # single-phase dispatch below runs byte-for-byte unchanged.
     matrix_result = None
-    if _sb_key_ecm != "azure":
+    if _sb_key_ecm not in ("azure", "gcp"):
         _staged_groups = []
         try:
             from backend.agents.rlm import staged_search as _ss
@@ -5603,10 +5603,11 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
             matrix_result = _staged_out.get("results") or {}
             kept = _staged_out.get("kept_cells") or []
 
-    if matrix_result is None and _sb_key_ecm == "azure":
-        with k8s_job_cell_runner.bind_run_context(
-            run_budget=_run_budget_ecm, event_sink=_event_sink_ecm, gpu_plan=_ecm_gpu_plan
-        ):
+    if matrix_result is None and _sb_key_ecm in ("azure", "gcp"):
+        with k8s_job_cell_runner._bind_settings_prefix(_sb_key_ecm), \
+             k8s_job_cell_runner.bind_run_context(
+                 run_budget=_run_budget_ecm, event_sink=_event_sink_ecm, gpu_plan=_ecm_gpu_plan,
+             ):
             matrix_result = k8s_job_cell_runner.run_matrix(
                 kept, str(code / "train_cell.py"),
                 output_root=str(artifact_root),

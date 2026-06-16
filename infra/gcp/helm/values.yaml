@@ -1,0 +1,135 @@
+# ---------------------------------------------------------------------------
+# ReproLab GKE L2 Helm values
+#
+# VALUES ↔ TERRAFORM OUTPUT MAPPING
+# Every value marked [TF: <output>] must be sourced from `terraform output`
+# after `terraform apply`.  Values marked [tfvar: <var>] come from the
+# envs/deepinvent/main.tfvars file, not from Terraform outputs.  One-liner:
+#   helm install reprolab-gke ./infra/gcp/helm \
+#     --set workloadIdentity.gcpServiceAccount=$(terraform -chdir=infra/gcp output -raw workload_identity_gcp_service_account) \
+#     --set storage.bucket=$(terraform -chdir=infra/gcp output -raw gcs_bucket_name) \
+#     --set image.gkeCellBase=$(terraform -chdir=infra/gcp output -raw artifact_registry_url)/gke-cell-base:0.1.0
+# See README.md for the full one-liner (with Filestore + RBAC) and mapping table.
+# ---------------------------------------------------------------------------
+
+# -- Kubernetes namespace that the chart creates and all resources live in.
+# [tfvar: workload_identity_namespace]  (envs/deepinvent/main.tfvars)
+namespace: reprolab
+
+# -- Name of the Kubernetes ServiceAccount (must match the Workload Identity
+#    member `<project>.svc.id.goog[<namespace>/<serviceAccountName>]`).
+# [tfvar: workload_identity_service_account]  (envs/deepinvent/main.tfvars)
+serviceAccountName: reprolab-sa
+
+# ---------------------------------------------------------------------------
+# Workload Identity — MANDATORY; sourced from the `identity` Terraform module.
+# On GKE, binding is via the KSA annotation iam.gke.io/gcp-service-account.
+# There is NO `azure.workload.identity/use` pod label on GKE.
+# ---------------------------------------------------------------------------
+workloadIdentity:
+  # Email of the GCP IAM service account the KSA impersonates.
+  # [TF: workload_identity_gcp_service_account]
+  gcpServiceAccount: ""   # REQUIRED — fill from `terraform output -raw workload_identity_gcp_service_account`
+
+# ---------------------------------------------------------------------------
+# Storage — sourced from the `storage` Terraform module.
+# ---------------------------------------------------------------------------
+storage:
+  # Name of the GCS bucket holding the artifact bus
+  # (runs/<id>/code/**, runs/<id>/cells/**).
+  # [TF: gcs_bucket_name]
+  bucket: ""   # REQUIRED — fill from `terraform output -raw gcs_bucket_name`
+
+  # Name of the Filestore file share to mount as the shared RWX cache PVC.
+  # Leave "" to SKIP the Filestore StorageClass + PVC entirely (Jobs use an
+  # emptyDir / GCS-only cache — matches filestore_enabled = false in Terraform).
+  # [TF: filestore_share]
+  filestoreShare: ""
+
+  # IP address of the Filestore instance backing the RWX share.
+  # REQUIRED only when filestoreShare is set.
+  # [TF: filestore_ip]
+  filestoreIp: ""
+
+  # Size of the PersistentVolumeClaim bound to the Filestore share.
+  # Must be <= the Filestore instance capacity set in Terraform.
+  pvcSize: "1024Gi"
+
+  # StorageClass reclaim policy: Retain keeps the underlying share on chart delete.
+  reclaimPolicy: Retain
+
+# ---------------------------------------------------------------------------
+# GPU node pools — sourced from the `gpu_nodepool` Terraform module.
+#
+# With the parameterized gpu_skus design, every GPU pool shares:
+#   taintKey    = nvidia.com/gpu   (NoSchedule, tolerated by Job pods)
+#   skuLabelKey = reprolab/sku     (the primary Job nodeSelector key)
+#
+# Job pods target a specific pool via:
+#   nodeSelector:
+#     reprolab/sku: <defaultSku>    (or the plan's short_name at runtime)
+#
+# [TF: gpu_pools output]  Use gpu_pools[<short_name>].sku_label for each pool.
+# ---------------------------------------------------------------------------
+gpu:
+  # Label key used to identify the target GPU pool in Job nodeSelectors.
+  # Every GPU node pool is labeled reprolab/sku=<catalog short_name>.
+  # [TF: gpu_sku_label_key]  constant: "reprolab/sku"
+  skuLabelKey: reprolab/sku
+
+  # Taint key applied to ALL GPU-pool nodes (value "present", effect NoSchedule).
+  # Job pods tolerate this with operator: Exists.
+  # [TF: gpu_taint_key]  constant: "nvidia.com/gpu"
+  taintKey: nvidia.com/gpu
+
+  # Default GPU SKU for smoke jobs and as the orchestrator fallback.
+  # Must match a short_name in var.gpu_skus (i.e. a provisioned pool).
+  # [TF: gpu_pools — first entry's sku_label]
+  defaultSku: gcp_a100_80
+
+# ---------------------------------------------------------------------------
+# RBAC — the Google identities bound to the Job-management Role.
+# ---------------------------------------------------------------------------
+rbac:
+  # Google IAM members granted create/watch/delete on Jobs in the namespace.
+  # Each entry is "user:<email>" or "group:<email>" — the prefix selects the
+  # RoleBinding subject kind (User / Group).
+  # [tfvar: operator_iam_members]  (envs/deepinvent/main.tfvars — not a TF output)
+  operatorMembers: []   # e.g. ["user:alice@example.com", "group:team@example.com"]
+
+# ---------------------------------------------------------------------------
+# Artifact Registry / image — sourced from the `registry` Terraform module.
+# ---------------------------------------------------------------------------
+image:
+  # Full Artifact Registry image ref for GKE cell Jobs.
+  # [TF: artifact_registry_url] + "/gke-cell-base:<PINNED-tag>"
+  # e.g. "us-central1-docker.pkg.dev/my-project/reprolab/gke-cell-base:0.1.0"
+  gkeCellBase: ""   # REQUIRED — fill from `terraform output -raw artifact_registry_url`
+
+# ---------------------------------------------------------------------------
+# ResourceQuota limits for the namespace.
+# Sizing rules (override in envs/<env>/helm-values.yaml as needed):
+#   maxGpu / maxGpuLimits = Σ(pool max_nodes × gpu_count) across all GPU pools.
+#     Default single A100-80 pool (max_nodes=4, gpu_count=1) → maxGpu=4.
+#     Set to 8 here for headroom for a second pool; adjust to pool max_nodes.
+#   maxJobs >= parallelism × (1 + max_escalations) + TTL-retained finished Jobs.
+#     64 covers 2 concurrent 8-cell runs × 3 attempts + 1 hr TTL headroom.
+# ---------------------------------------------------------------------------
+resourceQuota:
+  # Hard limit on the total number of nvidia.com/gpu REQUESTED across all pods.
+  maxGpu: 8
+
+  # Hard limit on nvidia.com/gpu LIMITS (typically == maxGpu for GPU workloads).
+  maxGpuLimits: 8
+
+  # Hard limit on the number of Jobs that may exist (running + pending) in namespace.
+  maxJobs: 64
+
+# ---------------------------------------------------------------------------
+# Device plugin — GKE manages the NVIDIA device plugin via the node-pool driver
+# install (gpu_driver_installation_config), so this chart ships NO DaemonSet.
+# This block exists only for parity with the Azure mirror.  Leave disabled.
+# ---------------------------------------------------------------------------
+devicePlugin:
+  # GKE installs and manages the device plugin automatically; do NOT enable.
+  enabled: false

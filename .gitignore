@@ -147,6 +147,15 @@ reprolab.db-wal
 # Bicep parameter files with real subscription IDs — MUST NOT be committed.
 # Copy from *.bicepparam.example and fill locally; never commit the filled copy.
 infra/azure/bicep/main.bicepparam
+# Terraform state — MUST NOT be committed (can carry resource metadata / secrets).
+# Bootstrap state is written to infra/azure/bootstrap/terraform.tfstate after
+# `terraform apply`; both it and any root-level state must stay local or in the
+# remote backend configured via backend.hcl, never in git.
+infra/azure/bootstrap/terraform.tfstate
+*.tfstate
+*.tfstate.backup
+infra/azure/**/.terraform/
+infra/gcp/**/.terraform/
 
 # DeepEval runtime cache (deepeval is a real dep — cache repopulates as needed)
 .deepeval
