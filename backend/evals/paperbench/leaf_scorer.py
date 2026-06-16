@@ -1546,8 +1546,17 @@ def score_reproduction(
     invariants: list[Any] | None = None,
     operator_skip_models: list[str] | None = None,
     operator_skip_environments: list[str] | None = None,
+    operator_dataset_inclusion: list[str] | None = None,
 ) -> dict[str, Any]:
     """Grade a reproduction run against a PaperBench rubric tree.
+
+    ``operator_dataset_inclusion`` (Layer 4, 2026-06-16): the operator's INCLUSION
+    scope (paper-hint ``default_scope`` / ``--scope-spec`` datasets). Leaves about
+    datasets OUTSIDE it are excluded from grading AND the roll-up — identical to
+    :func:`finalize_rescore`, so the in-loop grade and the shipped report agree
+    instead of the agent being shown un-fixable out-of-scope leaves as "weak".
+    No-op unless ``REPROLAB_SCOPE_INCLUSION_EXCLUDE`` is on and a list is given
+    (default-OFF / omitted == today's behaviour, byte-for-byte).
 
     Returns a dict with overall_score, leaf_count, graded, rubric_source,
     leaf_scores, degraded, coverage_pct, eligible_count, unavailable_count,
@@ -1678,6 +1687,19 @@ def score_reproduction(
     # Same skip_set treatment as data-unavailable; no-op unless the flag is on.
     theory_ids: set[str] = _detect_theory_only_leaves(leaves)
     unavailable_ids |= theory_ids
+    # Layer 4 (2026-06-16): leaves about datasets OUTSIDE the operator's inclusion
+    # scope. Mirrors finalize_rescore so the IN-LOOP grade excludes the same
+    # out-of-scope leaves the finalize re-roll-up does. Without this the agent is
+    # shown un-fixable out-of-scope leaves as "weak" and rubric_evaluation.json
+    # disagrees with the shipped report (ResNet: 0.368 in-loop vs 0.620 final — the
+    # 10 ImageNet/COCO leaves on a CIFAR-10-scoped run). Excluded leaves also skip
+    # LLM grading below, so no grader call is spent on a dataset the run was never
+    # scoped to. No-op unless REPROLAB_SCOPE_INCLUSION_EXCLUDE is on AND a list is
+    # provided (default-OFF == today). Operator-sourced + in-detector guards keep
+    # it safe (a leaf that names an in-scope dataset is never excluded).
+    unavailable_ids |= _detect_out_of_inclusion_scope_leaves(
+        leaves, operator_dataset_inclusion
+    )
     skip_set: frozenset[str] = frozenset(unavailable_ids)
 
     eligible_count = len(leaves) - len(unavailable_ids)

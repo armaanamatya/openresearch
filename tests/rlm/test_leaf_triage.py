@@ -108,6 +108,50 @@ def test_protocol_gap(tmp_path):
     assert out["plan"][0]["directive"]
 
 
+def test_render_artifact_zero_figure_phrasing(tmp_path):
+    # Adam fe5e79 (2026-06-16): the grader said "shows ZERO image or figure
+    # artifacts" — a phrasing the old render regex missed, so a figure that just
+    # needed rendering from on-disk data fell to "review". Data on disk → render.
+    p = _project(tmp_path, history=True, sweep=True)
+    out = leaf_triage.triage_weak_leaves([_leaf(
+        0.0,
+        "outputs/.../metrics.json and .log files are present but the listing "
+        "shows zero image or figure artifacts; train.py has a fail-soft mpl guard",
+    )], p)
+    d = out["plan"][0]
+    assert d["repair_class"] == "render_artifact"
+    assert d["cost"] == "none" and "RENDER" in d["directive"]
+
+
+def test_cell_failure_attempted_but_no_result(tmp_path):
+    # Adam ac4006 (2026-06-16): in-scope imdb_logreg cells were ATTEMPTED
+    # (provenance lists them) but produced no per_model entry — they errored.
+    # Honest repair = re-run the failed cell, NOT exclude (that hides a real miss).
+    p = _project(tmp_path)
+    out = leaf_triage.triage_weak_leaves([_leaf(
+        0.0,
+        "metrics.json per_model has no 'imdb_logreg' entry and scope.models_run "
+        "does not include it; provenance.json lists imdb_logreg cells but they "
+        "failed to produce output",
+    )], p)
+    d = out["plan"][0]
+    assert d["repair_class"] == "cell_failure"
+    assert d["cost"] == "targeted_rerun"
+    assert "RE-RUN" in d["directive"] and "exclud" in d["directive"]
+
+
+def test_cell_failure_does_not_steal_result_quality(tmp_path):
+    # A contradiction wins result_quality even when the same justification also
+    # mentions a failed cell — cell_failure is checked LAST, only catching leaves
+    # that would otherwise be bare "review".
+    p = _project(tmp_path)
+    out = leaf_triage.triage_weak_leaves([_leaf(
+        0.0,
+        "Adam ranked last, contradicting the paper; one cell also failed to run",
+    )], p)
+    assert out["plan"][0]["repair_class"] == "result_quality"
+
+
 def test_review_fallback(tmp_path):
     p = _project(tmp_path)
     out = leaf_triage.triage_weak_leaves(

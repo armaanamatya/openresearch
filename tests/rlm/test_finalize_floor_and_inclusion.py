@@ -9,8 +9,11 @@ the denominator although the OPERATOR had scoped the run to CIFAR-10/100.
 
 from __future__ import annotations
 
+import inspect
+
 from backend.evals.paperbench.leaf_scorer import (
     _detect_out_of_inclusion_scope_leaves,
+    score_reproduction,
 )
 
 
@@ -61,3 +64,36 @@ def test_digit_aware_matching(monkeypatch):
     ]
     out = _detect_out_of_inclusion_scope_leaves(leaves, ["CIFAR-100"])
     assert out == {"A", "C"}
+
+
+# --- the REAL ResNet (prj_4627097f8362928c) out-of-scope leaves -----------------
+# Ground truth, 2026-06-16: 10 of 20 leaves were ImageNet/COCO/bottleneck on a
+# CIFAR-10-scoped run, scored 0.0 in the in-loop verify (rubric_evaluation.json
+# 0.368) but excluded at finalize (final_report 0.620). These assert the detector
+# covers every real shape so the IN-LOOP path (now Layer-4 wired) excludes them too.
+RESNET_OOS = [
+    _leaf("imagenet_train", "Train ResNet on ImageNet (256 mini-batch, 60e4 iters)"),
+    _leaf("imagenet_topk", "Report ImageNet top-1 and top-5 validation error"),
+    _leaf("coco_detect", "Evaluate Faster R-CNN on MS COCO and report mAP"),
+    _leaf("bottleneck", "Implement 3-layer bottleneck for ResNet-50/101/152 on ImageNet"),
+    _leaf("tencrop", "10-crop / multi-scale ImageNet inference at {224,256,384}"),
+    _leaf("cifar_ok", "Train ResNet-110 on CIFAR-10 and report test error"),  # in scope
+    _leaf("params", "Report the parameter count for each architecture"),       # datasetless
+]
+
+
+def test_real_resnet_imagenet_coco_leaves_excluded(monkeypatch):
+    monkeypatch.setenv("REPROLAB_SCOPE_INCLUSION_EXCLUDE", "1")
+    out = _detect_out_of_inclusion_scope_leaves(RESNET_OOS, ["CIFAR-10"])
+    assert out == {"imagenet_train", "imagenet_topk", "coco_detect",
+                   "bottleneck", "tencrop"}
+    assert "cifar_ok" not in out      # in-scope dataset → never excluded
+    assert "params" not in out        # no dataset named → kept
+
+
+def test_score_reproduction_wires_inclusion_param():
+    # The in-loop grade path (score_reproduction) must accept the operator
+    # inclusion list so Layer 4 fires in-loop, not only at finalize — otherwise
+    # the agent sees un-fixable out-of-scope leaves as "weak" (the ResNet 0.368
+    # vs 0.620 split). Signature-level proof the plumbing exists.
+    assert "operator_dataset_inclusion" in inspect.signature(score_reproduction).parameters

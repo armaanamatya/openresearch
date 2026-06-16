@@ -6663,6 +6663,16 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             operator_skip_environments=list(
                 getattr(getattr(ctx, "scope_spec", None), "skip_datasets", None) or []
             ),
+            # Layer 4 (2026-06-16): the operator's INCLUSION scope (paper-hint
+            # default_scope / --scope-spec datasets) so the in-loop grade excludes
+            # leaves about datasets the run was never scoped to — identical to the
+            # finalize re-roll-up (report.py). No-op unless REPROLAB_SCOPE_INCLUSION
+            # _EXCLUDE is on. Mirrors report.py's finalize plumbing exactly.
+            operator_dataset_inclusion=[
+                (getattr(d, "name", None) or str(d))
+                for d in (getattr(getattr(ctx, "scope_spec", None), "datasets", None) or [])
+                if d
+            ],
         )
         # Phase 0B: persist the rubric tree so the deterministic finalize re-roll-up
         # (report → leaf_scorer.finalize_rescore) can recompute the score under a

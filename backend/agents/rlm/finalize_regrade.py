@@ -223,6 +223,15 @@ def maybe_regrade(ctx: Any, report: Any) -> dict | None:
             # — nuking the very complete-grid grade this regrade exists to recover.
             degraded=False,
             invariants=list(getattr(ctx, "paper_hint_invariants", None) or []),
+            # Layer 4 (2026-06-16): exclude out-of-inclusion-scope leaves on the
+            # freshness re-grade too, so a re-grade can't re-introduce the
+            # un-excluded in-loop score. No-op unless REPROLAB_SCOPE_INCLUSION
+            # _EXCLUDE is on. Mirrors the verify_against_rubric plumbing.
+            operator_dataset_inclusion=[
+                (getattr(d, "name", None) or str(d))
+                for d in (getattr(getattr(ctx, "scope_spec", None), "datasets", None) or [])
+                if d
+            ],
         )
         fresh_score = fresh.get("overall_score")
         try:
