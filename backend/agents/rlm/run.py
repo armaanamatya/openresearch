@@ -932,6 +932,15 @@ def _partial_evidence_from_experiment_runs(project_dir: Path) -> list[dict[str, 
     return evidence
 
 
+def _notify_run_terminal(project_dir: Path) -> None:
+    """Fire the opt-in terminal webhook (no-op unless OPENRESEARCH_NOTIFY_WEBHOOK_URL is set)."""
+    try:
+        from backend.agents.rlm.run_notify import notify_run_terminal
+        notify_run_terminal(project_dir)
+    except Exception:  # noqa: BLE001 — a notification must never affect run outcome
+        logger.debug("run-notify: terminal helper raised", exc_info=True)
+
+
 def _finalize_fatal_primitive_abort(
     *,
     abort: _FatalPrimitiveAbort,
@@ -992,6 +1001,7 @@ def _finalize_fatal_primitive_abort(
         run_experiment_ok_calls=run_experiment_success_count(ctx),
         run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx)
     )
+    _notify_run_terminal(project_dir)
 
     try:
         emit(
@@ -1115,6 +1125,7 @@ def _hard_stop_with_report(
         )
     except Exception:  # noqa: BLE001
         logger.exception("run_pipeline_rlm: hard-stop could not write final report")
+    _notify_run_terminal(project_dir)
     try:
         emit(
             build_run_complete_event(
@@ -2507,6 +2518,7 @@ def _finalize(
         run_experiment_ok_calls=run_experiment_success_count(ctx),
         run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx)
     )
+    _notify_run_terminal(project_dir)
 
     # Per-paper negative lessons (MUSE-lite, OPENRESEARCH_NEGATIVE_LESSONS): mine
     # agent-correctable failures from experiment_runs.jsonl into
