@@ -313,6 +313,42 @@ def test_build_grader_client_anthropic_respects_model_override(monkeypatch, _pat
     assert client._model == "claude-opus-4-8"
 
 
+def test_build_grader_client_oauth_backend(monkeypatch):
+    # The grader can ride the Claude OAuth subscription (no API credit needed) —
+    # the most-available transport (unblocks calibration in OAuth-only envs).
+    import backend.services.context.workspace.tools.rlm_query as _rq
+
+    class _FakeOAuth:
+        def __init__(self, model=None):
+            self.model = model
+
+    monkeypatch.setattr(_rq, "ClaudeLlmClient", _FakeOAuth)
+    monkeypatch.setenv("REPROLAB_GRADER_BACKEND", "oauth")
+    monkeypatch.delenv("REPROLAB_GRADER_MODEL", raising=False)
+
+    client, label = build_grader_client(object(), "root-label")
+    assert isinstance(client, _FakeOAuth)
+    assert client.model is None  # None → ClaudeLlmClient default_oauth_model() (Sonnet)
+    assert label == "grader:oauth:claude-oauth"
+
+
+def test_build_grader_client_oauth_aliases_and_model_override(monkeypatch):
+    import backend.services.context.workspace.tools.rlm_query as _rq
+
+    class _FakeOAuth:
+        def __init__(self, model=None):
+            self.model = model
+
+    monkeypatch.setattr(_rq, "ClaudeLlmClient", _FakeOAuth)
+    monkeypatch.setenv("REPROLAB_GRADER_MODEL", "claude-opus-4-8")
+    for alias in ("claude-oauth", "anthropic-oauth"):
+        monkeypatch.setenv("REPROLAB_GRADER_BACKEND", alias)
+        client, label = build_grader_client(object(), "root-label")
+        assert isinstance(client, _FakeOAuth)
+        assert client.model == "claude-opus-4-8"
+        assert label == "grader:oauth:claude-opus-4-8"
+
+
 def test_build_grader_client_unknown_backend_falls_back(monkeypatch):
     monkeypatch.setenv("REPROLAB_GRADER_BACKEND", "bananas")
     monkeypatch.delenv("REPROLAB_GRADER_MODEL", raising=False)

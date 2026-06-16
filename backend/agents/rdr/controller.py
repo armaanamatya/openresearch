@@ -412,10 +412,21 @@ async def _dispatch_competing_candidates(
     ``code/`` downstream exactly as a single attempt would. N× token cost, 1× GPU cost.
     Fail-soft per candidate; an empty/all-failed pool returns a failed Artifacts.
     """
-    from backend.agents.rdr.candidates import Candidate, select_best
+    from backend.agents.rdr.candidates import (
+        Candidate, select_best, select_best_gated, smoke_check_candidate, ENV_SMOKE_SELECT,
+    )
     import dataclasses as _dc
+    import os as _os_d2
     import re as _re
     import shutil as _shutil
+
+    # D2: mirror the RLM path — smoke-gate the SELECT signal (drop non-runnable
+    # candidates before choosing) when REPROLAB_BES_SMOKE_SELECT is on. Off →
+    # select_best_gated is a pass-through to select_best (byte-for-byte today).
+    _smoke_select_on = _os_d2.environ.get(ENV_SMOKE_SELECT, "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    smokes: dict = {}
 
     candidates_root = code_dir.parent / "candidates"
     # Sanitize the cluster id used in the scratch path so a traversal-bearing id
@@ -478,8 +489,32 @@ async def _dispatch_competing_candidates(
             "candidate_id": cid, "cluster_id": cluster.id,
             "score": score, "failed": art_i.failed,
         })
+        # D2: one read-only AST construct/import smoke per candidate when gated on.
+        if _smoke_select_on:
+            try:
+                smokes[cid] = smoke_check_candidate(cid, cand_code_dir)
+            except Exception:  # noqa: BLE001 — smoke is advisory; never break the cluster
+                pass
 
-    winner = select_best(pool, select_metric=select_metric)
+    winner, select_decision = select_best_gated(
+        pool, select_metric=select_metric, smokes=smokes,
+    )
+    if winner is None and select_decision.get("degenerate"):
+        # D2: every runnable candidate was smoke-dropped. Do NOT fail the cluster —
+        # fall back to the plain best-by-score (pre-D2 behavior) so smoke-gating can
+        # only IMPROVE selection, never cause a total cluster failure. Emit a warning.
+        emit("run_warning", {
+            "code": "degenerate_pool",
+            "cluster_id": cluster.id,
+            "message": (
+                f"BES cluster {cluster.id}: all runnable candidates smoke-dropped "
+                f"({select_decision.get('smoke_dropped') or []}); falling back to "
+                "best-by-score."
+            ),
+            "smoke_dropped": select_decision.get("smoke_dropped"),
+            "n_candidates": len(pool),
+        })
+        winner = select_best(pool, select_metric=select_metric)
     if winner is None:
         return Artifacts(cluster_id=cluster.id, failed=True, error="BES: no candidates produced")
     emit("candidate_outcome", {

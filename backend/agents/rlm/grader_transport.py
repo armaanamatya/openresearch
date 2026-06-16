@@ -106,6 +106,17 @@ def build_grader_client(
         return fallback_client, fallback_label
 
     try:
+        if backend in ("oauth", "claude-oauth", "anthropic-oauth"):
+            # Route the grader through the Claude OAuth subscription (the
+            # most-available transport — no API credit needed; fits A5's
+            # "survives a root/CLI wedge" intent and unblocks grader calibration
+            # in OAuth-only environments). model_override or default_oauth_model()
+            # (Sonnet). Mirrors run.py::_build_llm_client's anthropic-oauth path.
+            from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
+
+            client = ClaudeLlmClient(model=model_override)
+            return client, f"grader:oauth:{model_override or 'claude-oauth'}"
+
         if backend == "anthropic":
             from backend.services.context.workspace.tools.anthropic_messages_client import (
                 DEFAULT_GRADER_MODEL,
