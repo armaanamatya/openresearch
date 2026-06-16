@@ -271,6 +271,16 @@ def _grader_digest_enabled() -> bool:
     )
 
 
+def _deterministic_leaves_enabled() -> bool:
+    """A2 (2026-06-16): route mechanically-checkable leaves to the pure-Python
+    deterministic_leaf_checker instead of the noisy LLM. REPROLAB_DETERMINISTIC_LEAVES,
+    default OFF — every eligible leaf goes to the LLM exactly as today until the
+    calibration gate + a reliable provenance.json producer are in place."""
+    return os.environ.get("REPROLAB_DETERMINISTIC_LEAVES", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 def _latest_metrics_path(run_dir: Path) -> Path | None:
     """Return the NEWEST-by-mtime metrics.json — the canonical latest experiment.
 
@@ -1689,6 +1699,34 @@ def score_reproduction(
         _grader_client = llm_client
     _grader_samples = _resolve_grader_samples()
 
+    # A2 (2026-06-16): route mechanically-checkable leaves (those carrying a
+    # structured check_kind + assertion attached at rubric-gen) to the pure-Python
+    # deterministic checker — hyperparameters vs provenance.json, artifact
+    # existence vs filesystem, numeric trend vs metrics.json — so they never hit
+    # the noisy LLM. A leaf with no recognized annotation returns None and falls
+    # through to the LLM (additive — never breaks an un-annotated rubric).
+    # REPROLAB_DETERMINISTIC_LEAVES default OFF → every eligible leaf goes to the
+    # LLM exactly as today. Fail-soft: any checker error routes that leaf to LLM.
+    _deterministic_records: list[dict[str, Any]] = []
+    if _deterministic_leaves_enabled():
+        try:
+            from backend.evals.paperbench.deterministic_leaf_checker import (
+                check_leaf as _check_leaf,
+            )
+            _llm_leaves: list[dict[str, Any]] = []
+            for _leaf in eligible_leaves:
+                try:
+                    _rec = _check_leaf(_leaf, run_dir)
+                except Exception:  # noqa: BLE001 — a checker error must not lose the leaf
+                    _rec = None
+                if _rec is not None:
+                    _deterministic_records.append(_rec)
+                else:
+                    _llm_leaves.append(_leaf)
+            eligible_leaves = _llm_leaves  # only un-annotated / judgment leaves → LLM
+        except Exception:  # noqa: BLE001 — checker import/route failure → all-LLM (today)
+            _deterministic_records = []
+
     # Build the list of batches first (no LLM calls yet).
     batches: list[tuple[int, list[dict[str, Any]]]] = []
     for batch_num, start in enumerate(range(0, len(eligible_leaves), batch_size), 1):
@@ -1789,6 +1827,21 @@ def score_reproduction(
                     graded_count += 1
     finally:
         executor.shutdown(wait=False)
+
+    # A2: fold the deterministic-leaf results into the score maps before roll-up,
+    # applying the same degraded ceiling the LLM path uses so the rolled-up score
+    # and coverage_pct are consistent across both grader routes.
+    for _rec in _deterministic_records:
+        _lid = _rec["id"]
+        _dscore = _rec["score"]
+        if degraded and _dscore > DEGRADED_LEAF_CEILING:
+            _dscore = DEGRADED_LEAF_CEILING
+        leaf_scores[_lid] = _dscore
+        leaf_score_records.append(
+            {"id": _lid, "score": _dscore, "justification": _rec.get("justification", "")}
+        )
+        if _rec.get("_graded", True):
+            graded_count += 1
 
     # PR-κ: append skipped-data-unavailable records.
     # score=None signals "unscored" (not 0) so downstream consumers can
