@@ -761,6 +761,55 @@ def _apply_best_of_run_floor(rubric: dict, project_dir: "Path") -> dict:
     return floored
 
 
+def _champion_artifact_enabled() -> bool:
+    """A4 (2026-06-16): restore the best-graded CODE snapshot at finalize.
+    REPROLAB_CHAMPION_ARTIFACT, default OFF."""
+    import os as _os
+    return _os.environ.get("REPROLAB_CHAMPION_ARTIFACT", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _apply_champion_artifact(rubric: dict, project_dir: "Path") -> dict:
+    """A4: restore the highest-median-graded code snapshot and ship THAT grade, so
+    ``score ≡ the best artifact the run actually produced``.
+
+    The retired MAX floor papered over a repair that REGRESSED the code while the
+    grader (noisily) banked a better earlier score — shipping a *score* detached
+    from the *artifact*. binding snapshots ``code/`` per verify (content-addressed
+    by ``evidence_key``) with its median-of-N grade; at finalize we restore the
+    snapshot whose median is highest. No-op when the flag is off, no champions were
+    recorded, or the best champion is not strictly better than the current score
+    (never downgrade a better latest state). Fail-soft — never fatal.
+    """
+    if not _champion_artifact_enabled():
+        return rubric
+    try:
+        from backend.agents.rlm.champion_artifact import best_champion, restore_snapshot
+        champ = best_champion(Path(project_dir) / "rlm_state" / "champions.json")
+        if not champ:
+            return rubric
+        out = dict(rubric or {})
+        cur = out.get("overall_score")
+        try:
+            cur_f = float(cur) if cur is not None else None
+        except (TypeError, ValueError):
+            cur_f = None
+        try:
+            champ_score = float(champ.get("median_score"))
+        except (TypeError, ValueError):
+            return rubric
+        snap = champ.get("snapshot_dir")
+        if snap and (cur_f is None or champ_score >= cur_f):
+            restore_snapshot(Path(snap), Path(project_dir) / "code")
+            out["overall_score"] = champ_score
+            out["champion_restored"] = True
+        return out
+    except Exception:  # noqa: BLE001 — champion-artifact restore is best-effort, never fatal
+        logger.exception("report: champion-artifact restore failed (non-fatal)")
+        return rubric
+
+
 def _terminal_stop_reason_from_disk(project_dir: Path) -> dict | None:
     """Recover the last terminal ``stop_reason`` from ``experiment_runs.jsonl``.
 
@@ -886,6 +935,10 @@ def build_final_report(
     # below what the run actually achieved. (The floor used to run only after this,
     # leaving verdict and the displayed score inconsistent on the no-amend path.)
     rubric_floored = _apply_best_of_run_floor(parsed.get("rubric") or {}, ctx.project_dir)
+    # A4: restore the best-graded code snapshot and ship its grade (score ≡ best
+    # artifact). No-op unless REPROLAB_CHAMPION_ARTIFACT is on and a better
+    # snapshot than the current state was recorded.
+    rubric_floored = _apply_champion_artifact(rubric_floored, ctx.project_dir)
 
     # NEW: evidence-based verdict reconciliation (T6 / P0-I9).
     verdict, downgrade_reason = _reconcile_verdict_against_evidence(

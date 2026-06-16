@@ -743,16 +743,21 @@ def _emit_supplemental(
                 # Malformed score — leave policy state untouched; the
                 # interceptor treats None-score as "no rubric, accept".
                 pass
-            # A3 (2026-06-16): fingerprint the evidence state this grade was
-            # computed against (hash of canonical metrics + scope) so the report
-            # aggregator can take the MEDIAN of the latest state instead of the
-            # upward-biased global max. Flag-gated + fail-soft: off / on-error →
-            # no stamp, and the aggregator degrades to 'latest score'.
+            # A3/A4 (2026-06-16): fingerprint the evidence state this grade was
+            # computed against (hash of canonical metrics + scope). A3 stamps it on
+            # the event so the report aggregator takes the MEDIAN of the latest
+            # state (not the upward-biased global max); A4 snapshots the CODE that
+            # earned the grade, keyed by the same fingerprint, so finalize can
+            # restore the best-graded ARTIFACT (score ≡ code). Flag-gated + fail-soft.
             _evidence_key: str | None = None
             import os as _os_a3
-            if _os_a3.environ.get("REPROLAB_EVIDENCE_FINGERPRINT", "").strip().lower() in (
+            _fp_on_a3 = _os_a3.environ.get("REPROLAB_EVIDENCE_FINGERPRINT", "").strip().lower() in (
                 "1", "true", "yes", "on",
-            ):
+            )
+            _champ_on_a3 = _os_a3.environ.get("REPROLAB_CHAMPION_ARTIFACT", "").strip().lower() in (
+                "1", "true", "yes", "on",
+            )
+            if _fp_on_a3 or _champ_on_a3:
                 try:
                     import json as _json_a3
                     from backend.evals.paperbench.leaf_scorer import _latest_metrics_path as _lmp_a3
@@ -775,6 +780,29 @@ def _emit_supplemental(
                     _evidence_key = _ekey_a3(_metrics_a3, _scope_a3)
                 except Exception:  # noqa: BLE001 — fingerprint is advisory, never block emit
                     _evidence_key = None
+            # A4: snapshot the code/ that earned THIS grade (content-addressed by
+            # evidence_key) and record it with the median-of-N score, so finalize
+            # restores the highest-graded snapshot — score ≡ best artifact produced.
+            if _champ_on_a3 and _evidence_key:
+                try:
+                    from backend.agents.rlm.champion_artifact import (
+                        record_champion as _rec_champ_a4,
+                        snapshot_code as _snap_champ_a4,
+                    )
+                    _cdir_a4 = ctx.project_dir / "code"
+                    if _cdir_a4.is_dir():
+                        _snap_a4 = _snap_champ_a4(
+                            _cdir_a4,
+                            ctx.project_dir / "rlm_state" / "champions" / _evidence_key[:16] / "code",
+                        )
+                        _rec_champ_a4(
+                            ctx.project_dir / "rlm_state" / "champions.json",
+                            evidence_key=_evidence_key,
+                            snapshot_dir=_snap_a4,
+                            median_score=float(score),
+                        )
+                except Exception:  # noqa: BLE001 — champion snapshot is advisory, never block emit
+                    pass
             # Pass through the per-area `leaves` detail (id/label/score/status/why)
             # that `_rubric_areas` attached, plus the cross-area weak_leaves and
             # the last few failed-experiment rows, so the lab UI can show
