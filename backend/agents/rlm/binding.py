@@ -392,6 +392,9 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
             provider=ctx.provider,
             model=ctx.model,
             usage=usage,
+            # F1: tag the spend with the root-loop iteration for per-iteration
+            # cost attribution (additive metadata; default 0 when unknown).
+            iteration=int(getattr(ctx, "current_iteration", 0) or 0),
         ))
 
     def _emit_extra(event: dict) -> None:

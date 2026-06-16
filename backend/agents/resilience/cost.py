@@ -33,6 +33,10 @@ class CostLedgerEntry:
     cache_creation_input_tokens: int = 0
     reasoning_tokens: int = 0
     estimated_usd: float | None = None
+    # F1 (2026-06-16): root-loop iteration this spend occurred in, so cost can be
+    # attributed per-iteration. Additive metadata (default 0); never affects cost
+    # math, and old ledgers without the field read back as 0 (from_json default).
+    iteration: int = 0
 
     def to_json(self) -> dict[str, Any]:
         data = asdict(self)
@@ -65,6 +69,7 @@ class CostLedgerEntry:
         model: str,
         usage: dict[str, Any],
         timestamp: datetime | None = None,
+        iteration: int = 0,
     ) -> "CostLedgerEntry":
         normalized = {
             "input_tokens": _int(usage.get("input_tokens")),
@@ -82,6 +87,7 @@ class CostLedgerEntry:
             provider=provider,
             model=model,
             estimated_usd=estimate_cost_usd(model, normalized),
+            iteration=iteration,
             **normalized,
         )
 
