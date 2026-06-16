@@ -1643,6 +1643,17 @@ async def run_pipeline_rlm(
             if execution_profile is not None
             else False
         ),
+        # Execution mode (C1): thread ExecutionProfile.mode so
+        # resolve_experiment_timeout_s honors --execution-mode max instead of
+        # silently capping long papers at the 2h default. mode is an enum
+        # (.value = "efficient"/"max", matching EXPERIMENT_TIMEOUT_BY_MODE);
+        # tolerate a plain-string mode too.
+        execution_mode=(
+            getattr(execution_profile.mode, "value", execution_profile.mode)
+            if execution_profile is not None
+            and getattr(execution_profile, "mode", None) is not None
+            else None
+        ),
         gpu_device_ids=_parse_gpu_device_ids(),
         gpu_parallelism=_parse_gpu_parallelism(),
         gpu_visible_count=_visible_gpu_count(),
