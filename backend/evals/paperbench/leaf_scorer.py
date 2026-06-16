@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re
+import statistics
 import tempfile
 from pathlib import Path
 from typing import Any, Protocol
@@ -1635,6 +1636,20 @@ def score_reproduction(
     # Grade only the eligible leaves.
     eligible_leaves = [l for l in leaves if str(l.get("id", "")) not in unavailable_ids]
 
+    # A5/A1 (2026-06-16): the grader runs on a DECOUPLED, sampler-capable
+    # transport so a root/CLI wedge can't take grading down with it (the OmniZip
+    # failure mode), and so it can take median-of-N at temperature 0.
+    # build_grader_client returns the passed client UNCHANGED when
+    # REPROLAB_GRADER_BACKEND is unset (default == today's behavior, grader rides
+    # the root client). _resolve_grader_samples is 1 by default (one call per
+    # batch == today). Fail-soft: any transport-build error falls back to llm_client.
+    try:
+        from backend.agents.rlm.grader_transport import build_grader_client
+        _grader_client, _ = build_grader_client(llm_client)
+    except Exception:  # noqa: BLE001 — grader-transport build must never break scoring
+        _grader_client = llm_client
+    _grader_samples = _resolve_grader_samples()
+
     # Build the list of batches first (no LLM calls yet).
     batches: list[tuple[int, list[dict[str, Any]]]] = []
     for batch_num, start in enumerate(range(0, len(eligible_leaves), batch_size), 1):
@@ -1666,11 +1681,17 @@ def score_reproduction(
             batch_num=batch_num,
         )
         try:
-            raw = llm_client.complete(system=_SYSTEM_PROMPT, user=user_msg)
-            return _parse_batch_response(raw, batch)
+            from backend.agents.rlm.grader_transport import sample_completions
+            raws = sample_completions(
+                _grader_client,
+                system=_SYSTEM_PROMPT,
+                user=user_msg,
+                n=_grader_samples,
+                temperature=0,
+            )
         except Exception as exc:
             logger.warning(
-                "Batch %d LLM call failed (%s); defaulting all %d leaves to 0.0",
+                "Batch %d grader call failed (%s); defaulting all %d leaves to 0.0",
                 batch_num,
                 exc,
                 len(batch),
@@ -1684,6 +1705,23 @@ def score_reproduction(
                 }
                 for leaf in batch
             ]
+        # A1: parse every sample (parse never raises — unparseable leaves come
+        # back 0.0/_graded:False) and take the per-leaf MEDIAN. N=1 returns the
+        # single parse unchanged (byte-for-byte today's behavior).
+        parsed_runs = [_parse_batch_response(raw, batch) for raw in (raws or [])]
+        if not parsed_runs:
+            return [
+                {
+                    "id": str(leaf.get("id", "")),
+                    "score": 0.0,
+                    "justification": "batch_error",
+                    "_graded": False,
+                }
+                for leaf in batch
+            ]
+        if len(parsed_runs) == 1:
+            return parsed_runs[0]
+        return _median_merge(batch, parsed_runs)
 
     # Submit all batches concurrently; width ≤8 avoids rate-limit bursts.
     # I12: explicit shutdown(wait=False) so a wedged batch cannot block cleanup.
@@ -1822,6 +1860,62 @@ def _parse_batch_response(
             out.append(results[lid])
         else:
             out.append({"id": lid, "score": 0.0, "justification": "ungraded", "_graded": False})
+    return out
+
+
+def _resolve_grader_samples() -> int:
+    """Number of grader samples per batch for median-of-N denoising (A1, 2026-06-16).
+
+    REPROLAB_GRADER_SAMPLES — default 1 (== today's single-sample behavior,
+    byte-for-byte). Clamped to >= 1. Odd values give a clean median (no
+    two-middle averaging). The calibration gate (data/grader_calibration.json)
+    promotes the default to 3 once overall σ is shown to drop.
+    """
+    raw = os.environ.get("REPROLAB_GRADER_SAMPLES", "").strip()
+    if not raw:
+        return 1
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _median_merge(
+    batch: list[dict[str, Any]], parsed_runs: list[list[dict[str, Any]]]
+) -> list[dict[str, Any]]:
+    """Per-leaf median over N parsed grader samples (A1, 2026-06-16).
+
+    Each entry of ``parsed_runs`` is a full per-leaf record list (same ids — every
+    batch id is always present out of :func:`_parse_batch_response`). For each
+    leaf we take the MEDIAN of its N scores — deliberately median, not mean, so a
+    single transient all-0.0 sample (a failed/unparseable draw) is shrugged off
+    rather than dragging the estimate down. The justification is taken from the
+    sample whose score is closest to the median (a representative real rationale);
+    ``_graded`` is True iff ANY sample graded the leaf.
+    """
+    by_id: dict[str, list[dict[str, Any]]] = {}
+    for run in parsed_runs:
+        for rec in run:
+            by_id.setdefault(str(rec.get("id", "")), []).append(rec)
+    out: list[dict[str, Any]] = []
+    for leaf in batch:
+        lid = str(leaf.get("id", ""))
+        recs = by_id.get(lid) or []
+        if not recs:
+            out.append({"id": lid, "score": 0.0, "justification": "ungraded", "_graded": False})
+            continue
+        scores = [float(r.get("score", 0.0) or 0.0) for r in recs]
+        med = float(statistics.median(scores))
+        rep = min(recs, key=lambda r: abs(float(r.get("score", 0.0) or 0.0) - med))
+        out.append(
+            {
+                "id": lid,
+                "score": med,
+                "justification": rep.get("justification", ""),
+                "deductions": rep.get("deductions", []),
+                "_graded": any(bool(r.get("_graded", False)) for r in recs),
+            }
+        )
     return out
 
 
