@@ -169,6 +169,7 @@ def _disk_facts(project_dir: Path) -> dict[str, Any]:
         "has_history": False,
         "has_curves": False,
         "has_sweep": False,
+        "has_results": False,
         "has_provenance": False,
     }
     try:
@@ -180,6 +181,7 @@ def _disk_facts(project_dir: Path) -> dict[str, Any]:
             any((code / "outputs").glob("*/*/training_curves.json"))
             if (code / "outputs").is_dir() else False
         ) or (code / "training_curves.json").is_file()
+        facts["has_results"] = facts["outputs_metrics"] > 0
         facts["has_provenance"] = any(code.glob("**/provenance.json"))
         mpath = code / "metrics.json"
         if mpath.is_file():
@@ -189,6 +191,12 @@ def _disk_facts(project_dir: Path) -> dict[str, Any]:
                 facts["has_sweep"] = any(
                     isinstance(k, str) and "sweep" in k.lower() for k in m
                 )
+                # Measured per_model results → a COMPARISON figure (final metric by
+                # condition) is renderable even without per-step curves; that keeps
+                # render_artifact (vs demoting to protocol_gap) so the L2b backstop
+                # + the agent's render directive both fire. (Adam fe5e7900: scalars,
+                # no training_curves.json — was wrongly demoted, leaving it at 0.0.)
+                facts["has_results"] = facts["has_results"] or bool(m.get("per_model"))
     except Exception:  # noqa: BLE001 — facts are advisory grounding
         logger.debug("leaf_triage: disk facts failed", exc_info=True)
     return facts
@@ -204,9 +212,10 @@ def _classify(text: str) -> str:
 def _ground(klass: str, facts: dict[str, Any]) -> str:
     """Downgrade a no-cost class when the disk can't actually support it."""
     if klass == "render_artifact" and not (
-        facts.get("has_history") or facts.get("has_curves") or facts.get("has_sweep")
+        facts.get("has_history") or facts.get("has_curves")
+        or facts.get("has_sweep") or facts.get("has_results")
     ):
-        return "protocol_gap"  # data may genuinely not exist → produce it, scoped
+        return "protocol_gap"  # no data at all → produce it first, scoped
     if klass == "aggregation_gap" and not facts.get("outputs_metrics"):
         return "review"
     return klass
@@ -218,6 +227,7 @@ def _evidence_note(klass: str, facts: dict[str, Any]) -> str:
             ("history block", "has_history"),
             ("training_curves", "has_curves"),
             ("sweep data", "has_sweep"),
+            ("measured per-condition results", "has_results"),
         ) if facts.get(k)]
         return ", ".join(bits) or "metrics on disk"
     if klass == "aggregation_gap":

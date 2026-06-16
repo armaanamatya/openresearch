@@ -8,6 +8,19 @@ version + date and start a new `[Unreleased]` block above it.
 
 ## [Unreleased]
 
+### Added (leaf-frontier remediation — close the leaf-repair loop; all default-OFF, fail-soft, byte-for-byte today when unset)
+- `backend/agents/rlm/leaf_actuator.py` — the actuator that closes `leaf_triage`'s open loop. Today triage only *diagnoses* a weak leaf into an advisory directive the agent may ignore (the real Adam 0.764 run shipped two clean `0.0`s that way); the actuator turns the cheapest, most-deterministic repairs into concrete artifacts the EXISTING routes consume. Master flag `REPROLAB_LEAF_ACTUATE`. Routes: **L4** `result_quality` (inverted optimizer ordering) → a synthesized per-condition lr `search` block the staged-search route tunes + re-runs; **L5** variance-demanding leaf → a budget-gated seed plan (behind `REPROLAB_LEAF_ACTUATE_SEEDS`); **L6** `aggregation_gap` → a declared-vs-aggregated completeness audit surfacing silently-lost cells; **L2b** `render_artifact` → a grounded `fig_*.json` sidecar emitted straight from the measured on-disk metrics.
+- `leaf_actuator.emit_figure_sidecars` + `staged_search.synthesize_search_from_leaf` + `cell_matrix.audit_aggregation_completeness` — the pure cores (stdlib-only, fail-soft, unit-tested against plain dicts).
+- `REPROLAB_SCOPE_INCLUSION_EXCLUDE` (L1) — the in-loop verify (`score_reproduction`) now excludes out-of-inclusion-scope leaves the way *finalize* already did. Operator-sourced from `--scope-spec`/paper-hint; evidence-safe (a leaf naming an in-scope dataset is never excluded).
+- Flag knobs: `REPROLAB_LEAF_ACTUATE_MAX_COST` (`none`|`targeted_rerun`, L4 needs `targeted_rerun`), `REPROLAB_LEAF_ACTUATE_SEEDS` (L5 GPU sub-gate), `REPROLAB_LEAF_SEED_MAX` (auto-seed ceiling, default 5).
+
+### Fixed (leaf-frontier — the open-loop `0.0` leaves on the real Adam/ResNet runs)
+- **`fe5e7900` figure leaf shipped at `0.0`** ("shows zero image or figure artifacts"): the grader is TEXT-ONLY — it reads `fig_*.json` JSON sidecars (axis + series), never the PNG — and `leaf_triage._ground` was *demoting* `render_artifact`→`protocol_gap` whenever no per-step curves were on disk. But a COMPARISON figure (final metric by condition) is renderable from scalar finals. `_ground` now keeps `render_artifact` when measured `per_model` results exist (`has_results`), and `emit_figure_sidecars` writes the grounded sidecar the grader actually consumes. End-to-end on the real Adam `metrics.json`: triage `protocol_gap`→`render_artifact`, 6 sidecars emitted, picked up by the grader's own `_gather_figure_sidecars`.
+- **In-loop vs finalize score disagreement** (ResNet `0.369` in-loop vs `0.620` shipped): in-loop verify lacked the inclusion-scope param finalize had, so ResNet's 10 ImageNet/COCO/bottleneck leaves docked the in-loop grade on a CIFAR-10-scoped run. L1 makes both paths exclude identically (deterministic re-roll: `0.3685`→`0.6201`).
+
+### Validated (leaf-frontier)
+- 266 blast-radius tests pass (`tests/rlm/test_leaf_actuator.py`, `test_leaf_triage.py`, `test_staged_search_synthesis.py`, `test_leaf_scorer*.py`; `tests/agents/rlm/test_cell_matrix.py`; `tests/evals/`; baseline_implementation guidance), 0 regress. L2b verified end-to-end against the real Adam run + the grader's `_gather_figure_sidecars` reader.
+
 ### Added (night — constellation UI + dynamic sandbox capability + outcome canonicalization)
 - `frontend/src/components/lab/rlm/constellation-canvas.tsx` (695 LOC) + `layout-constellation.ts` (234 LOC) — replace the 4-node Reingold-Tilford tree with a force-directed graph that visualizes every primitive call and every mini-RLM, with progressive disclosure so the default view stays clean.
 - `frontend/src/components/lab/rlm/layout-constellation.test.ts` — pinned: empty input, 1+3 candidates, 50-primitive density (no-overlap under `forceCollide(radius+14)`), deterministic seed.

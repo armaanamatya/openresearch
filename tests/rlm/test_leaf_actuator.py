@@ -245,3 +245,105 @@ def test_guidance_block_never_raises_on_garbage(tmp_path, monkeypatch):
     (tmp_path / "rlm_state").mkdir()
     (tmp_path / "rlm_state" / la.STATE_FILE).write_text("{not json")
     assert la.guidance_block(tmp_path) == ""
+
+
+# ---------------------------------------------------------------------------
+# L2b — emit_figure_sidecars (deterministic render backstop, the fe5e7900 fix)
+# ---------------------------------------------------------------------------
+
+# Adam-shape per_model: scalar finals only (no per-step series on disk) — the
+# exact shape that left fe5e7900 ("zero figure artifacts") at 0.0.
+_ADAM_METRICS = {
+    "per_model": {
+        "mnist_logreg": {
+            "mnist_logreg": {
+                "adam": {"status": "ok", "metric": 37.06, "final_test_acc": 0.926},
+                "adagrad": {"status": "ok", "metric": 37.04, "final_test_acc": 0.921},
+                "sgd_nesterov": {"status": "ok", "metric": 36.94, "final_test_acc": 0.918},
+            }
+        }
+    }
+}
+
+_RENDER_LEAF = [{"repair_class": "render_artifact", "cost": "none", "leaf_id": "fe5e7900"}]
+
+
+def _read_sidecar(project: Path, rel: str) -> dict:
+    return json.loads((project / rel).read_text())
+
+
+def test_emit_figure_sidecars_grounded_comparison(tmp_path):
+    p = _project(tmp_path, metrics=_ADAM_METRICS)
+    written = la.emit_figure_sidecars(p, _RENDER_LEAF)
+    assert len(written) == 1 and written[0].endswith(".json")
+    assert "fig_auto_" in written[0]  # backstop-named, won't collide with agent figs
+    sc = _read_sidecar(p, written[0])
+    # the measured comparison reaches the (text-only) grader: series + axes present
+    assert set(sc["series"]) == {"adam", "adagrad", "sgd_nesterov"}
+    assert sc["series"]["adam"] == 37.06
+    assert sc["y_axis"]["label"] == "metric" and "scale" in sc["y_axis"]
+    assert "measured" in sc["note"].lower()  # honest: grounded, not fabricated
+
+
+def test_emit_figure_sidecars_matches_grader_glob(tmp_path):
+    """The written file must match the grader's ``fig_*.json`` rglob."""
+    p = _project(tmp_path, metrics=_ADAM_METRICS)
+    la.emit_figure_sidecars(p, _RENDER_LEAF)
+    assert list((p / "code").rglob("fig_*.json"))  # _gather_figure_sidecars would find it
+
+
+def test_emit_figure_sidecars_skips_when_agent_rendered(tmp_path):
+    p = _project(tmp_path, metrics=_ADAM_METRICS)
+    (p / "code" / "fig_loss_curves.json").write_text('{"figure":"real"}')  # agent's own
+    assert la.emit_figure_sidecars(p, _RENDER_LEAF) == []  # don't pile on
+    assert not list((p / "code").glob("fig_auto_*.json"))
+
+
+def test_emit_figure_sidecars_empty_without_metrics(tmp_path):
+    assert la.emit_figure_sidecars(_project(tmp_path), _RENDER_LEAF) == []  # no metrics
+    assert la.emit_figure_sidecars(tmp_path / "missing", _RENDER_LEAF) == []  # no code/
+    assert la.emit_figure_sidecars(_project(tmp_path, metrics=_ADAM_METRICS), []) == []  # no leaf
+
+
+def test_emit_figure_sidecars_curve_mode_downsamples(tmp_path):
+    metrics = {"per_model": {"m": {"e": {"adam": {"loss": list(range(200))}}}}}
+    p = _project(tmp_path, metrics=metrics)
+    written = la.emit_figure_sidecars(p, _RENDER_LEAF, max_points=40)
+    sc = _read_sidecar(p, written[0])
+    assert len(sc["series"]["adam"]) == 40  # downsampled to the cap
+    assert sc["x_axis"]["label"] == "training step"
+    assert sc["y_axis"]["scale"] == "log"  # 'loss' → log axis
+
+
+def test_emit_figure_sidecars_grounded_skips_empty_group(tmp_path):
+    # A group whose cells carry no numeric metric is skipped (grounded — never a
+    # fabricated figure), while a sibling group with data still emits.
+    metrics = {"per_model": {
+        "empty": {"e": {"b": {"status": "failed", "error": "boom"}}},
+        "real": {"e": {"b": {"metric": 0.9}}},
+    }}
+    p = _project(tmp_path, metrics=metrics)
+    written = la.emit_figure_sidecars(p, _RENDER_LEAF)
+    assert len(written) == 1 and "real" in written[0]
+
+
+def test_actuate_l2b_render_fires_at_default_ceiling(tmp_path, monkeypatch):
+    monkeypatch.setenv(la.ENV_FLAG, "1")  # ceiling none — render is cost none
+    p = _project(tmp_path, metrics=_ADAM_METRICS)
+    out = la.actuate(_RENDER_LEAF, p)
+    assert "render_artifact" in out["actuated"]
+    assert out["artifact"]["figure_sidecars"]
+    assert list((p / "code").glob("fig_auto_*.json"))
+
+
+def test_actuate_l2b_noop_when_master_flag_off(tmp_path):
+    p = _project(tmp_path, metrics=_ADAM_METRICS)
+    out = la.actuate(_RENDER_LEAF, p)  # flag off
+    assert out == {"actuated": [], "artifact": {}, "summary": ""}
+    assert not list((p / "code").glob("fig_auto_*.json"))
+
+
+def test_emit_figure_sidecars_never_raises(tmp_path):
+    assert la.emit_figure_sidecars(tmp_path, [None, "x", {}]) == []
+    bad = _project(tmp_path, metrics={"per_model": {"m": "not a dict"}})
+    assert la.emit_figure_sidecars(bad, _RENDER_LEAF) == []

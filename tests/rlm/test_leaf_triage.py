@@ -54,11 +54,28 @@ def test_render_artifact_when_data_exists(tmp_path):
 
 
 def test_render_downgrades_to_protocol_without_data(tmp_path):
-    p = _project(tmp_path)  # no history/curves/sweep on disk
+    p = _project(tmp_path)  # no history/curves/sweep/results on disk
     out = leaf_triage.triage_weak_leaves(
         [_leaf(0.0, "No figure showing the training curves is present")], p)
     assert out["plan"][0]["repair_class"] == "protocol_gap"
     assert out["plan"][0]["cost"] == "targeted_rerun"
+
+
+def test_render_kept_when_measured_results_exist(tmp_path):
+    # Adam fe5e7900 (2026-06-16): scalar per_model finals, NO training_curves.json.
+    # A COMPARISON figure (final metric by condition) is renderable from those
+    # scalars, so render_artifact must be KEPT (not demoted to protocol_gap) — the
+    # demotion left it at 0.0 and the L2b sidecar backstop never fired.
+    p = tmp_path
+    code = p / "code"
+    code.mkdir()
+    (code / "metrics.json").write_text(json.dumps(
+        {"status": "completed",
+         "per_model": {"mnist_logreg": {"e": {"adam": {"metric": 37.06}}}}}))
+    out = leaf_triage.triage_weak_leaves([_leaf(
+        0.0, "the listing shows zero image or figure artifacts")], p)
+    d = out["plan"][0]
+    assert d["repair_class"] == "render_artifact" and d["cost"] == "none"
 
 
 def test_provenance_gap(tmp_path):

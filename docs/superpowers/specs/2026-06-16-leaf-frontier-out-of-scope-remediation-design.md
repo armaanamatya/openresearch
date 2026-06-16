@@ -1,6 +1,6 @@
 # Leaf-Frontier & Out-of-Scope Remediation — Design Spec
 
-**Date:** 2026-06-16 · **Branch:** `feat/grader-fidelity` · **Status:** L1–L3 SHIPPED (`45c3d32`); L4 + L6 + the L5 planner/detector/directive SHIPPED (`leaf_actuator.py`, this tier); L5 hot-path seed *replication* + cross-seed mean±std aggregation = documented GPU-validated follow-on. All new behaviour default-OFF (`REPROLAB_LEAF_ACTUATE` unset == today byte-for-byte).
+**Date:** 2026-06-16 · **Branch:** `feat/grader-fidelity` · **Status:** L1 + L3 SHIPPED (`45c3d32`); L4 + L6 + the L5 planner/detector/directive SHIPPED (`leaf_actuator.py`); **L2b SHIPPED** (closed the render loop — `emit_figure_sidecars` + the `_ground` `has_results` fix; the one open-loop `0.0` leaf remaining after the first tier); L5 hot-path seed *replication* + cross-seed mean±std aggregation = documented GPU-validated follow-on. All new behaviour default-OFF (`REPROLAB_LEAF_ACTUATE` unset == today byte-for-byte).
 
 **Sibling specs (this doc does NOT re-design any of them):**
 - `2026-06-16-grader-fidelity-and-harness-remediation-design.md` — the LOCKED grader-fidelity workstreams **A1–A7 / B / C / D / E** (median-of-N, `deterministic_leaf_checker`, evidence-fingerprint, champion-artifact, decoupled transport, EVIDENCE_GATE, `ab_compare` validator, BES). **Owned by the operator.**
@@ -42,7 +42,7 @@ ResNet's 10 excluded ids are all ImageNet-training / COCO-detection / 3-layer-bo
 | # | Class | Real leaf | Root cause | Cost to fix | Status |
 |---|---|---|---|---|---|
 | **L1** | Out-of-inclusion-scope | ResNet ×10 | in-loop grade lacked the inclusion param finalize had | none (exclude) | **SHIPPED** |
-| **L2** | Render-artifact phrasing | Adam `fe5e7900` | render regex missed "shows zero … artifacts" | none (render) | **SHIPPED (classify)** |
+| **L2** | Render-artifact phrasing + sidecar | Adam `fe5e7900` | regex missed "zero … artifacts"; grounding over-demoted; no actuator | none (render) | **SHIPPED (closed-loop, L2b)** |
 | **L3** | In-scope cell failure | Adam `ac4006bf` | no class for "attempted but errored" | targeted re-run | **SHIPPED (classify)** |
 | **L4** | Per-condition HP fidelity | Adam optimizer-ordering leaves | one shared LR inverts the paper's ordering | targeted re-run (sweep) | **SHIPPED** (closed-loop) |
 | **L5** | Single-seed variance | ResNet 1-seed-vs-5 (3×`0.4`) | leaf wants mean±std; we ran 1 seed | GPU (N seeds) | **SHIPPED** (planner/directive); replication = follow-on |
@@ -61,8 +61,12 @@ ResNet's 10 excluded ids are all ImageNet-training / COCO-detection / 3-layer-bo
 
 **Composes with — does not duplicate — the locked spec:** this *realizes* the handoff's stated preference **F4** ("Prefer operator inclusion-scope over fuzzy matching; reserve the alias map for un-inferrable synonyms"). It runs *before* A3's evidence-fingerprint floor and A7's EVIDENCE_GATE — a leaf excluded here never reaches either.
 
-### L2 — render-artifact phrasing
-`leaf_triage` render regex (`leaf_triage.py:62`) now also matches "**zero/no** {image|figure|plot|curve|chart|visualis…} … artifacts" — Adam `fe5e7900`'s exact wording, which previously fell through to bare `review`. Still grounded: demotes to `protocol_gap` when no history/curves/sweep is on disk (`_ground`, `:204`).
+### L2 — render-artifact phrasing + L2b closed-loop sidecar backstop
+`leaf_triage` render regex (`leaf_triage.py:62`) now also matches "**zero/no** {image|figure|plot|curve|chart|visualis…} … artifacts" — Adam `fe5e7900`'s exact wording, which previously fell through to bare `review`.
+
+**L2b (the closed-loop fix, 2026-06-16):** classification alone left `fe5e7900` at `0.0` because the directive was *advisory* and two things compounded:
+1. **The grounding was too aggressive.** `_ground` (`:204`) demoted `render_artifact`→`protocol_gap` whenever there were no per-step curves on disk — but the Adam run had only scalar `per_model` finals (0 `training_curves.json`), and a *comparison* figure (final metric by condition) is perfectly renderable from scalars. `_ground` now also keeps `render_artifact` when measured results exist (`facts["has_results"]` = `per_model` non-empty OR `outputs/*/*/metrics.json` present).
+2. **No actuator closed the loop.** The grader is **text-only** — `leaf_scorer._gather_figure_sidecars` reads `fig_*.json` JSON sidecars (axis scale + series), never the PNG. `leaf_actuator.emit_figure_sidecars` now writes a GROUNDED sidecar straight from the measured on-disk metrics (one comparison figure per `(model_key, env)` group; a numeric array → a downsampled curve; scalars → a by-condition comparison), named `fig_auto_*` so it never clobbers an agent-rendered `fig_*.json`, skipped entirely when the agent already emitted one, and honest (a `note` field marks it a measured comparison, never a fabricated result). Fires at the default `none` cost ceiling under `REPROLAB_LEAF_ACTUATE`. **Verified end-to-end on the real Adam `metrics.json`:** triage `protocol_gap`→`render_artifact`, 6 sidecars emitted, all read back by the grader's own `_gather_figure_sidecars`.
 
 ### L3 — in-scope cell failure
 New `cell_failure` class (`leaf_triage.py:97`, checked **last** so a contradiction still wins `result_quality`): an in-scope cell that `provenance.json`/`cells.json` records as **attempted but produced no result** → `targeted_rerun` directive *"RE-RUN the failed cell(s), don't exclude … excluding it would hide a real miss."* (`:137`). This is the deliberate complement to L1: out-of-scope → exclude; in-scope-but-failed → re-run, never exclude.
@@ -76,7 +80,7 @@ New `cell_failure` class (`leaf_triage.py:97`, checked **last** so a contradicti
 
 | Repair class | Existing actuator | File |
 |---|---|---|
-| `render_artifact` | `emit_figure_sidecar` / mpl render | agent codegen helpers |
+| `render_artifact` | `emit_figure_sidecars` (grounded JSON sidecar; **L2b, now wired**) | `leaf_actuator.py` |
 | `aggregation_gap` | `aggregate_cell_metrics` / `normalize_cell_axes` | `cell_matrix.py` |
 | `result_quality` (per-condition LR) | `synthesize_search_from_hint` → `run_staged_search` | `staged_search.py:193,404` |
 | multi-seed | `ScopeSpec` seed axis + `describe_capacity` | `gpu_capacity.py:89` |
