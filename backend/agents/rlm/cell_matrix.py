@@ -63,6 +63,7 @@ __all__ = [
     "capacity_gate",
     "dataset_url_preflight",
     "aggregate_cell_metrics",
+    "audit_aggregation_completeness",
     "default_dataset_probe",
     "normalize_cell_axes",
 ]
@@ -715,3 +716,126 @@ def aggregate_cell_metrics(
         "per_model": per_model,
         "scope": scope,
     }
+
+
+def _leaf_for_axes(
+    per_model: dict[str, Any], model_key: str, env: str, baseline: str
+) -> dict[str, Any] | None:
+    """Find the aggregated leaf for ``(model_key, env, baseline)``.
+
+    Tolerates the dup-disambiguation suffix ``normalize_cell_axes`` appends to a
+    colliding baseline (``baseline__<cell_id>``), so a declared cell still matches
+    the leaf it actually produced. Returns the leaf dict or ``None``.
+    """
+    if not isinstance(per_model, dict):
+        return None
+    envs = per_model.get(model_key)
+    if not isinstance(envs, dict):
+        return None
+    baselines = envs.get(env)
+    if not isinstance(baselines, dict):
+        return None
+    if baseline in baselines and isinstance(baselines[baseline], dict):
+        return baselines[baseline]
+    for b, leaf in baselines.items():
+        if isinstance(b, str) and b.startswith(f"{baseline}__") and isinstance(leaf, dict):
+            return leaf
+    return None
+
+
+def audit_aggregation_completeness(
+    declared_cells: list[dict[str, Any]],
+    aggregated: dict[str, Any],
+) -> dict[str, Any]:
+    """Reconcile the DECLARED cells (``cells.json``) against the aggregate — L6(a).
+
+    ``normalize_cell_axes`` + ``aggregate_cell_metrics`` guarantee a cell that
+    reaches the aggregation loop never vanishes (derive-not-drop, 2026-06-09).
+    This is the verification layer for the gap that guarantee can't cover: a cell
+    the agent DECLARED that never reached the loop at all — dropped by a
+    staged-search budget reduction, a manifest-restore race, or a scheduler skip
+    with no matching gap record. It is a silent-loss DETECTOR, not a fixer.
+
+    For each declared cell, classify it into exactly one bucket by resolving its
+    ``(model_key, env, baseline)`` (same ``_cell_axes`` the aggregate uses) and
+    looking it up in the aggregate:
+
+    * ``ok``          — leaf present with ``status == "ok"``.
+    * ``failed``      — leaf present but ``status != "ok"`` (overlaps L3
+      cell_failure: ran, errored → re-run, don't exclude).
+    * ``gapped``      — ``model_key`` in ``scope.models_skipped`` OR the cell id /
+      model_key appears in ``scope.gaps`` (a KNOWN, accounted drop — capacity /
+      dataset preflight).
+    * ``unaccounted`` — none of the above: declared but silently absent. This is
+      the bucket the existing machinery cannot surface.
+
+    Pure, stdlib-only, never raises. Returns::
+
+        {"ok": [...ids], "failed": [...ids], "gapped": [...ids],
+         "unaccounted": [...ids], "complete": bool, "notes": [str]}
+
+    ``complete`` is ``True`` when nothing is ``unaccounted`` and nothing is
+    ``failed`` (every declared cell either landed ok or was a known, accounted
+    drop). ``notes`` carries one agent-readable sentence per non-empty problem
+    bucket — the actuator persists it and leaf-triage can route it.
+    """
+    out: dict[str, Any] = {
+        "ok": [], "failed": [], "gapped": [], "unaccounted": [], "complete": True, "notes": [],
+    }
+    try:
+        if not isinstance(declared_cells, list) or not declared_cells:
+            return out
+        agg = aggregated if isinstance(aggregated, dict) else {}
+        per_model = agg.get("per_model") if isinstance(agg.get("per_model"), dict) else {}
+        scope = agg.get("scope") if isinstance(agg.get("scope"), dict) else {}
+        skipped = {str(m) for m in (scope.get("models_skipped") or []) if m}
+        # Gap records the scorer reads via item/name/id — index by every label form.
+        gap_labels: set[str] = set()
+        for g in (scope.get("gaps") or []):
+            if isinstance(g, dict):
+                for k in ("item", "name", "id", "model_key"):
+                    v = g.get(k)
+                    if v:
+                        gap_labels.add(str(v))
+            elif g:
+                gap_labels.add(str(g))
+
+        for idx, cell in enumerate(declared_cells):
+            if not isinstance(cell, dict):
+                continue
+            cid = str(cell.get("id") or f"cell_{idx}")
+            model_key = str(cell.get("model_key", "") or "")
+            env = str(cell.get("env", "") or "")
+            baseline = str(cell.get("baseline", "") or "")
+            if not model_key or not env or not baseline:
+                model_key, env, baseline, _ = _cell_axes(cell, idx)
+
+            leaf = _leaf_for_axes(per_model, model_key, env, baseline)
+            if leaf is not None:
+                if str(leaf.get("status", "")) == "ok":
+                    out["ok"].append(cid)
+                else:
+                    out["failed"].append(cid)
+            elif model_key in skipped or cid in gap_labels or model_key in gap_labels:
+                out["gapped"].append(cid)
+            else:
+                out["unaccounted"].append(cid)
+
+        out["complete"] = not out["unaccounted"] and not out["failed"]
+        if out["failed"]:
+            out["notes"].append(
+                f"{len(out['failed'])} declared cell(s) ran but produced no ok result "
+                f"(failed/errored): {', '.join(out['failed'][:8])}. In-scope failures — "
+                "re-run the cell after fixing the error; do NOT exclude (that hides a real miss)."
+            )
+        if out["unaccounted"]:
+            out["notes"].append(
+                f"{len(out['unaccounted'])} declared cell(s) are UNACCOUNTED — present in "
+                f"cells.json but absent from metrics.json, gaps, and models_skipped: "
+                f"{', '.join(out['unaccounted'][:8])}. They were silently lost before "
+                "aggregation (budget reduction / scheduler skip). Re-run them or record an "
+                "explicit gap so the scorer isn't penalising work that simply never ran."
+            )
+    except Exception:  # noqa: BLE001 — the audit is advisory; never break a run.
+        pass  # this module is logging-free by design (stdlib-only, sandbox-copyable)
+    return out

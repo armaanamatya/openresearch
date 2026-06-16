@@ -246,6 +246,60 @@ def synthesize_search_from_hint(cells: list[dict], lr_search: dict) -> list[dict
         return []
 
 
+# A modest default per-condition lr grid (3 candidates) used when a result_quality
+# leaf demands tuning but no paper-hint grid is available. Kept small so N cells ×
+# this grid stays well under _MAX_TOTAL_CANDIDATES; the existing parse_search_spec
+# caps still apply on top.
+_DEFAULT_LEAF_LR_GRID = (3e-4, 1e-3, 3e-3)
+
+
+def synthesize_search_from_leaf(
+    cells: list[dict],
+    *,
+    lr_grid: "list[float] | tuple[float, ...] | None" = None,
+    param_key: str = "lr",
+    epochs_key: str = "epochs",
+    probe_epochs: int = 8,
+    select_metric: str = "final_train_loss",
+    select_objective: str = "min",
+) -> list[dict]:
+    """Build a ``search`` array from a weak-leaf DIAGNOSIS — L4 (2026-06-16).
+
+    The complement to :func:`synthesize_search_from_hint`: that one is triggered
+    by a paper-hint ``lr_search`` grid; this one is triggered by ``leaf_triage``
+    classifying a leaf as ``result_quality`` (the paper's ordering is inverted —
+    almost always an UNTUNED per-condition learning rate). When no hint grid
+    exists, the harness still gets the staged tune-then-run by synthesizing a
+    bounded default per-condition lr sweep over the agent's emitted cells.
+
+    Each emitted cell IS a per-condition unit (one cell per optimizer/method/
+    ablation), so the one-group-per-cell shape :func:`synthesize_search_from_hint`
+    produces gives exactly per-condition tuning — every condition reported at ITS
+    OWN best lr, the fix for the inverted-ordering leaves. Pure: delegates to
+    :func:`synthesize_search_from_hint` with a derived ``lr_search`` dict.
+
+    Returns ``[]`` when ``cells`` is unusable (→ caller keeps the legacy path).
+    Never raises.
+    """
+    try:
+        grid = list(lr_grid) if lr_grid else list(_DEFAULT_LEAF_LR_GRID)
+        grid = [g for g in grid if isinstance(g, (int, float)) and not isinstance(g, bool)]
+        if not grid or not isinstance(cells, list) or not cells:
+            return []
+        lr_search = {
+            "grid": grid,
+            "param_key": param_key,
+            "epochs_key": epochs_key,
+            "probe_epochs": probe_epochs,
+            "select_metric": select_metric,
+            "select_objective": select_objective,
+        }
+        return synthesize_search_from_hint(cells, lr_search)
+    except Exception:  # noqa: BLE001 — synthesis must never break the run.
+        logger.exception("synthesize_search_from_leaf failed; falling back to legacy path")
+        return []
+
+
 def select_winner(group: SearchGroup, candidate_results: dict[str, dict]) -> dict | None:
     """Deterministically pick the winning candidate CELL for ``group``.
 
@@ -503,6 +557,8 @@ def run_staged_search(
 __all__ = [
     "SearchGroup",
     "parse_search_spec",
+    "synthesize_search_from_hint",
+    "synthesize_search_from_leaf",
     "extract_select_value",
     "select_winner",
     "materialize_full_cells",

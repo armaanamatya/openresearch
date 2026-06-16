@@ -23,6 +23,7 @@ import pytest
 from backend.agents.rlm.cell_matrix import (
     DEFAULT_HEADROOM,
     aggregate_cell_metrics,
+    audit_aggregation_completeness,
     capacity_gate,
     dataset_url_preflight,
     default_dataset_probe,
@@ -670,3 +671,85 @@ class TestRealSampleShape:
         assert isinstance(out["scope"]["models_skipped"], list)
         assert isinstance(out["scope"]["environments_skipped"], list)
         assert isinstance(out["scope"]["gaps"], list)
+
+
+# ---------------------------------------------------------------------------
+# audit_aggregation_completeness (L6, 2026-06-16) — declared-vs-aggregated
+# reconciliation: catches cells lost BEFORE the aggregate loop (the gap the
+# derive-not-drop guarantee can't cover).
+# ---------------------------------------------------------------------------
+
+
+def _acell(cid, mk="m", env="e", base="b", **extra):
+    return {"id": cid, "model_key": mk, "env": env, "baseline": base, **extra}
+
+
+class TestAuditAggregationCompleteness:
+    def test_all_ok_is_complete(self):
+        cells = [_acell("c1", base="adam"), _acell("c2", base="sgd")]
+        agg = aggregate_cell_metrics(
+            {"c1": {"status": "ok", "metrics": {"metric": 0.9}},
+             "c2": {"status": "ok", "metrics": {"metric": 0.8}}},
+            cells,
+        )
+        out = audit_aggregation_completeness(cells, agg)
+        assert out["complete"] is True
+        assert set(out["ok"]) == {"c1", "c2"}
+        assert out["failed"] == [] and out["unaccounted"] == []
+
+    def test_failed_cell_surfaced(self):
+        cells = [_acell("c1", base="adam"), _acell("c2", base="sgd")]
+        agg = aggregate_cell_metrics(
+            {"c1": {"status": "ok", "metrics": {"metric": 0.9}},
+             "c2": {"status": "error", "error": "boom"}},
+            cells,
+        )
+        out = audit_aggregation_completeness(cells, agg)
+        assert out["failed"] == ["c2"]
+        assert out["complete"] is False
+        assert any("re-run" in n.lower() for n in out["notes"])
+
+    def test_unaccounted_cell_is_the_silent_loss_case(self):
+        # c2 is declared but NEVER reached aggregation (no matrix record, no gap,
+        # not skipped) — the bucket derive-not-drop cannot surface.
+        declared = [_acell("c1", base="adam"), _acell("c2", base="sgd")]
+        agg = aggregate_cell_metrics({"c1": {"status": "ok", "metrics": {"metric": 0.9}}},
+                                     [declared[0]])  # only c1 reached the loop
+        out = audit_aggregation_completeness(declared, agg)
+        assert out["unaccounted"] == ["c2"]
+        assert out["complete"] is False
+        assert any("unaccounted" in n.lower() for n in out["notes"])
+
+    def test_known_gap_is_accounted_not_unaccounted(self):
+        declared = [_acell("c1", base="adam"), _acell("big7b", mk="qwen7b", base="sgd")]
+        agg = aggregate_cell_metrics(
+            {"c1": {"status": "ok", "metrics": {"metric": 0.9}}},
+            [declared[0]],
+            models_skipped=["qwen7b"],  # capacity gate dropped it → KNOWN
+        )
+        out = audit_aggregation_completeness(declared, agg)
+        assert out["gapped"] == ["big7b"]
+        assert out["unaccounted"] == []  # a known drop is not silent loss
+
+    def test_tolerates_dup_disambiguation_suffix(self):
+        # Two cells resolve to the same triple → normalize_cell_axes suffixes the
+        # later baseline with its id; the audit must still match it as ok.
+        from backend.agents.rlm.cell_matrix import normalize_cell_axes
+        raw = [_acell("c1", base="b"), _acell("c2", base="b")]  # identical triple
+        cells, _ = normalize_cell_axes(raw)
+        agg = aggregate_cell_metrics(
+            {"c1": {"status": "ok", "metrics": {"metric": 0.9}},
+             "c2": {"status": "ok", "metrics": {"metric": 0.8}}},
+            cells,
+        )
+        out = audit_aggregation_completeness(raw, agg)  # audit the RAW declared cells
+        assert set(out["ok"]) == {"c1", "c2"}
+        assert out["complete"] is True
+
+    def test_never_raises_on_garbage(self):
+        # Returns a well-formed dict, never raises. (An empty-dict cell with no
+        # matching aggregate is legitimately "unaccounted" → complete False; the
+        # contract under test is "no exception", not a particular verdict.)
+        for decl, agg in ((None, None), ("x", {"per_model": 5}), ([{}, None, "s"], {})):
+            out = audit_aggregation_completeness(decl, agg)
+            assert isinstance(out, dict) and "complete" in out and isinstance(out["notes"], list)

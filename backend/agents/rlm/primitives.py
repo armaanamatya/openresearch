@@ -5314,6 +5314,27 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
                                                      "search block)")})
                         except Exception:  # noqa: BLE001 — emit is best-effort
                             pass
+                # L4 (2026-06-16): second fallback — a per-condition search synthesized
+                # from the LAST verify's result_quality leaf (leaf_actuator), used only
+                # when neither the agent nor a paper hint supplied a search block. Reader
+                # self-guards on REPROLAB_LEAF_ACTUATE (default-OFF == today byte-for-byte).
+                if not _cells_doc.get("search"):
+                    try:
+                        from backend.agents.rlm import leaf_actuator as _la
+                        _leaf_search = _la.staged_search_override(ctx.project_dir)
+                        if _leaf_search:
+                            _cells_doc["search"] = _leaf_search
+                            try:
+                                _emit_dashboard_event(
+                                    ctx, event_type="run_warning",
+                                    payload={"code": "search_synthesized_from_leaf",
+                                             "message": (f"harness synthesized {len(_leaf_search)} "
+                                                         "lr-search group(s) from the last verify's "
+                                                         "result_quality leaf (no agent/hint search)")})
+                            except Exception:  # noqa: BLE001 — emit is best-effort
+                                pass
+                    except Exception:  # noqa: BLE001 — override is advisory
+                        pass
             _staged_groups = _ss.parse_search_spec(_cells_doc)
         except Exception:  # noqa: BLE001 — a malformed/absent manifest → legacy path
             _staged_groups = []
@@ -6795,6 +6816,27 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
                     _lt.persist(ctx.project_dir, _triage)
         except Exception:  # noqa: BLE001 — triage is advisory, never blocks verify
             logger.debug("verify_against_rubric: leaf triage failed", exc_info=True)
+        # Leaf-repair control loop (L4/L5/L6, 2026-06-16): the optional actuator
+        # that closes the loop leaf_triage only diagnoses — STAGE a synthesized
+        # per-condition lr search (L4), a budget-gated seed plan (L5), and a
+        # declared-vs-aggregated completeness audit (L6) the existing routes pick
+        # up next iteration. Default-OFF (REPROLAB_LEAF_ACTUATE unset == today);
+        # fail-soft. Spec: 2026-06-16-leaf-frontier-out-of-scope-remediation.
+        try:
+            from backend.agents.rlm import leaf_actuator as _la
+
+            if _la.is_enabled():
+                _act = _la.actuate(
+                    result.get("leaf_repair_plan") or [],
+                    ctx.project_dir,
+                    weak_leaves=result.get("weak_leaves"),
+                    remaining_s=(ctx.remaining_s() if hasattr(ctx, "remaining_s") else None),
+                )
+                if _act.get("actuated"):
+                    result["leaf_actuation"] = _act["artifact"]
+                    result["leaf_actuation_summary"] = _act.get("summary", "")
+        except Exception:  # noqa: BLE001 — actuation is advisory, never blocks verify
+            logger.debug("verify_against_rubric: leaf actuation failed", exc_info=True)
         # Lane P phase B (codex review 2026-05-25): when metrics.json carries
         # an `experiments` dict with per-experiment {status, reason_class},
         # compute the scope-adjusted rubric and attach it alongside the raw

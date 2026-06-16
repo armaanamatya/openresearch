@@ -100,3 +100,52 @@ def test_end_to_end_pure_select_then_promote():
     assert winner is not None and winner["params"]["lr"] == 0.1
     full = ss.materialize_full_cells(groups, {g.group: winner})
     assert full[0]["lr"] == 0.1 and full[0]["epochs"] == 350
+
+
+# ---------------------------------------------------------------------------
+# synthesize_search_from_leaf (L4, 2026-06-16) — the same staged tune-then-run,
+# triggered by a result_quality leaf DIAGNOSIS instead of a paper-hint grid.
+# ---------------------------------------------------------------------------
+
+# Adam-shape cell: lr/epochs live under ["params"] (the trainer reads p["params"]["lr"]).
+ADAM_CELL = {
+    "id": "mnist_mlp_adam",
+    "model_key": "mnist_mlp",
+    "env": "plain",
+    "baseline": "adam",
+    "params": {"lr": 0.05, "epochs": 200},
+}
+
+
+def test_leaf_synth_one_group_per_condition_cell():
+    # Each emitted cell is one per-condition unit (one optimizer) → one group each,
+    # so every condition gets tuned at ITS OWN lr (the inverted-ordering fix).
+    cells = [dict(ADAM_CELL, id="mnist_adam", baseline="adam"),
+             dict(ADAM_CELL, id="mnist_sgd", baseline="sgd")]
+    search = ss.synthesize_search_from_leaf(cells)
+    assert len(search) == 2
+    assert all(g["param_from_winner"] == ["lr"] for g in search)
+    # Uses the default grid (3 candidates) when no explicit grid is given.
+    assert all(len(g["candidates"]) == 3 for g in search)
+
+
+def test_leaf_synth_roundtrips_through_parse_search_spec():
+    search = ss.synthesize_search_from_leaf([ADAM_CELL])
+    groups = ss.parse_search_spec({"search": search})
+    assert len(groups) == 1
+    assert groups[0].param_from_winner == ["lr"]
+
+
+def test_leaf_synth_honors_explicit_grid():
+    search = ss.synthesize_search_from_leaf([ADAM_CELL], lr_grid=[1e-4, 1e-3])
+    cand_lrs = {c["params"]["lr"] for c in search[0]["candidates"]}
+    assert cand_lrs == {1e-4, 1e-3}
+
+
+def test_leaf_synth_empty_on_unusable_input():
+    assert ss.synthesize_search_from_leaf([]) == []
+    assert ss.synthesize_search_from_leaf(None) == []  # type: ignore[arg-type]
+    # A falsy/empty grid falls back to the DEFAULT grid (still a usable search).
+    assert ss.synthesize_search_from_leaf([ADAM_CELL], lr_grid=[]) != []
+    # A grid with no numeric entries collapses to empty → legacy fallback.
+    assert ss.synthesize_search_from_leaf([ADAM_CELL], lr_grid=["bad"]) == []  # type: ignore[list-item]

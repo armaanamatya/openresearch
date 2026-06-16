@@ -1,6 +1,6 @@
 # Leaf-Frontier & Out-of-Scope Remediation — Design Spec
 
-**Date:** 2026-06-16 · **Branch:** `feat/grader-fidelity` (shipped tier) → continues on the same branch · **Status:** L1–L3 SHIPPED (commit `45c3d32`); L4–L6 designed, flag-gated, not built.
+**Date:** 2026-06-16 · **Branch:** `feat/grader-fidelity` · **Status:** L1–L3 SHIPPED (`45c3d32`); L4 + L6 + the L5 planner/detector/directive SHIPPED (`leaf_actuator.py`, this tier); L5 hot-path seed *replication* + cross-seed mean±std aggregation = documented GPU-validated follow-on. All new behaviour default-OFF (`REPROLAB_LEAF_ACTUATE` unset == today byte-for-byte).
 
 **Sibling specs (this doc does NOT re-design any of them):**
 - `2026-06-16-grader-fidelity-and-harness-remediation-design.md` — the LOCKED grader-fidelity workstreams **A1–A7 / B / C / D / E** (median-of-N, `deterministic_leaf_checker`, evidence-fingerprint, champion-artifact, decoupled transport, EVIDENCE_GATE, `ab_compare` validator, BES). **Owned by the operator.**
@@ -44,9 +44,9 @@ ResNet's 10 excluded ids are all ImageNet-training / COCO-detection / 3-layer-bo
 | **L1** | Out-of-inclusion-scope | ResNet ×10 | in-loop grade lacked the inclusion param finalize had | none (exclude) | **SHIPPED** |
 | **L2** | Render-artifact phrasing | Adam `fe5e7900` | render regex missed "shows zero … artifacts" | none (render) | **SHIPPED (classify)** |
 | **L3** | In-scope cell failure | Adam `ac4006bf` | no class for "attempted but errored" | targeted re-run | **SHIPPED (classify)** |
-| **L4** | Per-condition HP fidelity | Adam optimizer-ordering leaves | one shared LR inverts the paper's ordering | targeted re-run (sweep) | **designed** |
-| **L5** | Single-seed variance | ResNet 1-seed-vs-5 (3×`0.4`) | leaf wants mean±std; we ran 1 seed | GPU (N seeds) | **designed** |
-| **L6** | Aggregation-completeness + arch | VAE β-sweep | ran cells absent from aggregate; arch crash | none / preflight | **designed** |
+| **L4** | Per-condition HP fidelity | Adam optimizer-ordering leaves | one shared LR inverts the paper's ordering | targeted re-run (sweep) | **SHIPPED** (closed-loop) |
+| **L5** | Single-seed variance | ResNet 1-seed-vs-5 (3×`0.4`) | leaf wants mean±std; we ran 1 seed | GPU (N seeds) | **SHIPPED** (planner/directive); replication = follow-on |
+| **L6** | Aggregation-completeness + arch | VAE β-sweep | ran cells absent from aggregate; arch crash | none / preflight | **SHIPPED** (critic); L6(b) owned by TDD handoff |
 
 ---
 
@@ -107,6 +107,8 @@ Dispatch contract (pure, fail-soft, one actuator per leaf, idempotent): each `pl
 
 **Composes:** seed is already a first-class `ScopeSpec`/`cells.json` axis, so this re-uses the one-GPU-per-cell `run_matrix` placement unchanged; it borrows nothing from the locked BES/A-B workstream D.
 
+**Shipped scope (deliberate):** `plan_seed_expansion` (the budget arithmetic), `_wants_variance` (the detector), `expand_cells_for_seeds` (the pure replication), the staged seed plan, and the agent-facing seed directive are all built + tested. The *hot-path* replication is intentionally NOT wired into the run yet: replicated seed-cells produce N separate `per_model` leaves, but the leaf actually wants a single mean±std *aggregated* across seeds — that cross-seed aggregation is the GPU-validated follow-on. Wiring replication before it would burn N× the GPU for a still-unsatisfied leaf. So L5 today STAGES the plan + directs the agent; the auto-replication flips on with the aggregation step (behind the same `REPROLAB_LEAF_ACTUATE_SEEDS` sub-gate).
+
 ### 4.3 L6 — aggregation-completeness critic + arch preflight (VAE β-sweep)
 Two sub-issues, both `cost: none` or preflight:
 
@@ -164,7 +166,8 @@ Actuators mutate `code/` (render a figure, fold cells, re-run a cell). To stay h
 
 ## 11. Files of record
 - Shipped: `backend/evals/paperbench/leaf_scorer.py`, `backend/agents/rlm/{primitives,finalize_regrade,leaf_triage}.py`, `tests/rlm/{test_leaf_triage,test_finalize_floor_and_inclusion}.py` (commit `45c3d32`).
-- Proposed: `backend/agents/rlm/leaf_actuator.py` (new), `backend/agents/rlm/staged_search.py` (`synthesize_search_from_leaf`), `backend/agents/rlm/cell_matrix.py` (completeness assertion), the four test files in §9.
+- Shipped tier 2 (this commit): `backend/agents/rlm/leaf_actuator.py` (new — dispatcher + L5 planner/detector/`expand_cells_for_seeds` + readers + `guidance_block`), `backend/agents/rlm/staged_search.py` (`synthesize_search_from_leaf`), `backend/agents/rlm/cell_matrix.py` (`audit_aggregation_completeness`), wired into `primitives.py` (verify-time `actuate` + the staged-search second fallback) + `baseline_implementation.py` (6.7b guidance). Tests: `tests/rlm/test_leaf_actuator.py` (new), `tests/rlm/test_staged_search_synthesis.py`, `tests/agents/rlm/test_cell_matrix.py`.
+- Follow-on (GPU-validated): L5 hot-path replication + cross-seed mean±std aggregation; L6(b) arch preflight (owned by the agent-codegen-TDD handoff).
 - Memory: `in-loop-out-of-scope-exclusion.md`, `leaf-frontier-remediation.md`, `staged-search-cells-route.md`.
 
 ## 12. Definition of done
