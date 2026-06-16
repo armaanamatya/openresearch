@@ -77,7 +77,7 @@ def roll_up(
     node: dict[str, Any],
     leaf_scores: dict[str, float],
     skip_set: frozenset[str] = frozenset(),
-) -> float:
+) -> float | None:
     """Recursive weighted roll-up.
 
     Leaf: return leaf_scores.get(node["id"], 0.0), or skip entirely when the
@@ -87,6 +87,14 @@ def roll_up(
 
     ``skip_set`` defaults to an empty frozenset so existing callers that pass
     only ``node`` and ``leaf_scores`` are unaffected (backward compat).
+
+    F3 (2026-06-16): returns ``None`` when this node's ENTIRE subtree is skipped
+    (a skipped leaf, or a non-leaf all of whose children rolled up to ``None``) —
+    the sentinel that tells the parent level to exclude this node from both the
+    weight sum and the weighted sum. Callers MUST coerce ``None`` (every in-repo
+    caller does: ``x if x is not None else 0.0`` / an explicit ``is None`` guard).
+    With the default empty ``skip_set`` ``None`` never arises (no leaf is skipped).
+    The return type now states this honestly (was ``-> float`` + ``# type: ignore``).
     """
     children: list[dict[str, Any]] = [
         c for c in (node.get("sub_tasks") or []) if isinstance(c, dict)
@@ -97,7 +105,7 @@ def roll_up(
             # Signal to the parent that this leaf is ineligible.
             # Callers must filter children by skip_set before computing the
             # weighted average — see the non-leaf branch below.
-            return None  # type: ignore[return-value]
+            return None
         return leaf_scores.get(lid, 0.0)
 
     # Non-leaf: exclude skipped children from both weight sum and weighted sum.
@@ -120,7 +128,7 @@ def roll_up(
         scored_children.append((child, child_score))
 
     if not scored_children:
-        return None  # type: ignore[return-value]  # entire subtree skipped
+        return None  # entire subtree skipped
 
     total_weight = sum(float(c.get("weight", 0.0) or 0.0) for c, _ in scored_children)
     if total_weight == 0.0:
@@ -1910,9 +1918,12 @@ def score_reproduction(
                 if degraded and score > DEGRADED_LEAF_CEILING:
                     score = DEGRADED_LEAF_CEILING
                 leaf_scores[lid] = score
-                leaf_score_records.append(
-                    {"id": lid, "score": score, "justification": rec["justification"]}
-                )
+                _rec_out = {"id": lid, "score": score, "justification": rec["justification"]}
+                # F7: carry the median-of-N spread through to the leaf record when
+                # present (only under N>1 — additive, byte-for-byte today otherwise).
+                if "score_spread" in rec:
+                    _rec_out["score_spread"] = rec["score_spread"]
+                leaf_score_records.append(_rec_out)
                 if rec.get("_graded", True):
                     graded_count += 1
     finally:
@@ -2037,7 +2048,7 @@ def score_reproduction(
             sum(1 for r in invariant_results if r.get("soft_gate_tripped")),
         )
 
-    return {
+    result = {
         "overall_score": gated_overall,
         "leaf_count": len(leaves),
         "graded": graded_count,
@@ -2051,6 +2062,20 @@ def score_reproduction(
         "invariant_results": invariant_results,
         "invariant_gate_applied": inv_gate_applied,
     }
+    # F7: when median-of-N denoising is active (A1, N>1), surface the grader
+    # provenance + worst per-leaf noise spread so the report/UI can show the
+    # denoising headroom. Only added under N>1 → the result dict is byte-for-byte
+    # today (N=1 default). grader_temperature is 0 (the A1 sampling temperature).
+    if _grader_samples > 1:
+        _spreads = [
+            float(r["score_spread"]["max"]) - float(r["score_spread"]["min"])
+            for r in leaf_score_records
+            if isinstance(r.get("score_spread"), dict)
+        ]
+        result["grader_samples"] = _grader_samples
+        result["grader_temperature"] = 0.0
+        result["grader_max_spread"] = round(max(_spreads), 4) if _spreads else 0.0
+    return result
 
 
 def _parse_batch_response(
@@ -2154,6 +2179,15 @@ def _median_merge(
                 "justification": rep.get("justification", ""),
                 "deductions": rep.get("deductions", []),
                 "_graded": any(bool(r.get("_graded", False)) for r in recs),
+                # F7: per-leaf grader-noise spread across the N samples — lets the
+                # report/UI show the denoising headroom. Only present under
+                # median-of-N (this function runs only when N>1; N=1 returns the
+                # single parse upstream → byte-for-byte today).
+                "score_spread": {
+                    "n": len(scores),
+                    "min": round(min(scores), 4),
+                    "max": round(max(scores), 4),
+                },
             }
         )
     return out

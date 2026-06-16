@@ -2197,14 +2197,32 @@ def _finalize(
     # Lifts started_at from demo_status.json (written at run start); stamps
     # completed_at at write time; records per-role models for leaderboard ranking.
     report.mode = "rlm"
-    # verifier == grader: both are the rubric-scoring client (ctx.llm_client), whose model
-    # is llm_model. Under the default accelerator scope="navigation" this stays the strong
-    # root model (Sonnet) even when a small accelerator serves rlm_query/llm_query nav.
+    # verifier == the rubric-scoring client (ctx.llm_client → llm_model). Under the
+    # default accelerator scope="navigation" this stays the strong root model
+    # (Sonnet) even when a small accelerator serves rlm_query/llm_query nav.
+    # F5: the GRADER (leaf scorer) rides the same client by default, but A5's
+    # decoupled transport (REPROLAB_GRADER_BACKEND/_MODEL) can move it onto an
+    # independent sampler-capable model — and ACCELERATOR_SCOPE=all routes it onto
+    # the accelerator. Stamp what ACTUALLY graded so the leaderboard is honest;
+    # default (no override) → llm_model, byte-for-byte today.
+    _grader_stamp = (
+        os.environ.get("REPROLAB_GRADER_MODEL", "").strip()
+        or os.environ.get("REPROLAB_GRADER_BACKEND", "").strip()
+        or (
+            os.environ.get("REPROLAB_ACCELERATOR_MODEL", "").strip()
+            if (
+                os.environ.get("REPROLAB_ACCELERATOR_SCOPE", "").strip().lower() == "all"
+                and os.environ.get("REPROLAB_ACCELERATOR", "").strip().lower() == "endpoint"
+            )
+            else ""
+        )
+        or llm_model
+    )
     report.models = {
         "planner": llm_model,
         "executor": getattr(ctx, "agent_model", None),
         "verifier": llm_model,
-        "grader": llm_model,
+        "grader": _grader_stamp,
     }
     started_at: str | None = None
     demo_status_path = project_dir / "demo_status.json"

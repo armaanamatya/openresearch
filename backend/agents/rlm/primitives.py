@@ -6336,7 +6336,11 @@ def _rubric_areas(rubric: dict, leaf_scores_list: list[dict]) -> list[dict]:
         name = str(task.get("requirements") or "")[:120]
         if not name:
             name = f"Area {i + 1}"
-        score = _clamp01(roll_up(task, leaf_score_map))
+        # F3: roll_up is float | None (None when a whole subtree is skipped). The
+        # default empty skip_set here never yields None, but coerce defensively so
+        # the contract is explicit and _clamp01 never sees None.
+        _ru = roll_up(task, leaf_score_map)
+        score = _clamp01(_ru if _ru is not None else 0.0)
         weight = task.get("weight")
         areas.append({
             "area": name,
