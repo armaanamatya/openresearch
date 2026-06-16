@@ -86,9 +86,11 @@ class TestSdarHintStructure:
         assert "WebShop" in env_names
         assert "Search-QA" in env_names
 
-    def test_default_scope_has_three_seeds(self, sdar):
+    def test_default_scope_uses_single_paper_seed(self, sdar):
+        # The official SDAR scripts train with a single env.seed=0; the faithful
+        # default is one seed, not the harness's generic [42, 43, 44].
         assert sdar.default_scope is not None
-        assert sdar.default_scope.seeds == [42, 43, 44]
+        assert sdar.default_scope.seeds == [0]
 
     def test_invariants_cover_key_paper_claims(self, sdar):
         names = {inv.name for inv in sdar.invariants}

@@ -61,7 +61,12 @@ PAPER_HINTS: dict[str, PaperHint] = {
                 DatasetSlice(name="WebShop"),
                 DatasetSlice(name="Search-QA"),
             ],
-            seeds=[42, 43, 44],
+            # The official SDAR scripts (github.com/ZJU-REAL/SDAR) train with a
+            # single env.seed=0; the paper does not report multi-seed variance.
+            # A single seed is the faithful scope and ~3x cheaper than the
+            # harness's generic [42,43,44] default. Widen via --scope-spec only
+            # if a variance study is explicitly wanted.
+            seeds=[0],
         ),
         invariants=[
             InvariantSpec(
