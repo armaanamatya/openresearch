@@ -1005,6 +1005,20 @@ def build_final_report(
     # path. Keep them in lock-step with kwargs["rubric"].
     _final_rubric = kwargs.get("rubric")
     if isinstance(_final_rubric, dict):
+        # A7 (2026-06-16): recompute meets_target from the FINAL authoritative
+        # overall_score (after rescore + any floor), in ONE place, so it cannot go
+        # stale relative to a score that changed downstream — both All-CNN arms
+        # shipped meets_target=True while the score sat below target. None target
+        # → None verdict, never a fabricated bool.
+        _fo = _final_rubric.get("overall_score")
+        _ft = _final_rubric.get("target_score")
+        try:
+            if _ft is None:
+                _final_rubric["meets_target"] = None
+            elif _fo is not None:
+                _final_rubric["meets_target"] = bool(float(_fo) >= float(_ft))
+        except (TypeError, ValueError):
+            pass
         kwargs["overall_score"] = _final_rubric.get("overall_score")
         kwargs["meets_target"] = _final_rubric.get("meets_target")
 

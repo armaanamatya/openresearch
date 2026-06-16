@@ -156,6 +156,23 @@ class TestBuildFinalReportParsing:
 
         assert report.verdict == "partial"
 
+    def test_meets_target_recomputed_from_final_score(self, make_context, tmp_path):
+        """A7: meets_target is recomputed from the FINAL overall_score, so a stale
+        True (score below target) is corrected — not shipped as a false pass."""
+        ctx = _record_run_experiment(make_context(tmp_path))
+        d = dict(_BASE_REPORT_DICT)
+        d["rubric"] = {"overall_score": 0.5, "target_score": 0.7, "meets_target": True, "areas": []}
+        report = build_final_report(_make_result(json.dumps(d)), ctx=ctx)
+        assert report.rubric["meets_target"] is False  # 0.5 < 0.7 → stale True corrected
+
+    def test_meets_target_none_when_no_target(self, make_context, tmp_path):
+        """No target_score → meets_target is None, never a fabricated bool."""
+        ctx = _record_run_experiment(make_context(tmp_path))
+        d = dict(_BASE_REPORT_DICT)
+        d["rubric"] = {"overall_score": 0.88, "meets_target": True, "areas": []}
+        report = build_final_report(_make_result(json.dumps(d)), ctx=ctx)
+        assert report.rubric["meets_target"] is None
+
     def test_empty_baseline_metrics_tolerated(self, make_context, tmp_path):
         """Empty baseline_metrics in the response does not raise."""
         ctx = make_context(tmp_path)
