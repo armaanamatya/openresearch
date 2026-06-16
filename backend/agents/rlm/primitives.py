@@ -1236,18 +1236,25 @@ def resolve_gpu_requirements(
     except (ValueError, TypeError):
         _sb_enum = None
     _is_azure = _sb_enum is _SandboxMode.azure
+    _is_gcp = _sb_enum is _SandboxMode.gcp
 
-    # ``provisioned_skus`` restricts the azure resolver to the GPU pools that are
-    # actually provisioned (Terraform ``var.gpu_skus`` ⇒ ``settings.azure_gpu_skus``),
-    # so the primary pick + OOM escalation ladder can never name a pool that does
-    # not exist (which would otherwise hang the cell Pending until the
-    # capacity-exhausted timeout). ``None`` for non-azure leaves the runpod path
+    # ``provisioned_skus`` restricts the azure/gcp resolver to the GPU pools that are
+    # actually provisioned (Terraform ``var.gpu_skus`` ⇒ ``settings.azure_gpu_skus`` /
+    # ``settings.gcp_gpu_skus``), so the primary pick + OOM escalation ladder can never
+    # name a pool that does not exist (which would otherwise hang the cell Pending until
+    # the capacity-exhausted timeout). ``None`` for non-azure/gcp leaves the runpod path
     # byte-for-byte unchanged.
     if _is_azure:
         _provider = "azure"
         cloud_types: tuple[str, ...] = ("ONDEMAND",)
         _provisioned_skus: tuple[str, ...] | None = tuple(
             getattr(settings, "azure_gpu_skus", None) or ()
+        ) or None
+    elif _is_gcp:
+        _provider = "gcp"
+        cloud_types = ("ONDEMAND",)
+        _provisioned_skus = tuple(
+            getattr(settings, "gcp_gpu_skus", None) or ()
         ) or None
     else:
         _provider = "runpod"
@@ -2726,6 +2733,13 @@ def _backend_for_sandbox_mode(
 
         _runtime.ensure_azure_available()
         return AksJobBackend(run_budget=run_budget, gpu_plan=gpu_plan)
+
+    if mode is SandboxMode.gcp:
+        import backend.services.runtime as _runtime
+        from backend.services.runtime.gke_job_backend import GkeJobBackend
+
+        _runtime.ensure_gcp_available()
+        return GkeJobBackend(run_budget=run_budget, gpu_plan=gpu_plan)
 
     # All other modes (auto, brev, simulate) are not yet wired
     # for the RLM path.  Fall back with a loud WARNING so the operator knows.
