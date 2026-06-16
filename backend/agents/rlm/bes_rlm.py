@@ -317,7 +317,15 @@ def compete(plan: dict, *, ctx: Any, implement_fn: Callable[..., dict]) -> dict:
 
 
 def _compete_inner(plan: dict, *, ctx: Any, implement_fn: Callable[..., dict]) -> dict:
-    from backend.agents.rdr.candidates import Candidate, select_best
+    from backend.agents.rdr.candidates import (
+        Candidate,
+        SmokeResult,
+        select_best_gated,
+        smoke_check_candidate,
+    )
+    from backend.agents.rdr.candidates import (
+        ENV_SMOKE_SELECT as _ENV_SMOKE_SELECT,
+    )
     from backend.agents.rdr.models import Artifacts
     from backend.agents.rlm.primitives import _harvest_baseline_artifacts
     from backend.config import get_settings
@@ -325,6 +333,11 @@ def _compete_inner(plan: dict, *, ctx: Any, implement_fn: Callable[..., dict]) -
     settings = get_settings()
     n = max(2, int(settings.bes_candidates_per_cluster))
     select_metric = str(settings.bes_select_metric or "cluster_score")
+    # The §D2 smoke-gated SELECT is opt-in; only pay the per-candidate AST scan
+    # when it's on. Off → select_best_gated is a pass-through to select_best.
+    smoke_select_on = os.environ.get(_ENV_SMOKE_SELECT, "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
 
     project_dir = Path(ctx.project_dir)
     code_dir = Path(ctx.runs_root) / ctx.project_id / "code"
@@ -356,6 +369,7 @@ def _compete_inner(plan: dict, *, ctx: Any, implement_fn: Callable[..., dict]) -
     pool: list[Candidate] = []
     envelopes: dict[str, dict] = {}
     records: list[dict] = []
+    smokes: dict[str, SmokeResult] = {}
     last_failure: dict | None = None
 
     logger.info(
@@ -398,6 +412,12 @@ def _compete_inner(plan: dict, *, ctx: Any, implement_fn: Callable[..., dict]) -
                     "bes_rlm[%s]: candidate %s snapshot/grade failed",
                     ctx.project_id, cid, exc_info=True,
                 )
+            # §D2 runtime-axis smoke (opt-in): a read-only AST construct/import
+            # scan of the SNAPSHOT so a non-runnable candidate can't outrank a
+            # runnable one in select_best_gated. Fail-soft (checked=False on any
+            # error) — never costs the candidate its place in the pool.
+            if smoke_select_on:
+                smokes[cid] = smoke_check_candidate(cid, cand_dir / "code")
         else:
             last_failure = result if isinstance(result, dict) else None
 
@@ -431,7 +451,41 @@ def _compete_inner(plan: dict, *, ctx: Any, implement_fn: Callable[..., dict]) -
             "failed": not ok,
         })
 
-    winner = select_best(pool, select_metric=select_metric)
+    winner, select_decision = select_best_gated(
+        pool, select_metric=select_metric, smokes=smokes,
+    )
+
+    if select_decision.get("degenerate"):
+        # §D2: every candidate failed OR every survivor is non-runnable (a
+        # statically-faithful pool that can't actually run). "Selecting" any of
+        # these ships a doomed winner. Emit a coded warning and fall through to
+        # ONE single-shot repair implementation instead.
+        logger.warning(
+            "bes_rlm[%s]: degenerate pool (n=%d, smoke_dropped=%s) — single-shot repair",
+            ctx.project_id, len(pool), select_decision.get("smoke_dropped"),
+        )
+        _emit(ctx, "run_warning", {
+            "code": "degenerate_pool",
+            "message": (
+                f"BES pool of {len(pool)} produced no runnable candidate "
+                f"(smoke-dropped: {select_decision.get('smoke_dropped') or []}); "
+                "falling through to single-shot repair."
+            ),
+            "smoke_dropped": select_decision.get("smoke_dropped"),
+            "n_candidates": len(pool),
+        })
+        _clear_dir(code_dir)
+        repair = implement_fn(dict(plan), ctx=ctx, _bes_inner=True)
+        if isinstance(repair, dict):
+            repair["bes"] = {
+                "selected": None,
+                "n_candidates": len(pool),
+                "select_metric": select_metric,
+                "degenerate_pool": True,
+                "select_decision": select_decision,
+            }
+        return repair
+
     if winner is None or winner.candidate_id not in envelopes:
         # Every candidate failed — honour implement_baseline's failure contract.
         logger.warning(
@@ -460,6 +514,7 @@ def _compete_inner(plan: dict, *, ctx: Any, implement_fn: Callable[..., dict]) -
         "n_candidates": len(pool),
         "select_metric": select_metric,
         "scores": {r["candidate_id"]: r["score"] for r in records},
+        "select_decision": select_decision,
     }
     final["bes"] = bes_meta
 
@@ -483,6 +538,7 @@ def _compete_inner(plan: dict, *, ctx: Any, implement_fn: Callable[..., dict]) -
         "select_metric": select_metric,
         "winner": winner.candidate_id,
         "candidates": records,
+        "select_decision": select_decision,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
