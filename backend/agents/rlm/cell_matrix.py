@@ -202,26 +202,35 @@ def normalize_cell_axes(
 
     * **Never drops a cell** (non-dict entries excepted — they can't run).
     * Input is not mutated; patched cells are shallow copies.
-    * When two cells DERIVE to the same ``(model_key, env, baseline)`` triple,
+    * When two cells RESOLVE to the same ``(model_key, env, baseline)`` triple,
       the later one's ``baseline`` is suffixed with its cell id so no leaf can
-      silently overwrite another.  Explicit duplicate triples are preserved
-      verbatim (existing behavior for agent-authored manifests).
+      silently overwrite another.  This now covers BOTH derived dups (agent
+      omitted axes) AND explicit-identical dups (agent authored the same triple
+      twice).  Pre-2026-06-16 only derived dups were disambiguated, so two cells
+      with identical explicit ``model_key/env/baseline`` collided at
+      ``per_model[mk][env][baseline]`` and the earlier one was silently lost
+      (last-writer-wins).  A disambiguated, present leaf is strictly better than
+      a discarded measured result; the suffix is surfaced in ``notes`` so the
+      agent can emit distinct axes next iteration (C5).
     """
     if not isinstance(cells, list):
         return [], []
     out: list[dict[str, Any]] = []
     seen_triples: set[tuple[str, str, str]] = set()
     n_derived = 0
+    n_dup_disambiguated = 0
     for i, cell in enumerate(cells):
         if not isinstance(cell, dict):
             continue
         model_key, env, baseline, derived = _cell_axes(cell, i)
         if derived:
-            triple = (model_key, env, baseline)
-            if triple in seen_triples:
-                cid = str(cell.get("id") or f"cell_{i}")
-                baseline = f"{baseline}__{cid}"
             n_derived += 1
+        # Disambiguate ANY colliding triple — derived OR explicit — so no leaf
+        # silently overwrites another in aggregate_cell_metrics' per_model tree.
+        if (model_key, env, baseline) in seen_triples:
+            cid = str(cell.get("id") or f"cell_{i}")
+            baseline = f"{baseline}__{cid}"
+            n_dup_disambiguated += 1
         seen_triples.add((model_key, env, baseline))
         if (
             cell.get("model_key") == model_key
@@ -243,6 +252,14 @@ def normalize_cell_axes(
             "model/dataset/variant-style fields (falling back to the cell id). "
             "Metrics are keyed under the derived axes. For precise rubric matching, "
             "emit explicit model_key, env, and baseline for every cell in cells.json."
+        )
+    if n_dup_disambiguated:
+        notes.append(
+            f"cells.json contract: {n_dup_disambiguated}/{len(out)} cell(s) resolved to a "
+            "(model_key, env, baseline) triple already used by an earlier cell; the harness "
+            "suffixed the later baseline with the cell id so neither leaf is silently dropped "
+            "(per_model is keyed by that triple). Emit a DISTINCT model_key/env/baseline per "
+            "cell in cells.json so each result lands under the intended rubric leaf."
         )
     return out, notes
 

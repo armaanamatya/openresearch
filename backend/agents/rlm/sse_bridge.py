@@ -377,18 +377,39 @@ class ReproLabRLMLogger(RLMLogger):
         # those steps does not leave ctx with a stale counter.
         if self._ctx is not None:
             self._ctx.current_iteration = index
-            # F-06: reset the forced-iteration policy's per-turn trackers at the
-            # real REPL turn boundary, not only on a FINAL_VAR refusal. Without
-            # this, single failing run_experiment outcomes from DIFFERENT
-            # iterations accumulate and falsely trip the two-experiment-per-turn
-            # guard. Fail-soft — a reset (a list assignment) must never break
-            # logging.
+
+        # F-06: reset the forced-iteration policy's per-turn trackers at the
+        # real REPL turn boundary, not only on a FINAL_VAR refusal. Without
+        # this, single failing run_experiment outcomes from DIFFERENT
+        # iterations accumulate and falsely trip the two-experiment-per-turn
+        # guard.
+        #
+        # Reset the SAME policy object the FINAL_VAR interceptor reads — the
+        # thread-local stack top via forced_iteration._current_policy() — NOT
+        # ctx._forced_iteration_policy. The two normally coincide (run.py both
+        # sets the ctx attr and pushes the same object on the worker thread's
+        # stack), but they are read from two independent sources: if they ever
+        # diverge (ctx unset, a nested sub-run pushing a different policy, the
+        # logger constructed without ctx), resetting the ctx attr would advance
+        # the wrong object while the interceptor kept reading a stack-top whose
+        # per-turn tracker never cleared — the exact latent divergence C5/F6
+        # flags. ctx._forced_iteration_policy is the fallback for the (rare) path
+        # where this log() runs off the worker thread and the stack is empty.
+        # Fail-soft — a reset (a list assignment) must never break logging.
+        _pol = None
+        try:
+            from backend.agents.rlm.forced_iteration import _current_policy
+
+            _pol = _current_policy()
+        except Exception:  # noqa: BLE001 — import/lookup must never break logging
+            _pol = None
+        if _pol is None:
             _pol = getattr(self._ctx, "_forced_iteration_policy", None)
-            if _pol is not None:
-                try:
-                    _pol.on_iteration_advance()
-                except Exception:  # noqa: BLE001 — best-effort turn-boundary reset
-                    pass
+        if _pol is not None:
+            try:
+                _pol.on_iteration_advance()
+            except Exception:  # noqa: BLE001 — best-effort turn-boundary reset
+                pass
 
 
 # ---------------------------------------------------------------------------
