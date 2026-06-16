@@ -1405,6 +1405,14 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
             "skipped": True,
             "note": "azure sandbox: image is pre-baked in ACR; build_environment is a no-op",
         }, PrimitiveOutcome.ok)
+    if _sb_key == "gcp":
+        return _with_outcome({
+            "ok": True,
+            "image_tag": "",
+            "attempts": 0,
+            "skipped": True,
+            "note": "gcp sandbox: image is pre-baked in Artifact Registry (gcp_base_image); build_environment is a no-op",
+        }, PrimitiveOutcome.ok)
     # C6 (2026-06-16): under runpod the locally-built image is NEVER used — the
     # pod boots OPENRESEARCH_RUNPOD_IMAGE and runs over SSH in a per-run venv
     # (runpod_backend.py). The local `docker build` below is therefore wasted
@@ -5874,7 +5882,7 @@ def run_experiment(
     _sb_mode_str = str(getattr(getattr(ctx, "sandbox_mode", None), "value",
                                getattr(ctx, "sandbox_mode", None) or "")).lower()
     _is_local_sb = (_sb_mode_str == "local")
-    if _sb_mode_str not in ("local", "azure") and (not env_id or not str(env_id).strip()):
+    if _sb_mode_str not in ("local", "azure", "gcp") and (not env_id or not str(env_id).strip()):
         return _persist_experiment_result(ctx, {
             "success": False,
             "metrics": {},
@@ -6031,6 +6039,10 @@ def run_experiment(
             "1", "true", "yes", "on"
         ):
             _cell_route_kinds.append("azure")
+        if os.environ.get("OPENRESEARCH_GCP_CELL_ROUTE", "1").strip().lower() in (
+            "1", "true", "yes", "on"
+        ):
+            _cell_route_kinds.append("gcp")
         if (
             _caps.backend_kind in _cell_route_kinds
             and not _caps.is_empty

@@ -610,8 +610,6 @@ def _build_job_manifest(
         _gpu_skus_for_default: list = _cloud_setting("gpu_skus", []) or []
         default_sku = str(_gpu_skus_for_default[0]) if _gpu_skus_for_default else "azure_a100_80"
 
-    pvc_name = f"{namespace}-files-pvc"
-
     # P0-fix-1: env-var NAMES must exactly match what aks_cell_entrypoint.py reads.
     # Canonical contract (runner injects → entrypoint reads):
     #   OPENRESEARCH_CELL_ID               → os.environ.get("OPENRESEARCH_CELL_ID")
@@ -1195,10 +1193,10 @@ def _run_cell_job(
             files_cache_enabled=bool(_cloud_setting("files_cache_enabled", True)),
             # P1-fix-9: OOM shrink ratios forwarded from settings.
             oom_batch_scale_step1=float(
-                _cloud_setting("cell_oom_batch_scale_step1", 0.5)
+                _cloud_setting("oom_batch_scale_step1", 0.5)
             ),
             oom_batch_scale_floor=float(
-                _cloud_setting("cell_oom_batch_scale_floor", 0.25)
+                _cloud_setting("oom_batch_scale_floor", 0.25)
             ),
             bootstrap_pip_timeout_s=int(
                 _cloud_setting("bootstrap_pip_timeout_s", 600)

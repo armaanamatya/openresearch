@@ -339,6 +339,15 @@ class Settings(BaseSettings):
     gcp_region: str = Field(default="us-central1", description="GCP region (e.g. us-central1, us-east1)")
     gcp_gcs_bucket: str = Field(default="", description="GCS bucket name for run artifacts (replaces Azure storage account + container)")
     gcp_filestore_share: str = Field(default="reprolab-cache", description="Filestore share name for HF_HOME + pip cache")
+    gcp_files_cache_enabled: bool = Field(
+        default=False,
+        description=(
+            "Mount the Filestore PVC (reprolab-cache) as the cell cache. GCP "
+            "Filestore is OPTIONAL and off by default, so this defaults False — "
+            "cells then use an ephemeral emptyDir and never block on a missing "
+            "PVC. Set True only when the optional Filestore is provisioned."
+        ),
+    )
     gcp_artifact_registry: str = Field(default="", description="Artifact Registry host (e.g. us-central1-docker.pkg.dev/myproject/reprolab)")
     gcp_gke_cluster: str = Field(default="", description="GKE cluster name")
     gcp_namespace: str = Field(default="reprolab", description="Kubernetes namespace for Job submission")
