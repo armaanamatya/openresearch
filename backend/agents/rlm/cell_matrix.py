@@ -581,6 +581,115 @@ def _build_failed_leaf(
     return leaf
 
 
+# ---------------------------------------------------------------------------
+# Cross-seed aggregation — the "best (mean ± std) over N runs" evidence shape
+# ---------------------------------------------------------------------------
+#
+# When run_experiment replicates a headline model across seeds (seed_policy /
+# leaf_actuator.expand_cells_for_seeds), every replica shares the same
+# (model_key, env, baseline) and differs only by ``seed`` + an ``__seed{N}``
+# id suffix.  aggregate_cell_metrics' per_model tree is keyed by that triple, so
+# the replicas would otherwise collide and the last one would silently overwrite
+# the rest (the same "a ran cell must NEVER vanish" failure mode the axis
+# derivation guards) — and the distribution the paper's "best (mean ± std) over
+# 5 independent runs" leaf demands would be lost.  This folds the replicas into a
+# single leaf carrying that distribution.  It activates ONLY when ≥2 co-located
+# ok cells carry DISTINCT seeds, so a single-seed paper (and the accidental-
+# duplicate manifest, which keeps last-write-wins) is byte-for-byte unchanged.
+
+# Result-metric keys that earn the full mean/std/min/max/values treatment; every
+# other numeric key just reports its cross-seed mean.
+_SEED_STAT_KEYS = (
+    "metric", "test_error_pct", "best_test_error_pct", "test_accuracy",
+    "best_test_accuracy", "test_acc", "accuracy", "error", "top1_error",
+    "top5_error", "elbo", "final_elbo", "test_nll", "final_test_nll", "nll",
+    "reward", "reward_mean", "cumulative_return", "final_train_loss", "loss",
+    "score", "map", "mAP",
+)
+
+
+def _pstd(vals: "list[float]") -> float:
+    """Sample standard deviation (ddof=1) — 0.0 for <2 points. Pure, never raises."""
+    n = len(vals)
+    if n < 2:
+        return 0.0
+    mean = sum(vals) / n
+    return (sum((x - mean) ** 2 for x in vals) / (n - 1)) ** 0.5
+
+
+def _fold_seed_leaves(
+    leaves: "list[dict[str, Any]]", seeds: "list[Any]"
+) -> dict[str, Any]:
+    """Collapse per-seed ok leaves into ONE cross-seed mean±std leaf. Pure.
+
+    Every numeric key reports its cross-seed MEAN (so existing scalar readers —
+    the leaf scorer's ``metric`` lookup, the postflight guards — transparently
+    get the mean, which is exactly "report the mean over N seeds").  The curated
+    result-metric keys additionally gain ``<k>_mean`` / ``<k>_std`` / ``<k>_min``
+    / ``<k>_max`` / ``<k>_values`` so the grader can confirm "best (mean ± std)
+    over N runs" (best = min for an error/loss key, max for an accuracy key —
+    both are present, the grader picks by direction).  Non-numeric keys
+    (``model_key``, ``depth``, …) are inherited from the first replica.  Carries
+    ``seed_count`` + ``seeds``.  Never raises; falls back to the first leaf.
+    """
+    try:
+        ok = [lf for lf in leaves if isinstance(lf, dict)]
+        if not ok:
+            return {"status": "ok", "metric": None, "seed_count": 0, "seeds": []}
+        out: dict[str, Any] = dict(ok[0])  # inherit non-numeric axis/meta keys
+        cols: dict[str, list[float]] = {}
+        for lf in ok:
+            for k, v in lf.items():
+                fv = _coerce_metric(v)
+                if fv is not None:
+                    cols.setdefault(k, []).append(fv)
+        for k, vals in cols.items():
+            if not vals:
+                continue
+            mean = sum(vals) / len(vals)
+            out[k] = mean
+            if k in _SEED_STAT_KEYS:
+                out[f"{k}_mean"] = mean
+                out[f"{k}_std"] = _pstd(vals)
+                out[f"{k}_min"] = min(vals)
+                out[f"{k}_max"] = max(vals)
+                out[f"{k}_values"] = list(vals)
+        out["status"] = "ok"
+        out["metric"] = _coerce_metric(out.get("metric"))
+        out["seed_count"] = len(ok)
+        out["seeds"] = sorted({s for s in seeds if isinstance(s, int)})
+        return out
+    except Exception:  # noqa: BLE001 — folding must never break aggregation
+        return dict(leaves[0]) if leaves and isinstance(leaves[0], dict) else {
+            "status": "ok", "metric": None}
+
+
+def audit_headline_coverage(
+    cells: "list[dict[str, Any]]", headline_models: "list | None"
+) -> list[str]:
+    """Paper-headline model_keys ABSENT from the matrix — honest-gap surfacing. Pure.
+
+    A paper's headline model silently missing from cells.json (the ResNet-1202
+    case: the agent emitted depths 20–110 but never n=200) makes its result leaf
+    unverifiable AND invites the grader to fabricate a ``models_skipped`` entry
+    ("ResNet-1202 is explicitly listed in scope.models_skipped" — it was NOT).
+    Returning the declared-but-absent headline keys lets the caller record an
+    HONEST ``scope.models_skipped`` gap instead. ``[]`` when nothing is declared
+    or all headline models are present. Never raises.
+    """
+    try:
+        want = {str(m) for m in (headline_models or []) if str(m).strip()}
+        if not want:
+            return []
+        present = {
+            str(c.get("model_key", "") or "")
+            for c in cells if isinstance(c, dict)
+        }
+        return sorted(want - present)
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def aggregate_cell_metrics(
     matrix_result: dict[str, dict[str, Any]],
     cells: list[dict[str, Any]],
@@ -649,6 +758,10 @@ def aggregate_cell_metrics(
     models_with_ok: set[str] = set()
     any_ok = False
     any_failed = False
+    # Co-located OK cells per (model_key, env, baseline) slot — used after the
+    # loop to fold a genuine multi-seed sweep into a mean±std leaf instead of the
+    # last-write-wins collapse below (no fold unless ≥2 cells carry distinct seeds).
+    slot_ok: dict[tuple[str, str, str], list[tuple[Any, dict[str, Any]]]] = {}
 
     for idx, cell in enumerate(cells if isinstance(cells, list) else []):
         if not isinstance(cell, dict):
@@ -682,6 +795,11 @@ def aggregate_cell_metrics(
             leaf = _build_ok_leaf(cell_metrics)
             models_with_ok.add(model_key)
             any_ok = True
+            seed_val = cell.get("seed")
+            if not isinstance(seed_val, int):
+                p = cell.get("params")
+                seed_val = p.get("seed") if isinstance(p, dict) else None
+            slot_ok.setdefault((model_key, env, baseline), []).append((seed_val, leaf))
         else:
             # oom_failed / error / timeout / unknown / missing record → failed leaf.
             err = record.get("error") if record else None
@@ -689,6 +807,16 @@ def aggregate_cell_metrics(
             any_failed = True
 
         per_model.setdefault(model_key, {}).setdefault(env, {})[baseline] = leaf
+
+    # Cross-seed fold: a slot with ≥2 ok cells carrying DISTINCT seeds is a real
+    # seed sweep — replace the last-write-wins leaf with the mean±std fold so the
+    # paper's "best (mean ± std) over N runs" evidence survives. Single-seed and
+    # accidental-same-seed slots are left exactly as the loop produced them.
+    for (mk, env, baseline), items in slot_ok.items():
+        distinct_seeds = {s for s, _ in items if isinstance(s, int)}
+        if len(items) >= 2 and len(distinct_seeds) >= 2:
+            folded = _fold_seed_leaves([lf for _, lf in items], [s for s, _ in items])
+            per_model.setdefault(mk, {}).setdefault(env, {})[baseline] = folded
 
     # Top-level status from the ok/failed tallies.
     if any_ok and not any_failed:

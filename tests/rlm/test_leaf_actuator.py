@@ -347,3 +347,95 @@ def test_emit_figure_sidecars_never_raises(tmp_path):
     assert la.emit_figure_sidecars(tmp_path, [None, "x", {}]) == []
     bad = _project(tmp_path, metrics={"per_model": {"m": "not a dict"}})
     assert la.emit_figure_sidecars(bad, _RENDER_LEAF) == []
+
+
+# ---------------------------------------------------------------------------
+# Seed-demand recognition + policy (2026-06-16 ResNet ceiling)
+# The grader said "only 1 seed was run instead of the required 5" / "1 seed vs
+# 5 runs" — DIGIT seed counts the old _VARIANCE_RE missed, so the variance
+# leaves fell to "review" and the seed expansion never fired.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("text", [
+    "only 1 seed was run for ResNet-110 instead of the required 5",
+    "resnet_110 best_test_error_pct=6.82 vs paper's 6.43% (1 seed vs 5 runs)",
+    "test error is reported as 'best (mean ± std)' over 5 independent runs",
+    "single seed used, no error bars",
+    "results averaged across 3 seeds",
+    "best of 5 runs not reported",
+])
+def test_wants_variance_matches_real_phrasings(text):
+    assert la._wants_variance(text) is True
+
+
+@pytest.mark.parametrize("text", [
+    "the proof in appendix B is paraphrased imprecisely",
+    "batch size is only an assumption; epochs not confirmed",
+    "the figure shows no training curve",
+])
+def test_wants_variance_rejects_unrelated(text):
+    assert la._wants_variance(text) is False
+
+
+def test_resolve_seed_demand_priority():
+    # operator scope wins
+    assert la.resolve_seed_demand(scope_seeds=[0, 1, 2], hint_seeds=[0]) == (3, "scope_spec")
+    # hint when no operator scope
+    assert la.resolve_seed_demand(hint_seeds=[0, 1, 2, 3, 4]) == (5, "paper_hint")
+    # reactive variance leaf when neither
+    n, src = la.resolve_seed_demand(
+        weak_leaves=[{"score": 0.4, "justification": "only 1 seed run instead of 5"}])
+    assert (n, src) == (5, "variance_leaf")
+    # nothing demanded
+    assert la.resolve_seed_demand() == (1, "none")
+    # a single-element seed list is NOT a multi-seed demand
+    assert la.resolve_seed_demand(scope_seeds=[0]) == (1, "none")
+    # a STRONG variance leaf (>=0.6) does not trigger
+    assert la.resolve_seed_demand(
+        weak_leaves=[{"score": 0.8, "justification": "only 1 seed"}]) == (1, "none")
+
+
+def test_resolve_seed_demand_never_raises_on_garbage():
+    assert la.resolve_seed_demand(scope_seeds="x", hint_seeds=None,
+                                  weak_leaves=[None, "s", {}]) == (1, "none")
+
+
+def test_select_headline_models_deepest():
+    cells = [
+        {"model_key": "resnet_20", "depth": 20},
+        {"model_key": "resnet_110", "depth": 110},
+        {"model_key": "plain_56", "depth": 56},
+    ]
+    assert la.select_headline_models(cells) == {"resnet_110"}
+    assert la.select_headline_models(cells, max_models=2) == {"resnet_110", "plain_56"}
+
+
+def test_select_headline_models_explicit_intersect():
+    cells = [{"model_key": "a", "depth": 1}, {"model_key": "b", "depth": 2}]
+    assert la.select_headline_models(cells, explicit=["b", "zzz"]) == {"b"}
+    # explicit with no overlap falls back to the heuristic (deepest)
+    assert la.select_headline_models(cells, explicit=["zzz"]) == {"b"}
+
+
+def test_select_headline_models_empty():
+    assert la.select_headline_models([]) == set()
+    assert la.select_headline_models([{"no_key": 1}]) == set()
+
+
+def test_expand_cells_for_seeds_headline_only():
+    cells = [
+        {"id": "h", "model_key": "resnet_110", "seed": 42},
+        {"id": "o", "model_key": "resnet_20", "seed": 42},
+    ]
+    out = la.expand_cells_for_seeds(cells, 3, model_keys={"resnet_110"})
+    ids = [c["id"] for c in out]
+    # headline replicated x3, non-headline passes through unchanged
+    assert ids == ["h__seed42", "h__seed43", "h__seed44", "o"]
+    assert all(c["seed"] == c["params"]["seed"] for c in out if "__seed" in c["id"])
+
+
+def test_expand_cells_for_seeds_no_filter_replicates_all():
+    cells = [{"id": "a", "model_key": "x", "seed": 0}, {"id": "b", "model_key": "y", "seed": 0}]
+    out = la.expand_cells_for_seeds(cells, 2)
+    assert len(out) == 4

@@ -5085,6 +5085,108 @@ def _resolve_hint_lr_search(arxiv_id: str | None) -> dict | None:
         return None
 
 
+def _resolve_hint_seed_policy(arxiv_id: str | None) -> "tuple[list, list]":
+    """``(default_scope.seeds, headline_models)`` from the active paper hint.
+
+    The paper-side seed protocol + which model(s) the paper headlines (so the
+    harness replicates only the headline net, not the whole grid). Fail-soft:
+    any lookup error / missing field → ``([], [])``.
+    """
+    if not arxiv_id:
+        return [], []
+    try:
+        import re as _re
+        from backend.agents.prompts.paper_hints import PAPER_HINTS
+        raw = str(arxiv_id).strip()
+        hint = PAPER_HINTS.get(_re.sub(r"v\d+$", "", raw)) or PAPER_HINTS.get(raw)
+        if hint is None:
+            return [], []
+        ds = getattr(hint, "default_scope", None)
+        seeds = list(getattr(ds, "seeds", []) or []) if ds is not None else []
+        headline = list(getattr(hint, "headline_models", []) or [])
+        return seeds, headline
+    except Exception:  # noqa: BLE001 — hint resolution must never break the run
+        return [], []
+
+
+def _seed_replication_enabled() -> bool:
+    """REPROLAB_SEED_REPLICATION — deterministic harness multi-seed (default OFF)."""
+    return os.environ.get("REPROLAB_SEED_REPLICATION", "").strip().lower() in (
+        "1", "true", "on", "yes")
+
+
+def _read_prior_weak_leaves(project_dir) -> list[dict]:
+    """The last verify's weak leaves (for the reactive multi-seed trigger). Fail-soft."""
+    try:
+        doc = json.loads(
+            (Path(project_dir) / "rubric_evaluation.json").read_text(encoding="utf-8"))
+        wl = doc.get("weak_leaves")
+        return [l for l in wl if isinstance(l, dict)] if isinstance(wl, list) else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _maybe_replicate_seeds(ctx, cells: list, manifest, emit) -> list:
+    """Replicate the headline model across the demanded seeds — deterministic L5.
+
+    Closes the loop the reactive ``leaf_actuator`` only *staged*: when the
+    operator (``scope_spec.seeds``) or paper hint declares a multi-seed protocol,
+    the harness itself expands the headline cell(s) across those seeds so the
+    paper's "best (mean ± std) over N runs" leaf is satisfiable without relying on
+    the agent to write a seed loop. ``cell_matrix.aggregate_cell_metrics`` folds
+    the replicas into the mean±std leaf. Shape-gated (skips an already-multi-seed
+    manifest and a ``search`` run — staged-search owns that) + cost-bounded
+    (headline-only unless ``REPROLAB_SEED_ALL_MODELS``) + fail-soft. Pure on
+    inputs; the caller flag-guards on ``_seed_replication_enabled()``.
+    """
+    from backend.agents.rlm import leaf_actuator as la
+
+    if isinstance(manifest, dict) and manifest.get("search"):
+        return cells  # a staged-search run; replicating it would multiply the grid
+    scope_seeds = list(getattr(getattr(ctx, "scope_spec", None), "seeds", []) or [])
+    hint_seeds, hint_headline = _resolve_hint_seed_policy(getattr(ctx, "arxiv_id", None))
+    weak = _read_prior_weak_leaves(getattr(ctx, "project_dir", None))
+    n_seeds, source = la.resolve_seed_demand(
+        scope_seeds=scope_seeds, hint_seeds=hint_seeds, weak_leaves=weak)
+    n_seeds = min(int(n_seeds), la.seed_max())
+    if n_seeds <= 1:
+        return cells
+    # shape-gate: a manifest the agent already multi-seeded (or a resumed
+    # replication) carries >1 distinct seed — don't double-expand it.
+    distinct: set[int] = set()
+    for c in cells:
+        if isinstance(c, dict):
+            s = c.get("seed")
+            if not isinstance(s, int):
+                p = c.get("params")
+                s = p.get("seed") if isinstance(p, dict) else None
+            if isinstance(s, int):
+                distinct.add(s)
+    if len(distinct) > 1:
+        return cells
+    all_models = os.environ.get("REPROLAB_SEED_ALL_MODELS", "").strip().lower() in (
+        "1", "true", "on", "yes")
+    try:
+        max_models = max(1, int(float(os.environ.get("REPROLAB_SEED_MODELS_MAX", "1") or 1)))
+    except (TypeError, ValueError):
+        max_models = 1
+    headline = None if all_models else la.select_headline_models(
+        cells, explicit=hint_headline, max_models=max_models)
+    if headline is not None and not headline:
+        return cells
+    expanded = la.expand_cells_for_seeds(cells, n_seeds, model_keys=headline)
+    if len(expanded) > len(cells):
+        tgt = "all models" if all_models else ", ".join(sorted(headline or []))
+        try:
+            emit("seed_replication",
+                 f"harness replicated {tgt} across {n_seeds} seeds (source: {source}) — "
+                 f"{len(cells)}→{len(expanded)} cells; cross-seed mean±std aggregated",
+                 source=source, n_seeds=n_seeds)
+        except Exception:  # noqa: BLE001 — emit is best-effort
+            pass
+    return expanded
+
+
 def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: float | None, run_id: str) -> dict:
     """Run the training matrix one-GPU-per-cell via ``gpu_cell_runner`` (comp 4).
 
@@ -5159,6 +5261,23 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         except Exception:  # noqa: BLE001 — diagnostics must never break the run
             logger.debug("run_experiment: cell_axes_derived warning emit failed")
 
+    # Deterministic multi-seed replication (2026-06-16): when the operator/hint
+    # declares a multi-seed protocol the harness replicates the HEADLINE model
+    # across those seeds here — BEFORE the capacity gate, so the replicas are
+    # budget-checked like any cell and cross-seed mean±std is aggregated by
+    # cell_matrix. Flag-gated (default OFF) + shape-gated → unset/no-seeds ==
+    # byte-for-byte today. Fixes the ResNet "only 1 seed, variance leaves 0.4"
+    # ceiling where scope seeds were set but every cell stayed s42.
+    if _seed_replication_enabled():
+        try:
+            all_cells = _maybe_replicate_seeds(
+                ctx, all_cells, manifest,
+                lambda _c, _m, **_x: _emit_dashboard_event(
+                    ctx, event_type="run_warning",
+                    payload={"code": _c, "message": _m, **_x}))
+        except Exception:  # noqa: BLE001 — replication must never break the run
+            logger.debug("run_experiment: seed replication failed (non-fatal)", exc_info=True)
+
     # Multi-GPU cells: a slot of `gpus_per_cell` cards device_map-shards ONE (large)
     # model, so the capacity-gate VRAM budget is the slot's COMBINED VRAM, not one card.
     _gpus_per_cell = max(1, int(os.environ.get("REPROLAB_GPUS_PER_CELL", "1") or "1"))
@@ -5167,6 +5286,24 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     kept, cap_gaps, models_skipped = cell_matrix.capacity_gate(
         all_cells, caps.per_gpu_vram_gb * _gpus_per_cell, headroom=headroom)
     kept, ds_gaps, envs_skipped = cell_matrix.dataset_url_preflight(kept)
+
+    # Headline-coverage honesty (2026-06-16): a paper-headline model the agent
+    # never declared (the ResNet-1202 case) must surface as an HONEST
+    # scope.models_skipped gap — not vanish silently and invite the grader to
+    # fabricate one. Only fires when a paper hint declares headline_models;
+    # fail-soft + dedup-safe → unset/no-hint == byte-for-byte today.
+    try:
+        _, _hint_headline = _resolve_hint_seed_policy(getattr(ctx, "arxiv_id", None))
+        _missing_headline = cell_matrix.audit_headline_coverage(all_cells, _hint_headline)
+        _missing_headline = [m for m in _missing_headline if m not in (models_skipped or [])]
+        if _missing_headline:
+            models_skipped = list(models_skipped or []) + _missing_headline
+            _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                "code": "headline_coverage_gap",
+                "message": ("paper headline model(s) absent from cells.json — recorded "
+                            f"as an honest scope gap: {', '.join(_missing_headline)}")})
+    except Exception:  # noqa: BLE001 — coverage audit is advisory; never blocks the run
+        logger.debug("run_experiment: headline coverage audit failed", exc_info=True)
 
     gpus = [str(g) for g in (tuple(getattr(ctx, "gpu_device_ids", ()) or ()) or caps.free_gpu_ids)]
 

@@ -61,13 +61,24 @@ _COST_ORDER = {"none": 0, "targeted_rerun": 1, "review": 2}
 # confidence signal — NOT merely the word "variance" (which appears in plenty of
 # single-run justifications). Kept tight to avoid a false multi-seed expansion.
 _VARIANCE_RE = re.compile(
-    r"(single|only one|just one|one)\s+seed|"
+    # word- AND digit-form seed counts: "single seed", "only one seed",
+    # "only 1 seed", "1 seed", "5 seeds" (the ResNet grader said "only 1 seed
+    # was run instead of the required 5" — the digit form the old regex MISSED,
+    # so the leaf fell to "review" and the seed expansion never fired).
+    r"(single|only one|just one|one)\s+seeds?\b|"
+    r"\bonly\s+\d+\s+seeds?\b|\b\d+\s+seeds?\b|"
     r"\bseeds?\b.{0,40}(mean|std|standard deviation|average|variance|error.?bar|"
     r"confidence|ci\b|spread|deviation)|"
     r"(mean|std|standard deviation|average|error.?bar|confidence interval|±|\+/-)"
     r".{0,40}\bseeds?\b|"
     r"(no|missing|without|lacks?)\s+(error.?bars?|confidence interval|std|variance)|"
-    r"\bn\s*=\s*\d+\s+seeds?|over\s+\d+\s+seeds?|across\s+(multiple|\d+)\s+seeds?",
+    r"\bn\s*=\s*\d+\s+seeds?|over\s+\d+\s+(independent\s+)?(seeds?|runs?)|"
+    r"across\s+(multiple|\d+)\s+seeds?|"
+    # run-count phrasings: "instead of the required 5", "1 seed vs 5 runs",
+    # "best of 5 runs", "5 independent runs", "mean ± std over N runs".
+    r"(instead of|rather than|versus|vs\.?)\s+(the\s+)?(required\s+)?\d+"
+    r"(\s+(independent\s+)?(runs?|seeds?))?|"
+    r"best\s+of\s+\d+\s+(independent\s+)?runs?|\b\d+\s+independent\s+runs?",
     re.IGNORECASE,
 )
 
@@ -182,7 +193,9 @@ def plan_seed_expansion(
     return SeedPlan(cur, target, affordable, fits, expand, reason)
 
 
-def expand_cells_for_seeds(cells: list[dict], n_seeds: int) -> list[dict]:
+def expand_cells_for_seeds(
+    cells: list[dict], n_seeds: int, *, model_keys: "set[str] | None" = None
+) -> list[dict]:
     """Replicate each cell across ``n_seeds`` distinct seeds — pure, L5.
 
     Each replica is a deep copy with a distinct ``seed`` written to BOTH the top
@@ -192,9 +205,14 @@ def expand_cells_for_seeds(cells: list[dict], n_seeds: int) -> list[dict]:
     so a resume re-uses prior work. Returns the original list unchanged when
     ``n_seeds <= 1`` or input is unusable. Never raises.
 
-    NOTE: this produces the replicated MATRIX; computing cross-seed mean±std from
-    the replicas' results is the aggregation step the consuming route owns (and
-    the documented GPU-validated follow-on) — this helper only fans the cells out.
+    ``model_keys`` (when given) bounds the GPU cost: ONLY cells whose
+    ``model_key`` is in the set are replicated (the paper's headline model — e.g.
+    ResNet-110 reported "best ± std over 5 runs"); every other cell passes through
+    single-seed. ``None`` replicates everything.
+
+    The replicas all share ``(model_key, env, baseline)`` and differ only by
+    ``seed``; ``cell_matrix.aggregate_cell_metrics`` folds them into the
+    mean±std leaf the variance rubric leaf demands (no longer a deferred step).
     """
     try:
         if not isinstance(cells, list) or not cells or int(n_seeds) <= 1:
@@ -202,6 +220,9 @@ def expand_cells_for_seeds(cells: list[dict], n_seeds: int) -> list[dict]:
         out: list[dict] = []
         for cell in cells:
             if not isinstance(cell, dict):
+                continue
+            if model_keys is not None and str(cell.get("model_key", "") or "") not in model_keys:
+                out.append(cell)  # non-headline cell stays single-seed
                 continue
             base_id = str(cell.get("id") or "cell")
             base_seed = cell.get("seed")
@@ -223,6 +244,95 @@ def expand_cells_for_seeds(cells: list[dict], n_seeds: int) -> list[dict]:
     except Exception:  # noqa: BLE001 — replication must never break the run.
         logger.debug("expand_cells_for_seeds failed", exc_info=True)
         return cells if isinstance(cells, list) else []
+
+
+# ---------------------------------------------------------------------------
+# Seed-demand policy — the dynamic "how many seeds / which models" resolver
+# ---------------------------------------------------------------------------
+#
+# The deterministic counterpart to the reactive L5 plan: it answers "does this
+# run need a multi-seed sweep, and on which model(s)" BEFORE the first verify,
+# from whoever declared it — so the operator's ``--scope-spec seeds=[0,1,2]``
+# (or a paper-hint ``default_scope.seeds``) actually multiplies the headline
+# cells instead of being silently dropped (the ResNet failure: scope seeds set,
+# cells still all ``s42``).  Pure; both helpers are unit-tested against dicts.
+
+
+def _num(value: Any) -> float:
+    """Numeric coercion that sorts un-numeric/missing LAST. Never raises."""
+    try:
+        f = float(value)
+        return f if f == f else float("-inf")  # NaN → last
+    except (TypeError, ValueError):
+        return float("-inf")
+
+
+def resolve_seed_demand(
+    *,
+    scope_seeds: "list | None" = None,
+    hint_seeds: "list | None" = None,
+    weak_leaves: "list[dict] | None" = None,
+    default_when_variance: int = 5,
+) -> tuple[int, str]:
+    """How many seeds this run should use, and why. Pure, never raises.
+
+    Priority: an explicit operator ``scope_spec.seeds`` (>=2 distinct) > a
+    paper-hint ``default_scope.seeds`` > a variance-demanding weak leaf (which
+    requests the paper's ``default_when_variance``).  Returns ``(n_seeds,
+    source)`` where ``n_seeds == 1`` means no multi-seed sweep is demanded.
+    """
+    for src, seeds in (("scope_spec", scope_seeds), ("paper_hint", hint_seeds)):
+        try:
+            n = len({int(s) for s in (seeds or [])})
+        except (TypeError, ValueError):
+            n = 0
+        if n >= 2:
+            return n, src
+    for leaf in weak_leaves or []:
+        if not isinstance(leaf, dict):
+            continue
+        if float(leaf.get("score") or 0.0) < 0.6 and _wants_variance(
+            str(leaf.get("justification") or leaf.get("requirement") or "")
+        ):
+            return max(2, int(default_when_variance)), "variance_leaf"
+    return 1, "none"
+
+
+def select_headline_models(
+    cells: list[dict], *, explicit: "list | None" = None, max_models: int = 1
+) -> set[str]:
+    """Which ``model_key``(s) to replicate across seeds — bounds GPU cost. Pure.
+
+    Priority: an explicit list (paper-hint ``headline_models`` / operator)
+    intersected with the manifest's model keys; else the single most expensive
+    model by ``(depth, est_vram_gb, param_count, n)`` — the paper's headline
+    "deepest net" (ResNet-110 over ResNet-20…56), the one whose result leaf
+    demands mean±std.  Returns a set (possibly empty → replicate nothing).
+    """
+    keyed: list[tuple[str, dict]] = []
+    seen: set[str] = set()
+    for c in cells if isinstance(cells, list) else []:
+        if isinstance(c, dict):
+            mk = str(c.get("model_key", "") or "")
+            if mk and mk not in seen:
+                seen.add(mk)
+                keyed.append((mk, c))
+    if not keyed:
+        return set()
+    if explicit:
+        want = {str(m) for m in explicit}
+        sel = {mk for mk, _ in keyed if mk in want}
+        if sel:
+            return sel
+    ranked = sorted(
+        keyed,
+        key=lambda kc: (
+            _num(kc[1].get("depth")), _num(kc[1].get("est_vram_gb")),
+            _num(kc[1].get("param_count")), _num(kc[1].get("n")),
+        ),
+        reverse=True,
+    )
+    return {mk for mk, _ in ranked[: max(1, int(max_models))]}
 
 
 # ---------------------------------------------------------------------------
