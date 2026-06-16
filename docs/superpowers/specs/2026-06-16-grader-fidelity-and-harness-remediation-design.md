@@ -240,3 +240,23 @@ All new behavior flag-gated; `=0`/`off` restores prior behavior byte-for-byte. D
 - Execution: `backend/agents/rlm/primitives.py`, `binding.py`, `cell_matrix.py`, `gpu_cell_runner.py`, `env_pin.py`, `context.py` (add `execution_mode`)
 - BES/AB: `scripts/ab_compare.py`, `backend/agents/rdr/candidates.py`
 - Integration: merge `context_map.py` + `lesson_distiller.py` from `origin/bes`; `docs/audits/2026-06-07-bes-doc-alignment-audit.md` (on `m2`)
+
+---
+
+## Appendix S — June-2026 SOTA grounding & addenda (companion)
+
+A literature-grounding companion — **`2026-06-16-grader-noise-and-harness-remediation-design.md`** — annotates each workstream above against ~25 page-verified June-2026 papers (confirm/temper/contradict), with a SOTA→workstream map and an adversarial stress-test. It does **not** re-design anything locked; it grounds and challenges. Headline verdict: **the locked design is on the right side of the evidence; the additions below are narrow.** (Both the companion and this appendix were themselves adversarially reviewed.)
+
+**Confirmed by the literature — no change needed:** A2 deterministic routing (DeCE arXiv:2509.16093, decomposed r=0.78 vs 0.35 — the biggest variance/bias lever); A3 strip-the-MAX-floor (max-over-noise is upward-biased); A4 champion-artifact (ground the verdict in the executed artifact — BadScientist arXiv:2510.18003); **A7 EVIDENCE_GATE is the single highest-value correctness lever in the corpus** (MLR-Bench arXiv:2505.19955 ~80% fabricated results; ImpossibleBench arXiv:2510.20270 76% cheat; RewardHacking arXiv:2605.02964 env-hardening −87.7% exploits) — treat it as more than an "S" cleanup; D1/D3 (single-agent ≥ MAS at equal token budget, arXiv:2604.02460 — budget-match arms; keep BES off until measurable).
+
+**Addenda (non-binding):**
+- **A1** — make median-of-N a *cascade* (escalate only judgment / first-two-samples-*disagree* leaves; cost-saving cascades arXiv:2502.09054; panel benefit plateaus at n_eff≈2.2, arXiv:2605.29800 → cap N≈3) and gate its default-ON on the **Lane-0 calibration σ-drop** — Rating Roulette (arXiv:2510.27106) warns same-model resampling may not converge at fixed settings, so *measure* σ-before/after, don't assume √N. Escalate on cross-sample disagreement, **not** verbalized confidence (judge ECE up to 39%, arXiv:2508.06225).
+- **A5** — add an *optional cross-family* judgment-leaf grader, gated on a **measured** self-preference gap: Sonnet grades Sonnet-authored code, and cross-family > self-verification (arXiv:2512.02304, arXiv:2402.11436). A5's `REPROLAB_GRADER_BACKEND`/`_MODEL` mechanism already supports it — it is just never *used* for diversity. (Bias fix, not variance — low priority, off by default.)
+- **B2** — surface prior grades/failures to the root as *tool/memory observations*, not its own prior prose (+23–93pp correction, Self-Correction Illusion arXiv:2606.05976). The harness already does this structurally; lean into the framing.
+- **D1** — report every Δ relative to the **measured σ_grader band** (Lane-0); gate "significant" on Δ > kσ or a conformal bound (arXiv:2602.03814).
+
+**New levers from the companion (§3.5):**
+- **IMPLEMENTED 2026-06-16 (this branch):** a **decline-aware convergence advisory.** The existing flatline detector (`_rubric_plateaued`) misses a *declining* trajectory — the overthinking / inverse-scaling signal (arXiv:2604.10739, arXiv:2507.14417): the score peaked and recent changes made it worse, yet the run loops to the cap degrading further. Added `_rubric_declining` + `_decline_advisory_note` + a flag-gated (`REPROLAB_RUBRIC_DECLINE_ADVISORY`, **default-off**) regression `convergence_note`. Purely advisory (a tool-result note, never a forced stop); fail-soft; 0-regress when off. (Budget surfacing intentionally omitted for now — the note carries no wall-clock.) `backend/agents/rlm/primitives.py`; 15 unit tests in `tests/agents/rlm/test_scope_self_heal.py` (green). *Stash-verified isolated from the in-flight `leaf_scorer.py` refactor.*
+- **Design-only (deferred):** broader per-iteration budget surfacing + capped / oscillation-aware forced-iteration (BATS / AgentStop arXiv:2605.15206 / overthinking) — needs a proactive per-iteration injection surface (e.g. piggyback `check_user_messages`), so deferred to avoid an invasive change to a hot file.
+
+Full grounding, the SOTA→workstream map, the efficiency ledger, and the "where this could fail" stress-test live in the companion.
