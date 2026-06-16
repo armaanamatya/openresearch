@@ -6591,6 +6591,28 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
         target = _clamp01(rubric.get("target_score", 0.6))
         meets_target = overall_score >= target
 
+        # B2 (2026-06-16): record the score on ctx the MOMENT a real overall_score
+        # exists, independent of any advisory warning/error key the wrapper may
+        # attach downstream. Previously ONLY binding._emit_supplemental set this,
+        # and only on a verify the wrapper classified "successful" — so a
+        # graded-but-warned verify (a real score carrying a truthy `error`) left
+        # ctx.latest_rubric_score untouched, the forced-iteration guard read "never
+        # verified", and a premature partial could ship. Apply the same
+        # best-prior-attempt target floor binding uses so policy state is identical
+        # on both paths (fail-soft — the floor must never break verify).
+        try:
+            _b2_target = target
+            try:
+                from backend.agents.rlm.best_attempt import floored_target as _floored_target
+                _b2_target = _floored_target(ctx.project_dir, target)
+            except Exception:  # noqa: BLE001 — the floor must never break verify handling
+                _b2_target = target
+            ctx.latest_rubric_score = float(overall_score)
+            ctx.latest_rubric_target = float(_b2_target) if _b2_target is not None else 0.0
+            ctx.latest_rubric_iteration = int(getattr(ctx, "current_iteration", 0) or 0)
+        except (TypeError, ValueError):
+            pass
+
         leaf_scores = scored.get("leaf_scores", [])
         # Up to 8 lowest-scoring leaves (conservative grader — 0.0 means no evidence).
         # Exclude score=None entries (PR-κ data-unavailable leaves — not "weak", just absent).

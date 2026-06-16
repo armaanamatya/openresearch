@@ -69,6 +69,26 @@ def test_verify_has_leaf_scores(make_context, tmp_path):
     assert ids == {"code", "results"}
 
 
+def test_verify_records_latest_rubric_score_on_ctx(make_context, tmp_path):
+    """B2: verify_against_rubric records the score on ctx the moment a real
+    overall_score exists — not only via binding._emit_supplemental on the path
+    the wrapper classifies 'successful'.
+
+    A direct verify call is the seam: binding is NOT invoked here, so before the
+    B2 fix ctx.latest_rubric_score stayed None after a fully-graded verify, and a
+    graded-but-warned verify would read as 'never verified' to the
+    forced-iteration guard (premature partial). It must now be set at the source.
+    """
+    ctx = make_context(tmp_path, llm_responses=[_LLM_BATCH_RESPONSE])
+    assert ctx.latest_rubric_score is None  # nothing verified yet
+    result = verify_against_rubric({"success": True, "metrics": {"r": 1}}, RUBRIC, ctx=ctx)
+    assert result["overall_score"] == pytest.approx(0.86)
+    # Set at the source, independent of any downstream warning/error decoration.
+    assert ctx.latest_rubric_score == pytest.approx(0.86)
+    assert ctx.latest_rubric_target is not None
+    assert ctx.latest_rubric_iteration == ctx.current_iteration
+
+
 def test_verify_fail_soft_on_empty_rubric(make_context, tmp_path):
     """verify_against_rubric returns error dict on empty/None rubric (fail-soft)."""
     ctx = make_context(tmp_path)
