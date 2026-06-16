@@ -851,7 +851,7 @@ The 2026-05-23 advisor-checkpoint verification confirmed `Settings` (at `backend
     )
 ```
 
-Pydantic BaseSettings reads `OPENRESEARCH_RUNS_DIR` from env automatically when the project's env_prefix is `REPROLAB_` (confirm by inspecting neighbouring fields like `demo_secret` → `OPENRESEARCH_DEMO_SECRET`).
+Pydantic BaseSettings reads `OPENRESEARCH_RUNS_DIR` from env automatically when the project's env_prefix is `OPENRESEARCH_` (confirm by inspecting neighbouring fields like `demo_secret` → `OPENRESEARCH_DEMO_SECRET`).
 
 - [ ] **Step 4: Mount the router in `backend/app.py`**
 

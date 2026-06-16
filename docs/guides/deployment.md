@@ -1,8 +1,12 @@
+<!-- doc-meta: status=current; last-verified=2026-06-09 -->
 # Production Deployment
+
+> **Doc status:** Current · last verified 2026-06-09. Cross-check against
+> `docker-compose.yml`, `Dockerfile`, and `railway.json` before deploying.
 
 ## Overview
 
-A full ReproLab deployment consists of four components:
+A full OpenResearch deployment consists of four components:
 
 1. **Backend service** — FastAPI (uvicorn), stateless request handler + pipeline subprocess spawner
 2. **Frontend app** — Next.js, served via `next start`
@@ -27,14 +31,14 @@ If deploying the backend separately (without the bundled frontend), the same ima
 
 ### Required environment variables / secrets
 
-All settings use the `REPROLAB_` prefix (see `backend/config.py` for defaults and aliases). The unprefixed forms `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `RUNPOD_API_KEY`, and `APIFY_API_TOKEN` are also accepted.
+All settings use the `OPENRESEARCH_` prefix (see `backend/config.py` for defaults and aliases). The unprefixed forms `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `RUNPOD_API_KEY`, and `APIFY_API_TOKEN` are also accepted.
 
 | Variable | Required | Notes |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | Yes (if using Anthropic) | Claude provider key |
 | `OPENAI_API_KEY` | Yes (if using OpenAI) | OpenAI provider key |
 | `OPENAI_ADMIN_KEY` | No | Admin-scoped OpenAI credentials |
-| `OPENRESEARCH_DATABASE_URL` | No | Defaults to `sqlite:///reprolab.db`; set to an absolute path in production, e.g. `sqlite:////app/runs/reprolab.db` |
+| `OPENRESEARCH_DATABASE_URL` | No | Defaults to `sqlite:///openresearch.db`; set to an absolute path in production, e.g. `sqlite:////app/runs/openresearch.db` |
 | `OPENRESEARCH_DEFAULT_SANDBOX` | No | `auto`, `local`, `docker`, or `runpod`; defaults to `runpod` |
 | `OPENRESEARCH_LLM_PROVIDER` | No | `anthropic` (default) or `openai` |
 | `RUNPOD_API_KEY` | Yes (if sandbox=runpod) | RunPod REST API key |
@@ -93,11 +97,11 @@ The frontend API routes (`frontend/src/app/api/demo/`) proxy all pipeline reques
 
 ## Database
 
-ReproLab currently uses **SQLite** as its event store and persistence layer. There is no Postgres dependency. The database file location is controlled by `OPENRESEARCH_DATABASE_URL` (default: `sqlite:///reprolab.db`).
+OpenResearch currently uses **SQLite** as its event store and persistence layer. There is no Postgres dependency. The database file location is controlled by `OPENRESEARCH_DATABASE_URL` (default: `sqlite:///openresearch.db`).
 
 > **IMPORTANT — Schema consolidation required before production**
 >
-> The SQLite schema has accumulated tables across several development phases. Multiple schema definitions exist across `backend/persistence/database.py`, `backend/eventstore/sqlite_store.py`, `backend/evals/store.py`, `backend/messaging/idempotency.py`, `backend/services/diagnostics/service.py`, `backend/services/orchestration/`, `backend/services/approval/service.py`, and `backend/services/datasets/service.py`. Several of these tables are unused in current pipeline paths. Additionally, there are storage-handling issues (the `reprolab.db.corrupt-*` and `reprolab.db.offline_backup` files in the repo root indicate past write failures).
+> The SQLite schema has accumulated tables across several development phases. Multiple schema definitions exist across `backend/persistence/database.py`, `backend/eventstore/sqlite_store.py`, `backend/evals/store.py`, `backend/messaging/idempotency.py`, `backend/services/diagnostics/service.py`, `backend/services/orchestration/`, `backend/services/approval/service.py`, and `backend/services/datasets/service.py`. Several of these tables are unused in current pipeline paths. Additionally, there are storage-handling issues (the `openresearch.db.corrupt-*` and `openresearch.db.offline_backup` files in the repo root indicate past write failures).
 >
 > **Schema consolidation and storage hardening are prerequisites for a production deployment.** Specifically:
 > - Audit all `CREATE TABLE` sites and remove unused tables
@@ -109,7 +113,7 @@ In Docker Compose, the database is stored inside the `runs/` volume:
 
 ```yaml
 environment:
-  - OPENRESEARCH_DATABASE_URL=sqlite:///app/runs/reprolab.db
+  - OPENRESEARCH_DATABASE_URL=sqlite:////app/runs/openresearch.db
 ```
 
 ---
@@ -209,7 +213,7 @@ In addition to the variables in the *Required environment variables* section abo
 | Variable | Value | Purpose |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | your key | LLM provider — runs default to real SDK mode |
-| `OPENRESEARCH_DATABASE_URL` | `sqlite:////app/runs/reprolab.db` | DB on the persistent volume (four slashes — absolute path) |
+| `OPENRESEARCH_DATABASE_URL` | `sqlite:////app/runs/openresearch.db` | DB on the persistent volume (four slashes — absolute path) |
 | `OPENRESEARCH_DEMO_SECRET` | a long random string | the access gate — see below |
 | `OPENRESEARCH_BACKEND_URL` | `http://127.0.0.1:8000` | frontend → backend, same container |
 | `PORT` | `3000` | public frontend port |

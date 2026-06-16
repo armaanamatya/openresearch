@@ -53,7 +53,6 @@ Auth-agnostic by construction (no provider branching, no LLM calls).
 
 from __future__ import annotations
 
-import json
 import urllib.error
 import urllib.request
 from typing import Any, Callable

@@ -379,7 +379,7 @@ class TestBuildReproSpec:
         """Full round-trip: parsed claim → build_repro_spec → load_claims →
         compute_reproducibility_verdict can consume it without error."""
         from backend.agents.rlm.reproducibility_verdict import (
-            FidelityCertificate, ScopeTuple, SeedBundle, compute_reproducibility_verdict
+            FidelityCertificate, compute_reproducibility_verdict
         )
         claim = self._simple_claim()
         bundle = {"seeds": [42, 43], "per_seed_effect": [9.0, 9.2], "rng_independent": True}

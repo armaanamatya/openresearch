@@ -9,8 +9,6 @@ from pathlib import Path
 import pytest
 
 from backend.routes.leaderboard import (
-    LeaderboardRow,
-    RoleModels,
     aggregate_leaderboard,
 )
 

@@ -56,7 +56,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
 import re
 import threading
 import time
@@ -75,11 +74,11 @@ from backend.agents.rlm.cell_scheduler import (  # noqa: E402
     STATUS_OK,
     STATUS_OOM_FAILED,
     STATUS_SKIPPED,
-    STATUS_TIMEOUT,
+    STATUS_TIMEOUT,  # noqa: F401  re-exported for callers (tests assert kjcr.STATUS_TIMEOUT)
     CellResult,
+    clamp_cell_timeout,  # noqa: F401  re-exported for callers
     deadline_from_timeout,
-    clamp_cell_timeout,
-    headline_metric,
+    headline_metric,  # noqa: F401  re-exported for callers
     is_resume_armed,
     load_cell_manifest,
     should_skip_cell,
@@ -507,6 +506,15 @@ def _build_job_manifest(
         env_vars.append({"name": "OPENRESEARCH_CELL_FINGERPRINT", "value": fingerprint})
     if now_iso:
         env_vars.append({"name": "OPENRESEARCH_CELL_NOW_ISO", "value": now_iso})
+    # Image-compat shim (audit 2026-06-10): the entrypoint baked into a PINNED
+    # ACR image may predate the REPROLAB_->OPENRESEARCH_ rename and read the
+    # legacy names. Inject both spellings until every base image is rebuilt
+    # (the in-repo aks_cell_entrypoint.py reads the canonical names).
+    env_vars.extend(
+        {"name": "OPENRESEARCH_" + e["name"][len("OPENRESEARCH_"):], "value": e["value"]}
+        for e in list(env_vars)
+        if e["name"].startswith("OPENRESEARCH_")
+    )
 
     # GPU count: from plan when available, else 1.
     gpu_count_str: str

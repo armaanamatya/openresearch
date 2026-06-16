@@ -48,7 +48,11 @@ PAPER_HINTS: dict[str, PaperHint] = {
         ),
         default_scope=ScopeSpec(
             models=[
-                "Qwen3-1.7B-Instruct",
+                # Qwen3 post-trained models drop the "-Instruct" suffix (HF repo
+                # Qwen/Qwen3-1.7B; "Qwen/Qwen3-1.7B-Instruct" 401s — does not exist).
+                # Only Qwen2.5 uses the "-Instruct" suffix. A wrong id here poisons
+                # the guard's enforced canonical path AND the implementer guidance.
+                "Qwen3-1.7B",
                 "Qwen2.5-3B-Instruct",
                 "Qwen2.5-7B-Instruct",
             ],

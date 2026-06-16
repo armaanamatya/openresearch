@@ -6,7 +6,6 @@ regression test that a stale OPENAI_API_KEY in env does not override claude-oaut
 
 from __future__ import annotations
 
-import os
 
 import pytest
 
@@ -241,7 +240,11 @@ class TestAzureOpenAI:
 
 class TestPlainOpenAI:
 
-    def test_openai_plain_routes_to_openai_client(self):
+    def test_openai_plain_routes_to_openai_client(self, monkeypatch):
+        # The OpenAI SDK constructor presence-checks a key; locally one leaks
+        # in from .env via load_dotenv, but a keyless CI runner raised
+        # OpenAIError here (first CI run, 2026-06-09). Never used for I/O.
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key-never-used")
         from backend.services.context.workspace.tools.openai_client import OpenAILlmClient
 
         root = _make_root_model(
@@ -317,6 +320,11 @@ class TestPrimitiveLlmModelPin:
     def test_pin_does_not_touch_openai_branch(self, monkeypatch):
         from backend.services.context.workspace.tools.openai_client import OpenAILlmClient
 
+        # Keyless-runner hermeticity: constructing OpenAILlmClient requires a
+        # key; without planting one this passes only when a sibling test's env
+        # leaks into the same xdist worker (failed on the PR-context CI runner
+        # while the push run went green — same sha, different distribution).
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-key-never-used")
         monkeypatch.setenv("OPENRESEARCH_PRIMITIVE_LLM_MODEL", "claude-opus-4-7")
         root = _make_root_model(
             "openai",

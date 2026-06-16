@@ -14,7 +14,6 @@ Spec: §11 (2026-05-21-rlm-phase3-orchestrator-design.md).
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from datetime import datetime, timezone
 
 import pytest
@@ -343,6 +342,11 @@ class TestWriteFinalReport:
         """The Markdown file contains the verdict and rubric score."""
         project_dir = tmp_path / "project"
         project_dir.mkdir()
+        # Evidence gate (ported 2026-06-09): the reproduced verdict needs a real
+        # success+metrics row on disk or it downgrades to failed.
+        (project_dir / "experiment_runs.jsonl").write_text(
+            json.dumps({"success": True, "metrics": {"accuracy": 0.92}}) + "\n"
+        )
         report = self._build_report()
         _, md_path = write_final_report_rlm(report, project_dir)
 
@@ -971,7 +975,10 @@ def _events_with_peak(project_dir: Path, peak: float, last: float) -> None:
 
 
 class TestBestOfRunFloorAtWriteChokepoint:
-    def test_clean_completion_floored_to_peak(self, tmp_path):
+    def test_clean_completion_floored_to_peak(self, tmp_path, monkeypatch):
+        # Isolate the floor mechanism from the (default-ON) evidence gate, which
+        # would otherwise downgrade this evidence-less fixture's verdict.
+        monkeypatch.setenv("OPENRESEARCH_EVIDENCE_GATE", "0")
         project_dir = tmp_path / "proj"
         _events_with_peak(project_dir, peak=0.7498, last=0.6919)
         base = dict(_BASE_REPORT_DICT)
@@ -985,7 +992,8 @@ class TestBestOfRunFloorAtWriteChokepoint:
         assert data["rubric"].get("best_of_run") is True
         assert data["verdict"] == "reproduced"
 
-    def test_hard_stop_not_floored_up_here(self, tmp_path):
+    def test_hard_stop_not_floored_up_here(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENRESEARCH_EVIDENCE_GATE", "0")
         project_dir = tmp_path / "proj"
         _events_with_peak(project_dir, peak=0.7498, last=0.6919)
         base = dict(_BASE_REPORT_DICT)

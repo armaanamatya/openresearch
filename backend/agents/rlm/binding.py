@@ -369,7 +369,7 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
     the existing ``primitive_call`` events still fire via ``dashboard``.
     """
 
-    def _ledger() -> None:
+    def _ledger(outcome: str = "") -> None:
         """Append a cost-ledger row for this primitive invocation.
 
         Reads ctx.llm_client._last_usage (populated by ClaudeLlmClient.complete)
@@ -378,6 +378,12 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
         agent engine path (implement_baseline — engine writes its own entry),
         _last_usage stays at the zeroed value and the entry records 0 tokens,
         which is correct.
+
+        ``outcome`` is the per-row provenance stamp (audit 2026-06-10): "ok"
+        (returned non-failure), "failed" (returned a failure-shaped dict), or
+        "raised". The evidence gate consumes it via
+        ``RunCostLedger.session_success_compatible_count`` so a real-but-FAILED
+        run_experiment call can no longer back a forged success row.
         """
         usage: dict = {}
         llm_client = getattr(ctx, "llm_client", None)
@@ -392,6 +398,7 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
             provider=ctx.provider,
             model=ctx.model,
             usage=usage,
+            outcome=outcome,
             # F1: tag the spend with the root-loop iteration for per-iteration
             # cost attribution (additive metadata; default 0 when unknown).
             iteration=int(getattr(ctx, "current_iteration", 0) or 0),
@@ -579,7 +586,7 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                     pass
                 ctx.dashboard.primitive_call(name, "error", result_summary=summary)
                 _emit_primitive_resource(ctx, primitive=name, boundary="end")
-                _ledger()
+                _ledger("raised")
                 logger.warning("primitive %s raised %s", name, type(exc).__name__)
                 raise
             # Most primitives are fail-soft: on failure they RETURN a failure-shaped
@@ -596,7 +603,17 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                 coerced=coerced,
             )
             _emit_primitive_resource(ctx, primitive=name, boundary="end")
-            _ledger()
+            # Three-way stamp (audit 2026-06-11): a harness-finalized timeout
+            # partial gets its own outcome so the gate's cap tier can demand
+            # in-process provenance (a REPL-forged partial_timeout row in
+            # experiment_runs.jsonl can no longer ride a real-but-failed call).
+            if failed and isinstance(result, dict) and (
+                result.get("partial_timeout") is True
+                or result.get("failure_class") == "partial_timeout"
+            ):
+                _ledger("partial_timeout")
+            else:
+                _ledger("failed" if failed else "ok")
             if failed:
                 logger.warning(
                     "primitive %s returned a failure: %s",
@@ -605,16 +622,19 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
             else:
                 # --- Phase 6 (Task 13): post-success supplemental event emission ---
                 _emit_supplemental(name, result, ctx, _emit_extra)
-                # E1 (CONTEXT_MAP): union this primitive's structured output into
-                # rlm_state/context_map.json. Self-filtering — no-ops unless
-                # OPENRESEARCH_CONTEXT_MAP is on AND name is an orientation primitive
-                # (understand_section/extract_hyperparameters/detect_environment);
-                # off → byte-for-byte today. Fail-soft (orientation aid, never fatal).
+                # E1 (CONTEXT_MAP / PEEK-lite, OPENRESEARCH_CONTEXT_MAP): union this
+                # orientation primitive's structured output into
+                # rlm_state/context_map.json. Self-filtering — no-ops unless the flag
+                # is on AND name is an orientation primitive (understand_section/
+                # extract_hyperparameters/detect_environment); off → byte-for-byte
+                # today. Fail-soft (orientation aid, never fatal).
                 try:
                     from backend.agents.rlm.context_map import update_context_map
                     update_context_map(ctx.project_dir, name, result)
                 except Exception:  # noqa: BLE001 — orientation cache must never break the run
                     pass
+            # Steering (main 2026-06-09): surface unread operator messages inside
+            # primitive results so the root sees them without polling.
             result = _inject_operator_messages(name, result, ctx)
             return result
         finally:
@@ -951,17 +971,11 @@ def build_custom_tools(
         from backend.agents.rlm import primitives as _p
         registry = registry if registry is not None else _p.PRIMITIVE_REGISTRY
         descriptions = descriptions if descriptions is not None else _p.PRIMITIVE_DESCRIPTIONS
-    # E1: read_context_map lives in the registry unconditionally (so it's importable
-    # + testable) but is only ADVERTISED to the root when OPENRESEARCH_CONTEXT_MAP is on.
-    # Off → it is filtered out here, so the off-state tool list is byte-for-byte today.
-    try:
-        from backend.agents.rlm.context_map import _enabled as _context_map_enabled
-        _ctx_map_on = _context_map_enabled()
-    except Exception:  # noqa: BLE001 — flag probe must never break tool assembly
-        _ctx_map_on = False
+    # read_context_map is advertised to the root unconditionally (main's contract):
+    # the primitive is harmless when OPENRESEARCH_CONTEXT_MAP is off (it returns {}),
+    # so the root tool list stays stable regardless of the flag.
     return {
         name: {"tool": wrap_primitive(name, fn, ctx),
                "description": descriptions.get(name, name)}
         for name, fn in registry.items()
-        if name != "read_context_map" or _ctx_map_on
     }

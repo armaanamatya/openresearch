@@ -2,7 +2,6 @@
 
 from pathlib import Path
 import json
-import pytest
 
 from backend.agents.baseline_implementation import run_offline, PPO_TRAIN_PY
 from backend.agents.schemas import (

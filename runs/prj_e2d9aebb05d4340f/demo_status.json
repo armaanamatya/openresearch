@@ -1,0 +1,28 @@
+{
+  "paperId": "1710.09412",
+  "paperTitle": "arXiv:1710.09412",
+  "paper": {
+    "id": "1710.09412",
+    "title": "arXiv:1710.09412"
+  },
+  "sourceKind": "arxiv",
+  "sourceLabel": "arXiv:1710.09412",
+  "sourceNote": "1710.09412",
+  "projectId": "prj_e2d9aebb05d4340f",
+  "outputDir": "/Volumes/CS_Stuff/openresearch/runs/prj_e2d9aebb05d4340f",
+  "runMode": "rlm",
+  "status": "completed",
+  "updatedAt": "2026-06-02T16:03:55.036931+00:00",
+  "startedAt": "2026-06-02T14:14:27.754011+00:00",
+  "primitiveProvider": "real",
+  "process_status": "completed",
+  "verdict": "unknown",
+  "cost_summary": {
+    "usd_total": 0.0,
+    "usd_this_iter": 0.0,
+    "iter_count": 4,
+    "usd_per_iter_p50": 0.0,
+    "updated_at": "2026-06-02T16:03:28.036577+00:00"
+  },
+  "completedAt": "2026-06-02T16:03:55.036931+00:00"
+}

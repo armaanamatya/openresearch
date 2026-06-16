@@ -24,7 +24,9 @@ import pytest
 faiss = pytest.importorskip("faiss")
 
 # Mirror the runtime flat-import (env modules are copied flat into code/).
-_RLM_DIR = "/home/sww35/openresearch-fullscope/backend/agents/rlm"
+_RLM_DIR = str(  # repo-relative: the old hardcoded /home/sww35/... path
+    __import__("pathlib").Path(__file__).resolve().parents[3] / "backend" / "agents" / "rlm"
+)  # only collected on the author's machine (audit 2026-06-09)
 sys.path.insert(0, _RLM_DIR)
 try:
     import search_qa_env as sq  # noqa: E402

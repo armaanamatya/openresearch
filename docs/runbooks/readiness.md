@@ -87,7 +87,7 @@ Failing a lower tier blocks higher tiers from running. (e.g. `pytest` doesn't ev
 | `node ≥ 20.19 (≠21) or ≥ 22.12: FAIL` | Install via `fnm` / `nvm`: `fnm install 22.12 && fnm use 22.12`. |
 | `backend factory imports cleanly: FAIL` | Read `.readiness-backend.log` (if TIER 5 ran) or run `.venv/bin/python -c "from backend.app import create_app"` manually to see the traceback. |
 | `Claude credentials: WARN` | Either `claude login` (subscription) or set `ANTHROPIC_API_KEY=<key>` in `.env`. Subscription is free, API key is per-token billed. |
-| `RunPod creds present: WARN` | Set `REPROLAB_RUNPOD_API_KEY` + `OPENRESEARCH_RUNPOD_SSH_KEY_PATH` in `.env`, or stick to `--sandbox local`/`docker`. |
+| `RunPod creds present: WARN` | Set `OPENRESEARCH_RUNPOD_API_KEY` + `OPENRESEARCH_RUNPOD_SSH_KEY_PATH` in `.env`, or stick to `--sandbox local`/`docker`. |
 | `ftrl --mode rlm smoke: FAIL` | Read the run dir under `${TMPDIR}` — `final_report.json` and `dashboard_events.jsonl` tell the story. Most failures are credential issues (sub-agent can't auth) — see CLAUDE.md §"RLM auth". |
 
 ## CI integration

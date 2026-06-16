@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
 import sys
 import threading
 from dataclasses import dataclass
@@ -112,6 +113,11 @@ def _pid_alive(pid: int) -> bool:
         return bool(psutil.pid_exists(pid))
     try:
         os.kill(pid, 0)
+        return True
+    except PermissionError:
+        # EPERM: the process EXISTS but belongs to another user (e.g. the
+        # backend server and the CLI run launched under different OS users on
+        # one host). Treating it as dead would falsely sweep a live run.
         return True
     except OSError:
         return False
@@ -269,6 +275,17 @@ def sweep_orphaned_runs(
                 # mark this as orphan. PID instrumentation is a prereq for the
                 # sweeper; until every writer of status=running stamps a pid,
                 # absent-pid means "unknown", not "dead".
+                continue
+            pid_host = str(status.get("pidHost") or "").strip()
+            if pid_host and pid_host != socket.gethostname():
+                # The pid was minted on a different host / pid namespace — e.g.
+                # a host-launched CLI run observed by the containerized backend
+                # through the bind-mounted runs/ (compose mounts ./runs). An
+                # os.kill probe is meaningless across that boundary (the host
+                # pid simply doesn't exist in the container), so liveness is
+                # UNKNOWN, not dead — same conservative posture as absent-pid.
+                # A missing pidHost (legacy snapshots) keeps single-host
+                # behavior unchanged.
                 continue
             if _pid_alive(pid):
                 continue

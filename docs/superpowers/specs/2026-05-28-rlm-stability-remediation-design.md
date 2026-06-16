@@ -162,7 +162,7 @@ from io import StringIO
 from rlm.environments import local_repl as _local_repl
 
 logger = logging.getLogger(__name__)
-_PATCHED_ATTR = "_reprolab_traceback_patched"
+_PATCHED_ATTR = "_openresearch_traceback_patched"
 
 def _patched_execute_code(self, code: str):
     # Re-implement execute_code's body but include the full traceback in stderr.
@@ -226,7 +226,7 @@ def _warn_on_shell_env_override() -> None:
     dotenv_vals = dotenv_values(".env")
     suspect_keys = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY",
                     "FEATHERLESS_API_KEY", "OPENROUTER_API_KEY",
-                    "AZURE_OPENAI_API_KEY", "REPROLAB_RUNPOD_API_KEY")
+                    "AZURE_OPENAI_API_KEY", "OPENRESEARCH_RUNPOD_API_KEY")
     for k in suspect_keys:
         env_val = os.environ.get(k, "")
         file_val = dotenv_vals.get(k, "") or ""

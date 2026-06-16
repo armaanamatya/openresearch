@@ -153,7 +153,16 @@ def test_cpu_liveness_keeps_busy_job_alive(
     sandbox = _make_sandbox(tmp_path)
 
     t0 = time.monotonic()
-    r = _run(sandbox, "timeout 5 bash -c 'while true; do :; done'; true", timeout=60)
+    # Pure-bash busy spin: GNU `timeout` does not exist on macOS, where the
+    # old `timeout 5 …` exited command-not-found in ~6ms and the busy loop
+    # never ran (test only passed on Linux; audit 2026-06-09). $SECONDS ticks
+    # on whole-second boundaries, so N ticks elapse in [N-1, N] real seconds —
+    # spin 6 ticks to land in [5, 6]s, safely inside the 4.5–12s assertion.
+    r = _run(
+        sandbox,
+        "bash -c 'end=$((SECONDS+6)); while [ $SECONDS -lt $end ]; do :; done'; true",
+        timeout=60,
+    )
     elapsed = time.monotonic() - t0
 
     # Must NOT be killed for stalling — it ran to completion on CPU liveness alone.

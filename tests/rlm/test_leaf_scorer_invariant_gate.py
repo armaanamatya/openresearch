@@ -18,7 +18,6 @@ These tests use a synthetic rubric tree + a mock LLM that gives high scores
 from __future__ import annotations
 
 import json
-import tempfile
 from pathlib import Path
 
 import pytest

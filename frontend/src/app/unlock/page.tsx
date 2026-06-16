@@ -37,7 +37,7 @@ export default function UnlockPage() {
     <main className="flex min-h-screen items-center justify-center bg-stone-950 px-6 py-10 text-stone-100">
       <div className="w-full max-w-sm rounded-[28px] border border-emerald-400/20 bg-[radial-gradient(circle_at_top_left,_rgba(16,185,129,0.12),_transparent_40%),linear-gradient(135deg,_rgba(12,10,9,0.97),_rgba(28,25,23,0.94))] p-8 shadow-[0_20px_80px_rgba(0,0,0,0.4)]">
         <p className="mb-2 text-xs uppercase tracking-[0.35em] text-emerald-300">
-          ReproLab
+          OpenResearch
         </p>
         <h1 className="mb-1 text-xl font-semibold text-white">Demo access</h1>
         <p className="mb-6 text-sm leading-6 text-stone-400">

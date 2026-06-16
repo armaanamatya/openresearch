@@ -484,14 +484,31 @@ export const ConstellationCanvas = memo(function ConstellationCanvas({
   const handlePointerDown = useCallback((e: React.PointerEvent<SVGSVGElement>) => {
     if (e.button !== 0) return;
     dragState.current = { startX: e.clientX, startY: e.clientY, vbStart: viewBox, moved: false };
-    (e.currentTarget as SVGSVGElement).setPointerCapture(e.pointerId);
+    // Capture is DEFERRED to the first real pan movement (see handlePointerMove):
+    // capturing on pointerdown retargets the subsequent click event to the svg,
+    // so the node <g onClick> handlers never fired and node selection was
+    // silently broken for all users (audit 2026-06-10, found via Playwright).
   }, [viewBox]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent<SVGSVGElement>) => {
     if (!dragState.current) return;
+    if (e.buttons === 0) {
+      // pointerup was missed (released outside the svg before capture was
+      // taken — possible since capture is deferred to the first real pan
+      // movement): clear the stale drag so a button-less hover can't
+      // ghost-pan the canvas (audit 2026-06-11).
+      dragState.current = null;
+      return;
+    }
     const dx = e.clientX - dragState.current.startX;
     const dy = e.clientY - dragState.current.startY;
     if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+      if (!dragState.current.moved) {
+        // A real pan started — NOW capture so the drag keeps tracking outside
+        // the svg. A plain click never reaches this branch, so its click event
+        // still targets the node.
+        (e.currentTarget as SVGSVGElement).setPointerCapture(e.pointerId);
+      }
       dragState.current.moved = true;
       userInteractedRef.current = true;
     }
@@ -557,6 +574,8 @@ export const ConstellationCanvas = memo(function ConstellationCanvas({
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        onLostPointerCapture={handlePointerUp}
         style={{ cursor: dragState.current?.moved ? "grabbing" : "grab" }}
       >
         {/* Dot grid background */}

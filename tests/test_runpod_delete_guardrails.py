@@ -100,7 +100,7 @@ def test_delete_on_destroy_default_does_not_block_safety_layer() -> None:
 def test_runpod_preflight_fails_fast_without_api_key(monkeypatch) -> None:
     """RunPod is the default sandbox, so missing credentials must fail early."""
 
-    monkeypatch.delenv("REPROLAB_RUNPOD_API_KEY", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_RUNPOD_API_KEY", raising=False)
     monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
     monkeypatch.setattr(
         "backend.config.get_settings",

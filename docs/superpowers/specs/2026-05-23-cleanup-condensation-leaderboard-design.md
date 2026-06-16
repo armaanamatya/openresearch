@@ -445,7 +445,7 @@ A reviewer can confirm the plan is complete by checking:
 
 **Documentation.** `progress.md` current and succinct. `learn.md` is the post-mortem log (Symptom → Root cause → Fix → Lesson → Guardrail). `CHANGELOG.md` `[Unreleased]`. Keep `system_overview.md` and `CLAUDE.md` in sync with architectural drift.
 
-**Operational facts (carried from 2026-05-22).** RLM runs are serial — Featherless `feather_pro_plus` caps at 4 concurrent units; one RLM run saturates it. Re-running a paper needs both stores purged — run dir + `event_store_events` aggregates in `reprolab.db`. macOS Keychain stores Claude OAuth creds (not `~/.claude/.credentials.json`); both `validate_provider_credentials` and `has_provider_credentials` probe the Keychain on darwin (fixed 2026-05-23 in #77).
+**Operational facts (carried from 2026-05-22).** RLM runs are serial — Featherless `feather_pro_plus` caps at 4 concurrent units; one RLM run saturates it. Re-running a paper needs both stores purged — run dir + `event_store_events` aggregates in `openresearch.db`. macOS Keychain stores Claude OAuth creds (not `~/.claude/.credentials.json`); both `validate_provider_credentials` and `has_provider_credentials` probe the Keychain on darwin (fixed 2026-05-23 in #77).
 
 **Audit baseline (2026-05-23).**
 - `main` HEAD: `ecb7931` (PR #78 merge).

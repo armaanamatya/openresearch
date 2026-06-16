@@ -12,23 +12,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from backend.agents.environment_detective import (
     run_offline,
     _generate_dockerfile,
     _infer_framework,
-    _infer_python_version,
     _dataset_packages,
-    _generate_assumptions,
 )
 from backend.agents.schemas import (
-    Assumption,
     DatasetRequirement,
     EnvironmentSpec,
     MetricSpec,
     PaperClaimMap,
-    RiskLevel,
     TrainingRecipe,
 )
 
@@ -153,14 +148,27 @@ class TestDockerfileGeneration:
         df = _generate_dockerfile("3.11", packages, gpu_mode="auto")
         assert "download.pytorch.org/whl/cpu" in df
 
-    def test_torch_uses_cuda_wheel_for_gpu_mode_prefer(self):
+    def test_torch_uses_cuda_wheel_for_gpu_mode_prefer(self, monkeypatch):
+        # prefer/max only select the CUDA wheel when the HOST has an NVIDIA GPU;
+        # effective_gpu_mode downgrades to the CPU wheel on a GPU-less host
+        # (CI runners and macOS dev boxes). Pin host-GPU present so this test
+        # deterministically exercises the passthrough path it's meant to cover.
+        monkeypatch.setattr(
+            "backend.services.runtime.gpu_resolution.host_supports_nvidia_gpu",
+            lambda: True,
+        )
         packages = {"torch": "2.2.0"}
         df = _generate_dockerfile("3.11", packages, gpu_mode="prefer")
         # No --index-url override → default PyPI ships CUDA wheel.
         assert "download.pytorch.org/whl/cpu" not in df
         assert "torch==2.2.0" in df
 
-    def test_torch_uses_cuda_wheel_for_gpu_mode_max(self):
+    def test_torch_uses_cuda_wheel_for_gpu_mode_max(self, monkeypatch):
+        # See sibling test above: pin host-GPU present (GPU-less hosts downgrade).
+        monkeypatch.setattr(
+            "backend.services.runtime.gpu_resolution.host_supports_nvidia_gpu",
+            lambda: True,
+        )
         packages = {"torch": "2.2.0"}
         df = _generate_dockerfile("3.11", packages, gpu_mode="max")
         assert "download.pytorch.org/whl/cpu" not in df

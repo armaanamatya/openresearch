@@ -134,6 +134,11 @@ class ForcedIterationPolicy:
     # Tracks outcomes of all run_experiment calls in the current root turn;
     # reset by on_iteration_advance() at each turn boundary.
     _experiments_in_iteration: list[str] = field(default_factory=list, compare=False, repr=False)
+    # BUG-NEW-046: total run_experiment calls across ALL iterations.  Unlike
+    # _experiments_in_iteration (reset per turn), this is monotonically
+    # increasing.  should_refuse() uses it to block FINAL_VAR when the root
+    # has never run any experiment — even if the iteration floor is satisfied.
+    _total_run_experiments: int = field(default=0, compare=False, repr=False)
     # PR-μ Solution C — simplified constructor fields for test ergonomics and
     # future direct instantiation without callables.  Production code continues
     # to use the callable-based fields (rubric_snapshot, current_iteration,
@@ -235,6 +240,21 @@ class ForcedIterationPolicy:
         # 0.5. Defensive max-refusals cap.
         if self.refusal_count >= _MAX_REFUSALS_PER_RUN:
             return (False, None)
+
+        # 0.7. BUG-NEW-046: no experiment ever run — refuse FINAL_VAR.
+        # A run that never called run_experiment has done no reproducible work,
+        # regardless of how many iterations it consumed on planning/implementing.
+        if self._total_run_experiments == 0:
+            cur = self.current_iteration() if self.current_iteration is not None else 0
+            msg = (
+                f"FINAL_VAR refused at iteration {cur}: run_experiment has never "
+                "been called. You must execute the baseline code at least once "
+                "before terminating. Next steps: call build_environment (if the "
+                "image is not built yet), then run_experiment(code_path, env_id) "
+                "to execute the code, then verify_against_rubric to score it, "
+                "then FINAL_VAR."
+            )
+            return (True, msg)
 
         # Compute repair-iteration refusal eagerly — this check is independent
         # of min_iterations (rubric floor) so it fires even when the rubric
@@ -389,6 +409,7 @@ class ForcedIterationPolicy:
         """Append an outcome to the current iteration's run_experiment sequence.
         Called from the run_experiment primitive after computing its outcome."""
         self._experiments_in_iteration.append(outcome)
+        self._total_run_experiments += 1
 
     def on_iteration_advance(self) -> None:
         """Reset per-iteration trackers when a new REPL turn starts."""

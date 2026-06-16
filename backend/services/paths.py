@@ -15,7 +15,6 @@ import os
 import re
 import shutil
 import subprocess
-from pathlib import Path
 
 
 # Windows absolute path: drive letter + colon + slash or backslash.

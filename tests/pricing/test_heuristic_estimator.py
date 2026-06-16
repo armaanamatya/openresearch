@@ -12,7 +12,6 @@ from backend.services.pricing.estimators.heuristic import (
     estimate_heuristic,
     _hours_per_experiment,
 )
-from backend.services.pricing.paper_features import extract_features
 
 
 def _make_features(category: str, model_size_class: str, num_experiments: int = 1):

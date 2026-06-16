@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import io
 from pathlib import Path
 from unittest.mock import MagicMock
 from urllib.request import Request
 
-import pytest
 
 from backend.services.ingestion.intake.fetchers import arxiv as arxiv_mod
 from backend.services.ingestion.intake.fetchers.arxiv import ArxivFetcher

@@ -12,7 +12,6 @@ import ast
 import json
 import logging
 import os
-import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -1265,9 +1264,342 @@ def _metric_provenance_enabled() -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _has_experiment_evidence(project_dir: Path) -> bool:
+    """True iff ``experiment_runs.jsonl`` has a row that BOTH succeeded AND
+    produced non-empty metrics.
+
+    Tightened 2026-05-30: a row only counts when ``success == True`` AND
+    ``metrics`` is a non-empty dict. ``success`` is ``run_experiment``'s own flag
+    in its tri-state outcome:
+      * ``success=True``                 → executed cleanly ("ok")  → COUNTS
+      * ``success=False`` + metrics      → tri-state "partial"      → does NOT count
+      * ``success=False`` + no metrics   → "failed"                 → does NOT count
+    NOTE the deliberate strictness: a ``success=False`` run that produced *real
+    partial* metrics is still graded by the leaf scorer (that "partial evidence"
+    is real for *scoring*), but it does NOT by itself license a ``partial`` /
+    ``reproduced`` VERDICT here — only a cleanly-executed run with real metrics
+    does. This is what the verdict gate was asked to enforce (a crashed run that
+    emitted metrics-like junk must not rescue a success-ish verdict). Since the
+    self-attest escape was closed (2026-05-30, see ``_apply_evidence_gate``), this
+    predicate is the SOLE evidence test the gate consults — a run whose metrics the
+    root only copied into ``baseline_metrics`` (with no clean success+metrics row on
+    disk) no longer slips through.
+
+    Mirrors ``run.py:_partial_evidence_from_experiment_runs`` (kept local to avoid a
+    circular import). Fail-soft: any I/O / parse error returns False.
+    """
+    path = project_dir / "experiment_runs.jsonl"
+    if not path.exists():
+        return False
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("success") is not True:
+                continue
+            metrics = entry.get("metrics")
+            if isinstance(metrics, dict) and metrics:
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _has_partial_timeout_evidence(project_dir: Path) -> bool:
+    """True iff ``experiment_runs.jsonl`` has a HARNESS-finalized partial row:
+    non-empty dict ``metrics`` AND (``failure_class == "partial_timeout"`` or
+    ``partial_timeout is True``).
+
+    These rows come from ``primitives._finalize_timeout_result`` — the 2026-06-08
+    exec-reliability redesign loads the on-disk partial ``metrics.json`` written by
+    the training process itself when a run hits ``exec_timeout``/``exec_stalled``,
+    so the metrics are real completed work, not agent-attested numbers. They are
+    deliberately NOT accepted by ``_has_experiment_evidence`` (success is False),
+    but they justify capping a verdict at "partial" instead of forcing "failed".
+    Fail-soft: any I/O / parse error returns False.
+    """
+    path = project_dir / "experiment_runs.jsonl"
+    if not path.exists():
+        return False
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            if not (
+                entry.get("failure_class") == "partial_timeout"
+                or entry.get("partial_timeout") is True
+            ):
+                continue
+            metrics = entry.get("metrics")
+            if isinstance(metrics, dict) and metrics:
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _apply_evidence_gate(
+    report: RLMFinalReport,
+    project_dir: Path,
+    *,
+    run_experiment_calls: int | None = None,
+    run_experiment_ok_calls: int | None = None,
+    run_experiment_partial_timeout_calls: int | None = None,
+) -> RLMFinalReport:
+    """Downgrade a success-ish verdict that has NO experiment evidence (FM-004).
+
+    ``_reconcile_verdict_against_evidence`` only catches over-claimed "reproduced";
+    a "partial" with no successful ``run_experiment`` (the recurring /runs pattern,
+    e.g. pb_…784) slips through it. This write-time gate is path-agnostic — it runs
+    for the clean FINAL_VAR writer AND the watchdog / fatal-abort writers — so no
+    path can ship a success-ish verdict without evidence.
+
+    Self-attest escape closed 2026-05-30. The gate used to be SKIPPED whenever
+    ``report.baseline_metrics`` was non-empty (``and not report.baseline_metrics``).
+    That let a root copy numbers out of a *failed* ``run_experiment`` into
+    ``baseline_metrics`` and ship a hollow "partial"/"reproduced": Layer 0 keeps the
+    metrics (the primitive *was* called), ``_reconcile`` ignores "partial", and the
+    gate was bypassed precisely because the self-attested metrics were truthy. The
+    sole deciding condition is now the strict evidence predicate
+    (``_has_experiment_evidence`` = a row that BOTH ``success==True`` AND has
+    non-empty metrics), which is what the 2026-05-30 #1 instruction asked for — the
+    earlier code merely failed to enforce it on the self-attest path.
+
+    COST (intentional, stated): an *honest* tri-state run — ``success=False`` but
+    with real partial metrics the root copied into ``baseline_metrics`` — now
+    downgrades to "failed", not "partial". The partial numbers remain real for
+    *scoring* (the leaf scorer still grades the code), but they no longer license a
+    success-ish VERDICT. This is the strictness #1 deliberately chose.
+
+    PARTIAL-TIMEOUT TIER (2026-06-09): one narrow exception to that strictness —
+    a row finalized by the harness itself on ``exec_timeout``/``exec_stalled``
+    (``failure_class == "partial_timeout"``, metrics loaded from the on-disk
+    ``metrics.json`` the training process wrote; see
+    ``primitives._finalize_timeout_result``) caps the verdict at "partial" instead
+    of forcing "failed", provided the ledger shows ≥1 in-process ``run_experiment``
+    call (or no ledger is available). These metrics are harness-loaded completed
+    work, not agent-attested numbers, and "failed" would misdescribe exactly the
+    runs the 2026-06-08 finalize-on-timeout redesign exists to salvage.
+
+    FORGED-EVIDENCE cross-check (2026-05-30, audit finding): ``_has_experiment_evidence``
+    reads ``experiment_runs.jsonl`` CONTENT only. The root model's REPL keeps ``open()``
+    live, so it can append a fabricated ``{"success": true, "metrics": {...}}`` row
+    directly to that file and *satisfy* the predicate without any container ever running
+    — defeating the gate by passing it, not skipping it. When the caller supplies the
+    authoritative ``run_experiment_calls`` (the in-memory cost-ledger count, which the
+    REPL cannot forge — see ``run_experiment_call_count``), the gate REQUIRES a real
+    ``run_experiment`` call to back the on-disk evidence: a success row with
+    ``run_experiment_calls == 0`` is forged and is downgraded to ``failed``. ``None``
+    (no ledger available — replay/postmortem) falls back to content-only, so this never
+    over-fires on a path that lacks the trace. Safe by construction: a legitimate run
+    that produced a success+metrics row MUST have called ``run_experiment`` ≥ 1 time
+    (``_persist_experiment_result`` only writes from inside ``run_experiment``), so the
+    cross-check never downgrades a real reproduction.
+
+    PER-ROW PROVENANCE (2026-06-10, closes former residual #2): ``run_experiment_ok_calls``
+    counts in-process ledger rows whose ``outcome`` stamp (written by
+    ``binding.wrap_primitive``: "ok"/"failed"/"raised") is success-compatible. A root
+    that makes one real-but-FAILED ``run_experiment`` call and then forges a success
+    row used to pass the ``>= 1`` total-count check; now a success+metrics row with
+    ZERO success-compatible calls is forged too. Unknown-outcome rows ("" — legacy
+    doubles, pre-stamp artifacts) stay success-compatible so old paths never
+    over-downgrade; in the real pipeline every run_experiment row is stamped.
+
+    KNOWN RESIDUALS (not closed here): (1) the predicate checks that *a* success+metrics
+    row exists, not that ``baseline_metrics`` is *tied to* that row. (2) a root whose
+    ``run_experiment`` REALLY succeeded once can still forge a BETTER success row
+    alongside it (provenance ties the verdict to a real success, not the numbers to
+    the row); ``_verify_scope_evidence`` partially covers model/env tags. Documented
+    gaps; the audit's nonce idea is defeated by the root copying a nonce out of an
+    existing row, so the ledger count is the robust primary defense.
+
+    Disable with ``OPENRESEARCH_EVIDENCE_GATE=0`` (legacy ``REPROLAB_`` prefix
+    bridged at import by config._apply_legacy_env_aliases).
+    """
+    if os.environ.get("OPENRESEARCH_EVIDENCE_GATE", "1").strip().lower() in {"0", "false", "off"}:
+        return report
+    content_evidence = _has_experiment_evidence(project_dir)
+    # Forged iff there IS a success+metrics row on disk but the authoritative ledger
+    # proves no real primitive call backs it: either run_experiment never ran at all
+    # (total count 0) or every in-process call ENDED in failure/raise (ok-count 0 —
+    # per-row provenance, 2026-06-10). None => unknown ledger => skip that check.
+    forged_evidence = content_evidence and (
+        (run_experiment_calls is not None and run_experiment_calls <= 0)
+        or (run_experiment_ok_calls is not None and run_experiment_ok_calls <= 0)
+    )
+    has_real_evidence = content_evidence and not forged_evidence
+    if report.verdict in {"reproduced", "partial"} and not has_real_evidence:
+        if forged_evidence:
+            note = (
+                " [evidence_gap] Downgraded to 'failed': experiment_runs.jsonl has a "
+                "success+metrics row but the authoritative cost-ledger trace shows no "
+                "run_experiment call that ENDED successfully in this attempt — the "
+                "row is not backed by a real successful experiment (forged/unbacked "
+                "evidence)."
+            )
+            logger.warning(
+                "report: evidence gate downgraded verdict to 'failed' — FORGED "
+                "experiment evidence (success row on disk; run_experiment ledger "
+                "calls=%s, success-compatible=%s)",
+                run_experiment_calls,
+                run_experiment_ok_calls,
+            )
+        elif (
+            (run_experiment_calls is None or run_experiment_calls >= 1)
+            and (
+                run_experiment_partial_timeout_calls is None
+                or run_experiment_partial_timeout_calls >= 1
+            )
+            and _has_partial_timeout_evidence(project_dir)
+        ):
+            # Second tier (2026-06-09): the only evidence is a timeout-finalized
+            # partial — run_experiment ended early (exec_timeout/exec_stalled)
+            # after some work wrote real metrics, which the harness itself loaded
+            # from disk (primitives._finalize_timeout_result). Forcing "failed"
+            # here would misdescribe the run the finalize-on-timeout redesign was
+            # built for; cap at "partial" instead. A REPL-forged partial row with
+            # 0 in-process run_experiment calls does NOT reach this tier (the
+            # ledger condition above) and falls through to the hard downgrade.
+            note = (
+                " [evidence_cap] Verdict capped at 'partial': the experiment "
+                "evidence is a timeout-finalized partial — run_experiment ended "
+                "early (exec_timeout/exec_stalled) after real metrics were "
+                "written; no cleanly-successful run backs a full reproduction "
+                "claim."
+            )
+            if report.verdict == "reproduced":
+                logger.warning(
+                    "report: evidence gate capped verdict 'reproduced' -> 'partial' "
+                    "(only timeout-finalized partial evidence)"
+                )
+                report.verdict = "partial"
+            report.reproduction_summary = (
+                report.reproduction_summary or ""
+            ).rstrip() + note
+            return report
+        else:
+            note = (
+                " [evidence_gap] Downgraded to 'failed': no cleanly-successful "
+                "(success=True) run_experiment row with metrics exists to back "
+                "the reproduction claim"
+                + (
+                    " and baseline_metrics is empty."
+                    if not report.baseline_metrics
+                    else "."
+                )
+            )
+            logger.warning(
+                "report: evidence gate downgraded verdict to 'failed' (no experiment evidence)"
+            )
+        report.verdict = "failed"
+        report.reproduction_summary = (report.reproduction_summary or "").rstrip() + note
+    return report
+
+
+def run_experiment_call_count(ctx: RunContext) -> int | None:
+    """Authoritative count of ``run_experiment`` invocations from the **in-memory**
+    cost ledger — the one trusted signal the root model's REPL cannot forge.
+
+    SESSION-SCOPED (2026-06-09 audit fix): ``ctx.cost_ledger`` IS seeded from the
+    root-writable ``cost_ledger.jsonl`` at run start (``RunCostLedger.load_jsonl``
+    in ``run_pipeline_rlm`` — intentional, for cross-retry budget continuity), so
+    counting **all** entries would let a root forge a ``run_experiment`` ledger row
+    in run 1, crash without a report (warm retry preserves both jsonl files), and
+    have run 2 ingest the forged row and pass this cross-check. The count therefore
+    uses ``RunCostLedger.session_call_count``, which only sees entries appended
+    **in this process** by ``binding.wrap_primitive`` — appended exactly once per
+    primitive call on EVERY path (success, fail-soft return, raise, timeout),
+    including zero-token primitives like ``run_experiment``. So a count of 0 means
+    ``run_experiment`` genuinely never ran *in this attempt*, and any
+    ``success+metrics`` row in ``experiment_runs.jsonl`` was written by something
+    other than the real primitive (i.e. forged via the REPL's ``open()``).
+
+    Returns the count, or ``None`` if no ledger is available (the gate then falls back
+    to a content-only check — never over-fires on a missing-ledger path).
+    """
+    ledger = getattr(ctx, "cost_ledger", None)
+    if ledger is None:
+        return None
+    try:
+        counter = getattr(ledger, "session_call_count", None)
+        if callable(counter):
+            return counter("run_experiment")
+        # Ledger-shaped test double without the method: fall back to a full scan
+        # (no seeding concern — doubles are built in-process).
+        return sum(
+            1 for e in ledger.entries if getattr(e, "agent_id", None) == "run_experiment"
+        )
+    except Exception:  # noqa: BLE001 — a gate input must never crash finalization
+        return None
+
+
+def run_experiment_partial_timeout_count(ctx: RunContext) -> int | None:
+    """In-process ``run_experiment`` calls whose outcome stamp is
+    ``partial_timeout`` (the primitive RETURNED a harness-finalized timeout
+    partial). The gate's partial-cap tier keys on this — a REPL-forged
+    partial_timeout row in experiment_runs.jsonl cannot mint one.
+    ``None`` when no ledger is available (content-only fallback)."""
+    ledger = getattr(ctx, "cost_ledger", None)
+    if ledger is None:
+        return None
+    try:
+        counter = getattr(ledger, "session_partial_timeout_count", None)
+        if callable(counter):
+            return counter("run_experiment")
+        return sum(
+            1
+            for e in ledger.entries
+            if getattr(e, "agent_id", None) == "run_experiment"
+            and getattr(e, "outcome", "") == "partial_timeout"
+        )
+    except Exception:  # noqa: BLE001 — a gate input must never crash finalization
+        return None
+
+
+def run_experiment_success_count(ctx: RunContext) -> int | None:
+    """In-process ``run_experiment`` calls whose per-row ``outcome`` stamp is
+    success-compatible ("ok" or unknown ""). See
+    ``RunCostLedger.session_success_compatible_count`` — this is the gate input
+    that closes the one-real-failed-call-plus-forged-row residual (2026-06-10).
+    ``None`` when no ledger is available (gate skips the check)."""
+    ledger = getattr(ctx, "cost_ledger", None)
+    if ledger is None:
+        return None
+    try:
+        counter = getattr(ledger, "session_success_compatible_count", None)
+        if callable(counter):
+            return counter("run_experiment")
+        return sum(
+            1
+            for e in ledger.entries
+            if getattr(e, "agent_id", None) == "run_experiment"
+            and (getattr(e, "outcome", "") or "") in ("", "ok")
+        )
+    except Exception:  # noqa: BLE001 — a gate input must never crash finalization
+        return None
+
+
 def write_final_report_rlm(
     report: RLMFinalReport,
     project_dir: Path,
+    *,
+    run_experiment_calls: int | None = None,
+    run_experiment_ok_calls: int | None = None,
+    run_experiment_partial_timeout_calls: int | None = None,
 ) -> tuple[Path, Path]:
     """Write `final_report.json` and `final_report.md` atomically.
 
@@ -1288,6 +1620,20 @@ def write_final_report_rlm(
     Returns:
         ``(json_path, md_path)`` — the paths of the written files.
     """
+    # FM-004 (ported from feat/rlm-wedge-hardening 0a0084b, 2026-06-09):
+    # path-agnostic evidence gate — no writer may ship a success-ish verdict
+    # with no (or forged) experiment evidence. Runs before serialization.
+    # ``run_experiment_calls`` (the authoritative in-memory ledger count,
+    # threaded from callers that have ``ctx``) lets the gate reject a forged
+    # experiment_runs.jsonl row; ``None`` falls back to a content-only check.
+    report = _apply_evidence_gate(
+        report,
+        project_dir,
+        run_experiment_calls=run_experiment_calls,
+        run_experiment_ok_calls=run_experiment_ok_calls,
+        run_experiment_partial_timeout_calls=run_experiment_partial_timeout_calls,
+    )
+
     project_dir.mkdir(parents=True, exist_ok=True)
 
     json_path = project_dir / "final_report.json"
@@ -1414,7 +1760,38 @@ def write_final_report_rlm(
     try:
         from backend.agents.rlm.two_axis_report import compute_and_attach as _attach_two_axis
         _report_dict = report.model_dump()
+        _gate_approved_verdict = report.verdict
         if _attach_two_axis(_report_dict, project_dir):
+            # Gate-order hardening (audit 2026-06-10): two-axis runs AFTER the
+            # evidence gate and projects the verdict from ROOT-WRITABLE
+            # rlm_state/ artifacts (fidelity_certificate.json, repro_spec.json)
+            # — without this clamp, a forging root could write a green
+            # certificate and UPGRADE a gate-downgraded 'failed' back to
+            # 'reproduced'. An upgrade therefore requires the same unforgeable
+            # trust signal the gate uses: >=1 success-compatible in-process
+            # run_experiment call. Downgrades and equal verdicts are always
+            # allowed (A4's faithful-but-contradicted != failed is a downgrade
+            # protection, not an upgrade); None (no ledger — replay/postmortem)
+            # keeps content-only trust, matching the gate's posture.
+            _rank = {"failed": 0, "partial": 1, "reproduced": 2}
+            _new_v = str(_report_dict.get("verdict") or "")
+            if (
+                _rank.get(_new_v, 0) > _rank.get(str(_gate_approved_verdict or ""), 0)
+                and run_experiment_ok_calls is not None
+                and run_experiment_ok_calls <= 0
+            ):
+                logger.warning(
+                    "report: two-axis verdict upgrade %r -> %r clamped — no "
+                    "success-compatible run_experiment call backs the artifacts",
+                    _gate_approved_verdict, _new_v,
+                )
+                _report_dict["verdict"] = _gate_approved_verdict
+                _repro = _report_dict.get("reproducibility")
+                if isinstance(_repro, dict):
+                    _repro["verdict_clamped"] = (
+                        "upgrade to %r refused: zero success-compatible "
+                        "run_experiment calls in this attempt" % _new_v
+                    )
             try:
                 report.verdict = _report_dict.get("verdict", report.verdict)
             except Exception:  # noqa: BLE001 — model may be frozen; the dict stays authoritative
@@ -1827,8 +2204,8 @@ def _render_markdown(report: RLMFinalReport, project_dir: Path | None = None) ->
     lines.append("## Cost")
     lines.append("")
     cost = report.cost
-    lines.append(f"| Category | USD |")
-    lines.append(f"|---|---|")
+    lines.append("| Category | USD |")
+    lines.append("|---|---|")
     lines.append(f"| Primitive-internal LLM | ${cost.get('primitives', 0.0):.6f} |")
     lines.append(f"| **Total LLM** | **${cost.get('llm_usd', 0.0):.6f}** |")
     lines.append("")

@@ -13,7 +13,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
 
 from backend.agents.rlm import preflight_smoke
 

@@ -20,10 +20,9 @@ import hashlib
 from pathlib import Path
 from typing import Mapping
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import ConfigDict
 
 from backend.eventstore.interface import (
-    AppendError,
     ConcurrencyError,
     EventStore,
 )
@@ -36,14 +35,8 @@ from backend.messaging.envelope import (
     new_correlation_id,
 )
 from backend.services.ingestion.intake.aggregate import (
-    InvalidStateTransition,
     ProjectAggregate,
     ProjectState,
-)
-from backend.services.ingestion.intake.events import (
-    PaperFetched,
-    PaperFetchFailed,
-    ProjectCreated,
 )
 from backend.services.ingestion.intake.fetchers.interface import (
     IntakeFetcher,

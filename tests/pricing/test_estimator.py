@@ -6,14 +6,11 @@ Invariant 7: estimate_paper_budget never spawns a subprocess.
 
 from __future__ import annotations
 
-import json
 import subprocess
-import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
-import pytest_asyncio
 
 
 # ---------------------------------------------------------------------------

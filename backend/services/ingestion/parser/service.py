@@ -43,7 +43,6 @@ from backend.services.ingestion.parser.events import (
     FigureExtracted,
     ParsingCompleted,
     ParsingFailed,
-    ParsingStarted,
     ReferenceExtracted,
     SectionExtracted,
 )

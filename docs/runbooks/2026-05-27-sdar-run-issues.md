@@ -120,7 +120,7 @@ contract.
      `commands.json` (the 2026-05-27 Adam+VAE regression cited in the
      hotfix commit message).
    - **Underlying SDK fix needed:** the race lives in `claude-agent-sdk`
-     itself; ReproLab cannot patch it in user code. Options ranked by
+     itself; OpenResearch cannot patch it in user code. Options ranked by
      feasibility:
      1. Pin `claude-agent-sdk` to an older known-good version (check
         release notes for the asyncgen-teardown patch).
@@ -544,7 +544,7 @@ exists for this run, but `run_experiment` has not errored.**
 
 Possible causes:
 1. **RunPod API credentials mismatch.** `runpodctl` may be using a different
-   account/key than `REPROLAB_RUNPOD_API_KEY` in `.env`. Backend may have
+   account/key than `OPENRESEARCH_RUNPOD_API_KEY` in `.env`. Backend may have
    provisioned a pod on a different account that `runpodctl user` can't see.
 2. **`run_experiment` is blocked on capacity wait** with no event emission.
    The capacity-escalation ladder (PR `aae89ad`) should emit

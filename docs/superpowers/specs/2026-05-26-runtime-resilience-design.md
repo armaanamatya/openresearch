@@ -126,7 +126,7 @@ Resolution order at `run_experiment` entry:
    - On backend boot, call `pod_sweeper.sweep_stale_pods(max_age_seconds=2*3600, dry_run=False)` in a background task.
    - 2h threshold means we never reap a pod that a still-active run might be using (run-level wall-clock cap is much tighter).
    - Fail-soft: any error in the sweep is logged but doesn't block backend startup.
-   - Disabled when `REPROLAB_RUNPOD_API_KEY` is unset (no RunPod usage → no cleanup needed).
+   - Disabled when `OPENRESEARCH_RUNPOD_API_KEY` is unset (no RunPod usage → no cleanup needed).
 
 3. **Layer 3 — periodic background sweep** (new module `backend/services/runtime/pod_sweep_scheduler.py`):
    - Runs `sweep_stale_pods` every 30 minutes.

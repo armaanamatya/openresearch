@@ -21,12 +21,10 @@ The suite verifies:
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
 
-import backend.agents.rlm.gpu_cell_runner as gcr
 from backend.agents.rlm.gpu_cell_runner import CELL_MANIFEST_NAME, run_matrix
 
 

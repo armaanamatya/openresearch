@@ -33,6 +33,13 @@ class CostLedgerEntry:
     cache_creation_input_tokens: int = 0
     reasoning_tokens: int = 0
     estimated_usd: float | None = None
+    # Per-row provenance (audit 2026-06-10): how the primitive call ENDED, as
+    # observed by binding.wrap_primitive — "ok" (returned non-failure),
+    # "failed" (returned a failure-shaped dict), "raised" (exception path).
+    # "" = unknown (legacy rows, non-primitive appenders); treated as
+    # success-compatible by the evidence gate so old artifacts never
+    # over-downgrade.
+    outcome: str = ""
     # F1 (2026-06-16): root-loop iteration this spend occurred in, so cost can be
     # attributed per-iteration. Additive metadata (default 0); never affects cost
     # math, and old ledgers without the field read back as 0 (from_json default).
@@ -69,6 +76,7 @@ class CostLedgerEntry:
         model: str,
         usage: dict[str, Any],
         timestamp: datetime | None = None,
+        outcome: str = "",
         iteration: int = 0,
     ) -> "CostLedgerEntry":
         normalized = {
@@ -87,6 +95,7 @@ class CostLedgerEntry:
             provider=provider,
             model=model,
             estimated_usd=estimate_cost_usd(model, normalized),
+            outcome=outcome,
             iteration=iteration,
             **normalized,
         )
@@ -119,6 +128,12 @@ class RunCostLedger:
         # line-tearing is structurally impossible.
         self._buffer: list[dict] = []
         self._lock: threading.Lock = threading.Lock()
+        # Entries present at construction time were seeded from disk (load_jsonl
+        # of the root-writable cost_ledger.jsonl on a warm retry) and are NOT
+        # trustworthy as a record of in-process primitive calls. Appends always
+        # go to the end of the list under _lock, so entries[_seeded_len:] is
+        # exactly the rows recorded by THIS process (binding.wrap_primitive).
+        self._seeded_len: int = len(self.entries)
 
     def append(self, entry: CostLedgerEntry) -> None:
         """Append an entry to the in-memory list and the write buffer.
@@ -157,6 +172,48 @@ class RunCostLedger:
 
     def total_usd(self) -> float:
         return round(sum(entry.estimated_usd or 0.0 for entry in self.entries), 8)
+
+    def session_call_count(self, agent_id: str) -> int:
+        """Count entries appended IN THIS PROCESS for ``agent_id``.
+
+        Excludes rows seeded from disk at ``load_jsonl`` time: those live in the
+        root-writable ``cost_ledger.jsonl`` and can be forged through the REPL's
+        live ``open()``, then re-ingested on a warm retry of the same project
+        dir. Only post-construction appends (made by ``binding.wrap_primitive``
+        inside the orchestrator) are trusted. Budget math (``total_usd``)
+        intentionally stays cumulative across retries — this counter is the
+        trust signal, not the cost accumulator.
+        """
+        return sum(
+            1 for entry in self.entries[self._seeded_len :] if entry.agent_id == agent_id
+        )
+
+    def session_success_compatible_count(self, agent_id: str) -> int:
+        """In-process entries for ``agent_id`` whose outcome can back a SUCCESS
+        verdict: ``"ok"`` or ``""`` (unknown/legacy — conservative, never
+        over-downgrades). Rows explicitly stamped ``"failed"``/``"raised"`` by
+        ``binding.wrap_primitive`` do NOT count: a root that makes one real but
+        FAILED ``run_experiment`` call and then forges a success row into
+        ``experiment_runs.jsonl`` used to pass the >=1 call cross-check (the
+        documented KNOWN RESIDUAL); with per-row provenance it no longer does.
+        """
+        return sum(
+            1
+            for entry in self.entries[self._seeded_len :]
+            if entry.agent_id == agent_id
+            and (entry.outcome or "") in ("", "ok")
+        )
+
+    def session_partial_timeout_count(self, agent_id: str) -> int:
+        """In-process entries stamped ``partial_timeout`` by the orchestrator
+        (the primitive RETURNED a harness-finalized timeout partial). The gate's
+        partial-cap tier requires >=1 of these — file content alone (forgeable
+        via the REPL's open()) no longer reaches that tier."""
+        return sum(
+            1
+            for entry in self.entries[self._seeded_len :]
+            if entry.agent_id == agent_id and entry.outcome == "partial_timeout"
+        )
 
     def total_by_provider(self) -> dict[ProviderName, ProviderTotals]:
         raw: dict[ProviderName, dict[str, Any]] = {}

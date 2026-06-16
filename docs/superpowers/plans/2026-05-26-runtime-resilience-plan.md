@@ -783,7 +783,7 @@ from unittest.mock import MagicMock, patch
 
 @pytest.mark.asyncio
 async def test_scheduler_calls_sweep_at_interval(monkeypatch):
-    monkeypatch.setenv("REPROLAB_RUNPOD_API_KEY", "dummy")
+    monkeypatch.setenv("OPENRESEARCH_RUNPOD_API_KEY", "dummy")
     monkeypatch.setenv("OPENRESEARCH_POD_SWEEP_INTERVAL_S", "0.05")  # 50ms for fast test
     sweep_calls = []
     fake_sweep = MagicMock(side_effect=lambda **kw: sweep_calls.append(kw) or {"reaped": 0})
@@ -798,7 +798,7 @@ async def test_scheduler_calls_sweep_at_interval(monkeypatch):
 @pytest.mark.asyncio
 async def test_scheduler_disabled_via_env(monkeypatch):
     monkeypatch.setenv("OPENRESEARCH_POD_SWEEP_ENABLED", "false")
-    monkeypatch.setenv("REPROLAB_RUNPOD_API_KEY", "dummy")
+    monkeypatch.setenv("OPENRESEARCH_RUNPOD_API_KEY", "dummy")
     fake_sweep = MagicMock(return_value={"reaped": 0})
     with patch("backend.services.runtime.pod_sweep_scheduler.sweep_stale_pods", fake_sweep):
         from backend.services.runtime.pod_sweep_scheduler import PodSweepScheduler
@@ -810,7 +810,7 @@ async def test_scheduler_disabled_via_env(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_scheduler_fail_soft_on_sweep_exception(monkeypatch):
-    monkeypatch.setenv("REPROLAB_RUNPOD_API_KEY", "dummy")
+    monkeypatch.setenv("OPENRESEARCH_RUNPOD_API_KEY", "dummy")
     monkeypatch.setenv("OPENRESEARCH_POD_SWEEP_INTERVAL_S", "0.05")
     calls = []
     def _flaky_sweep(**kw):
@@ -844,7 +844,7 @@ interval. Fail-soft: any exception is logged but the scheduler keeps
 running.
 
 Disabled when:
-  - REPROLAB_RUNPOD_API_KEY is unset (no RunPod usage)
+  - OPENRESEARCH_RUNPOD_API_KEY is unset (no RunPod usage)
   - OPENRESEARCH_POD_SWEEP_ENABLED=false
 """
 from __future__ import annotations
@@ -866,7 +866,7 @@ class PodSweepScheduler:
         self._stop_event: asyncio.Event = asyncio.Event()
 
     def _enabled(self) -> bool:
-        if not os.environ.get("REPROLAB_RUNPOD_API_KEY"):
+        if not os.environ.get("OPENRESEARCH_RUNPOD_API_KEY"):
             return False
         if os.environ.get("OPENRESEARCH_POD_SWEEP_ENABLED", "true").lower() in {"false", "0", "no", "off"}:
             return False
@@ -939,7 +939,7 @@ _pod_sweep_scheduler = PodSweepScheduler()
 async def lifespan(app: FastAPI):
     # Startup
     try:
-        if os.environ.get("REPROLAB_RUNPOD_API_KEY") and os.environ.get("OPENRESEARCH_POD_SWEEP_ENABLED", "true").lower() not in {"false", "0", "no", "off"}:
+        if os.environ.get("OPENRESEARCH_RUNPOD_API_KEY") and os.environ.get("OPENRESEARCH_POD_SWEEP_ENABLED", "true").lower() not in {"false", "0", "no", "off"}:
             try:
                 summary = sweep_stale_pods(max_age_seconds=7200, dry_run=False)
                 logger.info("startup pod sweep: %s", summary)

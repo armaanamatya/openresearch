@@ -7,7 +7,6 @@ Invariant 10: on failure returns 200 + error field (not 500).
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 

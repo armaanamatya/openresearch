@@ -53,7 +53,6 @@ try:  # sandbox-flat: cell_scheduler.py is copied next to this file (see _HARNES
         clamp_cell_timeout,
         deadline_from_timeout,
         is_resume_armed,
-        load_cell_manifest,
         should_skip_cell,
         write_cell_manifest,
     )
@@ -64,7 +63,6 @@ except ImportError:  # in-repo import path (running inside the harness package).
         clamp_cell_timeout,
         deadline_from_timeout,
         is_resume_armed,
-        load_cell_manifest,
         should_skip_cell,
         write_cell_manifest,
     )

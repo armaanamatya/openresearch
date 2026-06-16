@@ -212,8 +212,8 @@ const instrumentSerif = Instrument_Serif({
 });
 
 export const metadata: Metadata = {
-  title: "ReproLab — reproduce any ML paper, end to end",
-  description: "ReproLab is a paper-reproduction agent built on the Recursive Language Model paradigm. It reads a paper, builds the environment, implements the method, runs the experiments, and grades itself against the paper's own claims."
+  title: "OpenResearch — reproduce any ML paper, end to end",
+  description: "OpenResearch is a paper-reproduction agent built on the Recursive Language Model paradigm. It reads a paper, builds the environment, implements the method, runs the experiments, and grades itself against the paper's own claims."
 };
 
 export default function RootLayout({
@@ -554,7 +554,7 @@ function Nav(): React.JSX.Element {
       <div className={`${styles.wrap} ${styles.navInner}`}>
         <Link href="/" className={styles.brand}>
           <span className={styles.brandMark} aria-hidden />
-          <span className={styles.brandName}>ReproLab<span className={styles.dot}>.</span></span>
+          <span className={styles.brandName}>OpenResearch<span className={styles.dot}>.</span></span>
         </Link>
         <div className={styles.navLinks}>
           <a href="#pipeline">How it works</a>
@@ -584,7 +584,7 @@ function Hero(): React.JSX.Element {
           </h1>
           <div className={styles.reveal}>
             <p className={styles.lede} style={{ margin: "0 0 24px" }}>
-              ReproLab is a paper-reproduction agent built on the Recursive Language Model paradigm.
+              OpenResearch is a paper-reproduction agent built on the Recursive Language Model paradigm.
               It reads a paper, builds the environment, implements the method, runs the
               experiments, and grades itself against the paper&apos;s own claims.
             </p>
@@ -885,7 +885,7 @@ function CTAFooter(): React.JSX.Element {
         <div className={styles.hEyebrow} style={{ marginBottom: 22 }}>§ 7.0 — Try it</div>
         <h2>An end-to-end reproduction,<br />in one command.</h2>
         <p className={styles.lede}>
-          Point ReproLab at an arXiv ID. Get back a sealed environment, an implementation,
+          Point OpenResearch at an arXiv ID. Get back a sealed environment, an implementation,
           a scorecard, and an audit trail. If a claim doesn&apos;t reproduce, you&apos;ll see exactly which one.
         </p>
         <div className={styles.actions}>
@@ -908,7 +908,7 @@ function Footer(): React.JSX.Element {
       <div className={`${styles.wrap} ${styles.footInner}`}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span className={styles.brandMark} style={{ width: 18, height: 18 }} aria-hidden />
-          <span>ReproLab · 2026</span>
+          <span>OpenResearch · 2026</span>
         </div>
         <div className={styles.links}>
           <a href="#pipeline">How it works</a>
@@ -1037,7 +1037,7 @@ The following inventory must hold true after Task 8 lands (every row checked):
 
 | Surface | Element | Current state | Target state |
 |---------|---------|---------------|--------------|
-| Landing nav | brand "ReproLab." | `Link href="/"` | ✅ unchanged |
+| Landing nav | brand "OpenResearch." | `Link href="/"` | ✅ unchanged |
 | Landing nav | "How it works" | `<a href="#pipeline">` | ✅ unchanged (anchor scroll) |
 | Landing nav | "Benchmarks" | `<a href="#benchmarks">` | ✅ unchanged |
 | Landing nav | "GitHub" | `<a href={GITHUB_URL} target="_blank">` | ✅ unchanged |
@@ -1050,7 +1050,7 @@ The following inventory must hold true after Task 8 lands (every row checked):
 | Footer | "How it works" | `<a href="#pipeline">` | ✅ unchanged |
 | Footer | "Benchmarks" | `<a href="#benchmarks">` | ✅ unchanged |
 | Footer | "GitHub" | `<a href={GITHUB_URL} target="_blank">` | ✅ unchanged |
-| Lab sidebar | Brand row "ReproLab" | `<button onClick={onBrandClick}>` | **Convert to `<Link href="/">`** so it navigates back to landing |
+| Lab sidebar | Brand row "OpenResearch" | `<button onClick={onBrandClick}>` | **Convert to `<Link href="/">`** so it navigates back to landing |
 | Lab sidebar | "Lab" nav | `<a href="/lab">` | ✅ unchanged |
 | Lab sidebar | "Library" nav | `<a href="/library">` | ✅ unchanged |
 
@@ -1085,7 +1085,7 @@ Reasoning: every substep is content-only, not a navigation target. The source HT
 - [ ] **Step 2: Smoke-test that all link clicks work**
 
 Boot dev, manually click every element. Expected:
-- Brand "ReproLab." in nav → `/` (current page, soft refresh)
+- Brand "OpenResearch." in nav → `/` (current page, soft refresh)
 - "How it works" / "Benchmarks" → scroll to section
 - "GitHub" → new tab to repo
 - "Open lab" nav-cta → `/lab`
@@ -1135,15 +1135,15 @@ grep -n "onBrandClick\|brand-row" frontend/src/components/lab/lab-sidebar.tsx fr
 // before
 <button className="brand-row" type="button" onClick={onBrandClick}>
   <span className="nav-icon">{ICONS.logo}</span>
-  <span className="brand-text">ReproLab</span>
+  <span className="brand-text">OpenResearch</span>
 </button>
 
 // after
 import Link from "next/link";
 // (and remove onBrandClick from props if no other caller uses it)
-<Link href="/" className="brand-row" aria-label="ReproLab — back to landing">
+<Link href="/" className="brand-row" aria-label="OpenResearch — back to landing">
   <span className="nav-icon">{ICONS.logo}</span>
-  <span className="brand-text">ReproLab</span>
+  <span className="brand-text">OpenResearch</span>
 </Link>
 ```
 

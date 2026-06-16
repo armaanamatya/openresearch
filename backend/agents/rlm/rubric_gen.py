@@ -7,7 +7,6 @@ by ``backend.evals.paperbench.leaf_scorer`` (flatten_leaves / roll_up).
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import time

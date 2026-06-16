@@ -34,7 +34,9 @@ import pytest
 # Import the copyable helper + base from THIS repo (the files this change edits).
 # Strip the flat dir immediately after import so it does not leak a second
 # identity for package modules into the rest of the session.
-_RLM_DIR = "/home/sww35/openresearch/backend/agents/rlm"
+_RLM_DIR = str(  # repo-relative: the old hardcoded /home/sww35/... path
+    __import__("pathlib").Path(__file__).resolve().parents[3] / "backend" / "agents" / "rlm"
+)  # only collected on the author's machine (audit 2026-06-09)
 sys.path.insert(0, _RLM_DIR)
 # A sibling test imports a bare ``alfworld_env`` / ``sdar_env_base`` from a DIFFERENT
 # worktree; in the full suite that caches a stale identity (without this change's

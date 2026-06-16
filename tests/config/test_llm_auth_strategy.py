@@ -43,7 +43,7 @@ def test_invalid_strategy_rejected(monkeypatch) -> None:
 def test_api_only_without_key_fails_fast(monkeypatch) -> None:
     monkeypatch.setenv("OPENRESEARCH_LLM_AUTH_STRATEGY", "api_only")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("REPROLAB_ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(_factory, "_has_claude_subscription_oauth", lambda: True)
     from backend.agents.runtime.factory import (
         ProviderConfigurationError, validate_provider_credentials,
@@ -68,7 +68,7 @@ def test_oauth_only_without_cli_fails_fast(monkeypatch) -> None:
 def test_auto_accepts_oauth_only(monkeypatch) -> None:
     monkeypatch.setenv("OPENRESEARCH_LLM_AUTH_STRATEGY", "auto")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("REPROLAB_ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(_factory, "_has_claude_subscription_oauth", lambda: True)
     from backend.agents.runtime.factory import validate_provider_credentials
     assert validate_provider_credentials("anthropic") == "anthropic"

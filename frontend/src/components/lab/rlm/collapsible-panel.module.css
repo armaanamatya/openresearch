@@ -1,0 +1,100 @@
+/* CollapsiblePanel — minimizable, height-bounded wrapper for the stacked
+ * score panels (scorecard, leaf-score breakdown) in the RLM lab.
+ *
+ * The body is capped + scrolls internally, and `min-height: 0` lets the panel
+ * yield vertical space under pressure so the constellation graph below keeps
+ * its `min-height` floor (see rlm-lab.module.css .workspace).
+ */
+
+.root {
+  display: flex;
+  flex-direction: column;
+  min-height: 0; /* allow the panel to shrink so the graph keeps its floor */
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: 6px var(--sp-4);
+  background: color-mix(in oklch, var(--chip) 50%, transparent);
+  border: none;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.header:hover {
+  background: color-mix(in oklch, var(--chip) 70%, transparent);
+}
+
+.header:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.chevron {
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+  transition: transform 150ms ease;
+  transform: rotate(90deg); /* expanded → pointing down */
+}
+
+.chevron[data-collapsed="true"] {
+  transform: rotate(0deg); /* collapsed → pointing right */
+}
+
+.chevronSvg {
+  display: block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chevron {
+    transition: none;
+  }
+}
+
+.title {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.summary {
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.action {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--muted-2);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.body {
+  min-height: 0;
+  overflow: auto;
+  /* Cap the expanded height so a long leaf list never claims the whole column.
+   * Override per-panel by setting --panel-body-cap on the wrapper. */
+  max-height: var(--panel-body-cap, 38vh);
+}

@@ -15,7 +15,6 @@ from backend.agents.rlm.run import (
     _FatalBackendGateLogger,
     _FatalPrimitiveAbort,
     _finalize_fatal_primitive_abort,
-    _outcome_value,
     _record_last_primitive_result_tools,
 )
 
@@ -68,7 +67,13 @@ def test_fatal_outcome_terminates_before_history_append(make_context, tmp_path):
     checkpointer.record.assert_called_once()
 
 
-def test_fatal_finalize_writes_failed_status_and_partial_report(make_context, tmp_path):
+def test_fatal_finalize_writes_failed_status_and_failed_report(make_context, tmp_path):
+    # The only experiment on disk is a tri-state "partial evidence" row:
+    # success=False with metrics-like numbers from a balance_too_low abort (the
+    # run hit a credit wall, it never really executed). Per the evidence gate
+    # (FM-004, ported from feat/rlm-wedge-hardening 2026-06-09), success==False
+    # does NOT license a partial/reproduced VERDICT — the report verdict is
+    # "failed", though the partial numbers stay in baseline_metrics for the record.
     ctx = make_context(tmp_path)
     result = _fatal_result()
     abort = _FatalPrimitiveAbort(primitive_name="run_experiment", result=result)
@@ -100,9 +105,73 @@ def test_fatal_finalize_writes_failed_status_and_partial_report(make_context, tm
     assert status["status"] == "failed"
     assert status["error"]["outcome"] == "fatal"
     assert status["error"]["primitive"] == "run_experiment"
-    assert report["verdict"] == "partial"
-    assert report["baseline_metrics"] == {"accuracy": 0.42}
+    assert report["verdict"] == "failed"  # tri-state partial-evidence no longer earns a verdict
+    assert "evidence_gap" in report["reproduction_summary"]
+    assert report["baseline_metrics"] == {"accuracy": 0.42}  # numbers kept for the record
     assert any(event.get("event") == "run_fatal" for event in emitted)
+
+
+def test_fatal_finalize_with_timeout_partial_evidence_caps_at_partial(make_context, tmp_path):
+    # Audit 2026-06-09: a HARNESS-finalized partial (exec_timeout/exec_stalled →
+    # primitives._finalize_timeout_result loads the on-disk metrics.json and
+    # stamps failure_class=partial_timeout) is real completed work — the verdict
+    # caps at "partial" with an evidence_cap note, instead of the forced "failed"
+    # the balance_too_low case above correctly gets. This is the wall-clock-expiry
+    # scenario the 2026-06-08 finalize-on-timeout redesign was built for.
+    ctx = make_context(tmp_path)
+    result = {
+        "success": False,
+        "metrics": {"accuracy": 0.61},
+        "error": "exec_timeout: wall clock exhausted after 4/5 families",
+        "failure_class": "partial_timeout",
+        "outcome": "fatal",
+    }
+    abort = _FatalPrimitiveAbort(primitive_name="run_experiment", result=result)
+    (ctx.project_dir / "experiment_runs.jsonl").write_text(
+        json.dumps({
+            "timestamp": "2026-06-09T00:00:00+00:00",
+            "success": False,
+            "metrics": {"accuracy": 0.61},
+            "failure_class": "partial_timeout",
+            "partial_timeout": True,
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+    # The timeout row was persisted by a REAL run_experiment call — record it in
+    # the in-process ledger exactly as binding.wrap_primitive would. Without this
+    # the gate's forge cross-check (session count == 0) rightly forces "failed".
+    from datetime import datetime, timezone
+
+    from backend.agents.resilience.cost import CostLedgerEntry
+
+    ctx.cost_ledger.append(
+        CostLedgerEntry(
+            timestamp=datetime.now(timezone.utc),
+            agent_id="run_experiment",
+            attempt_index=0,
+            provider="openai",
+            model="gpt-5",
+            outcome="partial_timeout",  # what wrap_primitive stamps for this return shape
+        )
+    )
+
+    run_result = _finalize_fatal_primitive_abort(
+        abort=abort,
+        ctx=ctx,
+        iterations=1,
+        project_dir=ctx.project_dir,
+        emit=lambda _e: None,
+        tools_label="real",
+    )
+
+    report = json.loads((ctx.project_dir / "final_report.json").read_text(encoding="utf-8"))
+
+    assert run_result.status == "failed"  # the RUN still ended fatally
+    assert report["verdict"] == "partial"  # ...but the verdict reflects the real partial work
+    assert "evidence_cap" in report["reproduction_summary"]
+    assert "evidence_gap" not in report["reproduction_summary"]
+    assert report["baseline_metrics"] == {"accuracy": 0.61}
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +269,12 @@ def test_repairable_outcome_forces_final_var_refusal_end_to_end(make_context, tm
     with patch.dict(os.environ, {"OPENRESEARCH_MIN_REPAIR_ITERATIONS": "2"}):
         # Simulate run_experiment call (records the repair attempt).
         wrapped["run_experiment"]["tool"]()
+        # In production the real run_experiment primitive also feeds the
+        # policy's experiment tracker (primitives.py: _fip.record_run_experiment)
+        # — the fake tool bypasses primitives, so mirror that here; without it
+        # the BUG-NEW-046 zero-experiments refusal (ported 2026-06-09) fires
+        # first and masks the repair refusal under test.
+        policy.record_run_experiment("repairable")
 
         # Simulate root calling FINAL_VAR immediately after the repairable outcome.
         with forced_iteration_policy(policy):
@@ -218,3 +293,50 @@ def test_repairable_outcome_forces_final_var_refusal_end_to_end(make_context, tm
 
     # repair_iter_count must reflect the one attempt.
     assert policy._repair_iter_count == 1
+
+
+def test_forged_partial_timeout_row_does_not_reach_the_cap_tier(make_context, tmp_path):
+    """Audit 2026-06-11: one real-but-FAILED run_experiment call + a forged
+    partial_timeout row used to keep a self-reported 'partial' via the cap
+    tier (it keyed on the TOTAL call count). The tier now requires an
+    in-process partial_timeout outcome stamp, which a REPL forge cannot mint."""
+    from datetime import datetime, timezone
+
+    from backend.agents.resilience.cost import CostLedgerEntry
+
+    ctx = make_context(tmp_path)
+    # Forged row: file content says harness-finalized partial...
+    (ctx.project_dir / "experiment_runs.jsonl").write_text(
+        json.dumps({
+            "success": False,
+            "metrics": {"accuracy": 0.93},
+            "failure_class": "partial_timeout",
+            "partial_timeout": True,
+        }) + "\n",
+        encoding="utf-8",
+    )
+    # ...but the only real call FAILED outright (stamped 'failed', not 'partial_timeout').
+    ctx.cost_ledger.append(CostLedgerEntry(
+        timestamp=datetime.now(timezone.utc), agent_id="run_experiment",
+        attempt_index=0, provider="openai", model="gpt-5", outcome="failed",
+    ))
+
+    from backend.agents.rlm.report import (
+        RLMFinalReport,
+        run_experiment_call_count,
+        run_experiment_partial_timeout_count,
+        run_experiment_success_count,
+        write_final_report_rlm,
+    )
+
+    report = RLMFinalReport(verdict="partial", reproduction_summary="self-reported")
+    json_path, _ = write_final_report_rlm(
+        report, ctx.project_dir,
+        run_experiment_calls=run_experiment_call_count(ctx),
+        run_experiment_ok_calls=run_experiment_success_count(ctx),
+        run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx),
+    )
+
+    written = json.loads(json_path.read_text(encoding="utf-8"))
+    assert written["verdict"] == "failed"
+    assert "evidence_cap" not in written["reproduction_summary"]

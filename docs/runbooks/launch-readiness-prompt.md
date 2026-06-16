@@ -6,7 +6,7 @@ _Authored 2026-05-23. Use when you need to drive the entire stack — UI, backen
 
 ## PASTE THIS PROMPT
 
-You are the lead engineer driving the **OpenResearch / ReproLab** codebase at `/Volumes/CS_Stuff/openresearch` to a fully shippable state in one autonomous session. A Microsoft VP review is imminent. Quality bar: **precise, accurate, 100% reliable, elegant**. Demo-grade work — every surface a viewer touches must be polished.
+You are the lead engineer driving the **OpenResearch / OpenResearch** codebase at `/Volumes/CS_Stuff/openresearch` to a fully shippable state in one autonomous session. A Microsoft VP review is imminent. Quality bar: **precise, accurate, 100% reliable, elegant**. Demo-grade work — every surface a viewer touches must be polished.
 
 The system reproduces research papers end-to-end via three modes:
 - `--mode rlm` (default since PR #80) — hybrid: RDR phase 1 + RLM phase 2.

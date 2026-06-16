@@ -1,6 +1,6 @@
 """Periodic scheduler runs sweep_stale_pods at the configured interval.
 Fail-soft on exceptions; disabled when OPENRESEARCH_POD_SWEEP_ENABLED=false or
-REPROLAB_RUNPOD_API_KEY is unset."""
+OPENRESEARCH_RUNPOD_API_KEY is unset."""
 from __future__ import annotations
 
 import asyncio
@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 @pytest.mark.asyncio
 async def test_scheduler_calls_sweep_at_interval(monkeypatch):
-    monkeypatch.setenv("REPROLAB_RUNPOD_API_KEY", "dummy")
+    monkeypatch.setenv("OPENRESEARCH_RUNPOD_API_KEY", "dummy")
     monkeypatch.setenv("OPENRESEARCH_POD_SWEEP_INTERVAL_S", "0.05")  # 50ms for fast test
     sweep_calls: list = []
     fake_sweep = MagicMock(side_effect=lambda **kw: sweep_calls.append(kw) or MagicMock())
@@ -26,7 +26,7 @@ async def test_scheduler_calls_sweep_at_interval(monkeypatch):
 @pytest.mark.asyncio
 async def test_scheduler_disabled_via_env(monkeypatch):
     monkeypatch.setenv("OPENRESEARCH_POD_SWEEP_ENABLED", "false")
-    monkeypatch.setenv("REPROLAB_RUNPOD_API_KEY", "dummy")
+    monkeypatch.setenv("OPENRESEARCH_RUNPOD_API_KEY", "dummy")
     fake_sweep = MagicMock(return_value=MagicMock())
     with patch("backend.services.runtime.pod_sweep_scheduler.sweep_stale_pods", fake_sweep):
         from backend.services.runtime.pod_sweep_scheduler import PodSweepScheduler
@@ -39,7 +39,7 @@ async def test_scheduler_disabled_via_env(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_scheduler_fail_soft_on_sweep_exception(monkeypatch):
-    monkeypatch.setenv("REPROLAB_RUNPOD_API_KEY", "dummy")
+    monkeypatch.setenv("OPENRESEARCH_RUNPOD_API_KEY", "dummy")
     monkeypatch.setenv("OPENRESEARCH_POD_SWEEP_INTERVAL_S", "0.05")
     calls: list = []
 

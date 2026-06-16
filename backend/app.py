@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import threading
 
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -402,7 +403,7 @@ def _make_lifespan():
     async def lifespan(app: FastAPI):
         # Startup
         _pod_sweep_enabled = (
-            bool(os.environ.get("REPROLAB_RUNPOD_API_KEY"))
+            bool(os.environ.get("OPENRESEARCH_RUNPOD_API_KEY"))
             and os.environ.get("OPENRESEARCH_POD_SWEEP_ENABLED", "true").lower()
             not in {"false", "0", "no", "off"}
         )
@@ -423,9 +424,33 @@ def _make_lifespan():
         except Exception as exc:
             logger.warning("pod_sweep_scheduler start failed (non-fatal): %s", exc)
 
+        # Orphaned-run detection cadence: without this, a long-lived API
+        # server only flips dead runs at request time (_load_run's per-request
+        # pid check) — runs nobody requests stay status=running forever. The
+        # sweeper itself was implemented but wired nowhere (audit 2026-06-09).
+        from backend.services.events.run_liveness import periodic_liveness_sweep
+
+        _liveness_stop = threading.Event()
+        try:
+            periodic_liveness_sweep(_runs_root(), stop_event=_liveness_stop)
+        except Exception as exc:
+            logger.warning("periodic_liveness_sweep start failed (non-fatal): %s", exc)
+
+        # Opt-in runs retention (audit 2026-06-10): no-op unless the operator
+        # sets OPENRESEARCH_RUNS_RETENTION_DAYS > 0 — deleting run artifacts
+        # is an operator decision, so the shipped default stays manual
+        # (scripts/prune_runs.py). Same stop event as the liveness sweep.
+        try:
+            from backend.services.runs.retention import periodic_retention_sweep
+
+            periodic_retention_sweep(_runs_root(), stop_event=_liveness_stop)
+        except Exception as exc:
+            logger.warning("periodic_retention_sweep start failed (non-fatal): %s", exc)
+
         yield
 
         # Shutdown
+        _liveness_stop.set()
         try:
             await scheduler.stop()
         except Exception:
@@ -457,30 +482,32 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
     if effective_runs_root is None and env_runs_root:
         effective_runs_root = _Path(env_runs_root)
 
-    # Diagnostic + marker. The print goes to backend.log; the marker file
-    # captures the FULL story per-process so we can compare reloader vs
-    # worker. backend.log only seems to capture stdout from one of them.
-    print(
-        f"[reprolab] runs_root: settings={settings.runs_root!r} "
-        f"env={env_runs_root!r} effective={effective_runs_root!r} "
-        f"pid={_os.getpid()} cwd={_os.getcwd()!r}",
-        flush=True,
-    )
-    try:
-        marker_root = (
-            effective_runs_root if effective_runs_root else _Path("logs") / "_no_runs_root"
+    # Reloader-vs-worker diagnostic, opt-in via OPENRESEARCH_DEBUG_RUNS_ROOT=1.
+    # It used to run unconditionally: a stdout print on every factory call and
+    # an unbounded pile of per-PID marker files under logs/_no_runs_root/
+    # (one per boot, pytest worker included — dozens accumulated).
+    if _os.environ.get("OPENRESEARCH_DEBUG_RUNS_ROOT") == "1":
+        print(
+            f"[openresearch] runs_root: settings={settings.runs_root!r} "
+            f"env={env_runs_root!r} effective={effective_runs_root!r} "
+            f"pid={_os.getpid()} cwd={_os.getcwd()!r}",
+            flush=True,
         )
-        marker_root.mkdir(parents=True, exist_ok=True)
-        (marker_root / f"_create_app_pid{_os.getpid()}.txt").write_text(
-            f"settings.runs_root={settings.runs_root!r}\n"
-            f"env OPENRESEARCH_RUNS_ROOT={env_runs_root!r}\n"
-            f"effective={effective_runs_root!r}\n"
-            f"cwd={_os.getcwd()}\n"
-            f"argv={_sys.argv}\n",
-            encoding="utf-8",
-        )
-    except Exception:
-        pass
+        try:
+            marker_root = (
+                effective_runs_root if effective_runs_root else _Path("logs") / "_no_runs_root"
+            )
+            marker_root.mkdir(parents=True, exist_ok=True)
+            (marker_root / f"_create_app_pid{_os.getpid()}.txt").write_text(
+                f"settings.runs_root={settings.runs_root!r}\n"
+                f"env OPENRESEARCH_RUNS_ROOT={env_runs_root!r}\n"
+                f"effective={effective_runs_root!r}\n"
+                f"cwd={_os.getcwd()}\n"
+                f"argv={_sys.argv}\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
 
     # Honor OPENRESEARCH_RUNS_ROOT so dev.ps1 / dev.sh actually colocate pipeline
     # workspaces with the launch's server logs. When unset, FileLiveRunService

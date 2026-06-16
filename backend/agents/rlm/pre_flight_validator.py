@@ -617,12 +617,12 @@ def _check_tensor_device_mismatch(
                         f"with `RuntimeError: tensors on cuda:0 and cpu`."
                     ),
                     hint=(
-                        f"Move the `.to(device)` call BEFORE constructing the "
-                        f"optimizer — the standard PyTorch idiom: "
-                        f"\n    model = MyModel().to(device)\n"
-                        f"    optimizer = AdamOptimizer(model.parameters(), ...)\n"
-                        f"NOT inside a function that receives `optimizer` as "
-                        f"an argument."
+                        "Move the `.to(device)` call BEFORE constructing the "
+                        "optimizer — the standard PyTorch idiom: "
+                        "\n    model = MyModel().to(device)\n"
+                        "    optimizer = AdamOptimizer(model.parameters(), ...)\n"
+                        "NOT inside a function that receives `optimizer` as "
+                        "an argument."
                     ),
                 ))
 

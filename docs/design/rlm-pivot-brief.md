@@ -1,4 +1,5 @@
-# OpenResearch / ReproLab — RLM Architecture Reference
+<!-- doc-meta: status=current; last-verified=2026-05-22 -->
+# OpenResearch / OpenResearch — RLM Architecture Reference
 
 > Canonical architecture reference. Supersedes the earlier implementation brief,
 > the deleted `rlm-integration.md`, and the deleted pre-pivot architecture docs.
@@ -8,7 +9,7 @@
 
 ## 1. Context — why
 
-ReproLab reproduces research papers end-to-end and scores the result against a
+OpenResearch reproduces research papers end-to-end and scores the result against a
 PaperBench-style rubric, built on the **Recursive Language Model (RLM)**
 paradigm. Two reasons drove the architectural choice, in order of importance:
 
@@ -22,7 +23,7 @@ paradigm. Two reasons drove the architectural choice, in order of importance:
    agentic orchestrator. This is our bet — label it as such, do not cite it as
    proven.
 
-**RLM is the substrate, not a target.** ReproLab is *built on* the RLM paradigm;
+**RLM is the substrate, not a target.** OpenResearch is *built on* the RLM paradigm;
 it *reproduces other papers*. The RLM paper itself is not a reproduction target.
 (Reproducing it with an RLM-based system is possible, but explicitly out of
 scope.)
@@ -306,7 +307,7 @@ with a real PaperBench rubric score; open `backend/agents/rlm/` and see the
 system is the `rlms` library driven by domain primitives; find ≥2 completed
 `runs/prj_xxx/` directories with real reports for different papers.
 
-The pitch sentence is true: *"ReproLab is a paper-reproduction agent built
+The pitch sentence is true: *"OpenResearch is a paper-reproduction agent built
 on the Recursive Language Model paradigm. The root model treats the paper as a
 variable in a persistent REPL, writes Python to navigate and decompose it,
 recursively invokes sub-models on programmatic slices, and accumulates the

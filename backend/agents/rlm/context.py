@@ -54,7 +54,7 @@ class RunContext:
     gpu_parallelism: str = "auto"  # "auto"|"single"|"multi"; from OPENRESEARCH_GPU_PARALLELISM
     gpu_visible_count: int | None = None  # GPUs visible to this run (from CUDA_VISIBLE_DEVICES / lease); hints the code-writing agent
     run_budget: Any = None   # RunBudget — threaded from --max-pod-seconds / --max-usd etc.
-    current_iteration: int = 0  # root-loop iteration index, incremented by ReproLabRLMLogger.log
+    current_iteration: int = 0  # root-loop iteration index, incremented by OpenResearchRLMLogger.log
     propose_round: int = 0      # per-run count of propose_improvements calls, incremented in wrap_primitive
     emit: Any = None          # thread-safe emit callable from sse_bridge.make_emit — set by run.py / conftest
     vram_override: int | None = None  # --vram-gb CLI flag; bypasses LLM VRAM estimate in resolve_gpu_requirements

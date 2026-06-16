@@ -4,7 +4,7 @@ This test exercises the FULL orchestrator path end-to-end:
 
     run_pipeline_rlm
       → RLM(backend=<stub>, custom_tools=build_stub_custom_tools(...))
-      → ReproLabRLMLogger.log() (sanitize + checkpoint + emit)
+      → OpenResearchRLMLogger.log() (sanitize + checkpoint + emit)
       → IterationCheckpointer.record() (SQLite event store + snapshot JSONL)
       → build_final_report() + write_final_report_rlm()
       → RLMRunResult
@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -517,10 +516,15 @@ class TestRunPipelineRlmIntegration:
         )
         # run_experiment never ran — the root's metrics are unbacked.
         assert report["baseline_metrics"] == {}
-        # A reproduction whose experiment never ran is not a full success.
-        assert report["verdict"] == "partial"
-        assert result.status == "partial"
+        # A reproduction whose experiment NEVER ran has no evidence at all:
+        # the honesty guard drops the metrics AND the evidence gate (FM-004,
+        # ported 2026-06-09) refuses any success-ish verdict — this exact
+        # scenario (success claim, zero run_experiment calls) is what the
+        # gate exists to stop.
+        assert report["verdict"] == "failed"
+        assert result.status == "failed"
         assert "honesty guard" in report["reproduction_summary"].lower()
+        assert "evidence_gap" in report["reproduction_summary"]
 
 
 class TestResolveAgentRuntime:

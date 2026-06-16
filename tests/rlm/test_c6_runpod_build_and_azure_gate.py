@@ -67,18 +67,20 @@ def _poison_docker(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_build_environment_runpod_returns_noop_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """runpod (flag default ON) must return ok/skipped/empty-tag WITHOUT Docker."""
+    """runpod (flag default ON) must return ok/skipped WITHOUT Docker, reporting
+    the configured pod image (so run_experiment can hand it to the RunPod backend)."""
     monkeypatch.delenv("OPENRESEARCH_RUNPOD_SKIP_BUILD", raising=False)
     _poison_docker(monkeypatch)
 
     from backend.agents.rlm.primitives import build_environment
+    from backend.config import get_settings
 
     ctx = _make_ctx(SandboxMode.runpod)
     result = build_environment({"dockerfile": "FROM python:3.11"}, ctx=ctx)
 
     assert result.get("ok") is True, f"Expected ok=True, got {result}"
     assert result.get("skipped") is True, f"Expected skipped=True, got {result}"
-    assert result.get("image_tag") == "", f"Expected image_tag='', got {result}"
+    assert result.get("image_tag") == get_settings().runpod_image, f"Expected pod image, got {result}"
     assert result.get("attempts") == 0
     assert result.get("outcome") == "ok"
     assert "runpod" in result.get("note", "").lower(), (

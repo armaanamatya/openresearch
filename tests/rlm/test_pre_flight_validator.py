@@ -88,7 +88,7 @@ def test_variant_present_in_code_no_violation(tmp_path: Path) -> None:
 
 def test_variant_present_with_hyphen_form_no_violation(tmp_path: Path) -> None:
     # YAML says qwen3_1_7b; code says "Qwen3-1.7B" (HF repo id form).
-    _write(tmp_path / "train.py", 'MODEL_ID = "Qwen/Qwen3-1.7B-Instruct"\n')
+    _write(tmp_path / "train.py", 'MODEL_ID = "Qwen/Qwen3-1.7B"\n')
     out = validate_code_pre_flight(
         tmp_path, {"variants_required": ["qwen3_1_7b"]},
     )
@@ -962,7 +962,7 @@ def step(student_logp, teacher_logp, beta):
 def test_real_model_required_passes_with_from_pretrained(tmp_path: Path) -> None:
     body = """\
 from transformers import AutoModelForCausalLM
-model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-1.7B-Instruct")
+model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-1.7B")
 """
     _write(tmp_path / "train.py", body)
     out = validate_code_pre_flight(tmp_path, {}, arxiv_id="2605.15155")
@@ -1034,7 +1034,7 @@ def test_paper_invariants_load_sdar_yaml() -> None:
     assert inv.models is not None
     # The yaml lists qwen3_1_7b: Qwen/Qwen3-1.7B-Instruct (and 3b, 7b).
     assert "qwen3_1_7b" in inv.models.canonical_models
-    assert inv.models.canonical_models["qwen3_1_7b"] == "Qwen/Qwen3-1.7B-Instruct"
+    assert inv.models.canonical_models["qwen3_1_7b"] == "Qwen/Qwen3-1.7B"
 
 
 # ---------------------------------------------------------------------------

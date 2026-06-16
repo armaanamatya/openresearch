@@ -29,7 +29,9 @@ import pytest
 # right after import so it does not leak into the rest of the session (a lingering
 # entry gives package modules like rubric_guard a second identity, breaking
 # unrelated tests such as rl_scaffold's RubricGuardFailure assertion).
-_RLM_DIR = "/home/sww35/openresearch-fullscope/backend/agents/rlm"
+_RLM_DIR = str(  # repo-relative: the old hardcoded /home/sww35/... path
+    __import__("pathlib").Path(__file__).resolve().parents[3] / "backend" / "agents" / "rlm"
+)  # only collected on the author's machine (audit 2026-06-09)
 sys.path.insert(0, _RLM_DIR)
 try:
     import webshop_env  # noqa: E402  (after the sys.path insert, by design)

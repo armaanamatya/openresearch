@@ -16,7 +16,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import pytest
 
 from backend.agents.rlm import primitives
 

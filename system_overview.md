@@ -1,22 +1,26 @@
-# System Overview — OpenResearch / ReproLab
+# System Overview — OpenResearch
 
+<!-- doc-meta: status=current; last-verified=2026-06-03 -->
+> **Doc status:** Current · source-of-truth tier 1 (the "why") · last verified
+> 2026-06-03. See [`docs/policies/documentation.md`](docs/policies/documentation.md).
+>
 > Orientation for new Claude Code / Codex sessions: the non-obvious "why" and
 > "how it fits together." For *what's where*, read the code — it's named by
 > function. Keep this current.
 
 ## Goal
 
-Given a paper (arXiv link or uploaded PDF), ReproLab ingests it, understands the
+Given a paper (arXiv link or uploaded PDF), OpenResearch ingests it, understands the
 claimed results, builds an environment, implements and runs a baseline, scores
 the reproduction against a PaperBench-style rubric, explores improvements, and
 emits a benchmark report comparing the reproduction to the paper's claims.
 
-RLM is the *paradigm the project is built on*, not a paper ReproLab reproduces.
-ReproLab reproduces other papers; the `rlms` library is its substrate.
+RLM is the *paradigm the project is built on*, not a paper OpenResearch reproduces.
+OpenResearch reproduces other papers; the `rlms` library is its substrate.
 
 ## Architecture
 
-ReproLab is built on the **Recursive Language Model** paradigm (arXiv 2512.24601,
+OpenResearch is built on the **Recursive Language Model** paradigm (arXiv 2512.24601,
 Zhang/Kraska/Khattab, MIT CSAIL). The `rlms` library (`pip install rlms`) is the
 engine; our code is the domain layer. The RLM root model never receives the paper
 text — it is offloaded as a REPL `context` variable and the model accesses it
@@ -128,7 +132,7 @@ blocks `globals` and `locals`, but those are pure namespace getters with no
 risk surface — and blocking them by setting the entries to `None` means any
 model code that calls `globals().get("report_state", {...})` (a normal idiom
 for cross-iteration state) raises a bare
-`TypeError: 'NoneType' object is not callable`. ReproLab patches both at
+`TypeError: 'NoneType' object is not callable`. OpenResearch patches both at
 import time via `backend/agents/rlm/safe_builtins_patch.py` (restore
 `globals`/`locals` to the real builtins) and
 `backend/agents/rlm/safe_repl_traceback_patch.py` (extend
@@ -213,7 +217,9 @@ the JSON and the re-rendered `final_report.md` served by `GET /runs/{id}/final-r
   must land before the next SDAR attempt.
 - `docs/superpowers/specs/2026-05-28-subscription-cost-reduction-design.md` —
   sub-agent token-burn measurement + retry-burst elimination (sibling track).
-- `learn.md` — post-mortems: bugs shipped + the guardrail for each.
+- `docs/archive/learn.md` — **archived** post-mortems (bugs shipped + guardrail
+  for each), frozen 2026-06-03; current incident narratives live in
+  `docs/superpowers/specs/` + per-bug memory files.
 - `docs/guides/setup-guide.md`, `docs/guides/deployment.md`, `README.md` — setup
   and deployment. README.md also documents the two-surfaces LLM auth model
   and the empty-`ANTHROPIC_API_KEY` + Claude Code OAuth pattern preferred for

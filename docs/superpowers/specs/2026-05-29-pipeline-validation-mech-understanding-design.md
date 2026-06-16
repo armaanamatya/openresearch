@@ -1,6 +1,6 @@
 # Pipeline validation on `mechanistic-understanding` — design (2026-05-29)
 
-**Goal:** prove that ReproLab reproduces an arbitrary ML paper end-to-end (ingest → understand → plan → implement → run_experiment → verify_against_rubric → final_report) on a paper that is significantly less complex than SDAR but still exercises the full pipeline against a real LM. Result: ONE definitive data point that the system reproduces real ML papers, decoupling "SDAR-specific complexity" from "general harness brittleness."
+**Goal:** prove that OpenResearch reproduces an arbitrary ML paper end-to-end (ingest → understand → plan → implement → run_experiment → verify_against_rubric → final_report) on a paper that is significantly less complex than SDAR but still exercises the full pipeline against a real LM. Result: ONE definitive data point that the system reproduces real ML papers, decoupling "SDAR-specific complexity" from "general harness brittleness."
 
 ## Why this paper, why now
 

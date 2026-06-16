@@ -38,8 +38,7 @@ The following are **silently skipped** — never uploaded:
 from __future__ import annotations
 
 import logging
-import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 

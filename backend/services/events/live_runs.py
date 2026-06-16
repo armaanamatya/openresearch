@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -42,7 +43,13 @@ ExecutionMode = Literal["efficient", "max"]
 SandboxMode = Literal["auto", "docker", "local", "runpod"]
 GpuMode = Literal["off", "auto", "prefer", "max"]
 ModelChoice = str
-RunStatus = Literal["queued", "running", "stopped", "completed", "failed"]
+RunStatus = Literal[
+    "queued", "running", "stopped", "completed", "failed",
+    # Terminal out-of-band states (BUG-NEW-045): "killed" is written by the CLI
+    # SIGTERM/SIGHUP handler, "interrupted" by run_liveness.sweep_orphaned_runs.
+    # Must be listed here or _load_run 500s on /runs/latest & /runs/{id}.
+    "killed", "interrupted",
+]
 
 
 class ProviderCredentials(BaseModel):
@@ -487,7 +494,7 @@ class FileLiveRunService:
         env: dict[str, str] = {**os.environ}
 
         # Load .env file if present (subprocess doesn't inherit dotenv).
-        # REPROLAB_* keys in .env are always authoritative: a stale shell
+        # OPENRESEARCH_* keys in .env are always authoritative: a stale shell
         # export from a previous login (e.g. OPENRESEARCH_RUNPOD_SSH_KEY_PATH
         # pointing to a different user's home) must not override the
         # project-level .env which reflects the operator's deliberate config.
@@ -503,9 +510,9 @@ class FileLiveRunService:
                     if "=" in line:
                         k, v = line.split("=", 1)
                         k, v = k.strip(), v.strip()
-                        # REPROLAB_ settings: .env wins over stale process env.
+                        # OPENRESEARCH_ settings: .env wins over stale process env.
                         # Everything else: only add if not already in env.
-                        if k and (k.startswith("REPROLAB_") or k not in env):
+                        if k and (k.startswith("OPENRESEARCH_") or k not in env):
                             env[k] = v
             except OSError:
                 pass
@@ -842,7 +849,7 @@ class FileLiveRunService:
             stderr.close()
             stdout.close()
 
-        meta.update({"pid": process.pid, "updatedAt": _now()})
+        meta.update({"pid": process.pid, "pidHost": socket.gethostname(), "updatedAt": _now()})
         await asyncio.to_thread(self._write_status, project_id, meta)
 
         # Launch the stderr watchdog as a fire-and-forget asyncio task.
@@ -1602,7 +1609,6 @@ def finalize_benchmark(run_dir: Path) -> dict[str, Any]:
         # present, otherwise overall — handles compute_adjusted-only runs and
         # legacy flat rubric_score runs.
         _rubric_score = _adjusted if _adjusted is not None else _overall
-        rubric = report.get("rubric") or {}
         cost = report.get("cost") or {}
         return {
             "benchmark": {
@@ -2239,6 +2245,9 @@ def _pid_exists(pid: Any) -> bool:
         return False
     try:
         os.kill(pid, 0)
+        return True
+    except PermissionError:
+        # EPERM means the process exists but belongs to another user — alive.
         return True
     except OSError:
         return False

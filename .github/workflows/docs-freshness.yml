@@ -1,0 +1,35 @@
+name: docs-freshness
+
+# Enforces docs/policies/documentation.md on every PR and push to main.
+# Mirrors `make docs-check` exactly. Pure stdlib — no install step.
+#
+# Deliberately NO paths filter: two of the script's checks (broken relative
+# links, README inline-path references) depend on the WHOLE tree, so a PR
+# that deletes/renames a referenced code file without touching any .md used
+# to merge green and leave main red for the next unrelated docs PR (exactly
+# how f9b14af broke main on 2026-06-08). The job costs ~20s.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-freshness-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Documentation freshness & consistency
+        run: python3 scripts/docs_freshness_check.py

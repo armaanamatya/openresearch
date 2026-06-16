@@ -6,7 +6,6 @@ import pytest
 from pydantic import ValidationError
 
 from backend.messaging.envelope import (
-    EventEnvelope,
     make_envelope,
     new_correlation_id,
     new_event_id,

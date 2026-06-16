@@ -19,7 +19,6 @@ import pytest
 
 from backend.eventstore.sqlite_store import SqliteEventStore
 from backend.messaging.event import _clear_registry_for_tests
-from backend.schemas.citations import Citation
 from backend.services.context.indexer import (
     IndexerAppService,
     SourcesProjection,

@@ -36,7 +36,9 @@ async function runTerminated() {
   try {
     const raw = await readFile(resolve(runDir, "demo_status.json"), "utf8");
     const s = JSON.parse(raw).status;
-    if (s === "failed" || s === "completed") return `status=${s}`;
+    // Every terminal RunStatus — stopped/killed/interrupted were missing and
+    // left the screenshot loop running forever on those runs.
+    if (["failed", "completed", "stopped", "killed", "interrupted"].includes(s)) return `status=${s}`;
   } catch { /* status not readable yet */ }
   return null;
 }

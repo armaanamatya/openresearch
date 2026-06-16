@@ -126,7 +126,7 @@ class RunpodBackend(RuntimeBackend):
     ) -> None:
         self.api_key = (
             api_key
-            or os.environ.get("REPROLAB_RUNPOD_API_KEY")
+            or os.environ.get("OPENRESEARCH_RUNPOD_API_KEY")
             or os.environ.get("RUNPOD_API_KEY")
             or ""
         ).strip()
@@ -180,7 +180,7 @@ class RunpodBackend(RuntimeBackend):
         if not self.api_key:
             raise SandboxRuntimeError(
                 RuntimeCauseKind.backend_unavailable,
-                "Runpod API key is missing. Set REPROLAB_RUNPOD_API_KEY or RUNPOD_API_KEY.",
+                "Runpod API key is missing. Set OPENRESEARCH_RUNPOD_API_KEY or RUNPOD_API_KEY.",
             )
         if not self.ssh_key_path.exists():
             raise SandboxRuntimeError(
@@ -1131,6 +1131,13 @@ class RunpodBackend(RuntimeBackend):
                 # but the pod was actually created by someone else.
                 try:
                     info = await client.get(f"/pods/{pod_id}")
+                    if info.status_code == 404:
+                        # Pod already gone — nothing to delete.
+                        _log.info(
+                            "Pod %s returned 404 on GET before DELETE — already absent.",
+                            pod_id,
+                        )
+                        return
                     info.raise_for_status()
                     pod_name = str((info.json() or {}).get("name") or "")
                     if pod_name and not pod_name.startswith("reprolab-"):
@@ -1149,7 +1156,14 @@ class RunpodBackend(RuntimeBackend):
                     pass
 
                 response = await client.delete(f"/pods/{pod_id}")
-                response.raise_for_status()
+                # 404 means the pod is already gone — treat as idempotent success.
+                if response.status_code == 404:
+                    _log.info(
+                        "Pod %s returned 404 on DELETE — already absent, treating as success.",
+                        pod_id,
+                    )
+                else:
+                    response.raise_for_status()
         except SandboxRuntimeError:
             raise
         except Exception as exc:
@@ -1187,6 +1201,9 @@ class RunpodBackend(RuntimeBackend):
                 # Best-effort name-prefix check — skip if GET fails.
                 try:
                     info = client.get(f"/pods/{pod_id}")
+                    if info.status_code == 404:
+                        _log.info("atexit cleanup: pod %s already gone (GET 404).", pod_id)
+                        return
                     info.raise_for_status()
                     pod_name = str((info.json() or {}).get("name") or "")
                     if pod_name and not pod_name.startswith("reprolab-"):
@@ -1200,8 +1217,11 @@ class RunpodBackend(RuntimeBackend):
                 except Exception:
                     pass  # GET failure → proceed with delete (allowlist already passed)
                 response = client.delete(f"/pods/{pod_id}")
-                response.raise_for_status()
-                _log.info("atexit cleanup: deleted RunPod pod %s.", pod_id)
+                if response.status_code == 404:
+                    _log.info("atexit cleanup: pod %s already gone (DELETE 404).", pod_id)
+                else:
+                    response.raise_for_status()
+                    _log.info("atexit cleanup: deleted RunPod pod %s.", pod_id)
         except Exception as exc:
             _log.warning("atexit cleanup: failed to delete pod %s: %s", pod_id, exc)
         finally:
@@ -1388,14 +1408,14 @@ def ensure_runpod_available() -> None:
     settings = get_settings(_force_reload=True)
     api_key = (
         settings.runpod_api_key
-        or os.environ.get("REPROLAB_RUNPOD_API_KEY")
+        or os.environ.get("OPENRESEARCH_RUNPOD_API_KEY")
         or os.environ.get("RUNPOD_API_KEY")
         or ""
     ).strip()
     if not api_key:
         raise SandboxRuntimeError(
             RuntimeCauseKind.backend_unavailable,
-            "RunPod sandbox is selected but REPROLAB_RUNPOD_API_KEY or RUNPOD_API_KEY is not set.",
+            "RunPod sandbox is selected but OPENRESEARCH_RUNPOD_API_KEY or RUNPOD_API_KEY is not set.",
         )
     ssh_key_path = _normalize_ssh_key_path(settings.runpod_ssh_key_path or None)
     if not ssh_key_path.exists():

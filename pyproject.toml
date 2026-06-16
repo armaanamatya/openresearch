@@ -3,38 +3,54 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "reprolab-backend"
+name = "openresearch-backend"
 version = "0.1.0"
-description = "ReproLab Agent backend service"
+description = "OpenResearch Agent backend service"
 requires-python = ">=3.11"
+# Mirrors backend/requirements.txt (the canonical install file used by README,
+# CLAUDE.md and the Dockerfile). Keep the two lists in sync.
 dependencies = [
     "anyio>=4,<5",
     "fastapi>=0.111,<1",
+    "python-multipart>=0.0.9,<1",
     "uvicorn[standard]>=0.29,<1",
     "pydantic>=2.7,<3",
     "pydantic-settings>=2.2,<3",
     "httpx>=0.27,<1",
+    "beautifulsoup4>=4.12,<5",
+    "Pillow>=10,<12",
     "pymupdf>=1.24,<2",
+    "pytesseract>=0.3.10,<0.4",
     "claude-agent-sdk>=0.2.87",
     "openai-agents>=0.17,<0.18",
     "docker>=7,<8",
     "asyncssh>=2.14,<3",
-    "beautifulsoup4>=4.12,<5",
-    "pytesseract>=0.3,<0.4",
+    "psutil>=5.9,<8",
+    "azure-identity>=1.16,<2",
+    "azure-storage-blob>=12.19,<13",
+    "kubernetes>=29,<32",
+    "deepeval>=2.0",
+    "scipy>=1.12",
+    "numpy>=1.26",
+    "rlms==0.1.1",
+    "python-dotenv>=1.2.1,<2",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8,<9",
+    "pytest>=9.0.2,<10",
+    "pytest-socket>=0.8",
 ]
 azure = [
     "azure-identity>=1.16,<2",
     "azure-storage-blob>=12.19,<13",
     "kubernetes>=29,<32",
 ]
-hermes = [
-    "hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git",
-]
+# NOTE: hermes-agent is deliberately NOT an extra. Its exact pins
+# (openai==2.24.0, pillow==12.2.0) conflict with this project's constraints,
+# so it cannot live in the universal uv.lock. Install it the way
+# backend/hermes_audit/providers.py documents:
+#   pip install "hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git"
 semantic = [
     "chromadb>=0.5,<1",
 ]
@@ -48,9 +64,62 @@ evals = [
 ]
 
 [tool.setuptools.packages.find]
-where = [".", "src"]
-include = ["backend*", "reprolab*"]
+where = ["."]
+include = ["backend*"]
+
+[tool.ruff]
+target-version = "py311"
+# Artifact dirs (generated code, run outputs, vendored dependencies, docs).
+exclude = [
+    "runs",
+    "docs",
+    "frontend",
+    "data",
+    "findings",
+    "best_runs",
+    "third_party",
+    "tools",
+    ".venv",
+    "node_modules",
+    "reprolab_backend.egg-info",
+]
+
+[tool.ruff.lint]
+# Default rule set: E4/E7/E9/F. No isort (I) or formatter — avoids repo-wide churn.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# primitives.py uses lazy `from pathlib import Path` inside function bodies and
+# TYPE_CHECKING guards for GpuRequirements — F821 false-positives throughout.
+"backend/agents/rlm/primitives.py" = ["F821", "E402"]
+# rl_scaffold.py imports torch and _OpenResearchGRPOTrainer conditionally at
+# runtime; F821 false-positives where the names are set by dynamic import.
+"backend/agents/rlm/rl_scaffold.py" = ["F821", "E741"]
+# cli.py intentionally places backend imports after logger initialisation so
+# early log messages can be emitted before heavy imports.
+"backend/cli.py" = ["E402"]
+# live_runs.py and other service files with conditional/deferred imports.
+"backend/services/events/live_runs.py" = ["E402"]
+"backend/agents/rlm/claude_oauth_client.py" = ["E402"]
+"backend/agents/runtime/claude_runtime.py" = ["E402"]
+"backend/agents/schemas.py" = ["E402"]
+"backend/services/runtime/brev_backend.py" = ["E402"]
+"backend/services/runtime/runpod_backend.py" = ["E402"]
+# Tests capture originals/results as side-effects; F841 unused assignments are
+# intentional stubs for future assertions or monkey-patch restore patterns.
+# E402 fires after pytest.importorskip() guards — an established test pattern.
+"tests/*" = ["F841", "E741", "E702", "E402"]
+# scripts/ are standalone operational tools; style (E701/E702/E722) is accepted.
+"scripts/*" = ["E701", "E702", "E722", "F841"]
+# docker cell entrypoint: deferred imports pattern.
+"docker/aks-cell-base/aks_cell_entrypoint.py" = ["E402"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["."]
 testpaths = ["tests"]
+# Socket-level network hermeticity (audit 2026-06-10): no test may reach a
+# real network host. Loopback stays open (TestClient/uvicorn-style tests),
+# unix sockets stay open (docker SDK doubles). This is the structural fix for
+# the 862s-stall class: a leaked .env credential can no longer turn a test
+# into a live API call — it dies instantly with SocketConnectBlockedError.
+addopts = "--disable-socket --allow-unix-socket --allow-hosts=127.0.0.1,::1"

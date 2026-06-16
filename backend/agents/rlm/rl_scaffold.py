@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
@@ -275,14 +274,14 @@ class GRPOScaffold:
         tokenizer: "AutoTokenizer",  # type: ignore[name-defined]  # noqa: F821
         dataset: Any,
         config: "GRPOConfig",  # type: ignore[name-defined]  # noqa: F821
-    ) -> "_ReproLabGRPOTrainer":
+    ) -> "_OpenResearchGRPOTrainer":
         """Build a subclassed GRPOTrainer that injects compute_loss override."""
         scaffold_ref = self
 
         # Import here so module loads without trl.
         from trl import GRPOTrainer  # lazy import
 
-        class _ReproLabGRPOTrainer(GRPOTrainer):
+        class _OpenResearchGRPOTrainer(GRPOTrainer):
             """GRPOTrainer subclass injecting the custom-loss hook.
 
             Override compute_loss so total = grpo_loss + LAMBDA * custom_loss_term.
@@ -296,7 +295,6 @@ class GRPOScaffold:
                 return_outputs: bool = False,
                 **kwargs: Any,
             ) -> "torch.Tensor":
-                import torch  # lazy
 
                 # Delegate to parent for GRPO base loss + reward computation.
                 grpo_loss = super().compute_loss(
@@ -333,7 +331,7 @@ class GRPOScaffold:
                     return total, outputs
                 return total
 
-        return _ReproLabGRPOTrainer(
+        return _OpenResearchGRPOTrainer(
             model=model,
             reward_funcs=[self.reward_fn],
             args=config,
@@ -487,7 +485,7 @@ runs but no separate server process — use_vllm=True uses an in-process path).
 Usage (from rl_scaffold guidance block):
     python rl_launch.py
 or (directly from commands.json):
-    # reprolab:rl-scaffold-owns-launch
+    # openresearch:rl-scaffold-owns-launch
     python rl_launch.py
 """
 from __future__ import annotations

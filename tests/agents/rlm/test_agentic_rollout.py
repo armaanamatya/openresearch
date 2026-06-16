@@ -23,7 +23,9 @@ import sys
 # Import the copyable helpers the way the agent sandbox does: flat on sys.path.
 # ``agentic_rollout`` is dep-free; ``sdar_env_base`` is too, so the scripted fake
 # env can be a *real* AgenticEnv subclass exercising the genuine interface.
-_RLM_DIR = "/home/sww35/openresearch-fullscope/backend/agents/rlm"
+_RLM_DIR = str(  # repo-relative: the old hardcoded /home/sww35/... path
+    __import__("pathlib").Path(__file__).resolve().parents[3] / "backend" / "agents" / "rlm"
+)  # only collected on the author's machine (audit 2026-06-09)
 sys.path.insert(0, _RLM_DIR)
 try:
     import agentic_rollout as ar  # noqa: E402

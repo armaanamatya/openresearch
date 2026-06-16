@@ -198,6 +198,25 @@ _CODEX_AGENT_CORRECTABLE_FAILURES = {
     "scope_shape_violation",
 }
 
+
+def _validate_dockerfile_shape(text: str) -> bool:
+    """Deterministic Dockerfile shape guard (BUG-NEW-042).
+
+    Returns True iff the first non-blank, non-comment line is a ``FROM`` or
+    ``ARG`` instruction (a leading ``# syntax=`` directive is allowed and
+    skipped). Rejects the common sub-agent failure mode of dumping prose /
+    markdown in place of a Dockerfile, which would otherwise be handed to
+    ``docker build`` and fail with an opaque parser error after wasting a build.
+    """
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            # blank lines and comments (incl. the `# syntax=` directive) skip
+            continue
+        head = line.split(None, 1)[0].upper()
+        return head in ("FROM", "ARG")
+    return False  # empty / all-comment Dockerfile is not buildable
+
 # PR-ζ: transient-error retry policy for _execute_in_sandbox.
 # Three retries with exponential backoff: 5s, 10s, 20s.
 # Total retry budget is capped so it cannot blow through the primitive
@@ -1306,6 +1325,40 @@ _ENV_REPAIR_SYSTEM = (
 )
 
 
+def _normalize_runpod_from_line(dockerfile: str) -> str:
+    """Replace a hallucinated runpod/ base image tag with the configured one.
+
+    The root model sometimes constructs env_spec dicts with non-existent runpod
+    image tags (e.g. ``runpod/pytorch:1.12.1``).  When the FROM line references
+    any ``runpod/`` image that doesn't match the settings-configured
+    ``OPENRESEARCH_RUNPOD_IMAGE`` (``config.runpod_image``), swap it in.
+    Non-runpod FROM lines (e.g.
+    ``python:3.11-slim``) are left untouched — they're valid CPU images.
+    """
+    from backend.config import get_settings
+
+    configured = get_settings().runpod_image
+    lines = dockerfile.split("\n")
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.upper().startswith("ARG"):
+            continue
+        if stripped.upper().startswith("FROM "):
+            parts = stripped.split()
+            if len(parts) >= 2 and parts[1].startswith("runpod/") and parts[1] != configured:
+                logger.warning(
+                    "build_environment: replacing hallucinated FROM %s "
+                    "with configured %s",
+                    parts[1],
+                    configured,
+                )
+                parts[1] = configured
+                lines[i] = " ".join(parts)
+                return "\n".join(lines)
+            break  # first FROM found and is fine (or non-runpod) — stop
+    return dockerfile
+
+
 def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
     """Build the Docker image for `env_spec`, repairing the Dockerfile on failure.
 
@@ -1354,17 +1407,29 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
     # BEFORE any docker client is reached. Flag-gated so the prior
     # daemon-requiring behaviour is restorable byte-for-byte:
     # OPENRESEARCH_RUNPOD_SKIP_BUILD=0 keeps the local build.
+    # RunPod sandbox: the pod boots OPENRESEARCH_RUNPOD_IMAGE over SSH and pulls
+    # its base image from Docker Hub directly — a locally-built image is never
+    # pushed to a registry, so a local `docker build` is wasted work that STILL
+    # hard-requires a local daemon (a daemon-less host would die in
+    # SandboxRuntimeError for an image it never touches). Short-circuit with the
+    # configured RunPod image (so run_experiment can hand it to the RunPod
+    # backend, which uses self.image_name with higher priority anyway); deps from
+    # requirements.txt install on the pod via SSH bootstrap. Flag-gated so the
+    # prior daemon-requiring behaviour is restorable byte-for-byte:
+    # OPENRESEARCH_RUNPOD_SKIP_BUILD=0 falls through to the local build.
     if _sb_key == "runpod" and os.environ.get(
         "OPENRESEARCH_RUNPOD_SKIP_BUILD", "1"
     ).strip().lower() in ("1", "true", "yes", "on"):
+        from backend.config import get_settings as _get_settings
+        _runpod_image = _get_settings().runpod_image
         return _with_outcome({
             "ok": True,
-            "image_tag": "",
+            "image_tag": _runpod_image,
             "attempts": 0,
             "skipped": True,
             "note": (
-                "runpod sandbox: the pod boots OPENRESEARCH_RUNPOD_IMAGE over SSH; "
-                "the local image is never used. build_environment is a no-op "
+                f"runpod sandbox: pod boots {_runpod_image} over SSH; the local "
+                "image is never used, so build_environment is a no-op "
                 "(set OPENRESEARCH_RUNPOD_SKIP_BUILD=0 to force the local build)"
             ),
         }, PrimitiveOutcome.ok)
@@ -1390,6 +1455,34 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
             "attempts": 0,
         }, PrimitiveOutcome.repairable)
 
+    # Deterministic shape guard (BUG-NEW-042): fail fast — before a wasted
+    # `docker build` — when the sub-agent dumped prose instead of a Dockerfile.
+    # failure_class=dockerfile_invalid is repairable, so the root re-derives.
+    if not _validate_dockerfile_shape(dockerfile):
+        return _with_outcome({
+            "ok": False,
+            "image_tag": "",
+            "error": (
+                "env_spec.dockerfile does not look like a Dockerfile: its first "
+                "non-blank/non-comment line is not FROM/ARG (looks like prose). "
+                "Emit a valid Dockerfile beginning with FROM."
+            ),
+            "error_code": "dockerfile_shape_guard",
+            "failure_class": "dockerfile_invalid",
+            "attempts": 0,
+        }, PrimitiveOutcome.repairable)
+
+    # Normalize runpod/ FROM line (ported from feat/rlm-wedge-hardening
+    # 82e9806; gate dropped 2026-06-09). The root model sometimes hallucinates
+    # a non-existent runpod image tag (e.g. runpod/pytorch:1.12.1) — a
+    # guaranteed manifest-not-found at `docker build`. Unconditional on the
+    # build paths that reach here (docker/auto/local-docker; the runpod
+    # sandbox returned via its short-circuit above, which made the old
+    # `if _sb_key == "runpod"` gate unreachable dead code). The function
+    # self-gates: only runpod/ FROM lines that mismatch the configured image
+    # are rewritten; python:3.11-slim etc. pass through untouched.
+    dockerfile = _normalize_runpod_from_line(dockerfile)
+
     attempts, ok, tag, error = 0, False, "", ""
     try:
         from backend.config import get_settings
@@ -1407,7 +1500,7 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
         # run_experiment runs whichever image the tag last pointed at. Key the
         # tag to the Dockerfile so distinct environments get distinct images.
         digest = hashlib.sha1(dockerfile.encode("utf-8")).hexdigest()[:12]
-        tag = f"reprolab/{ctx.project_id}:env-{digest}"
+        tag = f"openresearch/{ctx.project_id}:env-{digest}"
 
         # Three-layer "don't redo work" guard: content-addressed tag → Docker
         # layer cache → this existence check.  When the image is already
@@ -1746,6 +1839,7 @@ def _drive_baseline_child(
     *next* attempt gets a brand-new, un-poisoned process.
     """
     import multiprocessing as _mp
+    from pathlib import Path
     from types import SimpleNamespace as _NS
 
     from backend.agents.rlm.baseline_runner import run_baseline_in_child
@@ -3116,8 +3210,8 @@ def _resolve_distributed_launch(
     # RL-scaffold sentinel — the scaffold owns its own launch orchestration
     # (vLLM server + accelerate trainer partition), so the harness rewriter
     # must NOT wrap the launch command again.  Three detection surfaces:
-    #   1. Command-line marker: a command containing '# reprolab:rl-scaffold-owns-launch'
-    #   2. Sentinel file:       code_dir/.reprolab_rl_scaffold exists
+    #   1. Command-line marker: a command containing '# openresearch:rl-scaffold-owns-launch'
+    #   2. Sentinel file:       code_dir/.openresearch_rl_scaffold exists
     #   3. Environment var:     OPENRESEARCH_RL_SCAFFOLD=1
     if _os.environ.get("OPENRESEARCH_RL_SCAFFOLD", "").strip().lower() in ("1", "true", "yes"):
         logger.info(
@@ -3126,17 +3220,17 @@ def _resolve_distributed_launch(
             run_id,
         )
         return commands
-    if (code_dir / ".reprolab_rl_scaffold").exists():
+    if (code_dir / ".openresearch_rl_scaffold").exists():
         logger.info(
-            "_resolve_distributed_launch[%s]: skipping rewrite — .reprolab_rl_scaffold "
+            "_resolve_distributed_launch[%s]: skipping rewrite — .openresearch_rl_scaffold "
             "sentinel file present (scaffold owns launch)",
             run_id,
         )
         return commands
-    if any("# reprolab:rl-scaffold-owns-launch" in cmd for cmd in commands):
+    if any("# openresearch:rl-scaffold-owns-launch" in cmd for cmd in commands):
         logger.info(
             "_resolve_distributed_launch[%s]: skipping rewrite — "
-            "'# reprolab:rl-scaffold-owns-launch' marker in commands (scaffold owns launch)",
+            "'# openresearch:rl-scaffold-owns-launch' marker in commands (scaffold owns launch)",
             run_id,
         )
         return commands
@@ -4860,7 +4954,7 @@ def _apply_operator_scope(metrics: dict, ctx: "RunContext") -> dict:
     return metrics
 
 
-def _smoke_metrics_violation(smoke_out: Path, cell_id: str) -> str | None:
+def _smoke_metrics_violation(smoke_out: "Path", cell_id: str) -> "str | None":
     """U3 — flag a cell that ran but produced no / NaN metrics (the
     ``degraded_no_metrics`` root cause).  Returns a reason string, or None when fine.
 
@@ -4914,7 +5008,7 @@ def _cell_smoke_repair(failure_class: str, cell_id: str, detail: str, log_tail: 
     }
 
 
-def _cell_pregrid_smoke(kept, code, artifact_root, gpus, gpus_per_cell, timeout_s, ctx) -> dict | None:
+def _cell_pregrid_smoke(kept, code, artifact_root, gpus, gpus_per_cell, timeout_s, ctx) -> "dict | None":
     """U2/U3 — run the SMALLEST cell for a brief smoke BEFORE the full grid.
 
     Catches a non-OOM ``train_cell.py`` code bug (the All-CNN ``cell_execution_error``
@@ -5529,6 +5623,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         models_skipped=models_skipped, environments_skipped=envs_skipped)
     metrics = _apply_operator_scope(metrics, ctx)
     logs = _summarize_cell_logs(kept, matrix_result, gpus)
+
     if _axis_notes:
         logs = logs + "\n" + "\n".join(_axis_notes)
 
@@ -5536,6 +5631,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     n_ok = sum(s == "ok" for s in statuses)
     n_oom = sum(s == "oom_failed" for s in statuses)
     n_err = sum(s not in ("ok", "oom_failed") for s in statuses)
+
     # Dead-training early-stop (2026-06-09): cells the guard killed because their loss
     # was pinned (network never learned). These are deterministic architecture/init bugs
     # — NOT transient — so they drive a targeted, repairable ``degenerate_training``
@@ -5612,12 +5708,28 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
                         f"try reducing azure_max_nodes or requesting a quota increase")
             return _terminal("capacity_exhausted", _cap_msg, metrics, logs)
 
+    # All-timeout classification (audit 2026-06-11): when the time-budget cap
+    # (cap_overall_budget) floors the matrix budget below even one cell's
+    # runtime, EVERY cell times out — that is a wall-clock condition, not a
+    # code bug, so classify it exec_timeout (the finalize-on-timeout path
+    # scores any partial metrics) instead of cell_execution_error (which
+    # sends the root into a pointless repair loop against correct code).
+    n_timeout = sum(s == "timeout" for s in statuses)
+    if n_ok == 0 and n_oom == 0 and n_err > 0 and n_timeout == n_err:
+        _persist_metrics(metrics)
+        return {"success": False, "metrics": metrics, "logs": logs,
+                "failure_class": "exec_timeout",
+                "cause_kind": "exec_timeout",
+                "error": (f"all {n_timeout} run cell(s) hit the matrix time budget "
+                          f"before finishing — the run's remaining wall clock could "
+                          f"not fit the grid; not a code bug")}
+
     # Some non-OOM errors (code bugs) and no ok cell — repairable, not terminal.
-    _persist_metrics(metrics)
     _div_note = (
         f" (of which {n_diverged} early-stopped as dead-training: "
         f"{', '.join(_diverged_cells)})" if n_diverged else ""
     )
+    _persist_metrics(metrics)
     return {"success": False, "metrics": metrics, "logs": logs,
             "failure_class": "cell_execution_error",
             "error": (f"{n_err} cell(s) failed with non-OOM errors (likely code bugs)"
@@ -6008,9 +6120,16 @@ def run_experiment(
                     }
                 elif "RUNPOD_TRANSIENT_500" in exc_msg:
                     # Lane 3: unlabelled 500s from RunPod are typically transient
-                    # — advance the ladder so the run doesn't dead-end. Bounded
-                    # by dynamic_gpu_max_escalations so a request-shape bug
-                    # cannot burn the whole catalog.
+                    # infra hiccups — advance the ladder so the run doesn't dead-end.
+                    # This is intentionally the same path as CAPACITY_EXHAUSTED
+                    # because: (a) the 500 may itself be capacity under a different
+                    # marker, and (b) _execute_in_sandbox already exhausted 3 retries
+                    # with exponential backoff before bubbling up here, so a genuine
+                    # transient would have recovered. BUG-NEW-049: consider adding
+                    # a same-tier retry before escalating if TRANSIENT_500 is the
+                    # sole failure mode (CAPACITY_EXHAUSTED still escalates
+                    # immediately). Bounded by dynamic_gpu_max_escalations so a
+                    # request-shape bug cannot burn the whole catalog.
                     infra_error_kind = "runpod_transient_500"
                     result = {
                         "success": False, "metrics": {},
@@ -6129,9 +6248,13 @@ def run_experiment(
     # scope (the while-True ran ≥1 time, so run_id is bound to the last attempt).
     _stamp_manifest_ids(result, run_id=run_id, env_id=env_id, commands=commands)
 
-    # Hybrid route merge (2026-06-10): both manifests ran in this one call —
-    # graft the stashed grid aggregate into the agent-written family metrics so
-    # the scorer sees one combined metrics.json and neither route's work is lost.
+    # Hybrid route merge (2026-06-10; ordering restored 2026-06-11): both
+    # manifests ran in this one call — graft the stashed grid aggregate into
+    # the agent-written family metrics BEFORE finalize-on-timeout and the
+    # success-gated postflight guard chain, so every guard validates the
+    # MERGED result (the 7687d2e merge had displaced this to just before
+    # persist, which made the scope guard see only the family half and let
+    # the grid half bypass all guards).
     if _hybrid_grid_result is not None:
         result = _merge_hybrid_results(_hybrid_grid_result, result, code_path)
 
@@ -6373,6 +6496,7 @@ def run_experiment(
                     result = {**result, "contract_violations": _existing}
     except Exception:  # noqa: BLE001 — observability must never block the run
         logger.exception("run_experiment: metrics_shape post-run check failed — skipping")
+
 
     return _persist_experiment_result(ctx, result, model_id=model_id, eval_env=eval_env)
 
@@ -7531,11 +7655,13 @@ def read_context_map(*, ctx: "RunContext") -> dict:
 
     Pure file I/O delegating to :func:`context_map.read_context_map` — the
     union-per-field structured cache of this run's ``understand_section`` /
-    ``extract_hyperparameters`` / ``detect_environment`` outputs. Lets the root
-    consult what it has already derived before re-deriving a slice. Returns ``{}``
-    when ``OPENRESEARCH_CONTEXT_MAP`` is off or no map exists. Never raises (fail-soft):
-    a read error returns ``{}``. This primitive is only ADVERTISED to the root when
-    the flag is on (see ``build_custom_tools``); off-state byte-for-byte today.
+    ``extract_hyperparameters`` / ``detect_environment`` outputs (NAVIGATION AID
+    ONLY — never cite it as report evidence; the evidence gate remains the
+    backstop). Lets the root consult what it has already derived before
+    re-deriving a slice. Returns ``{}`` when ``OPENRESEARCH_CONTEXT_MAP`` is off
+    or no map exists. Never raises (fail-soft): a read error returns ``{}``. Only
+    ADVERTISED to the root when the flag is on (see ``build_custom_tools``);
+    off-state byte-for-byte today.
     """
     try:
         from backend.agents.rlm.context_map import read_context_map as _read
@@ -7561,7 +7687,7 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "recommend_next_tool": recommend_next_tool,
     "resolve_gpu_requirements": resolve_gpu_requirements,
     "codex_repair": codex_repair,
-    "read_context_map": read_context_map,
+    "read_context_map": read_context_map,  # PEEK-lite, OPENRESEARCH_CONTEXT_MAP
 }
 
 PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
@@ -7577,6 +7703,9 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "optimizer, learning rate, batch size, epochs from a slice.",
     "detect_environment": "detect_environment(method_spec) -> dict — an "
         "EnvironmentSpec (dockerfile, python_version, framework, pip_packages). "
+        "The returned dockerfile already uses the correct base image for the "
+        "active sandbox (runpod/docker/local) — pass the result through to "
+        "build_environment unchanged; do NOT construct your own Dockerfile. "
         "`method_spec` is a (partial) PaperClaimMap dict with keys: "
         "core_contribution (str, required), claims (list of dicts — each with "
         "keys like method/dataset/metric/expected_result), metrics (list of "
@@ -7654,4 +7783,10 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "navigation, paper summaries, rubric judgment, final reports, broad "
         "research, credential inspection, secret search, or high-frequency "
         "rlm_query calls.",
+    "read_context_map": "read_context_map() -> dict — PEEK-lite orientation "
+        "cache (enabled by OPENRESEARCH_CONTEXT_MAP). Returns already-derived "
+        "datasets/metrics/hardware/env facts unioned from understand_section, "
+        "extract_hyperparameters, and detect_environment so you can avoid "
+        "re-deriving them. Returns {} when disabled or empty. NAVIGATION ONLY — "
+        "never cite as report evidence.",
 }

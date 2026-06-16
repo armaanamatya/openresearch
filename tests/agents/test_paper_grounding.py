@@ -7,9 +7,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
-from backend.agents.paper_grounding import GroundingViolation, assert_paper_grounded
+from backend.agents.paper_grounding import assert_paper_grounded
 
 # ---------------------------------------------------------------------------
 # VAE paper text fixture

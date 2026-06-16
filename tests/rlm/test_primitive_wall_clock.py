@@ -8,12 +8,12 @@ Covers:
 """
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from backend.agents.rlm.binding import (
     PRIMITIVE_TIMEOUT_S,
@@ -62,18 +62,27 @@ def test_slow_primitive_returns_retryable_within_budget(tmp_path: Path) -> None:
     """A primitive that would sleep 600s wrapped with a 2s timeout returns
     outcome='retryable' in under 5s (accounting for thread overhead)."""
 
+    # Event instead of time.sleep(600): the wrapper abandons the worker
+    # thread on timeout, and a sleeping daemon thread would otherwise linger
+    # for 10 minutes inside the pytest process. set() in the finally releases
+    # it as soon as the test is done.
+    release = threading.Event()
+
     def _slow_primitive(*args: Any, ctx: Any = None, **kwargs: Any) -> dict:
-        time.sleep(600)
+        release.wait(600)
         return {"success": True}
 
     ctx = _make_ctx(tmp_path)
     wrapped = wrap_primitive("understand_section", _slow_primitive, ctx)
 
     # Temporarily override the timeout to 2s for test speed.
-    with patch.dict(PRIMITIVE_TIMEOUT_S, {"understand_section": 2}):
-        start = time.monotonic()
-        result = wrapped("some text")
-        elapsed = time.monotonic() - start
+    try:
+        with patch.dict(PRIMITIVE_TIMEOUT_S, {"understand_section": 2}):
+            start = time.monotonic()
+            result = wrapped("some text")
+            elapsed = time.monotonic() - start
+    finally:
+        release.set()
 
     assert elapsed < 6, f"Should time out in under 6s, took {elapsed:.2f}s"
     assert isinstance(result, dict), f"Expected dict, got {type(result)}"
@@ -176,16 +185,21 @@ def test_known_primitive_timeouts_are_correct() -> None:
 def test_timeout_result_carries_correct_primitive_name(tmp_path: Path) -> None:
     """The retryable result's 'primitive' field matches the primitive's name."""
 
+    release = threading.Event()  # see test_slow_primitive_returns_retryable_within_budget
+
     def _slow(*args: Any, ctx: Any = None, **kwargs: Any) -> dict:
-        time.sleep(600)
+        release.wait(600)
         return {}
 
     ctx = _make_ctx(tmp_path)
     # Use a name that IS in the table so we know the timeout applies.
     wrapped = wrap_primitive("extract_hyperparameters", _slow, ctx)
 
-    with patch.dict(PRIMITIVE_TIMEOUT_S, {"extract_hyperparameters": 2}):
-        result = wrapped("some text")
+    try:
+        with patch.dict(PRIMITIVE_TIMEOUT_S, {"extract_hyperparameters": 2}):
+            result = wrapped("some text")
+    finally:
+        release.set()
 
     assert result.get("primitive") == "extract_hyperparameters", (
         f"Expected primitive='extract_hyperparameters', got: {result}"

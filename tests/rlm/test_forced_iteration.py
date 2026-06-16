@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 
 from backend.agents.rlm.forced_iteration import (
     ForcedIterationPolicy,
@@ -34,16 +33,23 @@ def _make_policy(
     min_iterations: int = 2,
     remaining_s: float | None = 3600.0,
     refusals: list[str] | None = None,
+    total_run_experiments: int = 1,
 ) -> ForcedIterationPolicy:
-    """Factory for a policy whose rubric snapshot is fixed."""
+    """Factory for a policy whose rubric snapshot is fixed.
+
+    ``total_run_experiments`` defaults to 1 (the normal case: at least one
+    experiment ran).  Pass 0 to test the no-experiment refusal (BUG-NEW-046).
+    """
     captured: list[str] = refusals if refusals is not None else []
-    return ForcedIterationPolicy(
+    policy = ForcedIterationPolicy(
         min_iterations=min_iterations,
         rubric_snapshot=lambda: (score, target, iteration),
         current_iteration=lambda: iteration,
         remaining_s=lambda: remaining_s,
         on_refusal=lambda msg: captured.append(msg),
     )
+    policy._total_run_experiments = total_run_experiments
+    return policy
 
 
 # --- ForcedIterationPolicy.should_refuse — direct unit tests ---
@@ -165,6 +171,65 @@ def test_refusal_count_caps_at_max() -> None:
     policy.refusal_count = _MAX_REFUSALS_PER_RUN
     refuse, _msg = policy.should_refuse()
     assert refuse is False  # capped — root can finally ship
+
+
+# --- BUG-NEW-046: no experiment ever run ---
+
+
+def test_no_experiment_ever_run_refuses() -> None:
+    """BUG-NEW-046: FINAL_VAR refused when run_experiment has never been called."""
+    policy = _make_policy(
+        score=None, target=None, iteration=3, min_iterations=2,
+        total_run_experiments=0,
+    )
+    refuse, msg = policy.should_refuse()
+    assert refuse is True
+    assert msg is not None
+    assert "run_experiment" in msg
+
+
+def test_no_experiment_but_wall_clock_floor_accepts() -> None:
+    """Wall-clock floor takes precedence even with zero experiments."""
+    policy = _make_policy(
+        score=None, target=None, iteration=3, min_iterations=2,
+        remaining_s=30.0, total_run_experiments=0,
+    )
+    refuse, _msg = policy.should_refuse()
+    assert refuse is False
+
+
+def test_no_experiment_but_max_refusals_accepts() -> None:
+    """Max refusals cap takes precedence even with zero experiments."""
+    from backend.agents.rlm.forced_iteration import _MAX_REFUSALS_PER_RUN
+    policy = _make_policy(
+        score=None, target=None, iteration=3, min_iterations=2,
+        total_run_experiments=0,
+    )
+    policy.refusal_count = _MAX_REFUSALS_PER_RUN
+    refuse, _msg = policy.should_refuse()
+    assert refuse is False
+
+
+def test_one_experiment_run_allows_normal_flow() -> None:
+    """Once an experiment ran, the no-experiment check doesn't fire."""
+    policy = _make_policy(
+        score=None, target=None, iteration=2, min_iterations=2,
+        total_run_experiments=1,
+    )
+    refuse, _msg = policy.should_refuse()
+    assert refuse is False  # iteration floor met + experiment ran → accept
+
+
+def test_record_run_experiment_increments_total() -> None:
+    """record_run_experiment bumps both per-iteration and total counters."""
+    policy = _make_policy(
+        score=None, target=None, iteration=2, min_iterations=2,
+        total_run_experiments=0,
+    )
+    assert policy._total_run_experiments == 0
+    policy.record_run_experiment("ok")
+    assert policy._total_run_experiments == 1
+    assert len(policy._experiments_in_iteration) == 1
 
 
 # --- End-to-end via the patched LocalRepl._final_var ---
@@ -342,6 +407,7 @@ def test_lane_o_blanket_decline_refuses_final_var() -> None:
         on_refusal=lambda m: refusals.append(m),
         honest_candidate_outcomes=lambda: 0,  # ← all 3 declined, zero honest
     )
+    policy._total_run_experiments = 1  # experiments ran, just all declined
     refuse, msg = policy.should_refuse()
     assert refuse is True
     assert msg is not None
@@ -363,6 +429,7 @@ def test_lane_o_at_least_one_tested_allows_final_var() -> None:
         on_refusal=lambda m: None,
         honest_candidate_outcomes=lambda: 1,  # one candidate honestly tested
     )
+    policy._total_run_experiments = 1
     refuse, _msg = policy.should_refuse()
     assert refuse is False
 
@@ -377,6 +444,7 @@ def test_lane_o_marginal_counts_as_honest() -> None:
         on_refusal=lambda m: None,
         honest_candidate_outcomes=lambda: 1,
     )
+    policy._total_run_experiments = 1
     refuse, _msg = policy.should_refuse()
     assert refuse is False
 
@@ -391,6 +459,7 @@ def test_lane_o_below_floor_uses_floor_message_not_blanket_decline() -> None:
         on_refusal=lambda m: None,
         honest_candidate_outcomes=lambda: 0,
     )
+    policy._total_run_experiments = 1
     refuse, msg = policy.should_refuse()
     assert refuse is True
     assert msg is not None
@@ -409,6 +478,7 @@ def test_lane_o_callable_unset_means_disabled() -> None:
         on_refusal=lambda m: None,
         honest_candidate_outcomes=None,  # disabled
     )
+    policy._total_run_experiments = 1
     refuse, _msg = policy.should_refuse()
     assert refuse is False
 
@@ -426,6 +496,7 @@ def test_lane_o_callable_raising_is_failsoft() -> None:
         on_refusal=lambda m: None,
         honest_candidate_outcomes=_bad_counter,
     )
+    policy._total_run_experiments = 1
     refuse, _msg = policy.should_refuse()
     # 0 from fail-soft → refuse, same as if no candidates tested.
     assert refuse is True
@@ -441,6 +512,7 @@ def test_lane_o_score_above_target_skips_check() -> None:
         on_refusal=lambda m: None,
         honest_candidate_outcomes=lambda: 0,
     )
+    policy._total_run_experiments = 1
     refuse, _msg = policy.should_refuse()
     assert refuse is False
 

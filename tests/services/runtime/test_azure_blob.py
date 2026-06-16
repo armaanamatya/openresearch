@@ -14,10 +14,8 @@ Duck-type contract the fake satisfies (and that callers of
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -279,7 +277,6 @@ class TestUploadPrefix:
 
     def test_upload_error_propagates(self, tmp_path: Path) -> None:
         """If any single upload raises, upload_prefix must propagate the exception."""
-        import threading
 
         (tmp_path / "good.txt").write_text("ok")
         (tmp_path / "bad.txt").write_text("will fail")

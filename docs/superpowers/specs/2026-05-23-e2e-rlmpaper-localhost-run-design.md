@@ -7,7 +7,7 @@
 
 ## Goal
 
-Run arXiv 2512.24601 (the rlms paper itself) through the ReproLab stack on localhost to terminal state — a written `final_report.json` — exercising the full UI surface and fixing every backend/UI defect found along the way.
+Run arXiv 2512.24601 (the rlms paper itself) through the OpenResearch stack on localhost to terminal state — a written `final_report.json` — exercising the full UI surface and fixing every backend/UI defect found along the way.
 
 This is a meta-reproduction: the orchestrator built on the `rlms` library is asked to reproduce the rlms paper.
 
@@ -38,7 +38,7 @@ These must be done before kickoff or the run will fail in predictable ways alrea
    - `backend/services/context/workspace/tools/rlm_query.py` — SDK aclose deadlock fix (known-issues §3.1, blocker).
    - `frontend/src/hooks/use-resizable-panels.ts` — SSR hydration mismatch fix (known-issues §3.2).
 
-3. **RunPod SSH key:** generate `~/.ssh/reprolab_runpod_ed25519` keypair, wire path + public key into `.env`'s `OPENRESEARCH_RUNPOD_SSH_KEY_PATH` and `OPENRESEARCH_RUNPOD_SSH_PUBLIC_KEY` (currently empty — would cause `run_experiment` to fail).
+3. **RunPod SSH key:** generate `~/.ssh/openresearch_runpod_ed25519` keypair, wire path + public key into `.env`'s `OPENRESEARCH_RUNPOD_SSH_KEY_PATH` and `OPENRESEARCH_RUNPOD_SSH_PUBLIC_KEY` (currently empty — would cause `run_experiment` to fail).
 
 4. **Preflight:** `scripts/runpod_check.sh` must pass. Abort kickoff on failure.
 

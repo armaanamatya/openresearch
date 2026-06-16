@@ -62,7 +62,10 @@ class TestArmWatchdog:
             None, project_dir=tmp_path, emit=MagicMock(), iteration_count=lambda: 0
         )
         try:
-            assert isinstance(t, threading.Timer)
+            # Sleep-robust watchdog (ported 2026-06-09): a polling handle, not
+            # a threading.Timer (Timer waits on a monotonic clock that pauses
+            # during macOS sleep). The handle keeps the .interval contract.
+            assert t is not None
             assert t.interval == pytest.approx(
                 run._WATCHDOG_HARD_CEILING_DEFAULT_S + run._WATCHDOG_GRACE_S
             )

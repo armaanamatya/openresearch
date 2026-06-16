@@ -1,0 +1,129 @@
+name: infra-deploy
+
+# Triggered on two events:
+#   pull_request (paths filter) — compiles + lints the Bicep, NO Azure auth.
+#                                 PR-time OIDC is deliberately absent: the
+#                                 pull_request claim binds neither actor nor
+#                                 workflow content, so a PR running a modified
+#                                 workflow could exchange it for the deploy
+#                                 identity.  The ARM what-if preview runs inside
+#                                 the approval-gated deploy job instead.
+#   workflow_dispatch           — the explicit human-triggered deploy path; gated
+#                                 by the 'azure' GitHub environment protection
+#                                 rule AND pinned to the default branch.
+#
+# Scope: L1 (RG-scope infra.bicep) ONLY.  L0 (subscription-scope main.bicep —
+# resource groups + role grants) needs subscription-level rights the pipeline
+# identity deliberately never holds; it is run once by the admin via
+# infra/azure/bicep/bootstrap/admin-bootstrap.sh (or done manually in the portal).
+#
+# OIDC auth — no stored secrets.  Repo *variables* (not secrets) required:
+#   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, AZURE_MAIN_RG_NAME
+# Set them via: Settings → Secrets and variables → Actions → Variables.
+
+on:
+  pull_request:
+    paths:
+      - 'infra/azure/bicep/**'
+  workflow_dispatch:
+
+# Deploys are serialized globally (fixed group name).  PR validation runs
+# touch no Azure state, so they group per-PR and may overlap deploys freely.
+concurrency:
+  group: infra-deploy-${{ github.event_name == 'pull_request' && github.ref || 'deploy' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  # Minimal standing permissions — OIDC token write is the only Azure-auth need.
+  contents: read
+
+jobs:
+  # ─── PR validation — compile + lint, no Azure credentials ───────────────────
+  # Runs on every pull_request that touches infra/azure/bicep/.
+  validate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bicep CLI
+        run: |
+          curl -fsSL -o /usr/local/bin/bicep \
+            https://github.com/Azure/bicep/releases/latest/download/bicep-linux-x64
+          chmod +x /usr/local/bin/bicep
+
+      - name: Build + lint all Bicep entry points
+        run: |
+          set -euo pipefail
+          for f in infra/azure/bicep/main.bicep \
+                   infra/azure/bicep/infra.bicep \
+                   infra/azure/bicep/bootstrap/pipeline-identity.bicep; do
+            echo "── $f"
+            bicep build "$f" --stdout > /dev/null
+            bicep lint "$f"
+          done
+
+  # ─── Deploy ───────────────────────────────────────────────────────────────────
+  # Triggered only by workflow_dispatch (human intent).
+  # Gated by the 'azure' GitHub environment — configure required reviewers there
+  # to enforce an approval step before any changes reach Azure.
+  deploy:
+    # Branch pin: an unmerged branch must never deploy, even with environment
+    # approval — also set the matching branch rule on the 'azure' environment.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: azure   # approval gate — configure required reviewers in Settings → Environments
+    permissions:
+      id-token: write   # required for OIDC token exchange
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # What-if preview INSIDE the gated job: the run log shows the full ARM
+      # change-set to the same reviewers who approved the environment.
+      - name: What-if L1 (infra.bicep)
+        run: |
+          if [[ ! -f infra/azure/bicep/infra.bicepparam ]]; then
+            echo "infra.bicepparam not found — nothing to deploy."
+            exit 0
+          fi
+          az deployment group what-if \
+            --resource-group "${{ vars.AZURE_MAIN_RG_NAME }}" \
+            --template-file infra/azure/bicep/infra.bicep \
+            --parameters infra/azure/bicep/infra.bicepparam
+
+      # Deploy L1 via a deployment stack so orphaned resources are tracked.
+      # Deny-settings default to 'none': setting them needs
+      # Microsoft.Resources/deploymentStacks/manageDenySetting/action, which
+      # neither Contributor, RBAC Administrator, nor User Access Administrator
+      # includes — Azure recommends the Azure Deployment Stack Owner role.  Set
+      # the AZURE_DENY_SETTINGS_MODE repo variable to denyWriteAndDelete only
+      # after the admin grants that role to the pipeline identity.
+      - name: Deploy L1 (infra.bicep via deployment stack) — skipped if absent
+        run: |
+          if [[ ! -f infra/azure/bicep/infra.bicep ]] || \
+             [[ ! -f infra/azure/bicep/infra.bicepparam ]]; then
+            echo "infra.bicep or infra.bicepparam not found — L1 deploy skipped."
+            exit 0
+          fi
+          az stack group create \
+            --name "openresearch-l1" \
+            --resource-group "${{ vars.AZURE_MAIN_RG_NAME }}" \
+            --template-file infra/azure/bicep/infra.bicep \
+            --parameters infra/azure/bicep/infra.bicepparam \
+            --deny-settings-mode "${{ vars.AZURE_DENY_SETTINGS_MODE || 'none' }}" \
+            --action-on-unmanage detachAll \
+            --yes

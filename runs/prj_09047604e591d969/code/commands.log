@@ -1,3 +1,0 @@
-# SDAR baseline implementation for prj_09047604e591d969
-# Mode: implement_from_paper (Mode 2)
-# Assumptions applied: ENV001 (pytorch 2.2.0), ENV002 (python 3.11), A001 (Adafactor optimizer - required for 3B OOM), A002 (ALFWorld num_train_games=24 to avoid scan stall), A003 (Search-QA max_turns=2 per operator guidance), A004 (no WebShop per operator guidance)

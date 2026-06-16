@@ -281,7 +281,7 @@ def validate_provider_credentials(provider: ProviderName | str | None = None) ->
                 provider=resolved,
                 reason=(
                     "Anthropic credentials are missing; set ANTHROPIC_API_KEY "
-                    "or REPROLAB_ANTHROPIC_API_KEY, or install and log in to "
+                    "or OPENRESEARCH_ANTHROPIC_API_KEY, or install and log in to "
                     "the Claude Code CLI (`claude login`)."
                 ),
             )
@@ -296,8 +296,8 @@ def validate_provider_credentials(provider: ProviderName | str | None = None) ->
             provider=resolved,
             reason=(
                 "OpenAI credentials are missing; set OPENAI_API_KEY "
-                "or REPROLAB_OPENAI_API_KEY, or set OPENAI_ADMIN_KEY "
-                "or REPROLAB_OPENAI_ADMIN_KEY"
+                "or OPENRESEARCH_OPENAI_API_KEY, or set OPENAI_ADMIN_KEY "
+                "or OPENRESEARCH_OPENAI_ADMIN_KEY"
             ),
         )
     return resolved
@@ -344,7 +344,7 @@ def configure_openai_agents_sdk_credentials(
     """Bridge ReproLab settings into the OpenAI Agents SDK credential hooks.
 
     The OpenAI Agents SDK can read ``OPENAI_API_KEY`` / ``OPENAI_ADMIN_KEY``
-    directly. ReproLab also supports ``REPROLAB_*`` aliases and ``.env`` via
+    directly. ReproLab also supports ``OPENRESEARCH_*`` aliases and ``.env`` via
     Settings, so this function performs the provider-specific bridge once,
     before any Agents SDK objects are constructed.
     """

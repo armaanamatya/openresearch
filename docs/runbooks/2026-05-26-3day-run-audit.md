@@ -20,7 +20,7 @@
 | **Score ≥ 0.6 target** | **0** |
 
 **Orphaned resources:**
-- 1 active Docker container: `ec8a5bbcae11` (`reprolab/prj_3080fe2a02c20164`) running since `2026-05-26T00:35` UTC — still alive as of audit time, 6+ hours after the run was force-killed. The VAE run was manually salvaged; the container was never cleaned up.
+- 1 active Docker container: `ec8a5bbcae11` (`openresearch/prj_3080fe2a02c20164`) running since `2026-05-26T00:35` UTC — still alive as of audit time, 6+ hours after the run was force-killed. The VAE run was manually salvaged; the container was never cleaned up.
 - 7 exited Docker containers (`Exited (137)`) for prj_8819, prj_6d41, prj_9afa, and smoke-test runs. These are dead but not pruned.
 - No RunPod orphan pods confirmed: the two RunPod runs that failed at preflight (prj_0a77, prj_11e9) never provisioned a pod. The one successful RunPod run (prj_d02bd4) destroyed its pod normally.
 
@@ -363,5 +363,5 @@ prj_8819ad4e6e250b73: pid=None, status="running" (never wrote PID)
 
 ### Orphan Docker container
 ```
-ec8a5bbcae11   reprolab/prj_3080fe2a02c20164:env-57444c4ac5c7   Up 6 hours
+ec8a5bbcae11   openresearch/prj_3080fe2a02c20164:env-57444c4ac5c7   Up 6 hours
 ```

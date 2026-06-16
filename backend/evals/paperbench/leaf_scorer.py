@@ -108,15 +108,7 @@ def roll_up(
             return None
         return leaf_scores.get(lid, 0.0)
 
-    # Non-leaf: exclude skipped children from both weight sum and weighted sum.
-    eligible_children = [
-        c for c in children
-        if str(c.get("id", "")) not in skip_set
-        # A child is skipped when it IS a leaf and its id is in skip_set.
-        # For non-leaf children we recurse and check below.
-    ]
-
-    # Build (child, subtree_score) pairs; drop children whose entire subtree
+    # Non-leaf: build (child, subtree_score) pairs; drop children whose entire subtree
     # is fully skipped (roll_up returns None for a skipped leaf, but for a
     # non-leaf intermediate we need a sentinel — use a recursive helper).
     scored_children: list[tuple[dict[str, Any], float]] = []
@@ -1781,7 +1773,7 @@ def score_reproduction(
     eligible_count = len(leaves) - len(unavailable_ids)
 
     # Grade only the eligible leaves.
-    eligible_leaves = [l for l in leaves if str(l.get("id", "")) not in unavailable_ids]
+    eligible_leaves = [lf for lf in leaves if str(lf.get("id", "")) not in unavailable_ids]
 
     # A5/A1 (2026-06-16): the grader runs on a DECOUPLED, sampler-capable
     # transport so a root/CLI wedge can't take grading down with it (the OmniZip

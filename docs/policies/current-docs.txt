@@ -1,0 +1,24 @@
+# Current-state docs — the ONLY Markdown files the freshness checker holds to a
+# "last-verified" date. Each path below MUST carry a `<!-- doc-meta:
+# status=current; last-verified=YYYY-MM-DD -->` marker (see documentation.md §3).
+#
+# Everything NOT listed here is dated-historical, archived, generated, or
+# vendored, and is exempt by design. Add a path here ONLY when the doc describes
+# how the system works *right now*.
+#
+# One path per line, relative to repo root. Blank lines and #-comments ignored.
+
+README.md
+system_overview.md
+CLAUDE.md
+docs/reproduction.md
+docs/architecture.md
+docs/infra.md
+docs/troubleshooting.md
+docs/policies/documentation.md
+docs/design/rlm-pivot-brief.md
+docs/design/project-rebuild-spec.md
+docs/guides/setup-guide.md
+docs/guides/deployment.md
+docs/runbooks/e2e-testing.md
+docs/runbooks/running-the-project.md

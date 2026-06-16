@@ -64,7 +64,7 @@ def test_iteration_boundary_history_resets_on_iteration_advance():
 
 def test_logger_resets_two_experiment_tracker_at_real_turn_boundary():
     """F-06: on_iteration_advance must fire at each real REPL turn boundary
-    (ReproLabRLMLogger.log), not only inside a FINAL_VAR refusal path.
+    (OpenResearchRLMLogger.log), not only inside a FINAL_VAR refusal path.
 
     Without it, one failing run_experiment in two DIFFERENT iterations
     accumulates to len>=2 and falsely refuses the next legitimate FINAL_VAR —
@@ -73,7 +73,7 @@ def test_logger_resets_two_experiment_tracker_at_real_turn_boundary():
     """
     from rlm.core.types import RLMIteration
 
-    from backend.agents.rlm.sse_bridge import ReproLabRLMLogger
+    from backend.agents.rlm.sse_bridge import OpenResearchRLMLogger
 
     p = _policy()
 
@@ -82,7 +82,7 @@ def test_logger_resets_two_experiment_tracker_at_real_turn_boundary():
         _forced_iteration_policy = p
 
     ctx = _Ctx()
-    logger = ReproLabRLMLogger(emit=lambda _e: None, checkpointer=MagicMock(), ctx=ctx)
+    logger = OpenResearchRLMLogger(emit=lambda _e: None, checkpointer=MagicMock(), ctx=ctx)
 
     def _iter() -> RLMIteration:
         return RLMIteration(
@@ -132,7 +132,7 @@ def test_logger_resets_stack_top_policy_when_ctx_attr_unset():
     accumulated across turns → false two-in-one-turn refusal of a legit FINAL_VAR.
     """
     from backend.agents.rlm.forced_iteration import forced_iteration_policy
-    from backend.agents.rlm.sse_bridge import ReproLabRLMLogger
+    from backend.agents.rlm.sse_bridge import OpenResearchRLMLogger
 
     p = _policy()
 
@@ -141,7 +141,7 @@ def test_logger_resets_stack_top_policy_when_ctx_attr_unset():
         # NOTE: no _forced_iteration_policy attribute at all (the divergence).
 
     ctx = _Ctx()
-    logger = ReproLabRLMLogger(emit=lambda _e: None, checkpointer=MagicMock(), ctx=ctx)
+    logger = OpenResearchRLMLogger(emit=lambda _e: None, checkpointer=MagicMock(), ctx=ctx)
 
     # The policy is on the thread-local stack (what the interceptor consults),
     # NOT on ctx. Each turn has exactly one failing run_experiment.
@@ -166,7 +166,7 @@ def test_logger_resets_stack_top_not_a_stale_ctx_policy():
     must hit the stack-top one (what the interceptor reads), leaving the stale
     ctx policy untouched."""
     from backend.agents.rlm.forced_iteration import forced_iteration_policy
-    from backend.agents.rlm.sse_bridge import ReproLabRLMLogger
+    from backend.agents.rlm.sse_bridge import OpenResearchRLMLogger
 
     interceptor_policy = _policy()   # the one on the thread-local stack
     stale_ctx_policy = _policy()     # a different object hanging off ctx
@@ -176,7 +176,7 @@ def test_logger_resets_stack_top_not_a_stale_ctx_policy():
 
     ctx = _Ctx()
     ctx._forced_iteration_policy = stale_ctx_policy
-    logger = ReproLabRLMLogger(emit=lambda _e: None, checkpointer=MagicMock(), ctx=ctx)
+    logger = OpenResearchRLMLogger(emit=lambda _e: None, checkpointer=MagicMock(), ctx=ctx)
 
     with forced_iteration_policy(interceptor_policy):
         # Both policies record one failing experiment this "turn".

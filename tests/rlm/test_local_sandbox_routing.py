@@ -75,7 +75,6 @@ def _make_local_ctx(tmp_path) -> SimpleNamespace:
 
     We supply the real SandboxMode.local enum so .value == "local".
     """
-    from pathlib import Path
     from backend.agents.dashboard_emitter import DashboardEmitter
     from backend.agents.resilience.cost import RunCostLedger
     from backend.agents.rlm.context import RunContext
@@ -184,3 +183,43 @@ def test_build_environment_local_outcome_is_ok(
     assert result.get("outcome") == "ok", (
         f"Expected outcome='ok'; got {result.get('outcome')!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# A3: build_environment runpod no-op (2026-05-30)
+# The pod boots OPENRESEARCH_RUNPOD_IMAGE over SSH; the local build is never used
+# and HARD-FAILED when the base image wasn't pullable from docker.io.
+# ---------------------------------------------------------------------------
+
+
+def _make_runpod_ctx(tmp_path):
+    ctx = _make_local_ctx(tmp_path)
+    object.__setattr__(ctx, "sandbox_mode", SandboxMode.runpod)
+    return ctx
+
+
+def test_build_environment_runpod_skips_docker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Under runpod, build_environment must NOT touch local Docker (skip the unused build)."""
+    import backend.services.runtime.local_docker as _ld
+    import backend.agents.rlm.primitives as _prim
+
+    def _should_not_call_docker(*_a, **_k):
+        raise AssertionError("build_environment under runpod must not touch local Docker")
+
+    monkeypatch.setattr(_ld, "_make_docker_client", _should_not_call_docker)
+    monkeypatch.setattr(_prim, "_image_exists", _should_not_call_docker)
+
+    ctx = _make_runpod_ctx(tmp_path)
+    # A base image that does NOT exist on docker.io — proves we never try to build it.
+    result = build_environment(
+        {"dockerfile": "FROM runpod/pytorch:2.1.0-py3.10-cuda11.8.0-runtime-ubuntu22.04"},
+        ctx=ctx,
+    )
+    assert result["ok"] is True, f"Expected ok=True (skipped), got: {result}"
+    assert result.get("skipped") is True
+    # The short-circuit reports the settings-configured pod image (so
+    # run_experiment can hand it to the RunPod backend) — not an empty tag.
+    from backend.config import get_settings
+    assert result.get("image_tag") == get_settings().runpod_image

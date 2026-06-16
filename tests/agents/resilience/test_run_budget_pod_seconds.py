@@ -7,7 +7,6 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from backend.agents.resilience.budget import RunBudget
-from backend.agents.resilience.cost import RunCostLedger
 from backend.agents.resilience.failures import BudgetExhausted
 
 

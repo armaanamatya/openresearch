@@ -9,6 +9,7 @@ build/
 # Virtual environments
 .venv
 .venv/
+.venv*/
 venv/
 
 # Environment
@@ -78,9 +79,14 @@ Thumbs.db
 # (dashboard_events.jsonl is the full SSE firehose — can be large; track it
 #  per-run on demand with `git add -f runs/<id>/dashboard_events.jsonl`.)
 runs/_archive/
-# Launcher / per-run logs (REPROLAB_RUNS_ROOT diagnostics, _no_runs_root, etc.)
+# Launcher / per-run logs (OPENRESEARCH_RUNS_ROOT diagnostics, _no_runs_root, etc.)
 /logs/
 /logs
+
+# Large binary archives never belong in git history (D2: a 6 MB bundle was
+# committed by accident). Ship docs as markdown or release assets, not zips.
+*.zip
+/paper-repro-bes-docs/
 
 # Windows artifacts
 %APPDATA%/
@@ -103,6 +109,12 @@ frontend/playwright-report/
 
 # Local-only test logs and DB backups
 _test_logs/
+openresearch.db.offline_backup
+openresearch.db-shm
+openresearch.db-wal
+# Legacy DB name (pre-2026-06 rename) — kept because the backward-compat
+# fallback in backend/config.py still uses an existing reprolab.db, so SQLite
+# keeps producing these sibling files until the DB is migrated.
 reprolab.db.offline_backup
 reprolab.db-shm
 reprolab.db-wal
@@ -125,6 +137,7 @@ reprolab.db-wal
 /codex_prompt*.md
 /conflicts.md
 /*.png
+/openresearch.db.corrupt-*
 /reprolab.db.corrupt-*
 
 # Playwright MCP screenshot artifacts
@@ -157,3 +170,14 @@ infra/azure/**/.terraform/
 frontend/tmp-screens
 frontend/tmp-screens/
 /playwright/
+
+# Runtime-mutated artifacts (the code recreates/regenerates all of these;
+# tracking them meant permanent dirty-tree churn — audit 2026-06-09)
+/findings/*.log
+/data/calibration.json
+# Next.js regenerates next-env.d.ts on dev/build (dev vs build variants
+# differ, so a tracked copy churns on every workflow switch)
+frontend/next-env.d.ts
+
+# Local architecture tutorials (not committed)
+/docs/local/

@@ -1,0 +1,672 @@
+{
+  "paper": {
+    "id": "unknown",
+    "title": "A Mechanistic Understanding of Alignment Algorithms: A Case Study on DPO and Toxicity"
+  },
+  "verdict": "partial",
+  "reproduction_summary": "Reproduced the paper by: (1) reading the paper text and extracting the core method, datasets, and claims; (2) detecting the environment using the domain primitives; (3) building a Docker image; (4) planning and implementing a baseline; (5) running the experiment in a container. The experiment did not fully succeed. The rubric score was 0.000 against a target of 0.600. The reproduction did not fully meet the target score.",
+  "baseline_metrics": {},
+  "paper_claims": {
+    "proposed_method": {
+      "method": "proposed_method",
+      "dataset": "evaluation_dataset",
+      "metric": "main_metric",
+      "expected_result": "improvement over baseline"
+    }
+  },
+  "rubric": {
+    "overall_score": 0.0,
+    "meets_target": false,
+    "areas": [
+      {
+        "area": "Toxic vectors have been extracted from the GPT2-medium model.",
+        "score": 0.0,
+        "weight": 4,
+        "compute_adjusted_score": 0.0
+      },
+      {
+        "area": "Results in Table 1 have been reproduced.",
+        "score": 0.0,
+        "weight": 1,
+        "compute_adjusted_score": 0.0
+      },
+      {
+        "area": "The GPT2 model has been fine-tuned using DPO to reduce the likelihood of toxicity.",
+        "score": 0.0,
+        "weight": 4,
+        "compute_adjusted_score": 0.0
+      },
+      {
+        "area": "The results in figure 1 have been replicated.",
+        "score": 0.0,
+        "weight": 1,
+        "compute_adjusted_score": 0.0
+      },
+      {
+        "area": "The code for measuring toxicity, perplexity and F1 has been implemented.",
+        "score": 0.0,
+        "weight": 1,
+        "compute_adjusted_score": 0.0
+      },
+      {
+        "area": "Results in Table 2 have been reproduced.",
+        "score": 0.0,
+        "weight": 1,
+        "compute_adjusted_score": 0.0
+      },
+      {
+        "area": "Examples in Table 3 have been replicated.",
+        "score": 0.0,
+        "weight": 1,
+        "compute_adjusted_score": 0.0
+      },
+      {
+        "area": "The results discussed in Section 5.1 have been replicated.",
+        "score": 0.0,
+        "weight": 1,
+        "compute_adjusted_score": 0.0
+      },
+      {
+        "area": "The results in figure 2 have been replicated.",
+        "score": 0.0,
+        "weight": 1,
+        "compute_adjusted_score": 0.0
+      },
+      {
+        "area": "The results in figure 4 have been replicated.",
+        "score": 0.0,
+        "weight": 1,
+        "compute_adjusted_score": 0.0
+      },
+      {
+        "area": "The results in figure 5 have been replicated.",
+        "score": 0.0,
+        "weight": 1,
+        "compute_adjusted_score": 0.0
+      },
+      {
+        "area": "The results in table 4 have been replicated.",
+        "score": 0.0,
+        "weight": 1,
+        "compute_adjusted_score": 0.0
+      }
+    ],
+    "leaf_scores": [
+      {
+        "id": "cfcf4e45-a955-4064-8c12-17bc3787bed7",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "89eae18e-3abb-424c-b18d-8ddc210806e0",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "14994612-f5c9-4578-91ca-d9670a4b42c2",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "627f8d87-0aed-4cb5-a29e-8208c3bc9871",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "5614c277-43cb-4f54-afef-2af137f8e4a2",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "b54834e0-a42b-4a51-84cf-8fb9d185dd07",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "39489fa7-b2de-4220-b625-b7929b0e3587",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "b203fdd2-cd9e-434b-85b5-1ffa488ca445",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "a359ba32-d92d-4021-b904-9d8e0abbb1c3",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "bbdb4b01-fdf3-4879-bc5c-c59bcc6c12c2",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "224d730e-1525-4749-bdea-0b802618a861",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "1a8266f6-fe17-4638-8b69-d338648a3286",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "d8b9792d-eb88-4d68-baea-bc2d46e69710",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "9249d0dc-05dc-4748-afc8-ef1948f4bece",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "0cabfa12-a62a-40d5-a2fb-c41cb1fa6e24",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "a626e8d3-5947-4e65-8863-5fbc17c0ec66",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "c1953d3e-9a93-46b7-80fd-85306799218f",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "144dd2b8-0448-4a68-b658-8f3beb201885",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "a8c8d524-076c-4404-ae91-fd874154f06a",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "0658ca9a-f75a-4fe8-9920-8c2c9181ef96",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "cca1bf0e-dcc8-4f93-91a0-6883f92d2254",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "3c36d4c4-eb3a-441c-9058-334af9dbdef7",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "22d7454f-0b20-456f-b0a7-c60a3ab8a102",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "7bfa543c-8def-49f2-ad8d-adb32ed7e430",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "cae8f676-e7ba-43f8-aa28-1c55ee3b2613",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "52557c05-7f73-4700-9d41-90100745c5ac",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "829d2bf6-69f3-4613-9287-bc45f7ac08f0",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "e0533084-5045-4f76-8e6b-e51b210b2a3b",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "56e8de0e-828d-440b-a3bb-e6088942e794",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "31a3f55d-0024-44a4-940d-88bf0f0ab3eb",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "661eb38a-acca-41cb-bb09-3f10f0b4ea78",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "8dd6fc27-68bf-4c6f-836e-a8c835e8f227",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "c36d4dc7-20c0-452f-88f2-3921a1fa2f69",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "c03156e4-8b92-45c4-a417-27c1b2b44f34",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "9d74128a-30df-4544-aca2-6c7c8a52eadd",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "c9b77dd1-f107-430f-ab67-d111176d335a",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "d8ae7965-5f7e-4f85-a486-80c1cf0ef214",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "52cf0416-3bcb-4e08-a5ee-e6b8e7cdf6d5",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "39e101b0-070c-4b7b-a685-fc39fff08169",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "857de788-24d2-4ef1-8c63-7a7e57e19f05",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "f96df334-5abc-419c-8cd4-0a7fe4e5d3bb",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "2d5a1c2d-1fca-4f99-ad28-f98d43362365",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "d803af6a-ed80-42b8-a451-c50a5fd1c5d5",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "3506ea2b-e94f-4471-8876-a91c639d599a",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "8e05158f-91c6-4c55-89e1-3d072f5d0b13",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "5b5b9202-8b9c-4cc8-979a-e8bfbae060ca",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "af54e657-8a1d-4fd3-845b-f246b68d05d7",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "6130cc08-3e82-4ca1-932c-a6c885fcba99",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "a2fdea77-5337-429f-adac-54d30172cd28",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "742fba91-d517-4de7-a7a5-762f3069a23a",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "3da5893c-2488-41c5-8caa-bd51c0077ddc",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "a9267407-e676-4644-928b-16756a6586bb",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "0e548c9c-d25d-4aac-80f1-036c937d96db",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "63b23796-e968-44cd-8988-7d79e6c0fd84",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "29537c51-89b9-4655-bb7c-ca55cbdd26de",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "9bbf6a62-e20d-43f5-98b7-e3b5e49bdf99",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "14bc4567-e932-440d-b199-371a936ccb86",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "cac04bcb-f996-40a0-b31b-127ab52f1a07",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "13ccf9ef-84ef-4d74-a159-40850f08a0cc",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "cfba0129-04b8-4c21-8729-1a716c32dd0f",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "278df5fc-8fa4-4f8f-be1b-b7d747812a7e",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "78e8425c-47fd-420c-af6e-2cf108aac318",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "fadc5c82-978c-4c9d-bfb4-3aa0b1c8a93f",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "e258bd80-1a56-4b76-8c38-d642896ffc2a",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "225bbafb-c95f-4cba-aaa0-3941ba54fb78",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "07c50dfc-6369-490d-a8db-d59716fa30bd",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "db2814e4-6015-41d9-b9f6-b416f3b7b78b",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "8b3007d3-c543-4a90-9c8d-b6b042b82c8d",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "390f7dce-75bb-489a-8064-c5354c005180",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "bcaf2ef2-52e3-4083-a423-1d73fc04e92f",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "e1a48a92-2abd-490e-b77b-6bb01093a1ad",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "f9cd62f7-9baa-4a97-b9bd-d98ee3e28be3",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "ae70d1b4-7039-4098-81dd-2f3938997824",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "439fe783-2de5-4668-9502-f1c79aa1de40",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "be17cadf-a89b-4207-9402-7a8fe108dff1",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "ca0752cf-4c1f-44da-9e51-5b0d36339ac0",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "53949602-cd66-40d1-93e6-fbb2b36c707f",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "a0224468-d656-45db-a7a7-38a8b0671ea3",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "ae50c500-869c-4151-8506-34091e25f605",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "dab8e2b9-c62f-4489-a9ca-da223f6b46ae",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "fe82a362-4850-480a-9ff8-2bab070d208b",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "961fa740-a501-4d88-84a7-d1f10e964773",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "91560109-8eb0-404a-8bd0-5900fc09c583",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "fa6aada8-b3ed-4661-a7a9-fbd148375a2c",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "89aa7b43-9107-482f-889d-46182f7f5262",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "a9796ca5-928a-4ac5-b867-8a8ca01ac707",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "6642bb98-93ec-4665-a5cc-115529759a5a",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "55ff9da8-f032-4e58-8267-7ed114596108",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "dd9e6d01-a5ad-46d7-b18a-f37404e42cd8",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "54b0c3ab-0431-425c-8a93-9b3bc2883b7d",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "745d864c-2bff-4207-ad49-77d957e3ffbc",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "acbe52c2-7831-4e0a-a41d-4d1c4d5ef97e",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "2846e181-2992-4d1f-8565-594b90bfc816",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "2c61fa41-98d9-4ff9-bf50-1b17f1e9a881",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "f8abf2cd-b887-4d61-a1c4-73fd94fab436",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "b4c1e9c4-dc27-4548-84b3-5cdf7f6aad22",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      }
+    ],
+    "weak_leaves": [
+      {
+        "id": "cfcf4e45-a955-4064-8c12-17bc3787bed7",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "89eae18e-3abb-424c-b18d-8ddc210806e0",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "14994612-f5c9-4578-91ca-d9670a4b42c2",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "627f8d87-0aed-4cb5-a29e-8208c3bc9871",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "5614c277-43cb-4f54-afef-2af137f8e4a2",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "b54834e0-a42b-4a51-84cf-8fb9d185dd07",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "39489fa7-b2de-4220-b625-b7929b0e3587",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      },
+      {
+        "id": "b203fdd2-cd9e-434b-85b5-1ffa488ca445",
+        "score": 0.0,
+        "justification": "degraded_no_metrics"
+      }
+    ],
+    "leaf_count": 96,
+    "graded": 0,
+    "rubric_source": "paperbench_bundle",
+    "coverage_pct": 1.0,
+    "compute_adjusted_score": 0.0
+  },
+  "improvements": [
+    {
+      "title": "unknown",
+      "outcome": "declined",
+      "delta": 0
+    }
+  ],
+  "primitive_trace": {
+    "calls": 31,
+    "by_primitive": {
+      "check_user_messages": 1,
+      "heartbeat": 17,
+      "understand_section": 3,
+      "extract_hyperparameters": 1,
+      "resolve_gpu_requirements": 1,
+      "detect_environment": 1,
+      "build_environment": 1,
+      "plan_reproduction": 1,
+      "implement_baseline": 3,
+      "verify_against_rubric": 1,
+      "propose_improvements": 1
+    }
+  },
+  "cost": {
+    "llm_usd": 0.0,
+    "primitives": 0.0
+  },
+  "iterations": 1,
+  "primitive_provider": "real",
+  "degraded": false,
+  "mode": "rlm",
+  "models": {
+    "planner": "claude-oauth",
+    "executor": "claude-sonnet-4-6",
+    "verifier": null,
+    "grader": null
+  },
+  "started_at": "2026-05-29T15:21:23.163184Z",
+  "completed_at": "2026-05-29T15:47:53.036474+00:00",
+  "scope": {
+    "requested": "full paper reproduction",
+    "ran": [
+      "baseline experiment with env_id="
+    ],
+    "gaps": [
+      "experiment execution issues encountered"
+    ]
+  }
+}

@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from backend.persistence.database import Database
 from backend.persistence.repositories.task_repository import TaskRepository
 from backend.schemas.events import EventPayload
-from backend.schemas.tasks import AgentTask, TaskStatus
+from backend.schemas.tasks import AgentTask
 
 
 class InvalidTransitionError(Exception):

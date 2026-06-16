@@ -34,6 +34,9 @@ from backend.config import get_settings
 from backend.agents.rlm.report import (
     RLMFinalReport,
     reconcile_verdict_with_score,
+    run_experiment_call_count,
+    run_experiment_partial_timeout_count,
+    run_experiment_success_count,
     write_final_report_rlm,
 )
 from backend.agents.rlm.sse_bridge import (
@@ -212,7 +215,7 @@ def _zero_scores(*, degraded: bool) -> dict[str, Any]:
     }
 
 
-def _record_primitive_cost(ctx: "RunContext", primitive: str) -> None:
+def _record_primitive_cost(ctx: "RunContext", primitive: str, *, outcome: str = "") -> None:
     """Record direct RDR calls into RLM primitives in the run cost ledger."""
     ledger = getattr(ctx, "cost_ledger", None)
     if ledger is None:
@@ -225,6 +228,7 @@ def _record_primitive_cost(ctx: "RunContext", primitive: str) -> None:
                 attempt_index=0,
                 provider=getattr(ctx, "provider", "anthropic"),
                 model=getattr(ctx, "model", ""),
+                outcome=outcome,
             )
         )
     except Exception:  # noqa: BLE001 — ledger writes must never break a run
@@ -237,11 +241,29 @@ async def _call_primitive(
     fn: Callable[..., Any],
     *args: Any,
 ) -> Any:
-    """Call an RLM primitive from RDR and always ledger the attempt."""
+    """Call an RLM primitive from RDR and always ledger the attempt.
+
+    Outcome-stamped (audit 2026-06-11) with the same failure-shape
+    classification binding.wrap_primitive uses — without it every RDR row
+    carried outcome='' (success-compatible), making the evidence gate's
+    ok-calls cross-check vacuous in --mode rdr (even RAISED calls counted).
+    """
+    outcome = "raised"
     try:
-        return await asyncio.to_thread(fn, *args, ctx=ctx)
+        result = await asyncio.to_thread(fn, *args, ctx=ctx)
+        failed = isinstance(result, dict) and (
+            result.get("success") is False or bool(result.get("error"))
+        )
+        if failed and (
+            result.get("partial_timeout") is True
+            or result.get("failure_class") == "partial_timeout"
+        ):
+            outcome = "partial_timeout"
+        else:
+            outcome = "failed" if failed else "ok"
+        return result
     finally:
-        _record_primitive_cost(ctx, primitive)
+        _record_primitive_cost(ctx, primitive, outcome=outcome)
 
 
 def _dedup_commands(done: dict[str, Artifacts]) -> list[str]:
@@ -1082,8 +1104,6 @@ async def run_rdr(
         cluster_timeout_s=cluster_timeout_s,
     )
 
-    clusters_failed = sum(1 for art in done.values() if art.failed)
-
     # ------------------------------------------------------------------
     # Step 4: Assemble — write commands.json
     # ------------------------------------------------------------------
@@ -1457,7 +1477,11 @@ async def run_rdr(
         completed_at=datetime.now(timezone.utc).isoformat(),
     )
 
-    json_path, _md_path = write_final_report_rlm(report, ctx.project_dir)
+    json_path, _md_path = write_final_report_rlm(
+        report, ctx.project_dir, run_experiment_calls=run_experiment_call_count(ctx),
+        run_experiment_ok_calls=run_experiment_success_count(ctx),
+        run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx)
+    )
 
     # ------------------------------------------------------------------
     # Step 10: DC#4 artifacts — repl_state.pickle

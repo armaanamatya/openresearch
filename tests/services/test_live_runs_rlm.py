@@ -145,7 +145,6 @@ def test_finalize_benchmark_handles_sdk_schema(tmp_path):
 def test_reproduce_argparse_accepts_project_id():
     """--project-id must be accepted by the reproduce subcommand argparse config."""
     import argparse
-    import sys
 
     # We only want to parse; avoid actually importing backend heavy deps by
     # importing the module and calling the parser setup via parse_known_args.

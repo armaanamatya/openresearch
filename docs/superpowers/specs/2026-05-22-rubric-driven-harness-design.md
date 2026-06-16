@@ -304,7 +304,7 @@ fresh session needs:
 
 ### 12.1 The project
 
-OpenResearch / ReproLab — an agent pipeline that reproduces research papers
+OpenResearch / OpenResearch — an agent pipeline that reproduces research papers
 end-to-end and benchmarks the reproduction against the paper's claims. Backend:
 Python 3.14 / FastAPI. The RLM orchestrator (`backend/agents/rlm/`) is the
 current production path (`--mode rlm`); see `CLAUDE.md`, `system_overview.md`,

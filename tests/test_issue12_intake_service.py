@@ -20,10 +20,7 @@ from backend.services.ingestion.intake import (
     DoiRef,
     FetchPaper,
     IntakeAppService,
-    PaperFetched,
-    PaperFetchFailed,
     PdfPath,
-    ProjectCreated,
     ProjectState,
     RegisterProject,
 )

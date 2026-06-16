@@ -152,7 +152,7 @@ def test_runpod_backend_reads_api_key_from_env(monkeypatch, tmp_path):
     """Regression guard: if the env-var fallback in __init__ were dropped,
     a backend constructed without an explicit api_key= would silently have
     empty credentials and only fail later at the API call."""
-    monkeypatch.setenv("REPROLAB_RUNPOD_API_KEY", "env-fake-key-abc123")
+    monkeypatch.setenv("OPENRESEARCH_RUNPOD_API_KEY", "env-fake-key-abc123")
     backend = RunpodBackend()
     assert backend.api_key == "env-fake-key-abc123"
 

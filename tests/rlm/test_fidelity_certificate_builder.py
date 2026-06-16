@@ -22,7 +22,6 @@ Coverage:
 from __future__ import annotations
 
 import json
-import sys
 import textwrap
 from pathlib import Path
 
@@ -205,7 +204,6 @@ class TestGreenCert:
         assert cert.is_green is True  # all fields True → green
 
         # Verify implementation_verdict is faithful when fidelity_score high enough
-        from backend.agents.rlm.reproducibility_verdict import DEFAULT_FAITHFUL_MIN_SCORE
         v = compute_reproducibility_verdict(
             fidelity_score=0.85,
             certificate=cert,

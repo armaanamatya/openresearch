@@ -5,7 +5,6 @@ Tracks all eval runs for comparison across agent versions over time.
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import time
 import uuid
@@ -15,7 +14,6 @@ from typing import Any
 from backend.evals.schemas import (
     ABTestResult,
     EloRating,
-    EvalRun,
     InnovationScore,
     ReproductionScore,
 )

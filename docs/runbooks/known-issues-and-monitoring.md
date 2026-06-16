@@ -1,6 +1,6 @@
 # Known issues and monitoring runbook
 
-_Last updated: 2026-05-28. This doc is the canonical "what looks wrong but isn't" plus "what's actually broken" register for the OpenResearch / ReproLab stack. Add new entries here when you discover a confusing failure mode; remove entries when the underlying bug is fixed AND the fix has shipped to `main`._
+_Last updated: 2026-05-28. This doc is the canonical "what looks wrong but isn't" plus "what's actually broken" register for the OpenResearch / OpenResearch stack. Add new entries here when you discover a confusing failure mode; remove entries when the underlying bug is fixed AND the fix has shipped to `main`._
 
 If you are triaging a run **right now**, start at §1 (UI signal interpretation) then §3 (active issues). For background context on the architecture see `CLAUDE.md` and `system_overview.md`; for the day-to-day UI walkthrough see `docs/runbooks/e2e-testing.md`; for preflight gates see `docs/runbooks/readiness.md`.
 
@@ -33,6 +33,8 @@ If you are triaging a run **right now**, start at §1 (UI signal interpretation)
 | 21 | Forced-iteration (Lane H) accepts FINAL_VAR when `rubric_score is None` (BUG-LR-013) | high | resolved (`271df91`) | `backend/agents/rlm/forced_iteration.py` predicate; same spec |
 | 22 | Shell `OPENAI_API_KEY` silently overrides `.env` → 401 at iter 0 (BUG-LR-014) | blocker on stale shell vars | resolved (`271df91`) | Boot-time warning in `backend/cli.py`. Spec: same as #19 |
 | 23 | No detector for "model gave up before doing real work" — `partial` verdict ships with 0 primitives called (BUG-LR-015) | medium | resolved (`271df91`) | `_emit_suspicious_partial_warning` in `backend/agents/rlm/run.py`; same spec |
+| 24 | `.env` `OPENAI_API_KEY` out of quota → `429 insufficient_quota`; gpt-5 root wedges in `generate_rubric_tree` (a `GET /v1/models` check still 200s — false positive) | blocker on dry key | **open** (billing) — use `--model claude-oauth` + `REPROLAB_ACCELERATOR=off` until topped up | CLAUDE.md auth gotchas; `2026-05-23-sdar-baseline-handoff.md` (2026-05-31) |
+| 25 | "no signal Xs" chip false-alarms on `claude-oauth` path during `generate_rubric_tree` + first iteration (pre-pipeline, no in-flight primitive) | UX | known/benign 2026-05-31 | §1b, §3.4 — liveness check; only a real wedge if `dashboard_events.jsonl` mtime frozen + CPU 0 |
 
 §3 covers each open issue in depth. §4 is the family of fixes ("F1"-"F8") referenced in `e2e-testing.md`.
 
@@ -57,6 +59,18 @@ primitive in flight. If a long primitive is active, the header should show
 `implement_baseline`, which spawns a Sonnet sub-agent with tools) execute
 between heartbeats and may legitimately consume 5-15 minutes with no event
 traffic.
+
+**Even longer false-alarms on the `claude-oauth` root path (2026-05-31):** two
+*pre-pipeline* phases emit no heartbeat **and** do not register as an in-flight
+primitive, so the chip shows the alarming "no signal Xs" (not the calm
+"running …") even though the backend is working: (1) `generate_rubric_tree`
+(the rubric build, before the RLM loop starts) and (2) the **first RLM agent
+iteration** (a long bundled-CLI completion before the first `iteration_heartbeat`
+fires). On the bundled-CLI subscription transport these completions are slower
+than the gpt-5 path the chip was calibrated against, so 60-180s of "no signal"
+at run start is normal. Confirm liveness below; a real wedge is the gap climbing
+for several minutes with `dashboard_events.jsonl` mtime frozen AND CPU pinned at
+0 (the FM-001 orphaned-child signature).
 
 **Confirm if it's a real wedge:**
 ```bash
@@ -216,6 +230,16 @@ Cross-check with `find runs/$PROJECT/code -mmin -2 -type f` — if files were to
 `primitive_call` events and passes it to `RlmHeader`. The header renders
 `running <primitive> (Xs)` while a primitive is active and keeps `no signal Xs`
 for true no-primitive wedges.
+
+**Residual false-alarm on the `claude-oauth` path (2026-05-31):** the fix only
+covers the 12 domain primitives. The *pre-pipeline* phases — `generate_rubric_tree`
+and the first RLM agent iteration — are not `primitive_call` events, so no
+in-flight primitive is derived and the chip still shows the alarming form for
+60-180s at run start. This is expected on the slower bundled-CLI subscription
+transport (gpt-5, the calibration baseline, emits heartbeats far sooner). Not a
+bug; see §1b for the liveness check. Distinguish from a true FM-001 wedge by
+`dashboard_events.jsonl` mtime: frozen for minutes + CPU 0 = wedge; advancing =
+just a slow completion.
 
 ### 3.5 Sub-RLM root strategy queries the same slice repeatedly — **OPEN**
 

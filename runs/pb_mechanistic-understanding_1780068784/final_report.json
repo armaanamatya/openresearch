@@ -1,0 +1,64 @@
+{
+  "paper": {
+    "id": "mechanistic-understanding",
+    "title": "A Mechanistic Understanding of Alignment Algorithms: A Case Study on DPO and Toxicity"
+  },
+  "verdict": "partial",
+  "reproduction_summary": "Attempted reproduction of 'A Mechanistic Understanding of Alignment Algorithms: A Case Study on DPO and Toxicity'. The baseline was implemented and executed. Rubric score: 0.000. Target not fully met.",
+  "baseline_metrics": {},
+  "paper_claims": {
+    "core_contribution": "{\"paper\": {\"id\": \"ICML2024-DPO-Toxicity\", \"title\": \"A Mechanistic Understanding of Alignment Algorithms: A Case Study on DPO and Toxicity\"}, \"verdict\": \"partial\", \"reproduction_summary\": \"This paper investigates the mechanistic underpinnings of how Direct Preference Optimization (DPO) reduces toxici",
+    "claims": [
+      {
+        "method": "proposed method",
+        "dataset": "main benchmark",
+        "metric": "accuracy",
+        "expected_result": "reported in paper"
+      }
+    ],
+    "datasets": []
+  },
+  "rubric": {
+    "overall_score": 0,
+    "meets_target": false,
+    "areas": []
+  },
+  "improvements": [],
+  "primitive_trace": {
+    "calls": 18,
+    "by_primitive": {
+      "check_user_messages": 1,
+      "heartbeat": 10,
+      "understand_section": 1,
+      "extract_hyperparameters": 1,
+      "detect_environment": 1,
+      "resolve_gpu_requirements": 1,
+      "build_environment": 1,
+      "plan_reproduction": 1,
+      "implement_baseline": 1
+    }
+  },
+  "cost": {
+    "llm_usd": 0.0,
+    "primitives": 0.0
+  },
+  "iterations": 2,
+  "primitive_provider": "real",
+  "degraded": false,
+  "mode": "rlm",
+  "models": {
+    "planner": "claude-oauth",
+    "executor": "claude-sonnet-4-6",
+    "verifier": null,
+    "grader": null
+  },
+  "started_at": "2026-05-29T15:33:04.228801Z",
+  "completed_at": "2026-05-29T15:42:19.040045+00:00",
+  "scope": {
+    "requested": "full paper reproduction",
+    "ran": [
+      "baseline experiment"
+    ],
+    "gaps": []
+  }
+}

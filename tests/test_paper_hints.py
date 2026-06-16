@@ -11,7 +11,7 @@ from backend.agents.prompts.paper_hints import (
     _normalize_paper_id,
     lookup_paper_hint,
 )
-from backend.agents.schemas import InvariantSpec, PaperHint, ScopeSpec
+from backend.agents.schemas import PaperHint
 
 
 SDAR_ID = "2605.15155"

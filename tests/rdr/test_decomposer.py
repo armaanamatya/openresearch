@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from backend.agents.rdr.decomposer import decompose
-from backend.agents.rdr.models import TASK_CATEGORY_ORDER, WorkCluster
+from backend.agents.rdr.models import TASK_CATEGORY_ORDER
 
 
 # ---------------------------------------------------------------------------

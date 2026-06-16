@@ -40,8 +40,8 @@ If 'tesseract' on PATH is a confined snap — check with
 'readlink -f \$(which tesseract)'; a /snap/... path means yes — it also cannot
 read the host /tmp, so point the temp dir at a \$HOME location:
 
-    mkdir -p "\${HOME}/.cache/reprolab_ocr_tmp"
-    export TMPDIR="\${HOME}/.cache/reprolab_ocr_tmp"
+    mkdir -p "\${HOME}/.cache/openresearch_ocr_tmp"
+    export TMPDIR="\${HOME}/.cache/openresearch_ocr_tmp"
 
 A non-snap 'apt install tesseract-ocr tesseract-ocr-eng' avoids both wrinkles.
 NOTE

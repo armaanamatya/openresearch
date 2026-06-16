@@ -1,6 +1,5 @@
 """Tests for the image-exists guard in build_environment (D1-D5)."""
 
-import pytest
 import backend.agents.rlm.primitives as primitives
 from backend.agents.rlm.primitives import build_environment
 
@@ -55,7 +54,7 @@ def test_guard_tag_matches_content_addressed_value(make_context, tmp_path, monke
     # build_environment strips the dockerfile before hashing — mirror that here.
     stripped = dockerfile.strip()
     expected_digest = hashlib.sha1(stripped.encode("utf-8")).hexdigest()[:12]
-    expected_tag = f"reprolab/{ctx.project_id}:env-{expected_digest}"
+    expected_tag = f"openresearch/{ctx.project_id}:env-{expected_digest}"
 
     monkeypatch.setattr(primitives, "_image_exists", lambda tag: True)
     monkeypatch.setattr(primitives, "_build_image",

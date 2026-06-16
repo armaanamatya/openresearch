@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import type { DemoClusterStatus, DemoLeafScore, DemoRepairPass } from "@/lib/demo/demo-run-types";
 import { useRdrArtifacts } from "@/hooks/use-rdr-artifacts";
+import { CollapsiblePanel } from "./collapsible-panel";
 import styles from "./rubric-breakdown.module.css";
 
 interface RubricBreakdownProps {
@@ -236,11 +237,22 @@ export function RubricBreakdown({ projectId, isActive, perModelMetrics }: Rubric
   const hasAny = clusters.length > 0 || leafScores.length > 0 || repairPasses.length > 0;
   if (!hasAny) return null;
 
+  const failedClusters = clusters.filter((c) => c.failed === true).length;
+  const summaryParts: string[] = [];
+  if (leafScores.length > 0)
+    summaryParts.push(`${leafScores.length} ${leafScores.length === 1 ? "leaf" : "leaves"}`);
+  if (clusters.length > 0)
+    summaryParts.push(`${clusters.length} ${clusters.length === 1 ? "cluster" : "clusters"}`);
+  if (failedClusters > 0) summaryParts.push(`${failedClusters} failed`);
+  const summary = summaryParts.join(" · ");
+
   return (
-    <div className={styles.panel} data-testid="rubric-breakdown">
-      <ClusterGrid clusters={clusters} />
-      <RepairBanner passes={repairPasses} />
-      <LeafScoreList leafScores={leafScores} perModelMetrics={perModelMetrics} />
-    </div>
+    <CollapsiblePanel storageKey="rubric-breakdown" title="Rubric breakdown" summary={summary}>
+      <div className={styles.panel} data-testid="rubric-breakdown">
+        <ClusterGrid clusters={clusters} />
+        <RepairBanner passes={repairPasses} />
+        <LeafScoreList leafScores={leafScores} perModelMetrics={perModelMetrics} />
+      </div>
+    </CollapsiblePanel>
   );
 }

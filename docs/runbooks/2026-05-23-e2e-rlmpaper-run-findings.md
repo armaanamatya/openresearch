@@ -3,7 +3,7 @@
 Companion to `docs/superpowers/specs/2026-05-23-e2e-rlmpaper-localhost-run-design.md`.
 
 This is the final, reconciled log for the localhost reproduction of arXiv
-2512.24601, "Recursive Language Models", through ReproLab's RLM path. It
+2512.24601, "Recursive Language Models", through OpenResearch's RLM path. It
 records each backend, UI, and config defect found during the run, the fix that
 shipped or landed in the working tree, and the verification evidence.
 
@@ -280,7 +280,7 @@ The final report and event stream confirm the orchestrator:
 - successfully called `detect_environment` twice, `build_environment` twice,
   `understand_section`, `extract_hyperparameters`, and one of two
   `plan_reproduction` attempts;
-- built Docker image `reprolab/prj_20457ea6673b5a32:env-9caa8f013eab`;
+- built Docker image `openresearch/prj_20457ea6673b5a32:env-9caa8f013eab`;
 - self-recovered from one long `implement_baseline` error and one
   `plan_reproduction` error;
 - wrote `final_report.json`, `final_report.md`, rubric, cost, and

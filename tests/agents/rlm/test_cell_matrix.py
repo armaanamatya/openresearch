@@ -16,9 +16,10 @@ suite verifies:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
+from pathlib import Path
+
 
 from backend.agents.rlm.cell_matrix import (
     DEFAULT_HEADROOM,

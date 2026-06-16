@@ -7,7 +7,6 @@ Verifies that:
 """
 from __future__ import annotations
 
-import pytest
 
 import backend.agents.rlm.safe_builtins_patch  # noqa: F401 — apply patch
 from rlm.environments import local_repl as _local_repl

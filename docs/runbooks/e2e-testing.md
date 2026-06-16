@@ -1,3 +1,4 @@
+<!-- doc-meta: status=current; last-verified=2026-05-23 -->
 # End-to-end testing runbook — UI + backend on origin/main
 
 _Last updated: 2026-05-23. Session that produced this doc: F1–F6 deployment-blocker fixes._
@@ -248,7 +249,7 @@ pkill -9 -f "claude_agent_sdk/_bundled/claude"
 
 The in-flight run subprocess is **resumable** from `runs/<id>/rlm_state/` if it was checkpointed; otherwise it stops with `status: "failed"`. **Frontend resilience (F7)** keeps the lab UI usable even while the backend is wedged — no 502 spam — so the user can navigate, read the existing log, and start a fresh run after the restart.
 
-Tracking: see `learn.md` 2026-05-22 (Workaround B). Long-term: upstream SDK fix.
+Tracking: see `docs/archive/learn.md` 2026-05-22 (Workaround B). Long-term: upstream SDK fix.
 
 ### 4g. Orphan `claude` SDK subprocesses lingering
 
@@ -376,7 +377,7 @@ These are deferred follow-ups, not regressions:
 | 404 spam in console | Confirm F2 deployed (`git log --oneline | grep 633f2a5\|45e60df`); should stop after 15s |
 | Auth errors mid-run | Check `cost_ledger.jsonl` for which provider was actually used per call |
 | Hybrid not dispatching to RDR for a bundle | Verify `third_party/paperbench/<paper_id>/rubric.json` exists |
-| SDK aclose timeouts | Already mitigated by Workaround B (`_run_sdk_in_thread` + `shutdown(wait=False)`) — see `learn.md` 2026-05-22 |
+| SDK aclose timeouts | Already mitigated by Workaround B (`_run_sdk_in_thread` + `shutdown(wait=False)`) — see `docs/archive/learn.md` 2026-05-22 |
 
 ---
 

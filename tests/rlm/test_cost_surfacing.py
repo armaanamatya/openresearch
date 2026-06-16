@@ -16,14 +16,12 @@ Covers:
 from __future__ import annotations
 
 import json
-import statistics
 import tempfile
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
 
 from backend.agents.rlm.run import _compute_cost_summary, _update_cost_summary_loop
 

@@ -12,12 +12,10 @@ I12 — ``ThreadPoolExecutor`` could block past its timeout on shutdown:
 
 from __future__ import annotations
 
-import concurrent.futures
 import json
 import threading
 import time
 
-import pytest
 
 import backend.agents.rlm.primitives as primitives
 from backend.agents.rlm.context import RunContext

@@ -48,7 +48,6 @@ from backend.services.context.workspace.events import (
     VariableLoaded,
     VariablePromoted,
     WorkspaceClosed,
-    WorkspaceCreated,
     WorkspaceReady,
 )
 from backend.services.context.workspace.projections import (

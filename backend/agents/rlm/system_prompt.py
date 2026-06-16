@@ -48,7 +48,7 @@ PROPERTY 2 — YOUR OUTPUT IS BUILT AS A REPL VARIABLE
   window because it is constructed in memory, not in model tokens.
 
 PROPERTY 3 — SUB-CALLS ARE PROGRAMMATIC
-  `llm_query(prompt)` and `rlm_query(context_slice, query)` are Python functions
+  `llm_query(prompt)` and `rlm_query(prompt)` are Python functions
   available in the REPL.  Call them from loops and conditionals — they are not
   tool-use blocks in the API request; they are first-class REPL callables.  Write
   code that orchestrates them: iterate over sections, batch multiple slices,
@@ -152,7 +152,16 @@ Primitives operate on slices and structured specifications you assemble.  Use
 `context` before assembling inputs for the heavy-weight primitives.
 
 When you need structured information from a long passage (>10,000 chars), prefer
-`rlm_query(slice, specific_question)` over `understand_section(slice)`.
+`rlm_query` over `understand_section(slice)`. The library API takes a SINGLE
+composed prompt — call it as:
+
+    answer = rlm_query(f"{slice}\n\nQuestion: {specific_question}")
+
+NEVER call `rlm_query(slice, question)` as two positional args — the second
+positional parameter is `model`, and a question-shaped string there will be
+routed to the CLI as a model name, returning a CLI error string as the
+"answer". (A runtime guard auto-recovers and warns, but compose the prompt
+yourself to avoid the warning.)
 `rlm_query` spawns a sub-RLM that focuses entirely on your question and returns
 a tight answer; `understand_section` returns a generic schema that you must then
 re-process.  For short slices, the primitives remain optimal.  The same applies
@@ -227,6 +236,13 @@ FORCED-ITERATION POLICY:
   `verify_against_rubric` and the iteration floor has not been reached.
   A run that has not scored at all has done less work than one that scored 0.0.
   Remedy: call `run_experiment` → `verify_against_rubric` → THEN `FINAL_VAR`.
+
+  No-experiment check: `FINAL_VAR` is UNCONDITIONALLY refused (regardless of
+  iteration count) if `run_experiment` has never been called in this run.
+  Planning and implementing code is necessary but not sufficient — you MUST
+  actually execute the code via `run_experiment` at least once.
+  Remedy: `build_environment` → `run_experiment` → `verify_against_rubric` →
+  THEN `FINAL_VAR`.
 
   REPL error diagnosis: if you see a bare ``TypeError`` or other exception
   in REPL stderr, look at the full traceback above it for the file and line
@@ -519,6 +535,21 @@ It is a navigation aid ONLY — never cite it as evidence in the final report.""
 # ---------------------------------------------------------------------------
 
 
+_CONTEXT_MAP_SECTION = (
+    "═══════════════════════════════════════════════════════════════\n"
+    "  CONTEXT MAP (orientation cache)\n"
+    "═══════════════════════════════════════════════════════════════\n\n"
+    "An intra-run context map accumulates facts you already derived via "
+    "understand_section, extract_hyperparameters, and detect_environment "
+    "(datasets, metrics, hyperparameters, hardware, environment). BEFORE "
+    "re-deriving any such fact, call read_context_map() and reuse what is "
+    "already there — it saves a full primitive round-trip. The map is a "
+    "NAVIGATION AID ONLY: never cite it as evidence in the final report "
+    "(re-confirm from the corpus or an experiment result for anything that "
+    "must appear in the report).\n"
+)
+
+
 def build_system_prompt(
     *,
     context_metadata: dict,
@@ -563,6 +594,14 @@ def build_system_prompt(
         _HEARTBEAT_SECTION,
         _GPU_SELECTION_SECTION,
     ]
+
+    # PEEK-lite (OPENRESEARCH_CONTEXT_MAP): only when enabled, tell the root to
+    # consult the orientation cache before re-deriving known facts.
+    import os as _os
+    if _os.environ.get("OPENRESEARCH_CONTEXT_MAP", "").strip().lower() in (
+        "on", "1", "true", "yes",
+    ):
+        parts.append(_CONTEXT_MAP_SECTION)
 
     if include_hints:
         parts.append(_OPTIONAL_HINTS_SECTION)

@@ -8,7 +8,6 @@ run is NEVER flagged and a dead flat-and-high run always is.
 
 from __future__ import annotations
 
-import math
 
 from backend.agents.rlm.dead_training_guard import (
     DeadTrainingDetector,
@@ -167,7 +166,6 @@ def test_run_matrix_healthy_cell_not_flagged(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENRESEARCH_DEAD_LOSS_EARLYSTOP", "1")
     monkeypatch.setenv("OPENRESEARCH_DEAD_LOSS_WINDOW", "5")
     from backend.agents.rlm import gpu_cell_runner as gcr
-    import json as _json
     script = tmp_path / "good_cell.py"
     script.write_text(
         "import os, json\n"

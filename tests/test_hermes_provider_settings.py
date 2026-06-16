@@ -37,10 +37,10 @@ PROVIDER_ENV_NAMES = (
     "OPENAI_API_KEY",
     "OPENAI_ADMIN_KEY",
     "RUNPOD_API_KEY",
-    "REPROLAB_ANTHROPIC_API_KEY",
-    "REPROLAB_OPENAI_API_KEY",
-    "REPROLAB_OPENAI_ADMIN_KEY",
-    "REPROLAB_RUNPOD_API_KEY",
+    "OPENRESEARCH_ANTHROPIC_API_KEY",
+    "OPENRESEARCH_OPENAI_API_KEY",
+    "OPENRESEARCH_OPENAI_ADMIN_KEY",
+    "OPENRESEARCH_RUNPOD_API_KEY",
 )
 
 
@@ -156,7 +156,7 @@ def test_settings_picks_up_unprefixed_alias(monkeypatch: pytest.MonkeyPatch):
     """Critical contract for non-docker host runs: pydantic-settings
     reads ``ANTHROPIC_API_KEY``/``OPENAI_API_KEY`` out of .env (or shell
     env) directly via the AliasChoices on the Settings field. No
-    REPROLAB_ prefix needed, no os.environ bootstrap needed."""
+    OPENRESEARCH_ prefix needed, no os.environ bootstrap needed."""
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-from-shell-env")
     settings = get_settings(_force_reload=True)
@@ -164,22 +164,22 @@ def test_settings_picks_up_unprefixed_alias(monkeypatch: pytest.MonkeyPatch):
     assert settings.openai_api_key == "sk-from-shell-env"
 
 
-def test_settings_falls_back_to_reprolab_prefix(monkeypatch: pytest.MonkeyPatch):
+def test_settings_falls_back_to_openresearch_prefix(monkeypatch: pytest.MonkeyPatch):
     """Operators who have OPENAI_API_KEY reserved at the shell level for
-    a different scope can use REPROLAB_OPENAI_API_KEY without conflict."""
+    a different scope can use OPENRESEARCH_OPENAI_API_KEY without conflict."""
 
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setenv("REPROLAB_OPENAI_API_KEY", "sk-reprolab-scoped")
+    monkeypatch.setenv("OPENRESEARCH_OPENAI_API_KEY", "sk-openresearch-scoped")
     settings = get_settings(_force_reload=True)
 
-    assert settings.openai_api_key == "sk-reprolab-scoped"
+    assert settings.openai_api_key == "sk-openresearch-scoped"
 
 
 def test_settings_accepts_unprefixed_runpod_api_key(monkeypatch: pytest.MonkeyPatch):
     """RunPod is the default sandbox, so its standard env name must work
     from either shell env or .env without an os.environ bootstrap."""
 
-    monkeypatch.delenv("REPROLAB_RUNPOD_API_KEY", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_RUNPOD_API_KEY", raising=False)
     monkeypatch.setenv("RUNPOD_API_KEY", "runpod-from-shell-env")
     settings = get_settings(_force_reload=True)
 
@@ -196,6 +196,17 @@ def test_settings_reads_unprefixed_provider_keys_from_dotenv(
     (tmp_path / ".env").write_text(
         "OPENAI_API_KEY=sk-from-dotenv\nRUNPOD_API_KEY=runpod-from-dotenv\n"
     )
+    # Hermeticity: the repo's real .env was loaded into os.environ at import
+    # (load_dotenv), and process env OUTRANKS this tmp dotenv — scrub every
+    # spelling so the test exercises the dotenv path on any machine.
+    for _k in (
+        # BOTH spellings: the import-time bridge mirrors the real keys to the
+        # legacy names, and the AliasChoices read those too (a naming sweep
+        # once collapsed this list and un-scrubbed the legacy copies).
+        "OPENAI_API_KEY", "OPENRESEARCH_OPENAI_API_KEY", "REPROLAB_OPENAI_API_KEY",
+        "RUNPOD_API_KEY", "OPENRESEARCH_RUNPOD_API_KEY", "REPROLAB_RUNPOD_API_KEY",
+    ):
+        monkeypatch.delenv(_k, raising=False)
     monkeypatch.chdir(tmp_path)
     settings = get_settings(_force_reload=True)
 

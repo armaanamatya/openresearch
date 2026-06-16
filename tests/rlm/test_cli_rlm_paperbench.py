@@ -11,11 +11,8 @@ without needing an arXiv ID or PDF path.
 
 from __future__ import annotations
 
-import argparse
-import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
 
 
 class TestIsPaperbenchBundleId:
@@ -58,7 +55,6 @@ class TestCmdReproduceRlmPaperbenchDispatch:
     ):
         """A PaperBench bundle ID with --mode rlm should bypass ingest and call run_pipeline_rlm."""
         from argparse import Namespace
-        from backend.cli import _is_paperbench_bundle_id
 
         # Patch _cmd_reproduce_rlm_paperbench to capture the call.
         dispatched: list[Any] = []

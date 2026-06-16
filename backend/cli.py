@@ -24,6 +24,7 @@ import logging
 import os
 import re
 import shutil
+import socket
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -91,7 +92,7 @@ def _warn_on_shell_env_override() -> None:
     _SUSPECT_KEYS = (
         "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
         "FEATHERLESS_API_KEY", "OPENROUTER_API_KEY",
-        "AZURE_OPENAI_API_KEY", "REPROLAB_RUNPOD_API_KEY",
+        "AZURE_OPENAI_API_KEY", "OPENRESEARCH_RUNPOD_API_KEY",
     )
     def _prefix(s: str) -> str:
         return f"{s[:10]}…{s[-4:]}" if len(s) > 14 else "<set>"
@@ -332,6 +333,8 @@ def _mark_demo_status_stopped(
                 existing = json.loads(path.read_text(encoding="utf-8"))
             except Exception:
                 existing = {}
+        if existing.get("status") in ("completed", "failed", "killed"):
+            return  # a terminal status (esp. SIGTERM "killed") already won
         now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         merged = {
             **existing,
@@ -383,8 +386,8 @@ def _mark_demo_status_failed(
                 existing = {}
         except Exception:
             existing = {}  # corrupt; overwrite with a fresh failed payload
-        if existing.get("status") in ("completed", "failed", "stopped"):
-            return  # something else (probably _finalize) already wrote terminal status
+        if existing.get("status") in ("completed", "failed", "stopped", "killed"):
+            return  # something else (probably _finalize or the SIGTERM handler) already wrote terminal status
         now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         merged = {
             **existing,
@@ -421,6 +424,83 @@ def _mark_demo_status_failed(
             pass
     except Exception:
         return
+
+
+# --- CLI termination handling (STAB-3 / BUG-NEW-041) -------------------------
+# SIGTERM/SIGHUP (e.g. `kill <pid>`, terminal hangup, `kill_and_restart.sh`)
+# would otherwise leave demo_status.json reading "running" forever. We install
+# handlers that atomically flip the active run to status="killed" (with a
+# killReason), then re-raise SIGINT so the existing KeyboardInterrupt path runs
+# the graceful teardown. SIGKILL stays unhandleable by design.
+_ACTIVE_PROJECT_ID: str | None = None
+_ACTIVE_RUNS_ROOT: Path | None = None
+
+
+def _set_active_project_id(project_id: str | None, runs_root: Path | None = None) -> None:
+    """Record the in-flight run so the termination handler knows what to flip."""
+    global _ACTIVE_PROJECT_ID, _ACTIVE_RUNS_ROOT
+    _ACTIVE_PROJECT_ID = project_id
+    if runs_root is not None:
+        _ACTIVE_RUNS_ROOT = runs_root
+
+
+def _mark_demo_status_killed(
+    runs_root: Path,
+    project_id: str,
+    *,
+    kill_reason: str = "Process terminated (SIGTERM/SIGHUP)",
+) -> None:
+    """Atomically flip demo_status.json to status=killed. Terminal: once written,
+    _mark_demo_status_stopped/_failed will not overwrite it. Silent on failure."""
+    try:
+        path = runs_root / project_id / "demo_status.json"
+        existing: dict[str, Any] = {}
+        if path.exists():
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(existing, dict):
+                    existing = {}
+            except Exception:
+                existing = {}
+        if existing.get("status") in ("completed", "failed", "killed"):
+            return
+        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        merged = {
+            **existing,
+            "status": "killed",
+            "killReason": kill_reason,
+            "updatedAt": now_iso,
+            "completedAt": now_iso,
+            "error": kill_reason,
+        }
+        _atomic_write_json(path, merged)
+    except Exception:
+        return
+
+
+def _install_termination_handlers() -> None:
+    """Install SIGTERM/SIGHUP handlers that mark the active run killed, then
+    re-raise SIGINT so the graceful KeyboardInterrupt teardown runs."""
+    import signal
+
+    def _handler(signum, _frame):
+        name = signal.Signals(signum).name
+        if _ACTIVE_PROJECT_ID and _ACTIVE_RUNS_ROOT is not None:
+            _mark_demo_status_killed(
+                _ACTIVE_RUNS_ROOT,
+                _ACTIVE_PROJECT_ID,
+                kill_reason=f"Process terminated ({name})",
+            )
+        # Hand off to the graceful path (KeyboardInterrupt) for teardown.
+        signal.raise_signal(signal.SIGINT)
+
+    for _sig in (signal.SIGTERM, getattr(signal, "SIGHUP", None)):
+        if _sig is not None:
+            try:
+                signal.signal(_sig, _handler)
+            except (ValueError, OSError):
+                # Not on the main thread, or unsupported on this platform.
+                pass
 
 
 def _make_services(
@@ -768,7 +848,7 @@ def _cmd_reproduce_rdr(args: argparse.Namespace, runs_root: Path) -> int:
     print(f"[rdr] runs_root : {runs_root}", file=sys.stderr)
     print(f"[rdr] sandbox   : {sandbox_mode.value}", file=sys.stderr)
     if resume:
-        print(f"[rdr] resume    : True", file=sys.stderr)
+        print("[rdr] resume    : True", file=sys.stderr)
 
     try:
         rdr_result = asyncio.run(
@@ -915,6 +995,41 @@ def _cmd_reproduce_rlm_paperbench(args: argparse.Namespace, runs_root: Path) -> 
     except SandboxRuntimeError as exc:
         print(f"[rlm] Sandbox preflight failed: {exc}", file=sys.stderr)
         return 2
+
+    # 2026-05-29: write demo_status.json up front so the lab UI recognizes the
+    # run as a real one and stops redirecting to "lab main". Without this the
+    # frontend's project guard treats the run as orphan (it uses demo_status
+    # as the existence check). The normal ingest path writes this via Lane U
+    # in cmd_reproduce; the paperbench branch bypasses that, so we mirror
+    # the write here. Title comes from the bundle's config.yaml.
+    _ds_path = runs_root / project_id / "demo_status.json"
+    _ds_path.parent.mkdir(parents=True, exist_ok=True)
+    if not _ds_path.exists():
+        from datetime import datetime, timezone
+        _now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        _ds_payload = {
+            "paperId": paper_id,
+            "paperTitle": getattr(bundle, "title", paper_id),
+            "paper": {
+                "id": paper_id,
+                "title": getattr(bundle, "title", paper_id),
+            },
+            "projectId": project_id,
+            "outputDir": str(runs_root / project_id),
+            "runMode": getattr(args, "mode", "rlm"),
+            "status": "running",
+            "startedAt": _now_iso,
+            "updatedAt": _now_iso,
+            "primitiveProvider": "real",
+            # Liveness prereq (audit 2026-06-09): without a pid the orphan
+            # sweep skips this run; the pipeline runs in this same process.
+            # pidHost scopes the pid to the host that minted it (a
+            # containerized sweeper can't probe host pids).
+            "pid": os.getpid(),
+            "pidHost": socket.gethostname(),
+        }
+        _ds_path.write_text(json.dumps(_ds_payload, indent=2), encoding="utf-8")
+        print("[rlm] wrote demo_status.json (status=running)", file=sys.stderr)
 
     # Route by mode: default 'rlm' → hybrid; 'rlm-pure' → pure RLM.
     mode = getattr(args, "mode", "rlm")
@@ -1380,6 +1495,10 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     from backend.observability.run_logging import configure_root_logger
     configure_root_logger()
     runs_root = Path(args.runs_root)
+    # STAB-3: install SIGTERM/SIGHUP handlers so an out-of-band kill flips the
+    # active run's demo_status to "killed" instead of leaving it "running".
+    _set_active_project_id(None, runs_root)
+    _install_termination_handlers()
 
     # Dynamic GPU CLI overrides: set env vars BEFORE any Settings construction so
     # pydantic-settings picks them up. Non-None CLI values override env defaults.
@@ -1569,12 +1688,25 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
     else:
-        # PR-π Module D — resume offer: check for a prior interrupted run BEFORE
-        # archiving so rlm_state/ is still readable for the iteration count.
+        # PR-π Module D — interrupted-run notice. This is the rlm/rlm-pure
+        # path (rdr dispatched above), and RLM checkpoint-resume has NO read
+        # path yet: repl_state.pickle + rlm_state/ are write-only, and
+        # args.resume is consumed only by the rdr handler. The old code here
+        # prompted "Resume from last checkpoint? [Y/n]" and then archived the
+        # checkpoints and started fresh regardless of the answer — a lie to
+        # the operator (audit 2026-06-09). Say what actually happens instead.
         _presumed_pid_early = getattr(args, "project_id", None) or project_id_for(source)
         _prior_project_dir = runs_root / _presumed_pid_early
-        if not getattr(args, "resume", False) and _offer_resume(_prior_project_dir):
-            args.resume = True
+        _prior_interrupted = _detect_interrupted_run(_prior_project_dir)
+        if _prior_interrupted is not None:
+            _iter, _rubric = _prior_interrupted
+            print(
+                f"Detected interrupted prior run for {_prior_project_dir.name} "
+                f"(iter={_iter}, last_rubric={_rubric:.2f}). RLM-mode resume is "
+                "not implemented; its state will be archived to attempts/ and "
+                "a fresh attempt started. (RDR-mode runs support --resume.)",
+                file=sys.stderr,
+            )
 
         # Archive prior-attempt artifacts (final_report.*, experiment_runs.jsonl,
         # cost_ledger.jsonl, dashboard_events.jsonl, rlm_state/, etc.) under
@@ -1604,8 +1736,30 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         project_id_override=(getattr(args, "project_id", None) or None),
     )
     if getattr(args, "project_id", None):
+        # ISSUE-1 (2026-05-30, ported): the override may only *mirror* the
+        # source-derived id. The REST API spawns the CLI with --project-id set
+        # to the SAME deterministic id (project_id_for(source)) so the CLI
+        # writes to the dir the API watches — that is a safe no-op. An
+        # ARBITRARY value (e.g. the old runbook's `sdar_<ts>`) repoints
+        # project_id AFTER register_project keyed the event-store aggregate by
+        # the source-derived id, so the very next fetch_paper(project_id=...)
+        # misses the aggregate -> UnknownProject and the run dies at ingest.
+        # Reject the mismatch with an actionable message rather than failing
+        # opaquely three steps later.
+        if args.project_id != project_id:
+            print(
+                f"             ERROR: --project-id={args.project_id!r} does not match the "
+                f"source-derived project id {project_id!r}. The override may only mirror the "
+                f"source-derived id (the REST API passes the same deterministic id); an "
+                f"arbitrary value breaks ingest (fetch_paper -> UnknownProject). "
+                f"Omit --project-id to use the source-derived id.",
+                file=sys.stderr,
+            )
+            return 1
         project_id = args.project_id
     print(f"             project_id={project_id}", file=sys.stderr)
+    # STAB-3: register the in-flight run so a SIGTERM/SIGHUP marks it "killed".
+    _set_active_project_id(project_id, runs_root)
 
     print("[ingest 2/6] Fetching paper", file=sys.stderr)
     if not intake.fetch_paper(FetchPaper(project_id=project_id)):
@@ -1706,7 +1860,6 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     print(f"{'='*60}\n", file=sys.stderr)
 
     # --- Phase 2: Agent Pipeline ---
-    user_hints = [h.strip() for h in args.hints.split(",")] if args.hints else None
     # (#7) The blacklist is resolved + published to OPENRESEARCH_BLOCKED_TERMS_JSON in
     # the paper-hint env block above (this was a dead `blacklist_terms` line that
     # computed the value and discarded it — the benchmark-integrity bug #7 fixes).
@@ -2384,40 +2537,26 @@ def _read_last_rubric(project_dir: Path) -> float:
     return 0.0
 
 
-def _offer_resume(project_dir: Path) -> bool:
-    """Check for an interrupted prior run and offer to resume.
+def _detect_interrupted_run(project_dir: Path) -> tuple[int, float] | None:
+    """Detect an interrupted prior run; return (iterations, last_rubric).
 
-    Returns True if the user agreed to resume (or non-interactively the
-    run is skipped). Returns False if there is no prior interrupted run or
-    the user declined. Only prompts when stdin is a TTY.
+    Returns None when there is no prior run, the status file is unreadable,
+    or the prior status is anything other than ``interrupted``. Detection
+    only — it never prompts: this replaced ``_offer_resume``, whose
+    "Resume from last checkpoint? [Y/n]" promise was a no-op on the RLM path
+    (args.resume is consumed only by the rdr handler, and the rlm path
+    archived the checkpoints regardless of the answer).
     """
-    import sys
-
     status_path = project_dir / "demo_status.json"
     if not status_path.exists():
-        return False
+        return None
     try:
         prior = json.loads(status_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return False
+        return None
     if prior.get("status") != "interrupted":
-        return False
-
-    last_iter = _count_iterations(project_dir)
-    last_rubric = _read_last_rubric(project_dir)
-    print(
-        f"Detected interrupted prior run for {project_dir.name} "
-        f"(iter={last_iter}, last_rubric={last_rubric:.2f})."
-    )
-
-    if not sys.stdin.isatty():
-        return False
-
-    try:
-        answer = input("Resume from last checkpoint? [Y/n] ").strip().lower()
-    except EOFError:
-        return False
-    return answer in {"", "y", "yes"}
+        return None
+    return _count_iterations(project_dir), _read_last_rubric(project_dir)
 
 
 def _module_main(argv: list[str] | None = None) -> None:

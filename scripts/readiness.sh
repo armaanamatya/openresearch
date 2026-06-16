@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# scripts/readiness.sh — launch / testing readiness for OpenResearch (ReproLab).
+# scripts/readiness.sh — launch / testing readiness for OpenResearch (OpenResearch).
 #
 # Tiered checks: dependencies → static analysis → tests → boot smoke →
 # real-run smoke → deployment surface. Each tier blocks the next.
@@ -485,7 +485,7 @@ tier6_run_smoke() {
 
   # Use a temp runs dir so we can clean up without touching real runs.
   local tmp_runs
-  tmp_runs=$(mktemp -d -t reprolab-readiness.XXXXXX)
+  tmp_runs=$(mktemp -d -t openresearch-readiness.XXXXXX)
   trap "rm -rf '${tmp_runs}'" RETURN
 
   log_check_start "ftrl --mode rlm (≤\$${RUN_SMOKE_BUDGET_USD}, ${RUN_SMOKE_WALL_S}s)"
@@ -538,7 +538,7 @@ tier7_deploy() {
   fi
 
   if command -v docker >/dev/null; then
-    run_check 7 "Dockerfile parses" "docker build -f Dockerfile -t reprolab:readiness-check --no-cache --target=runtime . >/dev/null 2>&1 || docker build -f Dockerfile -t reprolab:readiness-check . >/dev/null 2>&1"
+    run_check 7 "Dockerfile parses" "docker build -f Dockerfile -t openresearch:readiness-check --no-cache --target=runtime . >/dev/null 2>&1 || docker build -f Dockerfile -t openresearch:readiness-check . >/dev/null 2>&1"
   else
     skip_check 7 "(docker not installed)"
   fi
@@ -549,7 +549,7 @@ tier7_deploy() {
   fi
 
   # RunPod creds (only checked, not used)
-  if [[ -f .env ]] && grep -qE '^REPROLAB_RUNPOD_API_KEY=.+' .env; then
+  if [[ -f .env ]] && grep -qE '^OPENRESEARCH_RUNPOD_API_KEY=.+' .env; then
     run_check 7 "RunPod creds present in .env" "true"
   else
     warn_check 7 "RunPod creds present" "missing — --sandbox runpod runs will fail at preflight"

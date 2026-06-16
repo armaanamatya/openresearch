@@ -1,6 +1,10 @@
-# ReproLab Agent — Developer Setup Guide
+<!-- doc-meta: status=current; last-verified=2026-06-09 -->
+# OpenResearch Agent — Developer Setup Guide
 
-Everything a contributor needs to install and configure before working on ReproLab.
+> **Doc status:** Current · last verified 2026-06-09. If a command here fails,
+> `CLAUDE.md` and `.env.example` are authoritative.
+
+Everything a contributor needs to install and configure before working on OpenResearch.
 
 ## Prerequisites
 
@@ -142,7 +146,7 @@ runpodctl version
 Set the backend environment:
 
 ```bash
-REPROLAB_RUNPOD_API_KEY=
+OPENRESEARCH_RUNPOD_API_KEY=
 OPENRESEARCH_RUNPOD_IMAGE=runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04
 OPENRESEARCH_RUNPOD_GPU_TYPE=NVIDIA GeForce RTX 4090
 OPENRESEARCH_RUNPOD_GPU_COUNT=1
@@ -155,7 +159,7 @@ Then run a paper with:
 python -m backend.cli reproduce path/to/paper.pdf --mode rlm --sandbox runpod
 ```
 
-The Runpod backend creates a GPU Pod, exposes SSH on `22/tcp`, uploads generated code to `/workspace/reprolab/<project>/baseline/work`, runs commands from `/code` (symlinked to the upload dir), syncs `/artifacts` back into the local run directory, and deletes the Pod when the run ends.
+The Runpod backend creates a GPU Pod, exposes SSH on `22/tcp`, uploads generated code to `/workspace/openresearch/<project>/baseline/work`, runs commands from `/code` (symlinked to the upload dir), syncs `/artifacts` back into the local run directory, and deletes the Pod when the run ends.
 
 ## 5. Node.js and frontend dependencies
 
@@ -174,8 +178,8 @@ sudo apt install -y nodejs
 Frontend setup (run from repo root):
 
 ```bash
-cd frontend   # once the frontend directory exists
-npm install
+cd frontend
+npm ci
 ```
 
 ## 6. Python dependencies
@@ -183,12 +187,11 @@ npm install
 From the repo root (with your venv activated):
 
 ```bash
-pip install -r requirements.txt
-# or, equivalently:
-pip install -r backend/requirements.txt
+pip install -r backend/requirements.txt -r backend/requirements-dev.txt
 ```
 
 `requirements.txt` at the repo root delegates to `backend/requirements.txt`.
+Install `backend/requirements-dev.txt` too for pytest and parallel test runs.
 Key packages installed by the backend runtime set:
 
 | Package | Purpose |
@@ -343,7 +346,7 @@ What the compose file mounts:
   PaperBench statuses between restarts.
 - `./third_party` (read-only) → vendored PaperBench bundles.
 - `./.env` (read-only) → keeps `OPENAI_API_KEY` /
-  `ANTHROPIC_API_KEY` / `REPROLAB_RUNPOD_API_KEY` available to the
+  `ANTHROPIC_API_KEY` / `OPENRESEARCH_RUNPOD_API_KEY` available to the
   entrypoint without printing secret values through `docker compose config`
   (and prevents in-container typos from clobbering your local secrets).
 

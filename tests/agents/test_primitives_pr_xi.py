@@ -8,10 +8,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +150,6 @@ class TestImplementBaselineRejectsErrorEnvelope:
         # Patch _run_baseline_with_sdk to return a minimal BaselineResult.
         # The function is called inside asyncio.run() in a thread pool, so we
         # need the mock to be a coroutine function (async def).
-        import asyncio as _asyncio
         code_dir = ctx.project_dir / "code"
 
         async def _fake_run(*args, **kwargs):

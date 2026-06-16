@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import warnings
 from typing import Any, AsyncIterator
+
+logger = logging.getLogger(__name__)
 
 # Suppress the harmless "aclose(): asynchronous generator is already running"
 # RuntimeWarning that the claude-agent-sdk emits on every subprocess teardown.
@@ -106,6 +109,19 @@ class ClaudeAgentRuntime:
                             tool_input=tool_input,
                         )
             elif isinstance(message, ResultMessage):
+                # FIX-E (2026-05-30): surface the SDK's own error metadata. On a
+                # transport wedge the SDK yields an is_error ResultMessage (carrying
+                # api_error_status, e.g. 429/500/529) just before raising ProcessError.
+                # Previously only usage was read, so the HTTP status was invisible and
+                # diagnosing FM-001 required spelunking ~/.claude transcripts. Log it.
+                if getattr(message, "is_error", False):
+                    logger.warning(
+                        "claude_runtime: SDK error ResultMessage subtype=%s "
+                        "api_error_status=%s num_turns=%s",
+                        getattr(message, "subtype", None),
+                        getattr(message, "api_error_status", None),
+                        getattr(message, "num_turns", None),
+                    )
                 usage = coerce_usage(getattr(message, "usage", None))
                 yield StreamUsage(
                     input_tokens=_int_value(usage, "input_tokens"),

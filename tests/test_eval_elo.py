@@ -1,13 +1,11 @@
 """Tests for Elo tournament system."""
 
-import pytest
 
 from backend.evals.elo import (
     EloTournament,
     ELO_START_RATING,
     compute_confidence,
 )
-from backend.evals.schemas import EloMatchResult, EloRating
 
 
 class TestEloTournament:

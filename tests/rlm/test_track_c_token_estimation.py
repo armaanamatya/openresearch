@@ -11,10 +11,8 @@ C4 — write_final_report_rlm calls recompute_calibration best-effort.
 from __future__ import annotations
 
 import json
-import os
-from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -150,7 +148,6 @@ def test_c2_unknown_model_returns_none():
 
 def test_c3_drain_root_usage_returns_and_clears():
     """drain_root_usage() returns accumulated usage and clears the global dict."""
-    import importlib
     import backend.agents.rlm.claude_oauth_client as mod
 
     # Force the CLI transport for this test so usage is actually accumulated.
@@ -301,6 +298,15 @@ def test_c4_calibration_auto_runs_at_finalize(tmp_path, monkeypatch):
 
     # Minimal ledger so tokens_total.json can be written.
     (project_dir / "cost_ledger.jsonl").write_text("", encoding="utf-8")
+
+    # Evidence gate (ported 2026-06-09): seed a success+metrics row so the
+    # partial verdict is legitimately earned (calibration only runs for
+    # non-failed verdicts, and an evidence-less partial now downgrades).
+    import json as _json
+    (project_dir / "experiment_runs.jsonl").write_text(
+        _json.dumps({"success": True, "metrics": {"accuracy": 0.9}}) + "\n",
+        encoding="utf-8",
+    )
 
     report = RLMFinalReport(verdict="partial", reproduction_summary="C4 test")
 

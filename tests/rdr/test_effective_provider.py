@@ -8,7 +8,6 @@ fixed _build_llm_client in rlm/run.py.
 
 from __future__ import annotations
 
-from unittest.mock import patch
 
 import pytest
 

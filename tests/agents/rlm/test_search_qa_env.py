@@ -29,7 +29,9 @@ import pytest
 # removed again right after import so it does NOT leak into the rest of the pytest
 # session — a lingering entry gives package modules (e.g. rubric_guard) a second
 # identity under a bare ``import``, breaking unrelated tests (rl_scaffold).
-_RLM_DIR = "/home/sww35/openresearch-fullscope/backend/agents/rlm"
+_RLM_DIR = str(  # repo-relative: the old hardcoded /home/sww35/... path
+    __import__("pathlib").Path(__file__).resolve().parents[3] / "backend" / "agents" / "rlm"
+)  # only collected on the author's machine (audit 2026-06-09)
 sys.path.insert(0, _RLM_DIR)
 try:
     import search_qa_env  # noqa: E402

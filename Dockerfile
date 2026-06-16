@@ -17,7 +17,16 @@
 # --------------------------------------------------------------------------- #
 # Stage 1 — Python dependency build                                            #
 # --------------------------------------------------------------------------- #
-FROM python:3.12-slim AS python-deps
+# Digest-pinned (audit 2026-06-10; bases corrected 2026-06-11): a moving
+# :3.12-slim tag silently changes the build between runs — the first digest
+# grab proved it by quietly landing on Debian TRIXIE while node stayed on
+# bookworm, breaking the same-base invariant the cross-stage node copy
+# depends on. Both stages now pin EXPLICITLY-bookworm MULTI-ARCH INDEX
+# digests (docker buildx imagetools inspect — never `docker images
+# --digests`, which can return a single-platform digest that breaks the
+# other arch). Node 22 = active LTS, matches CI's node-version and the
+# engines range. Bump deliberately, both stages together.
+FROM python:3.12-slim-bookworm@sha256:76d4b7b6305788c6b4c6a19d6a22a3921bf802e9af4d5e1e5bd771208dba74bf AS python-deps
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -47,7 +56,7 @@ RUN pip install --upgrade pip wheel \
 # --------------------------------------------------------------------------- #
 # Stage 2 — Frontend build                                                     #
 # --------------------------------------------------------------------------- #
-FROM node:20-bookworm-slim AS frontend
+FROM node:22-bookworm-slim@sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7ade28e4eef7d2934522b752 AS frontend
 
 WORKDIR /frontend
 
@@ -68,7 +77,7 @@ RUN rm -rf .next/dev .next/cache \
 # --------------------------------------------------------------------------- #
 # Stage 3 — Runtime image                                                      #
 # --------------------------------------------------------------------------- #
-FROM python:3.12-slim AS runtime
+FROM python:3.12-slim-bookworm@sha256:76d4b7b6305788c6b4c6a19d6a22a3921bf802e9af4d5e1e5bd771208dba74bf AS runtime
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -87,23 +96,34 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tini \
         ca-certificates \
         curl \
-        gnupg \
         openssh-client \
         docker.io \
         tesseract-ocr \
         tesseract-ocr-eng \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
+
+# Node comes from the frontend builder stage (same Debian bookworm base —
+# pinned explicitly; see the digest note on stage 1), so
+# the runtime serves with EXACTLY the Node that built the app. This replaces
+# the old `curl -fsSL https://deb.nodesource.com/setup_20.x | bash -` — an
+# unpinned remote script piped to root at build time, which could also drift
+# the serving Node away from the build Node (audit 2026-06-09). gnupg was
+# only needed for that nodesource flow and is gone with it.
+COPY --from=frontend /usr/local/bin/node /usr/local/bin/node
+COPY --from=frontend /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && node --version && npx --version
 
 # Bring the pre-built Python venv from stage 1.
 COPY --from=python-deps /opt/venv /opt/venv
 
-# App layout.
+# App layout. (start.sh is deliberately NOT copied: it is the host launcher —
+# it references .venv/bin/uvicorn, which does not exist in this image; the
+# container boots via /entrypoint.sh below.)
 WORKDIR /app
 COPY backend/ ./backend/
 COPY pyproject.toml ./
-COPY start.sh ./
 COPY third_party/ ./third_party/
 COPY paperbench1.pdf ./paperbench1.pdf
 COPY demo_paper.pdf ./demo_paper.pdf
@@ -121,8 +141,25 @@ COPY --from=frontend /frontend/next.config.ts ./frontend/next.config.ts
 RUN mkdir -p /app/runs
 
 # Single entrypoint runs both servers and forwards signals to children.
+# load_env.sh is the python-dotenv-delegating .env loader the entrypoint
+# sources (kept as a separate file so tests pin its parse to dotenv_values).
+COPY docker/load_env.sh /load_env.sh
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+
+# Non-root runtime user (audit 2026-06-10). Both servers run as `app`; the
+# docker-socket capability is granted at runtime via compose `group_add`
+# (see docker-compose.yml) — membership in the socket's group is still
+# root-equivalent ON THE HOST by design (LocalDockerBackend needs it for
+# inner sandbox runs), but the processes themselves no longer run as root:
+# no root-owned FS writes, no setuid surface, container escapes land on an
+# unprivileged uid. The runs/ volume is chowned at first boot by compose's
+# bind mount semantics on macOS; on Linux ensure ./runs is writable by
+# uid 10001 (or run `chown -R 10001 runs/`).
+RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app \
+    && chown -R app:app /app
+USER app
+ENV HOME=/home/app
 
 EXPOSE 8000 3000
 ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]

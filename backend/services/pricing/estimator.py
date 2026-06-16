@@ -9,14 +9,11 @@ Spec: docs/superpowers/specs/2026-05-25-budget-estimation-design.md §estimator.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
 import os
 import re
-import subprocess
-import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path

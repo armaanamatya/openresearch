@@ -1,5 +1,5 @@
 {
-  "name": "reprolab-frontend",
+  "name": "openresearch-frontend",
   "version": "0.1.0",
   "private": true,
   "engines": {
@@ -13,7 +13,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@rolldown/binding-linux-x64-gnu": "^1.0.2",
     "@types/d3-force": "^3.0.10",
     "cmdk": "^1.1.1",
     "d3-force": "^3.0.0",

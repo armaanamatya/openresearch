@@ -13,7 +13,7 @@ Guards (a) local/runpod/docker still use gpu_cell_runner unchanged,
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -92,7 +92,7 @@ def test_ensure_sandbox_mode_available_azure_calls_ensure_azure_available():
 
 def test_ensure_sandbox_mode_available_runpod_not_affected(monkeypatch):
     """Regression: runpod path still calls ensure_runpod_available, not ensure_azure_available."""
-    monkeypatch.setenv("REPROLAB_RUNPOD_API_KEY", "fake-key")
+    monkeypatch.setenv("OPENRESEARCH_RUNPOD_API_KEY", "fake-key")
     with (
         patch("backend.services.runtime.ensure_runpod_available") as mock_runpod,
         patch("backend.services.runtime.ensure_azure_available") as mock_azure,

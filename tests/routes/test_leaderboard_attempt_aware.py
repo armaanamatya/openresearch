@@ -20,12 +20,11 @@ from pathlib import Path
 import pytest
 
 from backend.services.runs.report_resolution import (
-    ResolvedReport,
     extract_scores,
     normalized_score,
     resolve_best_report,
 )
-from backend.routes.leaderboard import LeaderboardRow, aggregate_leaderboard
+from backend.routes.leaderboard import aggregate_leaderboard
 
 
 # ---------------------------------------------------------------------------

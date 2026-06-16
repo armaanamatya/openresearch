@@ -362,7 +362,7 @@ export function LabShell({
   );
 
   return (
-    <div className="reproLab">
+    <div className="openResearch">
       <PresentationModeProvider mode={presentationMode}>
         <div className="layout">
           <LabSidebar

@@ -27,9 +27,9 @@ const instrumentSerif = Instrument_Serif({
 });
 
 export const metadata: Metadata = {
-  title: "ReproLab — reproduce any ML paper, end to end",
+  title: "OpenResearch — reproduce any ML paper, end to end",
   description:
-    "ReproLab is a paper-reproduction agent built on the Recursive Language Model paradigm. It reads a paper, builds the environment, implements the method, runs the experiments, and grades itself against the paper's own claims."
+    "OpenResearch is a paper-reproduction agent built on the Recursive Language Model paradigm. It reads a paper, builds the environment, implements the method, runs the experiments, and grades itself against the paper's own claims."
 };
 
 export default function RootLayout({

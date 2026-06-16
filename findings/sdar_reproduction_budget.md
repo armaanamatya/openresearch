@@ -1,7 +1,7 @@
-# Grant-Style Budget — Full Reproduction of SDAR through ReproLab
+# Grant-Style Budget — Full Reproduction of SDAR through OpenResearch
 
 **Paper:** *Self-Distilled Agentic Reinforcement Learning* (SDAR), arXiv **2605.15155v1**, 14 May 2026.
-**System:** OpenResearch / ReproLab (RLM orchestrator).
+**System:** OpenResearch / OpenResearch (RLM orchestrator).
 **Prepared:** 2026-05-29. **Prices:** current as of May 2026 (sources at end).
 **Classification of the paper:** *hard*. It stresses every dimension at once — 3 Qwen scales (1.7B / 3B / 7B) × 3 agentic environments (ALFWorld, WebShop, Search-QA) × 6 trained methods (GRPO, OPSD, Skill-SD, GRPO+OPSD, RLSD, **SDAR**) + untrained Vanilla, GRPO RL with sigmoid-gated OPSD, and a leaf-level rubric that *reads the code* **and** *checks that real Qwen weights + real ALFWorld episodes actually load and train*.
 
@@ -9,7 +9,84 @@
 
 ---
 
-## 1. Cost anatomy of one ReproLab run
+## 0. LLM token budget per run — SDAR vs Adam (added 2026-06-02)
+
+> This section answers a narrower question than the rest of the doc: **how many LLM tokens does one end-to-end run consume**, across *both* LLM surfaces, for the heavy paper (SDAR) and a light paper (Adam). The dollar/GPU grant analysis (§1 onward) is the backing.
+
+### 0.1 What is measured vs modeled — read this first
+A run has two LLM surfaces: the **root orchestrator** and the **sub-agents** (Sonnet 4.6 coding sessions — `implement_baseline`, `run_experiment` analysis — which are the dominant token sink). What's on disk depends on which auth path each run used:
+
+- **Runs on metered Sonnet** capture a real SDK `usage` block per session in `cost_ledger.jsonl` (nonzero `output_tokens`/`cache_read_input_tokens`, even where `cost_usd` wasn't populated). **Six committed PPO runs are in this state** — a real sub-agent anchor (§0.2).
+- **Runs on `claude-oauth`** (subscription, per-message-free) log `0/0/$0` for every sub-agent line — the $0 is a *pricing* artifact, not absence of work. **The `best_runs/adam` run and the committed SDAR run `prj_09047604` are OAuth** → their sub-agent burn is **unmeasured** (the SDK transcripts ran on a remote host, `outputDir=/home/sww35/...`, and did not travel with the artifacts).
+
+So: **the sub-agent per-session cost is *measured* (from the PPO runs) and used to model both Adam and SDAR.** Adam's *root* is separately measured (it has a clean completed run); SDAR's root is partial/stale and scaled.
+
+### 0.2 Measured anchor — real Sonnet 4.6 sub-agent sessions (six PPO runs)
+Direct `cost_ledger.jsonl` aggregate over the six metered runs (`prj_c9befbf837180b39`, `cdeb54fe…`, `58783d55…`, `01a6d176…`, `126b2082…`, `a984fa8d…` — all *Proximal Policy Optimization*, a **medium-complexity RL** repro that sits between Adam and SDAR):
+
+| | value | note |
+|---|---:|---|
+| Sub-agent sessions (ledger lines) | **24** across 6 runs | each line = one Sonnet sub-agent invocation |
+| Per-session processed | min **47 k** · median **201 k** · mean **216 k** · max **520 k** | cache-read-dominated |
+| Token-class split (all sessions) | **output 3.1 % · cache-read 84.2 % · cache-create 12.7 %** | fresh input ≈ 0 |
+| Per-run sub-agent total | **0.26 M – 1.92 M** | scales with how far the run got |
+
+**Key correction:** a single coding session is **~0.2 M processed, not multi-million.** Output is only ~3 %; the volume is the cached paper + system prompt re-read each SDK turn. This per-session figure and the 3/84/13 split are applied below.
+
+### 0.3 Root-model anchor (measured, whole run)
+Direct ledger aggregate:
+
+| Run | output | cache-read | cache-create + fresh | **total processed (root only)** |
+|---|---:|---:|---:|---:|
+| **Adam** (complete, 19 iter) | 2,075 | 72,978 | 13,641 | **~89 k** |
+| SDAR (`prj_09047604`, stale 1-attempt) | 2,499 | 34,416 | 1,857 | ~39 k (under-count) |
+
+Root is **~95 % cache-read** and a **small fraction** of the run. Final generated source — Adam **75 KB `.py` (~18.8 k tok)**, SDAR **58 KB `.py` (~14.6 k tok)** (SDAR's run failed before writing the full matrix) — confirms output is a thin slice; the agent rewrites files many times so cumulative output ≫ final source but still ≪ cache-read.
+
+### 0.4 Bottom-up model — one *healthy* run (no death-spiral retries)
+Per-session = ~0.2 M (measured, §0.2), scaled by paper weight: Adam sessions lighter (~0.15 M, smaller paper/simpler code), SDAR heavier (~0.25–0.30 M, 18 k-tok paper + multi-file GRPO/OPSD matrix). Navigation (`understand`/`extract`/`llm_query`/`rlm_query`) runs on Haiku/gpt-4o-mini at ~30–80 k each.
+
+**Adam — one healthy run** (single optimizer; profile: `implement_baseline ×1`, `run_experiment ×1`, `understand ×4`, `extract`/`detect`/`verify`/`propose ×1`)
+| Component | Calls | Model | Per-call | Subtotal |
+|---|---:|---|---|---:|
+| Root orchestrator | 19 iter | oauth/gpt-5 | measured | **0.09 M** |
+| `implement_baseline` + `run_experiment` | 2 | Sonnet 4.6 | ~0.15–0.2 M | **~0.35 M** |
+| navigation | ~8 | Haiku / gpt-4o-mini | ~30–80 k | **~0.15 M** |
+| **Adam total** | | | | **low 0.35 M · expected ~0.6 M · high 1.2 M** |
+
+**SDAR — one healthy run** (smallest-two scope: Qwen3-1.7B + Qwen2.5-3B, GRPO+SDAR; more sessions: multi-env harness, OOM/repair loops, more rubric iterations)
+| Component | Calls | Model | Per-call | Subtotal |
+|---|---:|---|---|---:|
+| Root orchestrator | ~30–50 iter | oauth/gpt-5 | scaled (71 k-char paper re-read/turn) | **~0.25 M** |
+| `implement_baseline` (heavy) | 3–5 | Sonnet 4.6 | ~0.3 M | **~1.2 M** |
+| `run_experiment` + OOM/repair sub-sessions | 4–8 | Sonnet 4.6 | ~0.25 M | **~1.5 M** |
+| navigation (`understand`, `extract ×2`, `llm/rlm_query` over 71 k paper, `verify`, `propose ×2`) | ~12–20 | Haiku / gpt-4o-mini | ~50–120 k | **~1.2 M** |
+| **SDAR total** | | | | **low 2.5 M · expected ~4 M · high 8 M** |
+
+> **Cross-checks:** the heaviest single PPO run already hit **1.92 M in 7 sessions** — a *completing* SDAR run (more + heavier sessions) at 3–5 M is consistent. The committed SDAR worker mix (35 reports: oauth×16, haiku×7, **sonnet-4-6×5**, gpt-4o-mini×7) confirms navigation is offloaded to cheap models. §3's independent Regime-A model (~12 M cached-in + ~0.7 M out for ~10 implement calls ≈ a fuller/looser run) brackets the high end. **One healthy run ≠ the death-spiral total**: `prj_09047604`'s 11 attempts burned roughly **×3–5** this figure (→ ~12–20 M).
+
+### 0.5 Headline & token-class split (expected case, healthy run)
+| | **Total processed / run** | output (~3 %) | cache-read (~84 %) | cache-create (~13 %) |
+|---|---:|---:|---:|---:|
+| **Adam** | **~0.6 M** | ~20 k | ~0.5 M | ~80 k |
+| **SDAR** | **~4 M** | ~120 k | ~3.4 M | ~0.5 M |
+| Ratio | **~6–7×** | | | |
+
+**The budget is cache-read-dominated** (~84 %, measured): the paper + system prompt re-sent every SDK turn. The lever that moves the *token* count is **number of sub-agent sessions/turns**, not output length.
+
+### 0.6 Token budget ≠ dollar cost (the OAuth gap)
+Under OAuth these 0.6 M / 4 M tokens cost **$0 marginal** (subscription, rate-limited) — why §1's ledgers read ~$1/run. On **metered Sonnet 4.6** ($3 in / $15 out, cache-read ≈ $0.30/M, cache-create ≈ $3.75/M):
+- **Adam ≈ $0.8 / run** (output ~$0.3 + cache-read ~$0.15 + cache-create ~$0.3).
+- **SDAR ≈ $4–5 / healthy run** (≈ $15–25 with death-spiral retries — consistent with §1's observed $0.35–1.94 per *partial* run and §3 Regime A).
+
+Levers: fewer sub-agent sessions ↓ cache-read volume; navigation already on Haiku/gpt-4o-mini; OAuth ↓ dollars to ~0 but not tokens.
+
+### 0.7 Confidence
+**Sub-agent per-session cost is measured** (PPO, 24 sessions) — the strongest leg, and it pulled the SDAR estimate down ~3× from a first-pass model. **Adam root is measured**; **SDAR root is partial/scaled**. The widest remaining factor is the **session count** for a healthy run (Adam 2–3, SDAR 10–15) and whether SDAR sessions run ~50 % heavier than PPO's — together ±50 %. SDAR additionally carries paper-class extrapolation (PPO→SDAR) and has **no clean completed run** to confirm. Treat as **order-of-magnitude planning numbers**; audit by capturing SDK `usage` on the next *completing* metered SDAR run.
+
+---
+
+## 1. Cost anatomy of one OpenResearch run
 
 A run has two independent cost surfaces (see `CLAUDE.md` → "RLM auth — two surfaces, billed separately"):
 
@@ -71,7 +148,7 @@ Because a grant cannot cleanly fund a personal subscription, the **fundable** nu
 | **B. Dev path (observed)** | GPT-5 metered | Sonnet via **OAuth** ($0) | **~$1–2** |
 | **C. Zero-marginal** | `claude-oauth` or Featherless flat | OAuth ($0) | **~$0** (+ flat subscription) |
 
-> The grant should budget **Regime A** for the LLM line; Regimes B/C are the cost-reduction story.
+> The grant should budget **Regime A** for the *program* LLM line (≈60 runs incl. retries → the $2,500 line in §5). For a **single healthy run**, use §0's measured anchor (~$4–5 metered); Regime A's ~$20–40 is the *loose / death-spiral* high end (§0.4 brackets it as ~12 M cached-in ≈ a fuller run). The two are consistent — different points on the same curve, not a contradiction.
 
 ---
 
@@ -82,7 +159,7 @@ RunPod COMMUNITY rates from the system's own catalog (`backend/services/runtime/
 **Pod-lifecycle assumption:** RunPod bills wall-clock; pods are *owned and swept* (`pod_sweeper.delete_pod`, `_owned_pod_ids`). A long run that **holds one pod across multiple `run_experiment` calls** pays *idle GPU* while the LLM writes code between experiments. We add a **+20% idle factor** to active GPU-hours. (Per-experiment spin-up instead recurs 5–10 min provisioning each call — comparable order; +20% covers either.)
 
 ### Tier 1 — Lean / mechanism-level (the system's default guardrails)
-ReproLab ships `OPENRESEARCH_MAX_RUN_GPU_USD=10.0` and `OPENRESEARCH_MAX_GPU_USD_PER_HOUR=10.0`. Under the $10 cap you get ≈ **29 GPU-hr on RTX 4090** or **~5 hr on A100-80** — enough to load **real Qwen3-1.7B weights + real ALFWorld episodes** and run a **short (~10–30 step) training** that demonstrates the SDAR loss `g_t = σ(β·Δ_t)`, stop-gradient gate, λ=0.1, β=10.
+OpenResearch ships `OPENRESEARCH_MAX_RUN_GPU_USD=10.0` and `OPENRESEARCH_MAX_GPU_USD_PER_HOUR=10.0`. Under the $10 cap you get ≈ **29 GPU-hr on RTX 4090** or **~5 hr on A100-80** — enough to load **real Qwen3-1.7B weights + real ALFWorld episodes** and run a **short (~10–30 step) training** that demonstrates the SDAR loss `g_t = σ(β·Δ_t)`, stop-gradient gate, λ=0.1, β=10.
 
 - **Rubric reality:** this **clears the code-inspection leaves and the "real weights/data load + trains" leaves** → a *partial, non-zero* score. It does **not** reproduce paper-level metrics (150 steps × all cells). A pure-code surrogate with no GPU scores *lower* — so the $10 floor is the minimum to score meaningfully.
 - **GPU:** **$3–10.** LLM: $1–2 (Regime B) / $20–40 (Regime A). **Total: ~$5–50/run.**
@@ -98,7 +175,7 @@ Per `CLAUDE.md`: pin to **Qwen3-1.7B + Qwen2.5-3B**, key methods **GRPO + SDAR**
 
 Active **~30–60 GPU-hr** → +20% idle ≈ **36–72 GPU-hr**.
 - On **A100-80 ($1.89):** **$68–136.** On **H100 ($4.39):** **$158–316.**
-- LLM (Regime A): ~$30–60 (more implement/repair cycles). **Total ~$100–375/run.**
+- LLM: **~$4–5 healthy / ~$15–25 with retries** (§0 measured anchor; the pre-§0 Regime-A "$30–60" over-counted). **Total on A100-80: ~$75–160/run** (GPU $68–136 + LLM); on H100: **~$165–340**.
 
 ### Tier 3 — Full faithful reproduction (the grant ceiling)
 Transparent formula:
@@ -134,7 +211,7 @@ GPU$ = N_cells × hrs_per_cell × N_gpus × $/hr × contingency
 | **GPU — Tier 3 full faithful** | 8× H100, 45–54 cells × 150 steps, ×1.5 contingency | **$30,000** |
 | **Contingency (overall, 20%)** | death-spiral retries (11 observed), OOM escalations (up to ×2 SKU ladder) | **$7,500** |
 | **TOTAL (full-faithful program)** | | **≈ $45,000** |
-| *Single representative run (Tier 2, fundable)* | smallest-two, A100-80, metered LLM | **~$200–375** |
+| *Single representative run (Tier 2, fundable)* | smallest-two, A100-80, metered LLM | **~$75–145** (GPU $68–136 + ~$5 LLM; up to ~$160 with retries) |
 | *Single dev run (Tier 1, how we're doing it)* | $10 GPU cap + OAuth sub-agents | **~$5–15** |
 
 ### Cost-reduction levers (built into the system)

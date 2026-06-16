@@ -1,5 +1,14 @@
 # Changelog
 
+> ⚠️ **This changelog is behind `main` and is NOT the source of truth for
+> recent history.** The newest entry below stops at **2026-05-23**, but
+> development continued through 2026-06-03 (RLM stability remediation
+> BUG-LR-011..015, OAuth-contamination fix BUG-NEW-038, evidence-gate closure,
+> the gated codex repair primitive, the CLAUDE.md compaction, and more — none
+> recorded here). For an accurate, current history use **`git log`**. This file
+> is kept for the manual narrative it does contain; treat it as a partial,
+> hand-maintained log, not a complete record. *(flagged 2026-06-03)*
+
 All notable changes to OpenResearch land here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/spec/v2.0.0.html). Add new entries to the top
@@ -20,6 +29,18 @@ version + date and start a new `[Unreleased]` block above it.
 
 ### Validated (leaf-frontier)
 - 266 blast-radius tests pass (`tests/rlm/test_leaf_actuator.py`, `test_leaf_triage.py`, `test_staged_search_synthesis.py`, `test_leaf_scorer*.py`; `tests/agents/rlm/test_cell_matrix.py`; `tests/evals/`; baseline_implementation guidance), 0 regress. L2b verified end-to-end against the real Adam run + the grader's `_gather_figure_sidecars` reader.
+### Added (infra — Bicep migration L0/L1, OIDC pipeline, uv lock + ruff)
+- `infra/azure/bicep/` — full Bicep port of the Terraform L1 (network, AKS, GPU nodepool, ACR, storage, identity) plus a new `monitoring.bicep` (Log Analytics + diagnostic settings, security-baseline). Three deliberate parity breaks fixing latent never-deployed TF defects (storage `publicNetworkAccess`, CSI SMB shared-key, kubelet `listKeys`) — see `infra/azure/bicep/MIGRATION.md`. Terraform stays in-tree, deprecated, until live parity is proven.
+- `infra/azure/bicep/main.bicep` + `rg-grants.bicep` (L0) — subscription-scope RG creation + scoped grants; pipeline principal gets Contributor + ABAC-constrained RBAC Administrator (assignable roles limited to the four L1 data-plane roles), main RG only.
+- `infra/azure/bicep/bootstrap/` — `admin-bootstrap.sh` (one-time admin path: app registration + environment-scoped federated credential + what-if-gated L0 deploy) and `pipeline-identity.bicep` (Contributor-only adoption path: UAMI + GitHub federation for pre-existing RGs, e.g. `rg-sciartgen-external`).
+- `.github/workflows/infra-deploy.yml` — PR validation (bicep build/lint, deliberately zero Azure credentials — no `pull_request` OIDC federation exists), and an environment-gated, branch-pinned deploy job (what-if preview + deployment stack). Codex security review 2026-06-10 drove the PR-credential removal, deny-settings correction, and least-privilege grants.
+- `uv.lock` (153 pkgs) + `.python-version` (3.12) — locked Python env via uv; pip/requirements.txt path unchanged. `hermes-agent` removed from extras (its exact pins are unlockable; install per `backend/hermes_audit/providers.py`).
+- `[tool.ruff]` in `pyproject.toml` + CI `lint` job (`uv lock --check` + `ruff check`, both pinned) — 652 baseline violations → 0 (355 auto-fixed, 7 hand-fixed, rest config-scoped). Fixed a real latent `NameError` in `primitives.py::_run_baseline_subprocess` (missing `Path` import) surfaced by un-suppressing F821.
+
+### Changed (lab — minimizable score panels keep the constellation graph visible)
+- `frontend/src/components/lab/rlm/collapsible-panel.tsx` + `.module.css` — reusable minimizable wrapper (slim header with chevron + live summary, a height-capped internally-scrolling body, collapse state persisted per key in `localStorage`). Wraps `ScorecardPanel` (rubric scores) and `RubricBreakdown` (leaf scores) so neither can grow to consume the whole column.
+- `frontend/src/components/lab/rlm/rlm-lab.module.css` — floored the `.workspace` (graph) band at `min-height: clamp(220px, 34vh, 520px)` so the constellation canvas stays visible at all times, including after a run finishes or fails. Previously the unbounded score bands squeezed the `flex: 1 1 0` graph band to zero once a full run's leaf scores landed.
+- `frontend/src/components/lab/rlm/collapsible-panel.test.tsx` — guard: default-expanded body, minimize/restore, persisted + hydrated collapse state, `defaultCollapsed`. See `learn.md` 2026-05-31.
 
 ### Added (night — constellation UI + dynamic sandbox capability + outcome canonicalization)
 - `frontend/src/components/lab/rlm/constellation-canvas.tsx` (695 LOC) + `layout-constellation.ts` (234 LOC) — replace the 4-node Reingold-Tilford tree with a force-directed graph that visualizes every primitive call and every mini-RLM, with progressive disclosure so the default view stays clean.
@@ -412,7 +433,7 @@ version + date and start a new `[Unreleased]` block above it.
   field is optional and defaults empty — a run with the verifier disabled
   produces a byte-identical report and benchmark.
 - **Track 3 Phase C — capped self-improvement re-iteration loop.** After Gate 3,
-  `ReproLabOrchestrator` now loops back through improvement-selection + Gate 3
+  `OpenResearchOrchestrator` now loops back through improvement-selection + Gate 3
   while the rubric verifier reports below `rubric_target_score`, up to
   `rubric_max_improvement_iterations` rounds
   (`_run_improvement_reiteration_loop`). Termination is guaranteed by the pure
@@ -463,7 +484,7 @@ version + date and start a new `[Unreleased]` block above it.
   by the `?projectId=` query param — `app/lab/page.tsx` is an async
   server component that restores the run server-side, so a refresh or a
   shared link reopens the exact run instead of dropping to the upload
-  view. A per-browser `localStorage` pointer (`reprolab:lastRun`)
+  view. A per-browser `localStorage` pointer (`openresearch:lastRun`)
   auto-resumes an in-flight run when the tab is reopened on a bare
   `/lab` URL; a stale link, a deleted run, and a transient 504 are each
   handled without discarding a live run. New `lib/demo/server-run.ts`
@@ -550,7 +571,7 @@ version + date and start a new `[Unreleased]` block above it.
   if that flag flips, an in-memory allowlist (`_owned_pod_ids`)
   populated only by `_create_pod` blocks deletion of foreign pods. A
   belt-and-suspenders second check verifies the pod's name still
-  starts with `reprolab-` before issuing the API DELETE — so a future
+  starts with `openresearch-` before issuing the API DELETE — so a future
   code path that adds a pod ID to the allowlist by mistake still
   can't delete a coworker's pod on the same RunPod account. Locked in
   by `tests/test_runpod_delete_guardrails.py` (4 tests).
@@ -577,7 +598,7 @@ version + date and start a new `[Unreleased]` block above it.
 - **PaperBench head-to-head pipeline.** Vendored FTRL bundle scaffold
   (`third_party/paperbench/ftrl/`) + bundle loader, weight-aware rubric
   scorer, submission validator, seeded multi-attempt runner, and the
-  `reprolab paperbench {list,summary,run,status}` CLI subcommand. Default
+  `openresearch paperbench {list,summary,run,status}` CLI subcommand. Default
   is `--pipeline` (real LLM run); `--no-pipeline` runs a dry validation
   for CI. Status JSON is persisted to `runs/paperbench/<run_group_id>/`.
 - **`/paperbench` page** with paper picker, seed input, dry/pipeline
@@ -742,7 +763,7 @@ version + date and start a new `[Unreleased]` block above it.
   programmatically inspectable; see `learn.md` 2026-05-09.
 - **`ValueError: Invalid IPv6 URL`** crashing `paper_understood` on any
   agent output containing brackets — see `learn.md` 2026-05-09.
-- **`database disk image is malformed`** on `reprolab.db` after a killed
+- **`database disk image is malformed`** on `openresearch.db` after a killed
   pipeline subprocess. Restored from offline backup; `synchronous=FULL`
   prevents recurrence — see `learn.md` 2026-05-09.
 
@@ -755,10 +776,10 @@ version + date and start a new `[Unreleased]` block above it.
 
 ### Tooling
 - `.gitignore` exclusions for build/test artifacts:
-  `frontend/tsconfig.tsbuildinfo`, `_test_logs/`, `reprolab.db.*`,
+  `frontend/tsconfig.tsbuildinfo`, `_test_logs/`, `openresearch.db.*`,
   Windows `*:Zone.Identifier`, stray pip-version files at repo root.
   `paperbench1.pdf` is whitelisted as the canonical input fixture.
 - `tests/test_issue16_workspace_service.py::test_build_workspace_auto_embeds_chunks`
   now uses `pytest.importorskip("chromadb")` so the suite stays green
-  when the optional `reprolab-backend[semantic]` extras aren't
+  when the optional `openresearch-backend[semantic]` extras aren't
   installed (matches the pattern in `test_semantic_layer2.py`).

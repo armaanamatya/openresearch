@@ -155,12 +155,12 @@ step "1. Environment"
 : "${OPENRESEARCH_RUNPOD_BOOT_TIMEOUT_SECONDS:=900}"
 : "${OPENRESEARCH_RUNPOD_DELETE_ON_DESTROY:=true}"
 
-# Fall back to RUNPOD_API_KEY if REPROLAB_RUNPOD_API_KEY is unset
+# Fall back to RUNPOD_API_KEY if OPENRESEARCH_RUNPOD_API_KEY is unset
 # (mirrors RunpodBackend.__init__).
-API_KEY="${REPROLAB_RUNPOD_API_KEY:-${RUNPOD_API_KEY:-}}"
+API_KEY="${OPENRESEARCH_RUNPOD_API_KEY:-${RUNPOD_API_KEY:-}}"
 
 if [[ -z "${API_KEY}" ]]; then
-    fail "REPROLAB_RUNPOD_API_KEY (or RUNPOD_API_KEY) is empty"
+    fail "OPENRESEARCH_RUNPOD_API_KEY (or RUNPOD_API_KEY) is empty"
     exit 2
 fi
 ok "API key set ($(mask "${API_KEY}"))"
@@ -172,7 +172,7 @@ fi
 ok "SSH key path set (${OPENRESEARCH_RUNPOD_SSH_KEY_PATH})"
 
 if [[ -z "${OPENRESEARCH_RUNPOD_SSH_PUBLIC_KEY:-}" ]]; then
-    SSH_KEY_CANDIDATE="$(eval echo "${OPENRESEARCH_RUNPOD_SSH_KEY_PATH}")"  # expand ~
+    SSH_KEY_CANDIDATE="${OPENRESEARCH_RUNPOD_SSH_KEY_PATH/#\~/$HOME}"  # expand ~ (no eval — value is .env-supplied)
     if [[ -f "${SSH_KEY_CANDIDATE}" ]] && command -v ssh-keygen >/dev/null 2>&1; then
         DERIVED_PUBLIC_KEY="$(ssh-keygen -y -f "${SSH_KEY_CANDIDATE}" 2>/dev/null || true)"
         if [[ -n "${DERIVED_PUBLIC_KEY}" ]]; then
@@ -234,7 +234,7 @@ warn "validated at pod creation. Use --start-pod for an end-to-end smoke test."
 # ---------------------------------------------------------------------------
 step "4. SSH key"
 
-SSH_KEY="$(eval echo "${OPENRESEARCH_RUNPOD_SSH_KEY_PATH}")"  # expand ~
+SSH_KEY="${OPENRESEARCH_RUNPOD_SSH_KEY_PATH/#\~/$HOME}"  # expand ~ (no eval — value is .env-supplied)
 SSH_KEY="$(normalize_ssh_key_path "${SSH_KEY}")"
 
 if [[ ! -f "${SSH_KEY}" ]]; then
@@ -289,7 +289,7 @@ step "5. End-to-end pod smoke test (this WILL spend money)"
 require_cmd ssh
 require_cmd ssh-keygen
 
-POD_NAME="reprolab-smoke-$(date +%s)"
+POD_NAME="openresearch-smoke-$(date +%s)"
 echo "Creating pod ${POD_NAME} with ${OPENRESEARCH_RUNPOD_GPU_TYPE}..."
 
 CREATE_PAYLOAD="$(

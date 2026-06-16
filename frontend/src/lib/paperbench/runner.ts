@@ -85,13 +85,13 @@ export interface StartRunOptions {
 }
 
 function repoRoot(): string {
-  const override = process.env.OPENRESEARCH_REPO_ROOT?.trim();
+  const override = (process.env.OPENRESEARCH_REPO_ROOT ?? process.env.REPROLAB_REPO_ROOT)?.trim();
   if (override) return override;
   return path.join(process.cwd(), "..");
 }
 
 function pythonBinary(): string {
-  const override = process.env.OPENRESEARCH_PYTHON_BIN?.trim();
+  const override = (process.env.OPENRESEARCH_PYTHON_BIN ?? process.env.REPROLAB_PYTHON_BIN)?.trim();
   if (override) return override;
   const root = repoRoot();
   const venvPython =

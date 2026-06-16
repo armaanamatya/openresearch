@@ -12,12 +12,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from backend.agents.paper_understanding import (
     run_offline,
     _extract_ambiguities,
-    _extract_claims,
     _extract_contribution,
     _extract_datasets,
     _extract_metrics,

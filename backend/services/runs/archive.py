@@ -51,6 +51,10 @@ _TOP_LEVEL_FILES: tuple[str, ...] = (
     "cost_ledger.jsonl",
     "demo_status.json",
     "dashboard_events.jsonl",
+    "worker_reports.jsonl",   # 2026-05-30: was NOT archived → old+new rows
+                              # commingled across attempts, corrupting per-run
+                              # worker-failure analysis (e.g. stale "failed"
+                              # baseline rows read as the current attempt's).
     "runner.stdout.log",
     "runner.stderr.log",
     "agent_telemetry.jsonl",
@@ -62,7 +66,7 @@ _TOP_LEVEL_FILES: tuple[str, ...] = (
 ) + PER_ATTEMPT_SIDECARS
 
 # Whole directories moved if they exist.
-_TOP_LEVEL_DIRS: tuple[str, ...] = ("rlm_state", "outputs")
+_TOP_LEVEL_DIRS: tuple[str, ...] = ("rlm_state", "outputs", "reports")
 
 # At least one of these must exist for archiving to fire — otherwise the run
 # dir has only ingestion artifacts and there is nothing worth archiving.

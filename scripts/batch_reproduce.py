@@ -45,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dotenv import load_dotenv
 
-# Load .env so API keys and REPROLAB_* settings reach os.environ before
+# Load .env so API keys and OPENRESEARCH_* settings reach os.environ before
 # anything else runs (mirrors rlm_paperbench.py idiom).
 load_dotenv()
 

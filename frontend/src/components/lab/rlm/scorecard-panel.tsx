@@ -1,6 +1,7 @@
 "use client";
 
 import type { RlmRunState } from "../../../hooks/use-rlm-run";
+import { CollapsiblePanel } from "./collapsible-panel";
 import styles from "./scorecard-panel.module.css";
 
 interface ScorecardPanelProps {
@@ -35,7 +36,15 @@ export function ScorecardPanel({ rubric, projectId, paperTitle }: ScorecardPanel
 
   const shortId = projectId.slice(0, 16);
 
+  const summary = (
+    <>
+      {passingCount}/{areas.length} passing
+      {current !== null ? ` · ${current.toFixed(2)}` : ""}
+    </>
+  );
+
   return (
+    <CollapsiblePanel storageKey="scorecard" title="Reproduction scorecard" summary={summary}>
     <div className={styles.panel} data-testid="scorecard-panel">
       {/* FIG label */}
       <div className={styles.figLabel}>FIG § 5.1 &nbsp;—&nbsp; REPRODUCTION SCORECARD</div>
@@ -129,5 +138,6 @@ export function ScorecardPanel({ rubric, projectId, paperTitle }: ScorecardPanel
         </div>
       </div>
     </div>
+    </CollapsiblePanel>
   );
 }

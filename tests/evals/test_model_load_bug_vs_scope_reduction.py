@@ -19,16 +19,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from backend.evals.paperbench.leaf_scorer import (
     _detect_data_unavailable_leaves,
-    _normalise_model_name,
     _operator_skip_set,
 )
 from backend.agents.rlm.report import (
     _collect_data_unavailable_gaps,
-    _operator_skip_set as report_operator_skip_set,
 )
 
 

@@ -7,7 +7,7 @@
      ``binding.py`` if importable, else the deterministic stub provider,
   3. constructs an ``rlm.RLM`` (the Recursive Language Model engine),
   4. runs ``.completion()`` on a worker thread, streaming + checkpointing every
-     iteration through :class:`ReproLabRLMLogger`,
+     iteration through :class:`OpenResearchRLMLogger`,
   5. writes ``final_report.{json,md}`` and returns an :class:`RLMRunResult`.
 
 Time is bounded three ways (design spec §8): ``rlm``'s ``max_timeout`` (soft,
@@ -24,8 +24,10 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import signal
+import socket
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -52,10 +54,13 @@ from backend.agents.rlm.models import (
 from backend.agents.rlm.report import (
     RLMFinalReport,
     build_final_report,
+    run_experiment_call_count,
+    run_experiment_partial_timeout_count,
+    run_experiment_success_count,
     write_final_report_rlm,
 )
 from backend.agents.rlm.sse_bridge import (
-    ReproLabRLMLogger,
+    OpenResearchRLMLogger,
     build_run_complete_event,
     build_run_warning_event,
     make_emit,
@@ -86,6 +91,23 @@ from backend.agents.rlm import safe_builtins_patch as _safe_builtins_patch  # no
 # BUG-LR-012: include traceback.format_exc() in REPL exception stderr so the
 # root model can diagnose failures rather than concluding primitives unavailable.
 from backend.agents.rlm import safe_repl_traceback_patch as _safe_repl_traceback_patch  # noqa: F401
+# BUG-NEW-033 (ported 2026-06-10 from pipeline-validation-mech-understanding):
+# auto-recover from (slice, question) misuse of rlm_query/llm_query — the
+# library API is single-prompt; the misuse routed the question as a model name
+# and the CLI error string leaked into paper_claims (SDAR attempt 4 post-mortem).
+from backend.agents.rlm import rlm_query_misuse_patch as _rlm_query_misuse_patch  # noqa: F401
+# BUG-NEW-043 (ported 2026-06-09): surface real traceback when rlm._subcall's
+# child completion raises; upstream catches with `str(e)` and we get only
+# "maximum recursion depth exceeded" with no file/line. Mech-understanding
+# 2026-05-29 lost two sub-RLMs to this. (The branch's BUG-NEW-033
+# rlm_query_misuse_patch is ported too — imported above, 2026-06-10.)
+from backend.agents.rlm import safe_subcall_traceback_patch as _safe_subcall_traceback_patch  # noqa: F401
+# BUG-NEW-043 (belt+braces): the default recursion limit is 1000; the
+# mech-understanding paper's LaTeX-dense prompt blew it via some unknown deep
+# recursion path in the rlms stack. 10000 is defensive against the same kind
+# of regex/templater walker.
+import sys as _sys_for_recursion
+_sys_for_recursion.setrecursionlimit(10000)
 apply_oauth_backend_patch()
 apply_anthropic_caching_patch()
 # Lane H — install the FINAL_VAR interceptor once. Per-run policies are
@@ -130,6 +152,8 @@ def _watchdog_hard_ceiling_s() -> float:
     except ValueError:
         return _WATCHDOG_HARD_CEILING_DEFAULT_S
 
+
+_WATCHDOG_POLL_S = 30.0       # wall-clock poll cadence (sleep-robust; see _arm_watchdog)
 
 _ROOT_PROMPT = (
     "Reproduce the research paper offloaded in the REPL variable `context`. "
@@ -634,6 +658,27 @@ def _assert_disk_headroom(runs_root: Path, *, min_gb: float) -> str | None:
     return None
 
 
+# Exact-name denylist for the run_config.json env snapshot: knobs whose VALUES
+# routinely carry credentials even though their names lack KEY/SECRET/TOKEN/
+# PASSWORD. OPENRESEARCH_DATABASE_URL is a deployment knob (a credentialed
+# postgres DSN embeds user:pass), not a launch parameter; the bootstrap
+# command is arbitrary shell that may inline tokens (e.g. an hf login).
+_ENV_SNAPSHOT_DENY_EXACT = frozenset({
+    "OPENRESEARCH_DATABASE_URL",
+    "OPENRESEARCH_RUNPOD_BOOTSTRAP_COMMAND",
+})
+
+
+def _redact_env_value(value: str) -> str:
+    """Strip URL userinfo (``user:pass@``) before persisting a snapshot value.
+
+    Durably covers the URL-shaped class — OPENRESEARCH_LOCAL_TORCH_INDEX_URL,
+    OPENRESEARCH_ACCELERATOR_BASE_URL, and any future ``*_URL`` knob pointing
+    at a private index with embedded credentials.
+    """
+    return re.sub(r"(?<=://)[^/@\s]+@", "***@", value)
+
+
 def _write_demo_status(
     project_dir: Path,
     status: str,
@@ -698,6 +743,20 @@ def _write_demo_status(
     payload["primitiveProvider"] = primitive_provider  # T21 / review I8
     payload["process_status"] = process_status
     payload["verdict"] = verdict
+    # Liveness prereq: run_liveness.sweep_orphaned_runs deliberately skips
+    # runs without a pid ("absent-pid means unknown, not dead"), so a
+    # SIGKILLed CLI/batch run used to show status=running forever — only the
+    # API spawn path stamped one (live_runs.py). run.py always executes inside
+    # the run process itself, so an unconditional overwrite is always correct:
+    # on the API path the parent recorded this same subprocess pid
+    # (live_runs.py spawn, no shell), and on CLI re-runs of a reused project
+    # dir a setdefault would inherit a DEAD prior attempt's pid (demo_status
+    # is not in attempt_isolation's archive set), getting a live run falsely
+    # swept as orphaned. pidHost scopes the pid to the namespace that minted
+    # it — a containerized sweeper must not os.kill-probe host pids through
+    # the bind-mounted runs/ (see run_liveness.sweep_orphaned_runs).
+    payload["pid"] = os.getpid()
+    payload["pidHost"] = socket.gethostname()
     try:
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -815,7 +874,7 @@ def _fatal_primitive_result(ctx: RunContext | None) -> tuple[str, dict] | None:
     return (str(getattr(ctx, "_last_primitive_name", "unknown")), result)
 
 
-class _FatalBackendGateLogger(ReproLabRLMLogger):
+class _FatalBackendGateLogger(OpenResearchRLMLogger):
     """Logger hook that aborts before RLM appends fatal REPL output to history."""
 
     def log(self, iteration: Any) -> None:
@@ -925,7 +984,11 @@ def _finalize_fatal_primitive_abort(
         _fr.regrade_and_emit(ctx, report, emit)
     except Exception:  # noqa: BLE001
         logger.warning("_finalize_fatal_primitive_abort: regrade failed (non-fatal)", exc_info=True)
-    json_path, _md_path = write_final_report_rlm(report, project_dir)
+    json_path, _md_path = write_final_report_rlm(
+        report, project_dir, run_experiment_calls=run_experiment_call_count(ctx),
+        run_experiment_ok_calls=run_experiment_success_count(ctx),
+        run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx)
+    )
 
     try:
         emit(
@@ -999,7 +1062,7 @@ def _hard_stop_with_report(
     status_error: str,
     exit_code: int,
     stop_kind: str = "hard_stop",
-    llm_client: Any = None,
+    ctx: Any = None,
 ) -> None:
     """Ship a partial report, emit ``run_complete``, flip demo_status, and
     hard-exit — the single "never die without a report" path shared by the wall-clock
@@ -1008,7 +1071,7 @@ def _hard_stop_with_report(
     carries the run's best recorded rubric score + a reconciled verdict (salvage,
     2026-06-09) instead of an unconditional scoreless ``failed``.
 
-    ``llm_client`` (captured at run start) lets the salvage RE-GRADE the
+    ``ctx`` (captured at run start) carries the llm_client that lets salvage RE-GRADE the
     completed-but-never-verified grid before flooring — Adam's long runs hit
     the wall-clock here, and a grid that finished without a verify has a best
     RECORDED score of zero, so without this the watchdog ships 0 over a grid
@@ -1020,7 +1083,7 @@ def _hard_stop_with_report(
     # and write_final_report_rlm's merge both read).
     try:
         from backend.agents.rlm import finalize_regrade as _fr
-        _fresh = _fr.regrade_for_hard_stop(project_dir, llm_client)
+        _fresh = _fr.regrade_for_hard_stop(project_dir, getattr(ctx, "llm_client", None))
         if _fresh is not None:
             _fr_emit = emit if callable(emit) else (lambda *a, **k: None)
             _fr_emit("run_warning", {
@@ -1036,7 +1099,17 @@ def _hard_stop_with_report(
         report, project_dir, stop_kind=stop_kind, stop_detail=status_error,
     )
     try:
-        write_final_report_rlm(report, project_dir)
+        # Evidence-gate trust counts (audit 2026-06-11): without these the
+        # watchdog/SIGTERM path fell back to content-only trust — a forging
+        # root could wedge past the deadline and ship a forged 'partial'
+        # (the exact class the gate closes on the FINAL_VAR/fatal paths).
+        write_final_report_rlm(
+            report,
+            project_dir,
+            run_experiment_calls=run_experiment_call_count(ctx) if ctx is not None else None,
+            run_experiment_ok_calls=run_experiment_success_count(ctx),
+        run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx) if ctx is not None else None,
+        )
     except Exception:  # noqa: BLE001
         logger.exception("run_pipeline_rlm: hard-stop could not write final report")
     try:
@@ -1064,7 +1137,7 @@ def _arm_watchdog(
     project_dir: Path,
     emit: Any,
     iteration_count: Any,
-    llm_client: Any = None,
+    ctx: Any = None,
 ) -> threading.Timer | None:
     """Arm the process-level wall-clock backstop (design spec §8, Codex H2).
 
@@ -1076,12 +1149,19 @@ def _arm_watchdog(
     worker thread.
 
     ``iteration_count`` is a zero-arg callable returning the iterations done so
-    far.  Returns the armed (daemon) ``Timer`` — the caller must ``.cancel()``
-    it on normal completion. When ``deadline_s`` is ``None`` (no explicit
+    far.  Returns a handle exposing ``.cancel()`` — the caller must call it on
+    normal completion. When ``deadline_s`` is ``None`` (no explicit
     ``--max-wall-clock``), the watchdog falls back to the always-on hard-ceiling
     backstop (``_watchdog_hard_ceiling_s``) so a wedged/hung run still ships a
     partial report; it returns ``None`` (fully bypassed) only when that backstop
     is disabled via ``OPENRESEARCH_WATCHDOG_HARD_CEILING_S=0``.
+
+    Sleep-robust (2026-05-30, ported): a ``threading.Timer`` waits on a
+    MONOTONIC clock that PAUSES during macOS system sleep, so a closed lid
+    stretched a 2h deadline to ~5h before the timer fired. This polls real
+    wall-clock ``time.time()`` (which counts sleep) against an absolute
+    deadline, so on wake it fires within one poll interval regardless of how
+    long the machine slept.
     """
     if deadline_s is None:
         ceiling = _watchdog_hard_ceiling_s()
@@ -1113,14 +1193,42 @@ def _arm_watchdog(
                 f"wall-clock watchdog: run hard-stopped past its {deadline_s:.0f}s deadline"
             ),
             exit_code=_WATCHDOG_EXIT_CODE,
+            ctx=ctx,
             stop_kind="wall_clock_watchdog",
-            llm_client=llm_client,
         )
 
-    timer = threading.Timer(deadline_s + _WATCHDOG_GRACE_S, _fire)
-    timer.daemon = True
-    timer.start()
-    return timer
+    import time as _time
+    fire_at = _time.time() + deadline_s + _WATCHDOG_GRACE_S
+    stop_event = threading.Event()
+
+    def _poll() -> None:
+        # stop_event.wait() also waits on a monotonic clock, but only for one
+        # poll interval at a time — on wake the in-flight wait finishes within
+        # <= _WATCHDOG_POLL_S of real post-wake time, then the time.time() check
+        # sees the full elapsed wall clock and fires.
+        while not stop_event.wait(_WATCHDOG_POLL_S):
+            if _time.time() >= fire_at:
+                _fire()
+                return
+
+    threading.Thread(
+        target=_poll, name="rlm-wallclock-watchdog", daemon=True
+    ).start()
+
+    class _WatchdogHandle:
+        """Cancel handle for the polling watchdog. ``interval`` mirrors the
+        old ``threading.Timer.interval`` (armed delay in seconds) so callers
+        and tests can introspect what was armed."""
+
+        __slots__ = ("interval",)
+
+        def __init__(self, interval: float) -> None:
+            self.interval = interval
+
+        def cancel(self) -> None:
+            stop_event.set()
+
+    return _WatchdogHandle(deadline_s + _WATCHDOG_GRACE_S)
 
 
 def _install_sigterm_finalizer(
@@ -1128,7 +1236,7 @@ def _install_sigterm_finalizer(
     project_dir: Path,
     emit: Any,
     iteration_count: Any,
-    llm_client: Any = None,
+    ctx: Any = None,
 ) -> Any:
     """On SIGTERM, ship a partial report before exiting instead of dying silently.
 
@@ -1163,7 +1271,7 @@ def _install_sigterm_finalizer(
             status_error="run terminated by SIGTERM",
             exit_code=143,  # 128 + SIGTERM(15)
             stop_kind="sigterm",
-            llm_client=llm_client,
+            ctx=ctx,
         )
 
     try:
@@ -1275,6 +1383,13 @@ def _update_cost_summary_loop(
 
     Reads cost_ledger.jsonl and merges ``cost_summary`` into the existing
     demo_status.json via an atomic tmp-write. Fail-soft — never crashes the run.
+
+    Also refreshes ``updatedAt`` (audit 2026-06-09): this loop is the only
+    periodic writer during a run, so the refresh turns the orphan sweeper's
+    staleness gate (run_liveness, default 120s) into a genuine process-written
+    heartbeat — a LIVE run never looks stale, regardless of pid-namespace or
+    user-id visibility from the sweeping process. When this process dies the
+    refresh stops, staleness accrues, and the sweep proceeds as designed.
     """
     while not stop_event.wait(timeout=interval_s):
         try:
@@ -1288,6 +1403,10 @@ def _update_cost_summary_loop(
                 except Exception:  # noqa: BLE001
                     existing = {}
             existing["cost_summary"] = summary
+            if str(existing.get("status") or "") == "running":
+                existing["updatedAt"] = (
+                    datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                )
             tmp = status_path.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(existing, indent=2), encoding="utf-8")
             os.replace(tmp, status_path)
@@ -1484,6 +1603,42 @@ async def run_pipeline_rlm(
         "running",
         warnings=[_paper_degraded_reason] if _paper_degraded_reason else None,
     )
+
+    # Relaunchable config snapshot (audit 2026-06-09, cap-10): before this,
+    # sandbox/model/provider/budgets/seed had to be reconstructed by hand to
+    # re-launch an identical run (final_report carries only mode/models/scope).
+    # Secrets are deliberately NOT written — these are launch parameters only.
+    try:
+        _snapshot = {
+            "schema_version": 1,
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "mode": "rlm",
+            "project_id": project_id,
+            "model": model,
+            "provider": provider,
+            "sandbox_mode": str(getattr(sandbox_mode, "value", sandbox_mode)),
+            "seed": seed,
+            "attempt_id": attempt_id,
+            "run_group_id": run_group_id,
+            "hybrid_repair_only": hybrid_repair_only,
+            "max_usd": getattr(run_budget, "max_usd", None) if run_budget is not None else None,
+            "max_wall_clock_seconds": (
+                getattr(run_budget, "max_wall_clock_seconds", None) if run_budget is not None else None
+            ),
+            "max_pod_seconds": getattr(run_budget, "max_pod_seconds", None) if run_budget is not None else None,
+            "env_flags": {
+                k: _redact_env_value(v)
+                for k, v in sorted(os.environ.items())
+                if k.startswith("OPENRESEARCH_")
+                and k not in _ENV_SNAPSHOT_DENY_EXACT
+                and not any(t in k for t in ("KEY", "SECRET", "TOKEN", "PASSWORD"))
+            },
+        }
+        _cfg_tmp = project_dir / "run_config.json.tmp"
+        _cfg_tmp.write_text(json.dumps(_snapshot, indent=2, default=str), encoding="utf-8")
+        os.replace(_cfg_tmp, project_dir / "run_config.json")
+    except Exception:  # noqa: BLE001 — the snapshot must never block a run
+        logger.exception("run_pipeline_rlm: could not write run_config.json")
 
     # Local sandboxes have no /workspace volume — repoint the dataset root at a
     # writable shared cache BEFORE any primitive (implement_baseline / run_experiment)
@@ -1728,8 +1883,12 @@ async def run_pipeline_rlm(
 
     # arXiv runs arrive with no rubric_spec — derive a PaperBench-shaped rubric
     # from the paper so the run is scorable (bundle runs already carry one).
-    # OPENRESEARCH_REUSE_RUBRIC=1 reuses a pre-seeded generated_rubric.json instead
-    # (see _load_reusable_rubric) so A/B arms grade against the SAME rubric.
+    # Stub-primitive runs skip GENERATION only: rubric generation is a REAL paid
+    # LLM call (the one non-stubbed network path) — the 862s-suite-stall fix
+    # (audit 2026-06-09). OPENRESEARCH_REUSE_RUBRIC (LLM-free, see
+    # _load_reusable_rubric) stays active in both modes so A/B arms grade
+    # against the SAME pre-seeded rubric.
+    _stub_mode = os.environ.get("OPENRESEARCH_RLM_STUB_PRIMITIVES") == "1"
     if not context_dict.get("rubric_spec") and context_dict.get("paper_text"):
         _reused_rubric = _load_reusable_rubric(project_dir)
         if _reused_rubric is not None:
@@ -1738,7 +1897,9 @@ async def run_pipeline_rlm(
                 "run_pipeline_rlm: OPENRESEARCH_REUSE_RUBRIC — reusing on-disk "
                 "generated_rubric.json (no regeneration)"
             )
-    if not context_dict.get("rubric_spec") and context_dict.get("paper_text"):
+    if _stub_mode and not context_dict.get("rubric_spec") and context_dict.get("paper_text"):
+        logger.info("run_pipeline_rlm: stub mode — skipping LLM rubric generation (run proceeds rubric-less)")
+    if not _stub_mode and not context_dict.get("rubric_spec") and context_dict.get("paper_text"):
         from backend.agents.rlm.rubric_gen import generate_rubric_tree
 
         generated = generate_rubric_tree(
@@ -1870,14 +2031,14 @@ async def run_pipeline_rlm(
         project_dir=project_dir,
         emit=emit,
         iteration_count=lambda: rlm_logger.iteration_count,
-        llm_client=llm_client,
+        ctx=ctx,
     )
     # Ship a partial report on a graceful SIGTERM kill too (not just on a hang).
     _prev_sigterm = _install_sigterm_finalizer(
         project_dir=project_dir,
         emit=emit,
         iteration_count=lambda: rlm_logger.iteration_count,
-        llm_client=llm_client,
+        ctx=ctx,
     )
 
     # 10.5. Lane H — wire the forced-iteration policy so FINAL_VAR is refused
@@ -2322,7 +2483,21 @@ def _finalize(
     except Exception:  # noqa: BLE001 — re-grade is advisory, never blocks finalize
         logger.warning("_finalize: finalize_regrade failed (non-fatal)", exc_info=True)
 
-    json_path, _md_path = write_final_report_rlm(report, project_dir)
+    json_path, _md_path = write_final_report_rlm(
+        report, project_dir, run_experiment_calls=run_experiment_call_count(ctx),
+        run_experiment_ok_calls=run_experiment_success_count(ctx),
+        run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx)
+    )
+
+    # Per-paper negative lessons (MUSE-lite, OPENRESEARCH_NEGATIVE_LESSONS): mine
+    # agent-correctable failures from experiment_runs.jsonl into
+    # runs/_lessons/<arxiv_id>.json for the next run of the same paper.
+    # Flag-gated + fail-soft; no-op when arxiv_id is unknown.
+    try:
+        from backend.agents.rlm.lesson_distiller import mine_lessons
+        mine_lessons(project_dir, project_dir.parent, getattr(ctx, "arxiv_id", None))
+    except Exception:  # noqa: BLE001 — lesson bookkeeping must never break finalize
+        logger.debug("_finalize: mine_lessons raised", exc_info=True)
 
     # Write worker reports summary at run finalization
     try:

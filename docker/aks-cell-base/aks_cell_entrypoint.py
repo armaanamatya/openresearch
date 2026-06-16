@@ -7,12 +7,12 @@ Flow
    (``/mnt/reprolab-cache``) so expensive model weights are shared across runs.
 3. ``pip install`` project requirements through that cache (delta only; wheels
    already cached on the Files share make this ~instant after the first cell).
-4. Execute ``train_cell.py`` **unchanged**, inheriting ``REPROLAB_CELL_*`` env
+4. Execute ``train_cell.py`` **unchanged**, inheriting ``OPENRESEARCH_CELL_*`` env
    vars the orchestrator injected.
 5. On CUDA OOM: self-re-exec with the shrink ladder:
    attempt 0 — original params
-   attempt 1 — REPROLAB_CELL_BATCH_SCALE=0.5, REPROLAB_CELL_GRAD_CHECKPOINT=1
-   attempt 2 — REPROLAB_CELL_BATCH_SCALE=0.25, REPROLAB_CELL_GRAD_CHECKPOINT=1
+   attempt 1 — OPENRESEARCH_CELL_BATCH_SCALE=0.5, OPENRESEARCH_CELL_GRAD_CHECKPOINT=1
+   attempt 2 — OPENRESEARCH_CELL_BATCH_SCALE=0.25, OPENRESEARCH_CELL_GRAD_CHECKPOINT=1
    floor (max_oom_retries>2) — repeat 0.25+grad-ckpt.
 6. Push ``metrics.json`` + per-attempt logs + ``status.json`` to Blob.
 7. Exit with the exact code the orchestrator maps:
@@ -45,8 +45,6 @@ import signal
 import subprocess
 import sys
 import tempfile
-import time
-import traceback
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -110,12 +108,12 @@ def plan_attempts(
     Attempts 3+: repeat the floor only when max_oom_retries > 2.
 
     The caller passes the *number of OOM retries allowed after the original*
-    (i.e. the value of REPROLAB_CELL_MAX_OOM_RETRIES, default 2).  Total
+    (i.e. the value of OPENRESEARCH_CELL_MAX_OOM_RETRIES, default 2).  Total
     attempts = max_oom_retries + 1.
 
     ``batch_scale_step1`` and ``batch_scale_floor`` override the defaults when
     provided; when None they are read from
-    ``REPROLAB_CELL_OOM_BATCH_SCALE_STEP1`` / ``REPROLAB_CELL_OOM_BATCH_SCALE_FLOOR``
+    ``OPENRESEARCH_CELL_OOM_BATCH_SCALE_STEP1`` / ``OPENRESEARCH_CELL_OOM_BATCH_SCALE_FLOOR``
     (defaults 0.5 / 0.25) so the orchestrator can tune them per-run.
 
     Args:
@@ -126,21 +124,21 @@ def plan_attempts(
     Returns:
         List of dicts, each with keys:
           - ``attempt``:        0-based attempt index.
-          - ``batch_scale``:    float override for REPROLAB_CELL_BATCH_SCALE.
-          - ``grad_checkpoint``:str "0" or "1" for REPROLAB_CELL_GRAD_CHECKPOINT.
+          - ``batch_scale``:    float override for OPENRESEARCH_CELL_BATCH_SCALE.
+          - ``grad_checkpoint``:str "0" or "1" for OPENRESEARCH_CELL_GRAD_CHECKPOINT.
     """
     # P1-fix-9: read from env when not supplied by caller.
     if batch_scale_step1 is None:
         try:
             batch_scale_step1 = float(
-                os.environ.get("REPROLAB_CELL_OOM_BATCH_SCALE_STEP1", "0.5")
+                os.environ.get("OPENRESEARCH_CELL_OOM_BATCH_SCALE_STEP1", "0.5")
             )
         except (ValueError, TypeError):
             batch_scale_step1 = 0.5
     if batch_scale_floor is None:
         try:
             batch_scale_floor = float(
-                os.environ.get("REPROLAB_CELL_OOM_BATCH_SCALE_FLOOR", "0.25")
+                os.environ.get("OPENRESEARCH_CELL_OOM_BATCH_SCALE_FLOOR", "0.25")
             )
         except (ValueError, TypeError):
             batch_scale_floor = 0.25
@@ -466,7 +464,7 @@ def _run_trainer_subprocess(
 
     Args:
         train_cell_path:  Path to the train_cell.py script.
-        output_dir:       Value for REPROLAB_CELL_OUTPUT_DIR.
+        output_dir:       Value for OPENRESEARCH_CELL_OUTPUT_DIR.
         env_overrides:    Dict of env-var overrides to inject (batch scale etc).
         attempt_log_path: File path where combined output will be tee'd.
 
@@ -475,7 +473,7 @@ def _run_trainer_subprocess(
     """
     env = os.environ.copy()
     env.update(env_overrides)
-    env["REPROLAB_CELL_OUTPUT_DIR"] = str(output_dir)
+    env["OPENRESEARCH_CELL_OUTPUT_DIR"] = str(output_dir)
 
     output_lines: list[str] = []
     attempt_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -639,8 +637,8 @@ def _run_with_ladder(
         _remove_stale_metrics(output_dir)
 
         env_overrides: dict[str, str] = {
-            "REPROLAB_CELL_BATCH_SCALE": str(cfg["batch_scale"]),
-            "REPROLAB_CELL_GRAD_CHECKPOINT": cfg["grad_checkpoint"],
+            "OPENRESEARCH_CELL_BATCH_SCALE": str(cfg["batch_scale"]),
+            "OPENRESEARCH_CELL_GRAD_CHECKPOINT": cfg["grad_checkpoint"],
         }
 
         log_path = log_dir / f"attempt-{attempt_num}.log"
@@ -781,9 +779,9 @@ def _bootstrap(
     # pip install requirements if a requirements file is present
     req_path = local_code_dir / "requirements.txt"
     if req_path.is_file():
-        # P1-fix-9: read pip timeout from env (runner injects REPROLAB_BOOTSTRAP_PIP_TIMEOUT_S).
+        # P1-fix-9: read pip timeout from env (runner injects OPENRESEARCH_BOOTSTRAP_PIP_TIMEOUT_S).
         try:
-            _pip_timeout = int(os.environ.get("REPROLAB_BOOTSTRAP_PIP_TIMEOUT_S", "600"))
+            _pip_timeout = int(os.environ.get("OPENRESEARCH_BOOTSTRAP_PIP_TIMEOUT_S", "600"))
         except (ValueError, TypeError):
             _pip_timeout = 600
         logger.info("pip installing requirements from %s (timeout=%ds)", req_path, _pip_timeout)
@@ -837,13 +835,13 @@ def main(
     # -----------------------------------------------------------------------
     # Config from environment (injected by k8s_job_cell_runner)
     # -----------------------------------------------------------------------
-    cell_id = os.environ.get("REPROLAB_CELL_ID", "unknown")
-    account_name = os.environ.get("REPROLAB_AZURE_STORAGE_ACCOUNT", "")
-    container_name = os.environ.get("REPROLAB_AZURE_BLOB_CONTAINER", "")
-    code_blob_prefix = os.environ.get("REPROLAB_BLOB_CODE_PREFIX", "")
-    output_blob_prefix = os.environ.get("REPROLAB_BLOB_OUTPUT_PREFIX", "")
-    cache_mount = Path(os.environ.get("REPROLAB_CACHE_MOUNT", "/mnt/reprolab-cache"))
-    max_oom_retries = int(os.environ.get("REPROLAB_CELL_MAX_OOM_RETRIES", "2"))
+    cell_id = os.environ.get("OPENRESEARCH_CELL_ID", "unknown")
+    account_name = os.environ.get("OPENRESEARCH_AZURE_STORAGE_ACCOUNT", "")
+    container_name = os.environ.get("OPENRESEARCH_AZURE_BLOB_CONTAINER", "")
+    code_blob_prefix = os.environ.get("OPENRESEARCH_BLOB_CODE_PREFIX", "")
+    output_blob_prefix = os.environ.get("OPENRESEARCH_BLOB_OUTPUT_PREFIX", "")
+    cache_mount = Path(os.environ.get("OPENRESEARCH_CACHE_MOUNT", "/mnt/reprolab-cache"))
+    max_oom_retries = int(os.environ.get("OPENRESEARCH_CELL_MAX_OOM_RETRIES", "2"))
 
     logger.info(
         "AKS cell entrypoint start: cell_id=%s account=%s container=%s",
