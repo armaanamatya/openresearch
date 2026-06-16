@@ -107,6 +107,7 @@ _SENTINEL_OOM_OUTCOME = "oom_shrink_exhausted"
 # Default fallback values used when a settings attribute is absent (defensive,
 # so the module imports + tests run against a partial/older config).
 _SETTINGS_DEFAULTS: dict[str, Any] = {
+    # --- Azure / AKS ---
     "azure_namespace": "reprolab",
     "azure_service_account": "reprolab-sa",
     "azure_node_pool_name": "gpunodes",
@@ -129,15 +130,60 @@ _SETTINGS_DEFAULTS: dict[str, Any] = {
     "azure_job_backoff_limit": 0,
     "azure_cache_mount_path": "/mnt/reprolab-cache",
     "azure_watch_poll_interval_s": 5.0,
+    "azure_cell_oom_batch_scale_step1": 0.5,
+    "azure_cell_oom_batch_scale_floor": 0.25,
+    "azure_bootstrap_pip_timeout_s": 600,
+    # --- GCP / GKE ---
+    "gcp_namespace": "reprolab",
+    "gcp_service_account": "reprolab-sa",
+    "gcp_node_pool_name": "gpua100",
+    "gcp_base_image": "",
+    "gcp_max_nodes": 4,
+    "gcp_gpu_usd_per_hour": 3.67,
+    "gcp_pending_timeout_seconds": 900,
+    "gcp_gpu_skus": ["gcp_a100_80"],
+    "gcp_ttl_seconds_after_finished": 3600,
+    "gcp_job_backoff_limit": 0,
+    "gcp_cache_mount_path": "/mnt/reprolab-cache",
+    "gcp_watch_poll_interval_s": 5.0,
+    "gcp_cell_oom_batch_scale_step1": 0.5,
+    "gcp_cell_oom_batch_scale_floor": 0.25,
+    "gcp_bootstrap_pip_timeout_s": 600,
 }
 
 # ---------------------------------------------------------------------------
-# Context var — concurrent-safe budget + event-sink + gpu_plan injection
+# Context vars — concurrent-safe budget + event-sink + gpu_plan + prefix injection
 # ---------------------------------------------------------------------------
 
 _RUN_CONTEXT: ContextVar[dict[str, Any]] = ContextVar(
     "k8s_job_cell_runner_context", default={}
 )
+
+# Separate ContextVar for the cloud prefix so that callers that patch
+# bind_run_context in tests (with 3-arg fakes) remain unaffected.
+_SETTINGS_PREFIX_CTX: ContextVar[str] = ContextVar(
+    "k8s_job_cell_runner_settings_prefix", default="azure"
+)
+
+
+@contextmanager
+def _bind_settings_prefix(prefix: str) -> Iterator[None]:
+    """Set the cloud-provider settings prefix for the duration of the ``with`` block.
+
+    Used by ``primitives._execute_cell_matrix`` alongside ``bind_run_context`` to
+    activate the GCP path without breaking existing tests that patch
+    ``bind_run_context`` with 3-argument fakes.
+
+    Example::
+
+        with _bind_settings_prefix("gcp"), bind_run_context(...):
+            run_matrix(...)
+    """
+    token = _SETTINGS_PREFIX_CTX.set(prefix)
+    try:
+        yield
+    finally:
+        _SETTINGS_PREFIX_CTX.reset(token)
 
 
 @contextmanager
@@ -146,6 +192,7 @@ def bind_run_context(
     run_budget: Any | None = None,
     event_sink: Callable[[str, dict[str, Any]], None] | None = None,
     gpu_plan: Any | None = None,
+    settings_prefix: str | None = None,
 ) -> Iterator[None]:
     """Bind a ``RunBudget``, event sink, and/or a ``GpuPlan`` for the duration of the
     ``with`` block.
@@ -156,13 +203,21 @@ def bind_run_context(
     resolved GPU plan without changing ``run_matrix``'s signature.
 
     Args:
-        run_budget:  A ``RunBudget`` instance (or None to disable checks).
-        event_sink:  ``(event_type, payload) → None`` called to emit EXISTING SSE
-                     events (``primitive_call``, ``repl_iteration``, ``run_warning``,
-                     ``gpu_escalated``).  Default no-op when None.
-        gpu_plan:    A ``GpuPlan`` instance (or None to use default pool + 1 GPU).
-                     When bound, Jobs target the plan's SKU node pool; OOM cells
-                     escalate through ``plan.ladder_remaining``.
+        run_budget:       A ``RunBudget`` instance (or None to disable checks).
+        event_sink:       ``(event_type, payload) → None`` called to emit EXISTING SSE
+                          events (``primitive_call``, ``repl_iteration``, ``run_warning``,
+                          ``gpu_escalated``).  Default no-op when None.
+        gpu_plan:         A ``GpuPlan`` instance (or None to use default pool + 1 GPU).
+                          When bound, Jobs target the plan's SKU node pool; OOM cells
+                          escalate through ``plan.ladder_remaining``.
+        settings_prefix:  Cloud provider prefix for settings reads, e.g. ``"azure"``
+                          or ``"gcp"``.  ``None`` (the default) means "do not change
+                          the prefix" — it preserves whatever ``_bind_settings_prefix``
+                          already bound, so the ``primitives.py`` nesting
+                          ``with _bind_settings_prefix("gcp"), bind_run_context():``
+                          resolves to ``"gcp"`` instead of being clobbered back to the
+                          azure default.  Pass an explicit value only when binding the
+                          prefix directly through this context manager.
 
     Example::
 
@@ -178,10 +233,19 @@ def bind_run_context(
         "event_sink": event_sink,
         "gpu_plan": gpu_plan,
     })
+    # Only (re)bind the cloud prefix when one is explicitly passed; a None prefix
+    # preserves whatever _bind_settings_prefix already set. This is what makes the
+    # primitives nesting resolve correctly and lets test fakes that patch
+    # bind_run_context (without a settings_prefix kwarg) keep working.
+    prefix_token = (
+        _SETTINGS_PREFIX_CTX.set(settings_prefix) if settings_prefix is not None else None
+    )
     try:
         yield
     finally:
         _RUN_CONTEXT.reset(token)
+        if prefix_token is not None:
+            _SETTINGS_PREFIX_CTX.reset(prefix_token)
 
 
 def _get_run_budget() -> Any | None:
@@ -196,6 +260,25 @@ def _get_event_sink() -> Callable[[str, dict[str, Any]], None]:
 def _get_gpu_plan() -> Any | None:
     """Return the bound GpuPlan (or None when none was bound)."""
     return _RUN_CONTEXT.get({}).get("gpu_plan")
+
+
+def _get_settings_prefix() -> str:
+    """Return the active cloud-provider settings prefix (default ``"azure"``).
+
+    ``_SETTINGS_PREFIX_CTX`` is the single source of truth — set either by
+    ``_bind_settings_prefix`` (the ``primitives.py`` path) or by an explicit
+    ``settings_prefix=`` on ``bind_run_context``.
+    """
+    return _SETTINGS_PREFIX_CTX.get("azure")
+
+
+def _cloud_setting(logical: str, default: Any = None) -> Any:
+    """Read ``<prefix>_<logical>`` from settings, using ``_SETTINGS_DEFAULTS`` as fallback.
+
+    Equivalent to ``_setting(f"{_get_settings_prefix()}_{logical}", default)`` but
+    centralises the prefix-composition so callers stay readable.
+    """
+    return _setting(f"{_get_settings_prefix()}_{logical}", default)
 
 
 # ---------------------------------------------------------------------------
@@ -254,15 +337,13 @@ def _blob_upload_prefix(
     container_name: str,
     client: Any | None = None,
 ) -> list[str]:
-    """Delegate to ``backend.services.runtime.azure_blob.upload_prefix``."""
-    from backend.services.runtime import azure_blob  # type: ignore[import]
-    return azure_blob.upload_prefix(
-        local_root,
-        blob_prefix=blob_prefix,
-        account_name=account_name,
-        container_name=container_name,
-        client=client,
-    )
+    """Delegate to the active ObjectStore's upload_prefix.
+
+    ``account_name`` and ``container_name`` are kept in the signature for
+    call-site compatibility but are now unused for routing — the ObjectStore
+    encapsulates those details.
+    """
+    return _object_store().upload_prefix(local_root, blob_prefix=blob_prefix)
 
 
 def _blob_download_bytes(
@@ -272,13 +353,8 @@ def _blob_download_bytes(
     container_name: str,
     client: Any | None = None,
 ) -> bytes:
-    from backend.services.runtime import azure_blob  # type: ignore[import]
-    return azure_blob.download_bytes(
-        blob_name,
-        account_name=account_name,
-        container_name=container_name,
-        client=client,
-    )
+    """Delegate to the active ObjectStore's download_bytes."""
+    return _object_store().download_bytes(blob_name)
 
 
 def _blob_download_artifact(
@@ -289,14 +365,36 @@ def _blob_download_artifact(
     container_name: str,
     client: Any | None = None,
 ) -> Path:
-    from backend.services.runtime import azure_blob  # type: ignore[import]
-    return azure_blob.download_artifact(
-        blob_name,
-        destination,
-        account_name=account_name,
-        container_name=container_name,
-        client=client,
-    )
+    """Delegate to the active ObjectStore's download_artifact."""
+    return _object_store().download_artifact(blob_name, destination)
+
+
+# ---------------------------------------------------------------------------
+# Cloud ObjectStore factory — monkeypatchable for tests
+# ---------------------------------------------------------------------------
+
+def _object_store() -> Any:
+    """Return the active ObjectStore for the current cloud prefix.
+
+    Resolved lazily from the bound ``settings_prefix`` (``"azure"`` → AzureBlobStore
+    via ``_AZURE_CLOUD``; ``"gcp"`` → GcsStore via ``_GCP_CLOUD``).  Lazy imports
+    prevent circular-import issues; ``_AZURE_CLOUD``/``_GCP_CLOUD`` live in their
+    respective thin-adapter modules which already import ``k8s_job_backend``.
+
+    Monkeypatch this symbol in tests via::
+
+        monkeypatch.setattr(kjcr, "_object_store", lambda: FakeStore())
+    """
+    prefix = _get_settings_prefix()
+    if prefix == "gcp":
+        from backend.services.runtime.gke_job_backend import _GCP_CLOUD  # type: ignore[import]
+        return _GCP_CLOUD.make_object_store(_get_settings(), None)
+    else:
+        # Default to Azure (covers "azure" and any unknown prefix).
+        account = _setting("azure_storage_account", "") or ""
+        container = _setting("azure_blob_container", "reprolab-artifacts") or "reprolab-artifacts"
+        from backend.services.runtime.k8s_job_backend import AzureBlobStore  # type: ignore[import]
+        return AzureBlobStore(account, container, None)
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +423,9 @@ def _make_blob_client(
     but those helpers already catch all exceptions, so the worst case is a
     logged debug warning.
     """
+    # GCP uses its own client internally via GcsStore; no shared ContainerClient.
+    if _get_settings_prefix() == "gcp":
+        return None
     if not account_name:
         return None
     try:
@@ -447,7 +548,11 @@ def _build_job_manifest(
     oom_batch_scale_floor: float = 0.25,
     # pip bootstrap timeout
     bootstrap_pip_timeout_s: int = 600,
-    default_sku: str = "azure_a100_80",
+    default_sku: str | None = None,
+    # Cloud-specific pod template labels (e.g. AKS Workload Identity).
+    # When None the function uses the azure default ({"azure.workload.identity/use": "true"})
+    # to preserve backward compatibility for callers that don't pass this param.
+    pod_template_extra_labels: dict | None = None,
 ) -> dict[str, Any]:
     """Build the K8s Job manifest dict for a single training cell.
 
@@ -458,14 +563,28 @@ def _build_job_manifest(
 
     Without ``gpu_plan`` the manifest falls back to ``{"reprolab/sku": default_sku}``
     (P0-fix-3) so the pod is always placed on a GPU node in the correct pool.
+
+    ``pod_template_extra_labels``:
+        Additional labels merged into the pod template metadata.  When ``None``
+        (the default) the Azure Workload Identity label is applied, preserving
+        byte-for-byte compatibility for existing callers.  Pass ``{}`` explicitly
+        for GCP (or any cloud that does not need WI labels).
     """
     # P1-fix-5: refuse to submit with an empty image tag rather than silently
     # using whatever :latest resolves to at runtime.
     if not base_image:
+        _img_setting = f"{_get_settings_prefix()}_base_image"
         raise ValueError(
-            "k8s_job_cell_runner: azure_base_image is empty — set OPENRESEARCH_AZURE_BASE_IMAGE "
-            "or the azure_base_image config field before submitting AKS Jobs."
+            f"k8s_job_cell_runner: {_img_setting} is empty — set the "
+            f"OPENRESEARCH_{_img_setting.upper()} config field before submitting K8s Jobs."
         )
+
+    # Resolve default_sku lazily from the active cloud context when not supplied.
+    # This ensures the correct cloud-specific default (gcp_a100_80 vs azure_a100_80)
+    # is used even when _build_job_manifest is called directly without default_sku.
+    if default_sku is None:
+        _gpu_skus_for_default: list = _cloud_setting("gpu_skus", []) or []
+        default_sku = str(_gpu_skus_for_default[0]) if _gpu_skus_for_default else "azure_a100_80"
 
     pvc_name = f"{namespace}-files-pvc"
 
@@ -483,14 +602,12 @@ def _build_job_manifest(
     #   OPENRESEARCH_CELL_OOM_BATCH_SCALE_STEP1  → (entrypoint plan_attempts)
     #   OPENRESEARCH_CELL_OOM_BATCH_SCALE_FLOOR  → (entrypoint plan_attempts)
     #   OPENRESEARCH_BOOTSTRAP_PIP_TIMEOUT_S     → (entrypoint _bootstrap pip install)
+    # Cloud-neutral env vars (both clouds).
     env_vars = [
         {"name": "OPENRESEARCH_CELL_ID",               "value": cell_id},
         {"name": "OPENRESEARCH_CELL_PARAMS",            "value": cell_params_json},
         {"name": "OPENRESEARCH_CELL_OUTPUT_DIR",        "value": f"/mnt/outputs/{cell_id}"},
         {"name": "OPENRESEARCH_CELL_MAX_OOM_RETRIES",   "value": str(max_oom_retries)},
-        # P0-fix-1: standardised on OPENRESEARCH_AZURE_* names the entrypoint reads.
-        {"name": "OPENRESEARCH_AZURE_STORAGE_ACCOUNT",  "value": storage_account},
-        {"name": "OPENRESEARCH_AZURE_BLOB_CONTAINER",   "value": blob_container},
         {"name": "OPENRESEARCH_BLOB_CODE_PREFIX",       "value": code_blob_prefix},
         {"name": "OPENRESEARCH_BLOB_OUTPUT_PREFIX",     "value": output_blob_prefix},
         {"name": "OPENRESEARCH_CACHE_MOUNT",            "value": cache_mount_path},
@@ -502,6 +619,20 @@ def _build_job_manifest(
         {"name": "OPENRESEARCH_BOOTSTRAP_PIP_TIMEOUT_S",
          "value": str(bootstrap_pip_timeout_s)},
     ]
+    # Cloud-specific object-store env vars.
+    # Azure: frozen contract with the baked ACR image — keep injecting the exact names.
+    # GCP: inject OPENRESEARCH_GCP_GCS_BUCKET (the cloud-neutral pair stays above).
+    _prefix = _get_settings_prefix()
+    if _prefix == "gcp":
+        env_vars.append(
+            {"name": "OPENRESEARCH_GCP_GCS_BUCKET", "value": _cloud_setting("gcs_bucket", "")}
+        )
+    else:
+        # Default / azure: P0-fix-1 standardised on OPENRESEARCH_AZURE_* names.
+        env_vars.extend([
+            {"name": "OPENRESEARCH_AZURE_STORAGE_ACCOUNT",  "value": storage_account},
+            {"name": "OPENRESEARCH_AZURE_BLOB_CONTAINER",   "value": blob_container},
+        ])
     if fingerprint:
         env_vars.append({"name": "OPENRESEARCH_CELL_FINGERPRINT", "value": fingerprint})
     if now_iso:
@@ -539,13 +670,23 @@ def _build_job_manifest(
         "effect": "NoSchedule",
     }
 
+    # Pod template labels: base labels + cloud-specific extras.
+    # Default to Azure Workload Identity label when pod_template_extra_labels is
+    # not explicitly provided, preserving byte-for-byte backward compatibility.
+    _pod_extra: dict[str, str] = (
+        {"azure.workload.identity/use": "true"}
+        if pod_template_extra_labels is None
+        else pod_template_extra_labels
+    )
+    _pod_labels: dict[str, str] = {
+        "app": "reprolab-cell",
+        "cell-id": cell_id[:63],
+    }
+    _pod_labels.update(_pod_extra)
+
     pod_template: dict[str, Any] = {
         "metadata": {
-            "labels": {
-                "azure.workload.identity/use": "true",
-                "app": "reprolab-cell",
-                "cell-id": cell_id[:63],
-            },
+            "labels": _pod_labels,
         },
         "spec": {
             "serviceAccountName": service_account,
@@ -665,7 +806,7 @@ def _watch_job(
             return _watch_result("deadline")
 
         # --- Single API call: read Job status ---
-        _poll_interval: float = _setting("azure_watch_poll_interval_s", 5.0)
+        _poll_interval: float = _cloud_setting("watch_poll_interval_s", 5.0)
         try:
             job = k8s.batch.read_namespaced_job_status(job_name, namespace)
         except Exception as exc:
@@ -998,6 +1139,7 @@ def _run_cell_job(
     run_id: str,
     gpu_plan: Any | None = None,
     blob_client: Any | None = None,
+    pod_template_extra_labels: dict | None = None,
 ) -> CellResult:
     """Submit a K8s Job for ``cell`` and block until terminal, then return a CellResult.
 
@@ -1022,7 +1164,7 @@ def _run_cell_job(
             base_image=base_image,
             storage_account=storage_account,
             blob_container=blob_container,
-            files_share=_setting("azure_files_share", "reprolab-cache"),
+            files_share=_cloud_setting("files_share", "reprolab-cache"),
             cell_id=cell_id,
             cell_params_json=cell_params_json,
             output_blob_prefix=output_blob_prefix,
@@ -1033,23 +1175,24 @@ def _run_cell_job(
             now_iso=now_iso,
             gpu_plan=gpu_plan,
             # P1-fix-8: configurable knobs from settings.
-            ttl_seconds_after_finished=int(_setting("azure_ttl_seconds_after_finished", 3600)),
-            backoff_limit=int(_setting("azure_job_backoff_limit", 0)),
-            cache_mount_path=str(_setting("azure_cache_mount_path", "/mnt/reprolab-cache")),
+            ttl_seconds_after_finished=int(_cloud_setting("ttl_seconds_after_finished", 3600)),
+            backoff_limit=int(_cloud_setting("job_backoff_limit", 0)),
+            cache_mount_path=str(_cloud_setting("cache_mount_path", "/mnt/reprolab-cache")),
             # P1-fix-9: OOM shrink ratios forwarded from settings.
             oom_batch_scale_step1=float(
-                _setting("azure_cell_oom_batch_scale_step1", 0.5)
+                _cloud_setting("cell_oom_batch_scale_step1", 0.5)
             ),
             oom_batch_scale_floor=float(
-                _setting("azure_cell_oom_batch_scale_floor", 0.25)
+                _cloud_setting("cell_oom_batch_scale_floor", 0.25)
             ),
             bootstrap_pip_timeout_s=int(
-                _setting("azure_bootstrap_pip_timeout_s", 600)
+                _cloud_setting("bootstrap_pip_timeout_s", 600)
             ),
             # P0-fix-3: default SKU for no-plan fallback.
             default_sku=str(
-                (_setting("azure_gpu_skus", []) or ["azure_a100_80"])[0]
+                (_cloud_setting("gpu_skus", []) or ["azure_a100_80"])[0]
             ),
+            pod_template_extra_labels=pod_template_extra_labels,
         )
     except ValueError as exc:
         # P1-fix-5: manifest builder raises ValueError on empty base_image.
@@ -1057,16 +1200,18 @@ def _run_cell_job(
         logger.error(
             "k8s_job_cell_runner: manifest build failed cell=%s: %s", cell_id, exc
         )
+        _cs = "gke" if _get_settings_prefix() == "gcp" else "aks"
         return CellResult(
             cell_id=cell_id,
             status=STATUS_ERROR,
             metrics=None,
-            gpu="aks:unassigned",
+            gpu=f"{_cs}:unassigned",
             retries=0,
             error=f"manifest build failed: {exc}",
         )
 
     # Submit the Job.
+    _cs = "gke" if _get_settings_prefix() == "gcp" else "aks"
     try:
         k8s.batch.create_namespaced_job(namespace, manifest)
         logger.info(
@@ -1080,7 +1225,7 @@ def _run_cell_job(
             cell_id=cell_id,
             status=STATUS_ERROR,
             metrics=None,
-            gpu="aks:unassigned",
+            gpu=f"{_cs}:unassigned",
             retries=0,
             error=f"job submission failed: {exc}",
         )
@@ -1096,7 +1241,7 @@ def _run_cell_job(
     )
 
     node_name = watch.get("node_name")
-    gpu_label = f"aks:{node_name}" if node_name else "aks:unassigned"
+    gpu_label = f"{_cs}:{node_name}" if node_name else f"{_cs}:unassigned"
 
     # Reconcile Blob status.json if Job was TTL-deleted before we could read it.
     blob_status: dict[str, Any] | None = None
@@ -1252,20 +1397,28 @@ def run_matrix(
     if not cells:
         return {}
 
-    # Read settings defensively.
-    namespace: str = _setting("azure_namespace", "reprolab")
-    service_account: str = _setting("azure_service_account", "reprolab-sa")
-    node_pool_name: str = _setting("azure_node_pool_name", "gpunodes")
+    # Read settings defensively — cloud-specific keys via _cloud_setting(),
+    # cloud-agnostic keys via _setting() directly.
+    namespace: str = _cloud_setting("namespace", "reprolab")
+    service_account: str = _cloud_setting("service_account", "reprolab-sa")
+    node_pool_name: str = _cloud_setting("node_pool_name", "gpunodes")
     # P1-fix-5: default is "" — _build_job_manifest raises clearly if still empty.
-    base_image: str = _setting("azure_base_image", "")
-    storage_account: str = _setting("azure_storage_account", "")
-    blob_container: str = _setting("azure_blob_container", "reprolab-artifacts")
+    base_image: str = _cloud_setting("base_image", "")
+    storage_account: str = _cloud_setting("storage_account", "") or ""
+    blob_container: str = _cloud_setting("blob_container", "reprolab-artifacts") or "reprolab-artifacts"
     # P1-fix-5: align with config.py default of 4 (was incorrectly 8 here).
-    azure_max_nodes: int = int(_setting("azure_max_nodes", 4))
-    gpu_usd_per_hour: float = float(_setting("azure_gpu_usd_per_hour", 3.67))
-    pending_timeout_s: float = float(_setting("azure_pending_timeout_seconds", 900))
-    provisioned_skus: list[str] = list(_setting("azure_gpu_skus", []) or [])
+    cloud_max_nodes: int = int(_cloud_setting("max_nodes", 4))
+    gpu_usd_per_hour: float = float(_cloud_setting("gpu_usd_per_hour", 3.67))
+    pending_timeout_s: float = float(_cloud_setting("pending_timeout_seconds", 900))
+    provisioned_skus: list[str] = list(_cloud_setting("gpu_skus", []) or [])
     max_escalations: int = int(_setting("dynamic_gpu_max_escalations", 2))
+    # Derive cloud prefix short label for gpu result fields ("aks" for azure, "gke" for gcp).
+    _prefix = _get_settings_prefix()
+    _cloud_short = "gke" if _prefix == "gcp" else "aks"
+    # Pod template extra labels: AKS needs WI label, GKE does not.
+    _pod_extra_labels: dict = (
+        {} if _prefix == "gcp" else {"azure.workload.identity/use": "true"}
+    )
 
     _fingerprints: dict[str, str] = fingerprints or {}
     _force_cells: set[str] = force_cells or set()
@@ -1290,7 +1443,7 @@ def run_matrix(
                 cell_id=cell.get("id", f"cell_{i}"),
                 status=STATUS_ERROR,
                 metrics=None,
-                gpu="aks:unassigned",
+                gpu=f"{_cloud_short}:unassigned",
                 retries=0,
                 error=msg,
             ).to_dict()
@@ -1302,8 +1455,8 @@ def run_matrix(
 
     # Parallelism.
     parallelism = min(
-        max_parallel or azure_max_nodes,
-        azure_max_nodes,
+        max_parallel or cloud_max_nodes,
+        cloud_max_nodes,
         len(cells),
     )
     parallelism = max(1, parallelism)
@@ -1319,7 +1472,7 @@ def run_matrix(
                 cell_id=cell.get("id", f"cell_{i}"),
                 status=STATUS_ERROR,
                 metrics=None,
-                gpu="aks:unassigned",
+                gpu=f"{_cloud_short}:unassigned",
                 retries=0,
                 error=err,
             ).to_dict()
@@ -1350,7 +1503,7 @@ def run_matrix(
                 cell_id=cell.get("id", f"cell_{i}"),
                 status=STATUS_ERROR,
                 metrics=None,
-                gpu="aks:unassigned",
+                gpu=f"{_cloud_short}:unassigned",
                 retries=0,
                 error=err,
             ).to_dict()
@@ -1403,7 +1556,7 @@ def run_matrix(
                     cell_id=cell_id,
                     status=STATUS_SKIPPED,
                     metrics=prior_metrics,
-                    gpu="aks:unassigned",
+                    gpu=f"{_cloud_short}:unassigned",
                     retries=0,
                     error=None,
                 )
@@ -1416,7 +1569,7 @@ def run_matrix(
                     cell_id=cell_id,
                     status=STATUS_ERROR,
                     metrics=None,
-                    gpu="aks:unassigned",
+                    gpu=f"{_cloud_short}:unassigned",
                     retries=0,
                     error="overall matrix timeout — cell not submitted",
                 )
@@ -1454,7 +1607,7 @@ def run_matrix(
                         cell_id=cell_id,
                         status=STATUS_ERROR,
                         metrics=None,
-                        gpu="aks:unassigned",
+                        gpu=f"{_cloud_short}:unassigned",
                         retries=0,
                         error=budget_err,
                     )
@@ -1492,6 +1645,7 @@ def run_matrix(
                 gpu_plan=current_plan,
                 # P0-scale-2: shared client avoids per-call MSI probe.
                 blob_client=shared_blob_client,
+                pod_template_extra_labels=_pod_extra_labels,
             )
 
             # Escalation check: only if oom_failed + plan available + cap not hit.
@@ -1620,7 +1774,7 @@ def run_matrix(
                 cell_id=cid,
                 status=STATUS_ERROR,
                 metrics=None,
-                gpu="aks:unassigned",
+                gpu=f"{_cloud_short}:unassigned",
                 retries=0,
                 error="worker exited without recording a result",
             )

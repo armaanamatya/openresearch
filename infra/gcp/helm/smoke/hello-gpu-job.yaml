@@ -1,0 +1,155 @@
+# ---------------------------------------------------------------------------
+# hello-gpu-job.yaml — Phase-1a gate: GPU pool scale 0→1→0 (GKE)
+#
+# PURPOSE:
+#   Prove end-to-end that:
+#     1. The GPU node pool scales from 0 → 1 (GKE cluster autoscaler).
+#     2. GKE's managed device plugin surfaces the GPU as nvidia.com/gpu: 1.
+#     3. `nvidia-smi` runs successfully inside the Job pod.
+#     4. Workload Identity works (the KSA impersonates the GSA — NO key).
+#     5. The Job can write a marker object to GCS using Application Default
+#        Credentials (Workload Identity token, NO static secrets).
+#     6. After TTL, the pool autoscales back to 0.
+#
+# USAGE:
+#   kubectl apply -f smoke/hello-gpu-job.yaml -n <namespace>
+#   kubectl get jobs -n <namespace> -w
+#   kubectl logs -n <namespace> job/hello-gpu-smoke -f
+#
+# PREREQUISITES:
+#   - `helm install` has been run (namespace, SA, RBAC exist; PVC if Filestore on).
+#   - GCS_BUCKET and IMAGE are filled in below.
+#   - The workload-identity GSA holds roles/storage.objectAdmin on the bucket
+#     (granted by the Terraform identity module).
+#
+# SUCCESS CRITERIA:
+#   Job status = Completed; logs contain "nvidia-smi OK" and "gcs write OK".
+#   Pool node count goes 0 → 1 → (after ttl) → 0.
+#
+# FILL BEFORE RUNNING — substitute from `terraform output`:
+#   GCS_BUCKET      = terraform output -raw gcs_bucket_name
+#   IMAGE           = terraform output -raw artifact_registry_url  (+ /gke-cell-base:0.1.0)
+#   NAMESPACE       = the value of .Values.namespace
+#   SERVICE_ACCOUNT = the value of .Values.serviceAccountName
+#   GPU_SKU         = .Values.gpu.defaultSku  (e.g. "gcp_a100_80")
+#   GPU_TAINT_KEY   = .Values.gpu.taintKey
+# ---------------------------------------------------------------------------
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hello-gpu-smoke
+  # Replace with your namespace (.Values.namespace)
+  namespace: reprolab
+  labels:
+    app.kubernetes.io/name: reprolab-gke-smoke
+    app.kubernetes.io/component: hello-gpu
+spec:
+  # Retry at most once for infra failures (e.g. image pull on a cold node).
+  backoffLimit: 1
+  # Automatically delete 1 hour after completion (success or failure).
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: hello-gpu-smoke
+    spec:
+      # Use the Workload-Identity-annotated SA.  On GKE the KSA annotation alone
+      # wires up Workload Identity — there is NO per-pod label (unlike Azure).
+      # Value MUST match .Values.serviceAccountName (default: reprolab-sa).
+      serviceAccountName: reprolab-sa
+      restartPolicy: Never
+
+      # Schedule on the specific GPU SKU pool.
+      # Replace <GPU_SKU> with .Values.gpu.defaultSku (e.g. "gcp_a100_80").
+      # [TF: gpu_pools — use gpu_pools[<sku>].sku_label]
+      nodeSelector:
+        reprolab/sku: gcp_a100_80   # replace with .Values.gpu.defaultSku
+
+      tolerations:
+        # Tolerate the shared GPU NoSchedule taint (nvidia.com/gpu=present:NoSchedule).
+        # operator: Exists matches any taint value — no per-pool enumeration needed.
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+
+      containers:
+        - name: hello-gpu
+          # Replace with the Artifact Registry image produced by the
+          # docker/gke-cell-base build.
+          # [TF: artifact_registry_url]  e.g. REGION-docker.pkg.dev/PROJECT/REPO/gke-cell-base:0.1.0
+          image: "REPLACE_WITH_ARTIFACT_REGISTRY_IMAGE"
+          imagePullPolicy: Always
+
+          # GPU resource request AND limit — required for the device plugin to
+          # inject CUDA_VISIBLE_DEVICES and schedule on a GPU node.
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+              cpu: "1"
+              memory: "4Gi"
+            limits:
+              nvidia.com/gpu: "1"
+              cpu: "2"
+              memory: "8Gi"
+
+          env:
+            - name: REPROLAB_GCS_BUCKET
+              # [TF: gcs_bucket_name]
+              value: "REPLACE_WITH_GCS_BUCKET"
+            # Marker object path written to prove GCS auth works.
+            - name: SMOKE_OBJECT_NAME
+              value: "smoke/hello-gpu-smoke-marker.txt"
+
+          # Mount the shared Filestore cache PVC (only present when Filestore is
+          # enabled).  Remove this volumeMount + the volume below if Filestore
+          # is off (storage.filestoreShare empty).
+          volumeMounts:
+            - name: reprolab-cache
+              mountPath: /mnt/reprolab-cache
+
+          command:
+            - /bin/bash
+            - -euo
+            - pipefail
+            - -c
+            - |
+              echo "=== hello-gpu-smoke starting ==="
+
+              # 1. Verify the GPU is accessible.
+              echo "--- nvidia-smi ---"
+              nvidia-smi
+              echo "nvidia-smi OK"
+
+              # 2. Write a test file to the shared Filestore cache mount.
+              echo "--- Filestore PVC write ---"
+              TMPFILE="/mnt/reprolab-cache/smoke-test-$(date +%s).txt"
+              echo "hello from hello-gpu-smoke at $(date)" > "${TMPFILE}"
+              cat "${TMPFILE}"
+              rm "${TMPFILE}"
+              echo "Filestore PVC write OK"
+
+              # 3. Write a marker object to GCS using Application Default
+              #    Credentials (Workload Identity federated token).
+              echo "--- GCS write via Workload Identity ---"
+              python3 - <<'PYEOF'
+              import os, sys, datetime
+              bucket = os.environ["REPROLAB_GCS_BUCKET"]
+              obj = os.environ["SMOKE_OBJECT_NAME"]
+              try:
+                  from google.cloud import storage
+              except ImportError as e:
+                  print(f"google-cloud-storage not available: {e}", file=sys.stderr)
+                  sys.exit(1)
+              client = storage.Client()
+              marker = f"hello-gpu-smoke OK at {datetime.datetime.utcnow().isoformat()}"
+              client.bucket(bucket).blob(obj).upload_from_string(marker.encode())
+              print(f"Uploaded marker to gs://{bucket}/{obj}")
+              print("gcs write OK")
+              PYEOF
+
+              echo "=== hello-gpu-smoke PASSED ==="
+
+      volumes:
+        - name: reprolab-cache
+          persistentVolumeClaim:
+            claimName: reprolab-cache

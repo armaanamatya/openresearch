@@ -1,0 +1,59 @@
+{{- if .Values.storage.filestoreShare }}
+# ---------------------------------------------------------------------------
+# Static PersistentVolume + PVC pointing at the EXISTING Filestore instance
+# provisioned by Terraform (filestore_enabled = true).
+#
+# We use a STATIC PV (rather than dynamic provisioning) because we want every
+# Job pod to mount the SINGLE shared cache share — so model weights download
+# once per cluster lifetime — not a freshly-provisioned per-PVC share.
+#
+# The PV's csi.volumeHandle encodes the Filestore instance + share; the volume
+# attributes carry the IP + share so the Filestore CSI driver can NFS-mount it.
+# Multiple Job pods on different nodes mount it simultaneously (RWX).
+#
+# Rendered only when storage.filestoreShare is non-empty; when empty the chart
+# ships no cache PVC and Jobs fall back to an emptyDir / GCS-only cache.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ .Values.namespace }}-reprolab-cache-pv
+  labels:
+    {{- include "reprolab-gke.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteMany   # RWX — multiple concurrent GPU Job pods across nodes
+  capacity:
+    storage: {{ .Values.storage.pvcSize }}
+  storageClassName: {{ .Values.namespace }}-filestore-rwx
+  persistentVolumeReclaimPolicy: {{ .Values.storage.reclaimPolicy }}
+  csi:
+    driver: filestore.csi.storage.gke.io
+    # volumeHandle is a logical identifier for the pre-existing share.  The
+    # operator may need to align it with the Filestore instance's full resource
+    # path; see README "Filestore static mount" for the exact value.
+    volumeHandle: "{{ .Values.namespace }}-reprolab-cache"
+    volumeAttributes:
+      ip: {{ .Values.storage.filestoreIp | quote }}
+      volume: {{ .Values.storage.filestoreShare | quote }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: reprolab-cache
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "reprolab-gke.labels" . | nindent 4 }}
+  annotations:
+    # Binds to the static Filestore PV above. Mounted by every GPU Job pod at
+    # the gcp_cache_mount_path (see backend/config.py) to provide a shared,
+    # persistent HF_HOME and pip cache across the training matrix.
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: {{ .Values.namespace }}-filestore-rwx
+  volumeName: {{ .Values.namespace }}-reprolab-cache-pv
+  resources:
+    requests:
+      storage: {{ .Values.storage.pvcSize }}
+{{- end }}

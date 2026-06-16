@@ -152,6 +152,7 @@ infra/azure/bootstrap/terraform.tfstate
 *.tfstate
 *.tfstate.backup
 infra/azure/**/.terraform/
+infra/gcp/**/.terraform/
 
 # DeepEval runtime cache (deepeval is a real dep — cache repopulates as needed)
 .deepeval
