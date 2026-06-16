@@ -2131,10 +2131,17 @@ def _parse_batch_response(
 def _resolve_grader_samples() -> int:
     """Number of grader samples per batch for median-of-N denoising (A1, 2026-06-16).
 
-    REPROLAB_GRADER_SAMPLES — default 1 (== today's single-sample behavior,
-    byte-for-byte). Clamped to >= 1. Odd values give a clean median (no
-    two-middle averaging). The calibration gate (data/grader_calibration.json)
-    promotes the default to 3 once overall σ is shown to drop.
+    REPROLAB_GRADER_SAMPLES — **default 1**. The calibration σ-gate (2026-06-16)
+    re-graded prj_4627097f8362928c K=3 through the production OAuth Sonnet grader
+    at temperature=0 and measured overall **σ=0.0067 at samples=1** — already
+    within the ≤0.02 promotion band, so the default is validated-sufficient and
+    stays 1 (0-regression; no forced 3× grader cost). samples=**3** drives σ to
+    **0.0000** (it fully absorbs the one observed bistable leaf, 0.4↔0.7) and is
+    the RECOMMENDED opt-in for fidelity-critical / borderline-verdict papers —
+    median-of-N is a pure denoiser (median of N draws of the SAME grader can only
+    reduce variance, never bias the score). Clamped to >= 1; odd values give a
+    clean median. Data: data/grader_calibration.json; decision rationale: memory
+    grader-fidelity-implementation.
     """
     raw = os.environ.get("REPROLAB_GRADER_SAMPLES", "").strip()
     if not raw:
