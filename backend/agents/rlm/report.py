@@ -670,6 +670,64 @@ def _best_recorded_rubric_score(project_dir: "Path") -> "float | None":
     return best
 
 
+def _evidence_fingerprint_enabled() -> bool:
+    """A3 (2026-06-16): median-within-evidence-state aggregation instead of the
+    global-MAX best-of-run floor. REPROLAB_EVIDENCE_FINGERPRINT, default OFF →
+    legacy global-max floor (byte-for-byte today)."""
+    import os as _os
+    return _os.environ.get("REPROLAB_EVIDENCE_FINGERPRINT", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _evidence_aware_best_score(project_dir: "Path") -> "float | None":
+    """A3: the run's robust score at its FINAL evidence state — the MEDIAN of the
+    rubric_score events sharing the LATEST evidence_key — NOT the global max.
+
+    The global max over every verify event is upward-biased: it banks the luckiest
+    draw across both same-evidence grader noise AND different evidence states.
+    Grouping by evidence_key (hash of canonical metrics+scope, stamped on each
+    event by binding when the fingerprint flag is on) and taking the median of the
+    latest state strips that bias. Events with no evidence_key (older runs, or the
+    flag was off at emit) each form a singleton group, so a keyless run degrades to
+    'latest score' — still never a global max. None when no score was recorded.
+    """
+    import statistics as _stats
+    events = Path(project_dir) / "dashboard_events.jsonl"
+    if not events.exists():
+        return None
+    seq: list[tuple[str, float]] = []  # (evidence_key, score) in arrival order
+    _nokey = 0
+    try:
+        for line in events.read_text(encoding="utf-8").splitlines():
+            if "rubric_score" not in line:
+                continue
+            try:
+                d = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            payload = d.get("payload") if isinstance(d.get("payload"), dict) else d
+            s = payload.get("overall_score")
+            if s is None:
+                s = payload.get("score")
+            try:
+                val = float(s)
+            except (TypeError, ValueError):
+                continue
+            key = payload.get("evidence_key")
+            if not key:
+                _nokey += 1
+                key = f"__nokey__{_nokey}"  # singleton → degrades to latest-score
+            seq.append((str(key), val))
+    except OSError:
+        return None
+    if not seq:
+        return None
+    latest_key = seq[-1][0]
+    latest_scores = [v for k, v in seq if k == latest_key]
+    return float(_stats.median(latest_scores))
+
+
 def _apply_best_of_run_floor(rubric: dict, project_dir: "Path") -> dict:
     """Return ``rubric`` with ``overall_score`` floored to the run's best recorded
     rubric score (best-of-run; 2026-05-30, reordered for F-11).
@@ -679,8 +737,16 @@ def _apply_best_of_run_floor(rubric: dict, project_dir: "Path") -> dict:
     reflects the floored score, not the degraded self-reported one — F-11: the floor
     used to run only AFTER reconciliation, leaving verdict and score inconsistent on
     the no-amend path. No-op when no better score was recorded.
+
+    A3 (2026-06-16): with REPROLAB_EVIDENCE_FINGERPRINT on, ``best`` is the MEDIAN
+    of the latest evidence state (no global max — that banked the luckiest draw);
+    off, it is the legacy global-max high-water mark (byte-for-byte today).
     """
-    best = _best_recorded_rubric_score(project_dir)
+    best = (
+        _evidence_aware_best_score(project_dir)
+        if _evidence_fingerprint_enabled()
+        else _best_recorded_rubric_score(project_dir)
+    )
     if best is None:
         return rubric
     floored = dict(rubric or {})

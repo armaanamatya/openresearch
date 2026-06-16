@@ -743,6 +743,38 @@ def _emit_supplemental(
                 # Malformed score — leave policy state untouched; the
                 # interceptor treats None-score as "no rubric, accept".
                 pass
+            # A3 (2026-06-16): fingerprint the evidence state this grade was
+            # computed against (hash of canonical metrics + scope) so the report
+            # aggregator can take the MEDIAN of the latest state instead of the
+            # upward-biased global max. Flag-gated + fail-soft: off / on-error →
+            # no stamp, and the aggregator degrades to 'latest score'.
+            _evidence_key: str | None = None
+            import os as _os_a3
+            if _os_a3.environ.get("REPROLAB_EVIDENCE_FINGERPRINT", "").strip().lower() in (
+                "1", "true", "yes", "on",
+            ):
+                try:
+                    import json as _json_a3
+                    from backend.evals.paperbench.leaf_scorer import _latest_metrics_path as _lmp_a3
+                    from backend.agents.rlm.evidence_key import evidence_key as _ekey_a3
+                    _mp_a3 = _lmp_a3(ctx.project_dir)
+                    _metrics_a3 = (
+                        _json_a3.loads(_mp_a3.read_text(encoding="utf-8")) if _mp_a3 else {}
+                    )
+                    _ss_a3 = getattr(ctx, "scope_spec", None)
+                    _scope_a3 = None
+                    if _ss_a3 is not None:
+                        _scope_a3 = {
+                            "models": list(getattr(_ss_a3, "models", None) or []),
+                            "datasets": [
+                                getattr(d, "name", None) or str(d)
+                                for d in (getattr(_ss_a3, "datasets", None) or [])
+                            ],
+                            "seeds": list(getattr(_ss_a3, "seeds", None) or []),
+                        }
+                    _evidence_key = _ekey_a3(_metrics_a3, _scope_a3)
+                except Exception:  # noqa: BLE001 — fingerprint is advisory, never block emit
+                    _evidence_key = None
             # Pass through the per-area `leaves` detail (id/label/score/status/why)
             # that `_rubric_areas` attached, plus the cross-area weak_leaves and
             # the last few failed-experiment rows, so the lab UI can show
@@ -763,7 +795,7 @@ def _emit_supplemental(
                 _recent_errors = _recent_experiment_errors(ctx.project_dir)
             except Exception:  # noqa: BLE001 — observability must never block emit
                 _recent_errors = []
-            emit_extra(build_rubric_score_event(
+            _rubric_evt = build_rubric_score_event(
                 iteration=ctx.current_iteration,
                 score=float(score),
                 target=float(target) if target is not None else 0.0,
@@ -775,7 +807,15 @@ def _emit_supplemental(
                 ],
                 weak_leaves=_weak_leaves,
                 recent_errors=_recent_errors,
-            ))
+            )
+            if _evidence_key:  # A3 — stamp alongside the score the aggregator reads
+                _evt_payload = (
+                    _rubric_evt.get("payload")
+                    if isinstance(_rubric_evt.get("payload"), dict)
+                    else _rubric_evt
+                )
+                _evt_payload["evidence_key"] = _evidence_key
+            emit_extra(_rubric_evt)
 
             # 2026-05-26: persist the full verify_against_rubric payload so
             # write_final_report_rlm can merge per-leaf justifications into
@@ -789,6 +829,7 @@ def _emit_supplemental(
                 tmp = eval_path.with_suffix(".json.tmp")
                 payload = {
                     "iteration": ctx.current_iteration,
+                    "evidence_key": _evidence_key,  # A3 — None when fingerprint flag off
                     "overall_score": float(score),
                     "target_score": float(target) if target is not None else None,
                     "meets_target": result.get("meets_target"),
