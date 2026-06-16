@@ -671,6 +671,29 @@ class ClaudeLlmClient:
         finally:
             ex.shutdown(wait=False)
 
+    def complete_samples(
+        self,
+        *,
+        system: str,
+        user: str,
+        n: int = 1,
+        temperature: float | None = None,
+        seed: int | None = None,
+    ) -> list[str]:
+        """Return ``n`` completions by calling ``complete`` ``n`` times.
+
+        Optional grader-fidelity sampling path (spec 2026-06-16 §A5). The
+        bundled claude-agent-sdk OAuth transport exposes NO sampler control
+        (no temperature, no seed, no native ``n``), so this is genuinely
+        sequential and ``temperature``/``seed`` are accepted-and-IGNORED
+        (documented). The grader's per-leaf median-of-N is the denoiser on this
+        path — distinct draws come from the SDK's own default sampling, not
+        from a tunable temperature. Each call carries the existing
+        ``with_429_backoff`` + SDK-isolation hardening of ``complete``;
+        ``_last_usage`` reflects the LAST call.
+        """
+        return [self.complete(system=system, user=user) for _ in range(n)]
+
     async def _async_complete(self, *, system: str, user: str) -> tuple[str, dict[str, int]]:
         """Return (result_text, usage_dict) from the SDK stream.
 
