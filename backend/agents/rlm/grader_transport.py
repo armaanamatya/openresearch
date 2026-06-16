@@ -59,7 +59,16 @@ def sample_completions(
     """
     fn = getattr(client, "complete_samples", None)
     if callable(fn):
-        return fn(system=system, user=user, n=n, temperature=temperature, seed=seed)
+        try:
+            result = fn(system=system, user=user, n=n, temperature=temperature, seed=seed)
+        except (TypeError, AttributeError):
+            result = None
+        # A real complete_samples returns list[str]; a MagicMock auto-attribute
+        # (e.g. a test stub that only implements `complete`) returns a Mock, not a
+        # list — fall through to plain `complete` so any loose stub still yields n
+        # samples. This keeps `complete` the universal, backwards-compatible floor.
+        if isinstance(result, list):
+            return [str(x) for x in result]
     return [client.complete(system=system, user=user) for _ in range(n)]
 
 
