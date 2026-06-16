@@ -87,6 +87,87 @@ _OOM_SIGNATURES: tuple[str, ...] = (
 # Batch-scale values tried on successive OOM retries (after the original attempt).
 _OOM_BATCH_SCALES: tuple[float, ...] = (0.5, 0.25)
 
+# C3: extra OOM stderr signatures, matched ONLY under REPROLAB_OOM_ENFORCE. The
+# base set above stays the default (byte-for-byte); these catch non-standard CUDA
+# OOM messages that today misclassify a terminal OOM as a non-OOM failure.
+_OOM_SIGNATURES_EXTRA: tuple[str, ...] = (
+    "CUBLAS_STATUS_ALLOC_FAILED",
+    "CUDNN_STATUS_ALLOC_FAILED",
+    "cudaErrorMemoryAllocation",
+    "torch.cuda.OutOfMemoryError",
+    "failed to allocate",
+    "tried to allocate",          # torch OOM detail line
+)
+
+
+def _oom_enforce_enabled() -> bool:
+    """C3: REPROLAB_OOM_ENFORCE — on an OOM retry, ENFORCE a per-GPU memory cap a
+    non-cooperating trainer cannot ignore (set_per_process_memory_fraction shim)
+    + broaden OOM classification. Default OFF → only REPROLAB_CELL_BATCH_SCALE is
+    set (advisory, byte-for-byte today)."""
+    return os.environ.get("REPROLAB_OOM_ENFORCE", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+# C3 memory-cap shim. Injected as a sitecustomize on a dedicated PYTHONPATH dir on
+# OOM retries so it runs at interpreter startup BEFORE the trainer allocates —
+# enforcing the cap without trainer cooperation. Stdlib-only (this file is copied
+# flat into the agent sandbox). Best-effort: any failure is swallowed so the cell
+# still runs. (A pre-existing site-packages sitecustomize is shadowed for this one
+# subprocess only — acceptable for a flag-gated OOM-retry path.)
+_OOM_MEMCAP_SHIM = (
+    "# Auto-injected by gpu_cell_runner on an OOM retry (C3, REPROLAB_OOM_ENFORCE).\n"
+    "# Caps this process's per-GPU memory fraction so a non-cooperating trainer\n"
+    "# cannot re-OOM identically. Runs at interpreter startup.\n"
+    "import os as _os\n"
+    "_frac = _os.environ.get('REPROLAB_CELL_MEM_FRACTION')\n"
+    "if _frac:\n"
+    "    try:\n"
+    "        import torch as _torch\n"
+    "        if _torch.cuda.is_available():\n"
+    "            _f = max(0.05, min(1.0, float(_frac)))\n"
+    "            for _d in range(_torch.cuda.device_count()):\n"
+    "                _torch.cuda.set_per_process_memory_fraction(_f, _d)\n"
+    "    except Exception:\n"
+    "        pass\n"
+)
+
+
+def _inject_oom_memcap(child_env: dict, shim_root: "Path | str", fraction: float) -> None:
+    """Write the memcap sitecustomize into ``shim_root/_oom_shim`` and wire
+    ``child_env`` (REPROLAB_CELL_MEM_FRACTION + PYTHONPATH prepend). Fail-soft: on
+    any error the cell still runs (advisory batch-scale already set)."""
+    try:
+        shim_dir = Path(shim_root) / "_oom_shim"
+        shim_dir.mkdir(parents=True, exist_ok=True)
+        (shim_dir / "sitecustomize.py").write_text(_OOM_MEMCAP_SHIM, encoding="utf-8")
+        child_env["REPROLAB_CELL_MEM_FRACTION"] = str(max(0.05, min(1.0, float(fraction))))
+        child_env["PYTHONPATH"] = str(shim_dir) + os.pathsep + child_env.get("PYTHONPATH", "")
+    except Exception:  # noqa: BLE001 — enforcement is best-effort; never block the cell
+        pass
+
+
+# C2 orphan-guard hooks (soft): register each spawned cell's process group with the
+# harness so binding's per-primitive timeout can SIGKILL it on abandonment. Lazy +
+# fail-soft so this file stays zero-non-stdlib-dep when copied FLAT into the agent
+# sandbox (where there is no backend package — and no binding handler either, so
+# skipping registration there is correct). No-op kill unless REPROLAB_ORPHAN_GUARD.
+def _orphan_register(pid: int) -> None:
+    try:
+        from backend.agents.rlm import orphan_guard as _og
+        _og.register(pid)
+    except Exception:  # noqa: BLE001 — sandbox-flat (no backend pkg) or any error: skip
+        pass
+
+
+def _orphan_deregister(pid: int) -> None:
+    try:
+        from backend.agents.rlm import orphan_guard as _og
+        _og.deregister(pid)
+    except Exception:  # noqa: BLE001
+        pass
+
 __all__ = ["CELL_MANIFEST_NAME", "CellResult", "discover_visible_gpus", "run_matrix"]
 
 
@@ -151,8 +232,17 @@ def discover_visible_gpus() -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _is_oom(output: str) -> bool:
-    """Return True iff ``output`` (stderr + stdout combined) contains an OOM signature."""
-    return any(sig in output for sig in _OOM_SIGNATURES)
+    """Return True iff ``output`` (stderr + stdout combined) contains an OOM signature.
+
+    C3: under REPROLAB_OOM_ENFORCE the broadened ``_OOM_SIGNATURES_EXTRA`` set is
+    also matched (catches non-standard CUDA OOM messages). Default → base set only
+    (byte-for-byte today).
+    """
+    if any(sig in output for sig in _OOM_SIGNATURES):
+        return True
+    if _oom_enforce_enabled() and any(sig in output for sig in _OOM_SIGNATURES_EXTRA):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +324,12 @@ def _run_cell_subprocess(
     if batch_scale is not None:
         child_env["REPROLAB_CELL_BATCH_SCALE"] = str(batch_scale)
         child_env["REPROLAB_CELL_GRAD_CHECKPOINT"] = "1" if grad_checkpoint else "0"
+        # C3: advisory batch-scale alone lets a non-cooperating trainer OOM
+        # identically. When REPROLAB_OOM_ENFORCE is on, ALSO enforce a hard per-GPU
+        # memory cap (sitecustomize shim, no trainer cooperation) tracking the
+        # batch-scale ladder (0.5 → 0.25). Off → byte-for-byte today.
+        if _oom_enforce_enabled():
+            _inject_oom_memcap(child_env, output_dir, batch_scale)
     else:
         # Clear any inherited values from a parent run.
         child_env.pop("REPROLAB_CELL_BATCH_SCALE", None)
@@ -247,6 +343,7 @@ def _run_cell_subprocess(
     ]
 
     captured_chunks: list[str] = []
+    _cell_proc_pid: int | None = None  # C2: process group, deregistered in finally
 
     try:
         with log_path.open("w", encoding="utf-8", errors="replace") as log_fh:
@@ -261,6 +358,11 @@ def _run_cell_subprocess(
                 # New process group so we can kill the whole tree on timeout.
                 start_new_session=True,
             )
+            # C2: register this cell's process group so binding's per-primitive
+            # timeout handler can SIGKILL it if the OUTER timeout abandons us before
+            # this cell's own timeout fires. Soft + flag-gated (no-op when off).
+            _cell_proc_pid = proc.pid
+            _orphan_register(proc.pid)
 
             # Dead-training early-stop (2026-06-09, flag-gated default OFF): watch the
             # streamed loss for the provably-stuck signature and kill the cell early as
@@ -323,6 +425,12 @@ def _run_cell_subprocess(
         except OSError:
             pass
         return -1, "".join(captured_chunks)
+    finally:
+        # C2: cell reaped (normal exit, timeout-kill, or launch failure) → drop it
+        # from the orphan registry so a later primitive timeout can't target a
+        # since-recycled PID. Soft no-op when the guard never registered it.
+        if _cell_proc_pid is not None:
+            _orphan_deregister(_cell_proc_pid)
 
 
 # ---------------------------------------------------------------------------

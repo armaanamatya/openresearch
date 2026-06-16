@@ -517,6 +517,15 @@ class LocalProcessBackend(RuntimeBackend):
             ) from exc
 
         state = _ExecState(pid=process.pid, command=command)
+        # C2: register this exec's process group so binding's per-primitive timeout
+        # can SIGKILL it if the OUTER timeout abandons this coroutine before our own
+        # stall/timeout fires. Soft + lazy (avoids a services->agents import cycle) +
+        # flag-gated (no-op kill unless REPROLAB_ORPHAN_GUARD; byte-for-byte today).
+        try:
+            from backend.agents.rlm import orphan_guard as _orphan_guard
+            _orphan_guard.register(process.pid)
+        except Exception:  # noqa: BLE001 — orphan registration must never break exec
+            pass
         stdout_cap = _CappedText()
         stderr_cap = _CappedText()
         live_fh = None
@@ -573,6 +582,15 @@ class LocalProcessBackend(RuntimeBackend):
             except Exception:  # noqa: BLE001
                 pass
         _write_heartbeat(heartbeat_path, state)
+
+        # C2: exec reaped (all completion paths reach here) → drop its process group
+        # from the orphan registry so a later primitive timeout can't target a
+        # since-recycled PID.
+        try:
+            from backend.agents.rlm import orphan_guard as _orphan_guard
+            _orphan_guard.deregister(process.pid)
+        except Exception:  # noqa: BLE001
+            pass
 
         finished_at = datetime.now(timezone.utc)
         duration = (finished_at - started_at).total_seconds()

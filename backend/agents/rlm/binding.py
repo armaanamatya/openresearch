@@ -503,6 +503,22 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                             "primitive %s timed out after %ss — marking retryable",
                             name, _timeout_s,
                         )
+                        # C2: the abandoned worker thread may still hold an
+                        # experiment subprocess group (GPU/VRAM). SIGKILL the
+                        # registered groups so the retry this timeout authorises
+                        # isn't starved. No-op unless REPROLAB_ORPHAN_GUARD is on →
+                        # byte-for-byte today.
+                        _killed = 0
+                        try:
+                            from backend.agents.rlm.orphan_guard import kill_orphans
+                            _killed = kill_orphans()
+                            if _killed:
+                                logger.warning(
+                                    "primitive %s timeout: SIGKILLed %d orphaned "
+                                    "experiment process group(s)", name, _killed,
+                                )
+                        except Exception:  # noqa: BLE001 — orphan-kill MUST NOT break the run
+                            pass
                         # Emit a run_warning SSE event so the UI and cost-ledger
                         # reflect the hung primitive.
                         try:
@@ -513,6 +529,7 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                                 "code": "primitive_timeout",
                                 "primitive": name,
                                 "wall_clock_s": _timeout_s,
+                                "orphan_groups_killed": _killed,
                                 "message": (
                                     f"primitive `{name}` exceeded its wall-clock "
                                     f"cap of {_timeout_s}s and was interrupted. "
@@ -526,6 +543,7 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                             "error": "primitive_hung",
                             "primitive": name,
                             "wall_clock_s": _timeout_s,
+                            "orphan_groups_killed": _killed,
                         }
             except Exception as exc:
                 # Value-free event: an exception MESSAGE can carry raw LLM output,
