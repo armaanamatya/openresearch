@@ -670,6 +670,56 @@ def _best_recorded_rubric_score(project_dir: "Path") -> "float | None":
     return best
 
 
+# E3 (loud-fail-soft sweep): run_warning codes that represent a SILENT LESSER PATH
+# (a degrade the report should own), vs purely-advisory warnings or IMPROVEMENTS
+# (finalize_regrade_adopted) which are deliberately excluded from the "what
+# degraded" ledger. Extend this set as new degrade warnings are added.
+_DEGRADATION_WARNING_CODES: frozenset[str] = frozenset({
+    "cells_manifest_restored", "cells_manifest_dropped", "per_model_derived",
+    "cell_axes_derived", "metrics_incomplete", "metrics_shape_item_invalid",
+    "primitive_timeout", "search_synthesized", "plan_reproduction_failed_envelope",
+    "paper_grounding_failed", "disk_headroom_thin", "degenerate_pool",
+    "compute_scope_invalid", "sdk_pre_emit_stall", "knowledge_channel_strict_violation",
+    "forced_iteration", "finalize_regrade_skipped",
+})
+
+
+def _collect_degradations(project_dir: "Path") -> "list[dict[str, Any]]":
+    """E3: aggregate this run's coded degradation ``run_warning`` events into a
+    compact ledger ``[{code, count, last_message}]`` (newest message wins).
+
+    Reads ``dashboard_events.jsonl`` — the channel degradations ALREADY emit on —
+    so no individual fail-soft site needs instrumenting (the cells_manifest_restored
+    pattern, made universal at the read side). Returns ``[]`` when the run took no
+    degraded path, so the caller omits the field and a clean run's report is
+    byte-for-byte today. Fail-soft: any read/parse error returns ``[]``.
+    """
+    events = Path(project_dir) / "dashboard_events.jsonl"
+    if not events.exists():
+        return []
+    agg: dict[str, dict[str, Any]] = {}
+    try:
+        for line in events.read_text(encoding="utf-8").splitlines():
+            if "run_warning" not in line:
+                continue
+            try:
+                d = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            payload = d.get("payload") if isinstance(d.get("payload"), dict) else d
+            code = payload.get("code")
+            if not isinstance(code, str) or code not in _DEGRADATION_WARNING_CODES:
+                continue
+            rec = agg.setdefault(code, {"code": code, "count": 0, "last_message": ""})
+            rec["count"] += 1
+            msg = payload.get("message")
+            if isinstance(msg, str) and msg:
+                rec["last_message"] = msg[:300]
+    except OSError:
+        return []
+    return [agg[k] for k in sorted(agg)]
+
+
 def _evidence_fingerprint_enabled() -> bool:
     """A3 (2026-06-16): median-within-evidence-state aggregation instead of the
     global-MAX best-of-run floor. REPROLAB_EVIDENCE_FINGERPRINT, default OFF →
@@ -1387,6 +1437,22 @@ def write_final_report_rlm(
             json_content = json.dumps(_d, indent=2)
     except Exception:  # noqa: BLE001 — stamp is best-effort
         logger.warning("report: experiment-arm stamp failed (non-fatal)", exc_info=True)
+
+    # --- E3: degradations_taken ledger (loud-fail-soft sweep) --------------
+    # Surface the run's coded degradation warnings so the report honestly lists
+    # every lesser path the harness took (the cells_manifest_restored pattern made
+    # universal). Same serialized-dict pattern as the stamps above — RLMFinalReport
+    # needs no field. Omitted when empty → a clean run's report is byte-for-byte
+    # today. Fail-soft — never blocks the write.
+    try:
+        _degr = _collect_degradations(project_dir)
+        if _degr:
+            _d = json.loads(json_content)
+            _d["degradations_taken"] = _degr
+            json_content = json.dumps(_d, indent=2)
+    except Exception:  # noqa: BLE001 — degradation ledger is best-effort
+        logger.warning("report: degradations_taken ledger failed (non-fatal)", exc_info=True)
+
     _atomic_write(json_path, json_content)
 
     # --- Markdown (human-readable) ---
