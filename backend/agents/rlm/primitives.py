@@ -1345,6 +1345,29 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
             "skipped": True,
             "note": "azure sandbox: image is pre-baked in ACR; build_environment is a no-op",
         }, PrimitiveOutcome.ok)
+    # C6 (2026-06-16): under runpod the locally-built image is NEVER used — the
+    # pod boots REPROLAB_RUNPOD_IMAGE and runs over SSH in a per-run venv
+    # (runpod_backend.py). The local `docker build` below is therefore wasted
+    # work that STILL hard-requires a local daemon, so a runpod run on a
+    # daemon-less host dies in SandboxRuntimeError(backend_unavailable) for an
+    # image it will never touch. Short-circuit to a no-op (mirroring local/azure)
+    # BEFORE any docker client is reached. Flag-gated so the prior
+    # daemon-requiring behaviour is restorable byte-for-byte:
+    # REPROLAB_RUNPOD_SKIP_BUILD=0 keeps the local build.
+    if _sb_key == "runpod" and os.environ.get(
+        "REPROLAB_RUNPOD_SKIP_BUILD", "1"
+    ).strip().lower() in ("1", "true", "yes", "on"):
+        return _with_outcome({
+            "ok": True,
+            "image_tag": "",
+            "attempts": 0,
+            "skipped": True,
+            "note": (
+                "runpod sandbox: the pod boots REPROLAB_RUNPOD_IMAGE over SSH; "
+                "the local image is never used. build_environment is a no-op "
+                "(set REPROLAB_RUNPOD_SKIP_BUILD=0 to force the local build)"
+            ),
+        }, PrimitiveOutcome.ok)
 
     import asyncio
     import concurrent.futures
@@ -5707,8 +5730,23 @@ def run_experiment(
     try:
         from backend.services.runtime.gpu_capacity import describe_capacity
         _caps = describe_capacity(ctx)
+        # C6 (2026-06-16): the cell-matrix route gate historically allowed only
+        # ("local","docker") — which made the azure K8s branch in
+        # _execute_cell_matrix (the `_sb_key_ecm == "azure"` arm that dispatches
+        # k8s_job_cell_runner.run_matrix) unreachable, since azure capacity is
+        # detected first by describe_capacity and then excluded here. AksJobBackend
+        # is the intended azure path (exported from runtime/__init__, instantiated
+        # by _backend_for_azure, plan-aware), so the branch is unreachable-by-gate,
+        # NOT dead-by-design — admit "azure" to the gate. Flag-gated so local/docker
+        # (and runpod, which uses the SSH exec path, never this route) are
+        # byte-for-byte unchanged when REPROLAB_AZURE_CELL_ROUTE=0.
+        _cell_route_kinds = ["local", "docker"]
+        if os.environ.get("REPROLAB_AZURE_CELL_ROUTE", "1").strip().lower() in (
+            "1", "true", "yes", "on"
+        ):
+            _cell_route_kinds.append("azure")
         if (
-            _caps.backend_kind in ("local", "docker")
+            _caps.backend_kind in _cell_route_kinds
             and not _caps.is_empty
             and (Path(code_path) / "cells.json").is_file()
             and (Path(code_path) / "train_cell.py").is_file()
