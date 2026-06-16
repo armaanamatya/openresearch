@@ -25,11 +25,11 @@ GRID = {
 
 
 def test_flag_default_off(monkeypatch):
-    monkeypatch.delenv("REPROLAB_HYBRID_EXEC_ROUTE", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_HYBRID_EXEC_ROUTE", raising=False)
     assert _hybrid_route_enabled() is False
-    monkeypatch.setenv("REPROLAB_HYBRID_EXEC_ROUTE", "1")
+    monkeypatch.setenv("OPENRESEARCH_HYBRID_EXEC_ROUTE", "1")
     assert _hybrid_route_enabled() is True
-    monkeypatch.setenv("REPROLAB_HYBRID_EXEC_ROUTE", "off")
+    monkeypatch.setenv("OPENRESEARCH_HYBRID_EXEC_ROUTE", "off")
     assert _hybrid_route_enabled() is False
 
 

@@ -18,8 +18,8 @@ def _reset_settings_cache():
 def _isolate_settings(monkeypatch, tmp_path):
     runs_root = tmp_path / "runs"
     runs_root.mkdir()
-    monkeypatch.setenv("REPROLAB_RUNS_ROOT", str(runs_root))
-    monkeypatch.delenv("REPROLAB_DEMO_SECRET", raising=False)
+    monkeypatch.setenv("OPENRESEARCH_RUNS_ROOT", str(runs_root))
+    monkeypatch.delenv("OPENRESEARCH_DEMO_SECRET", raising=False)
     _reset_settings_cache()
     yield runs_root
     _reset_settings_cache()

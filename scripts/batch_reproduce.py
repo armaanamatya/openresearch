@@ -457,7 +457,7 @@ def _run_one(
 
         per_run_env: dict[str, str] = {
             "CUDA_VISIBLE_DEVICES": gpu_uuid_csv,
-            "REPROLAB_GPU_DEVICE_IDS": gpu_uuid_csv,
+            "OPENRESEARCH_GPU_DEVICE_IDS": gpu_uuid_csv,
             "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
             "HF_HOME": str(shared_hf),
             "PIP_CACHE_DIR": str(shared_pip),  # shared wheel cache — fast, resilient re-installs (see above)
@@ -469,13 +469,13 @@ def _run_one(
             "TRITON_CACHE_DIR": str((runs_root / ".cache" / project_id / "triton").resolve()),
             "XDG_CACHE_HOME": str((runs_root / ".cache" / project_id / "xdg").resolve()),
             "MPLCONFIGDIR": str((runs_root / ".cache" / project_id / "mpl").resolve()),
-            "REPROLAB_RLM_ROOT_MODEL": args.model,
+            "OPENRESEARCH_RLM_ROOT_MODEL": args.model,
             "PYTHONUNBUFFERED": "1",
         }
         if venv_ok:
-            per_run_env["REPROLAB_EXPERIMENT_VENV"] = str(venv_dir)
+            per_run_env["OPENRESEARCH_EXPERIMENT_VENV"] = str(venv_dir)
 
-        # Opt-in (REPROLAB_PROVISION_ENVS="ALFWorld,WebShop"): stand the heavy RL
+        # Opt-in (OPENRESEARCH_PROVISION_ENVS="ALFWorld,WebShop"): stand the heavy RL
         # environments up ONCE via the host-shared EnvCacheManager and hand their
         # cache locations (ALFWORLD_DATA / WEBSHOP_URL) to the child. An env that
         # cannot be provisioned on this host becomes a VERIFIED env_setup_failed
@@ -483,7 +483,7 @@ def _run_one(
         # and the rubric excludes (not zeroes) the rest. Dormant unless the env var
         # is set, so the default smallest-two run is unaffected.
         _provision_names = [
-            s.strip() for s in os.environ.get("REPROLAB_PROVISION_ENVS", "").split(",") if s.strip()
+            s.strip() for s in os.environ.get("OPENRESEARCH_PROVISION_ENVS", "").split(",") if s.strip()
         ]
         if _provision_names:
             try:
@@ -642,7 +642,7 @@ _ACCEL_POLL_INTERVAL_S = 5      # seconds between readiness probes
 def _probe_accelerator(host: str, port: int) -> bool:
     """Return True if GET http://{host}:{port}/v1/models indicates a live server.
 
-    Sends ``Authorization: Bearer <key>`` when ``REPROLAB_ACCELERATOR_API_KEY`` is
+    Sends ``Authorization: Bearer <key>`` when ``OPENRESEARCH_ACCELERATOR_API_KEY`` is
     set (default ``"local"``), because a vLLM server started with ``--api-key``
     returns 401 to an unauthenticated probe — which means the server IS up.
     HTTP 401/403 are therefore treated as reachable (mirrors
@@ -652,7 +652,7 @@ def _probe_accelerator(host: str, port: int) -> bool:
     import urllib.request
 
     url = f"http://{host}:{port}/v1/models"
-    api_key = os.environ.get("REPROLAB_ACCELERATOR_API_KEY", "local")
+    api_key = os.environ.get("OPENRESEARCH_ACCELERATOR_API_KEY", "local")
     req = urllib.request.Request(url)
     req.add_header("Authorization", f"Bearer {api_key}")
     try:

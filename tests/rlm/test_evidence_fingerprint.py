@@ -1,6 +1,6 @@
 """A3: evidence-fingerprint aggregation — median-within-state, no global MAX.
 
-REPROLAB_EVIDENCE_FINGERPRINT default OFF → legacy global-max best-of-run floor
+OPENRESEARCH_EVIDENCE_FINGERPRINT default OFF → legacy global-max best-of-run floor
 (byte-for-byte today). On → the floor is the MEDIAN of the rubric_score events
 sharing the LATEST evidence_key; keyless events degrade to 'latest score'. Either
 way the upward-biased global max is gone.
@@ -24,7 +24,7 @@ def _write_events(tmp_path, rows):
 
 
 def test_floor_off_uses_legacy_global_max(monkeypatch, tmp_path):
-    monkeypatch.delenv("REPROLAB_EVIDENCE_FINGERPRINT", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_EVIDENCE_FINGERPRINT", raising=False)
     _write_events(tmp_path, [
         {"overall_score": 0.7, "evidence_key": "k1"},
         {"overall_score": 0.9, "evidence_key": "k1"},  # lucky draw
@@ -35,7 +35,7 @@ def test_floor_off_uses_legacy_global_max(monkeypatch, tmp_path):
 
 
 def test_floor_on_uses_median_at_latest_key(monkeypatch, tmp_path):
-    monkeypatch.setenv("REPROLAB_EVIDENCE_FINGERPRINT", "1")
+    monkeypatch.setenv("OPENRESEARCH_EVIDENCE_FINGERPRINT", "1")
     _write_events(tmp_path, [
         {"overall_score": 0.7, "evidence_key": "k1"},
         {"overall_score": 0.9, "evidence_key": "k1"},  # earlier state, lucky
@@ -49,7 +49,7 @@ def test_floor_on_uses_median_at_latest_key(monkeypatch, tmp_path):
 
 
 def test_floor_on_keyless_degrades_to_latest_not_max(monkeypatch, tmp_path):
-    monkeypatch.setenv("REPROLAB_EVIDENCE_FINGERPRINT", "1")
+    monkeypatch.setenv("OPENRESEARCH_EVIDENCE_FINGERPRINT", "1")
     _write_events(tmp_path, [
         {"overall_score": 0.9},  # no evidence_key (older run / flag was off)
         {"overall_score": 0.6},  # latest
@@ -59,7 +59,7 @@ def test_floor_on_keyless_degrades_to_latest_not_max(monkeypatch, tmp_path):
 
 
 def test_floor_on_salvages_when_current_is_none(monkeypatch, tmp_path):
-    monkeypatch.setenv("REPROLAB_EVIDENCE_FINGERPRINT", "1")
+    monkeypatch.setenv("OPENRESEARCH_EVIDENCE_FINGERPRINT", "1")
     _write_events(tmp_path, [
         {"overall_score": 0.55, "evidence_key": "k1"},
         {"overall_score": 0.59, "evidence_key": "k1"},
@@ -70,7 +70,7 @@ def test_floor_on_salvages_when_current_is_none(monkeypatch, tmp_path):
 
 
 def test_no_events_returns_input_unchanged(monkeypatch, tmp_path):
-    monkeypatch.setenv("REPROLAB_EVIDENCE_FINGERPRINT", "1")
+    monkeypatch.setenv("OPENRESEARCH_EVIDENCE_FINGERPRINT", "1")
     assert _evidence_aware_best_score(tmp_path) is None
     r = _apply_best_of_run_floor({"overall_score": 0.5}, tmp_path)
     assert r["overall_score"] == pytest.approx(0.5)

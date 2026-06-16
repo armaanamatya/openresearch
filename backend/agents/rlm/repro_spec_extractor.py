@@ -34,7 +34,7 @@ Design notes
   the *sign is folded* so that a positive ``claimed_effect`` always means the
   proposed method's advantage over the baseline (consistent with
   ``ComparisonSpec.claimed_effect`` sign convention).
-* **LLM extraction is flag-gated** on ``REPROLAB_TWO_AXIS_VERDICT`` and
+* **LLM extraction is flag-gated** on ``OPENRESEARCH_TWO_AXIS_VERDICT`` and
   fail-soft: any error writes nothing + logs a warning (never breaks report
   finalization).
 * **A6a blinded re-extraction**: two independent extraction passes from the raw
@@ -67,8 +67,8 @@ def _truthy(value: str | None) -> bool:
 
 
 def is_enabled() -> bool:
-    """Returns True when ``REPROLAB_TWO_AXIS_VERDICT`` is set (mirrors two_axis_report)."""
-    return _truthy(os.environ.get("REPROLAB_TWO_AXIS_VERDICT"))
+    """Returns True when ``OPENRESEARCH_TWO_AXIS_VERDICT`` is set (mirrors two_axis_report)."""
+    return _truthy(os.environ.get("OPENRESEARCH_TWO_AXIS_VERDICT"))
 
 
 # ---------------------------------------------------------------------------
@@ -853,7 +853,7 @@ def extract_and_write(
 ) -> Path | None:
     """Identify the paper's top-K falsifiable claims and write ``repro_spec.json``.
 
-    Flag-gated on ``REPROLAB_TWO_AXIS_VERDICT`` (default OFF).  Fail-soft:
+    Flag-gated on ``OPENRESEARCH_TWO_AXIS_VERDICT`` (default OFF).  Fail-soft:
     any error logs a warning and returns None (never breaks report finalization).
 
     Parameters

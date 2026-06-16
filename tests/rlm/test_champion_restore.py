@@ -1,6 +1,6 @@
 """A4: champion-artifact restore at finalize — score ≡ best artifact produced.
 
-REPROLAB_CHAMPION_ARTIFACT default OFF → no-op. On → finalize restores the
+OPENRESEARCH_CHAMPION_ARTIFACT default OFF → no-op. On → finalize restores the
 highest-median-graded code snapshot (recorded per verify by binding) and ships
 that grade, but NEVER downgrades a better latest state.
 """
@@ -21,13 +21,13 @@ def _mk_snapshot(tmp_path, name, content):
 
 
 def test_off_is_noop(monkeypatch, tmp_path):
-    monkeypatch.delenv("REPROLAB_CHAMPION_ARTIFACT", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_CHAMPION_ARTIFACT", raising=False)
     out = _apply_champion_artifact({"overall_score": 0.5}, tmp_path)
     assert out == {"overall_score": 0.5}
 
 
 def test_restores_best_artifact_and_ships_its_grade(monkeypatch, tmp_path):
-    monkeypatch.setenv("REPROLAB_CHAMPION_ARTIFACT", "1")
+    monkeypatch.setenv("OPENRESEARCH_CHAMPION_ARTIFACT", "1")
     snap_a = _mk_snapshot(tmp_path, "snapA", "# A (earlier, weaker)")
     snap_b = _mk_snapshot(tmp_path, "snapB", "# B (best artifact)")
     reg = tmp_path / "rlm_state" / "champions.json"
@@ -46,7 +46,7 @@ def test_restores_best_artifact_and_ships_its_grade(monkeypatch, tmp_path):
 
 
 def test_never_downgrades_a_better_latest_state(monkeypatch, tmp_path):
-    monkeypatch.setenv("REPROLAB_CHAMPION_ARTIFACT", "1")
+    monkeypatch.setenv("OPENRESEARCH_CHAMPION_ARTIFACT", "1")
     snap = _mk_snapshot(tmp_path, "snap", "# weaker champion")
     reg = tmp_path / "rlm_state" / "champions.json"
     record_champion(reg, evidence_key="k", snapshot_dir=str(snap), median_score=0.40)
@@ -62,6 +62,6 @@ def test_never_downgrades_a_better_latest_state(monkeypatch, tmp_path):
 
 
 def test_no_champions_recorded_is_noop(monkeypatch, tmp_path):
-    monkeypatch.setenv("REPROLAB_CHAMPION_ARTIFACT", "1")
+    monkeypatch.setenv("OPENRESEARCH_CHAMPION_ARTIFACT", "1")
     out = _apply_champion_artifact({"overall_score": 0.5}, tmp_path)
     assert out == {"overall_score": 0.5}

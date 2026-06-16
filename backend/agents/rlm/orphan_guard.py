@@ -12,7 +12,7 @@ This module is a tiny thread-safe registry the exec layer populates (the session
 leader's pid == its pgid) so the binding timeout handler can SIGKILL the whole
 tree on abandonment — reusing the cell runner's process-group-kill.
 
-``REPROLAB_ORPHAN_GUARD`` is **default-OFF**: registration/deregistration is
+``OPENRESEARCH_ORPHAN_GUARD`` is **default-OFF**: registration/deregistration is
 cheap always-on bookkeeping, but :func:`kill_orphans` is a no-op (returns 0) when
 the flag is off, so behavior is byte-for-byte today. Deregistration on normal
 completion keeps the set small and bounds PID-recycle risk; every kill is
@@ -32,8 +32,8 @@ _active_pgids: set[int] = set()
 
 
 def orphan_guard_enabled() -> bool:
-    """True iff ``REPROLAB_ORPHAN_GUARD`` opts the kill ON (default OFF)."""
-    return os.environ.get("REPROLAB_ORPHAN_GUARD", "").strip().lower() in (
+    """True iff ``OPENRESEARCH_ORPHAN_GUARD`` opts the kill ON (default OFF)."""
+    return os.environ.get("OPENRESEARCH_ORPHAN_GUARD", "").strip().lower() in (
         "1",
         "true",
         "yes",
@@ -67,7 +67,7 @@ def deregister(pid: int) -> None:
 def kill_orphans() -> int:
     """SIGKILL every registered process group; return the count signalled.
 
-    No-op (returns 0) unless ``REPROLAB_ORPHAN_GUARD`` is on — so the default is
+    No-op (returns 0) unless ``OPENRESEARCH_ORPHAN_GUARD`` is on — so the default is
     byte-for-byte today. Drains the registry first (under the lock) so a kill and
     a concurrent deregister can't double-act. Each ``killpg`` is fail-soft: a
     process group that already exited just raises ``ProcessLookupError`` and is

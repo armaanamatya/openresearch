@@ -1,7 +1,7 @@
 """Smoke-gated BES SELECT (candidates.py §D2, 2026-06-16).
 
 Pure unit coverage for the three §D2 levers, all gated on
-``REPROLAB_BES_SMOKE_SELECT`` (default OFF):
+``OPENRESEARCH_BES_SMOKE_SELECT`` (default OFF):
 
   1. ``smoke_check_candidate`` — the read-only AST construct/import smoke;
   2. ``select_best_gated`` smoke gate — a non-runnable candidate (hard AST
@@ -60,8 +60,8 @@ def _smoke(cid: str, *, runnable: bool, complete: bool = True, hard: int = 0, so
 
 @pytest.fixture(autouse=True)
 def _no_flag_leak(monkeypatch):
-    monkeypatch.delenv("REPROLAB_BES_SMOKE_SELECT", raising=False)
-    monkeypatch.delenv("REPROLAB_BES_SELECT_MIN_SPREAD", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_BES_SMOKE_SELECT", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_BES_SELECT_MIN_SPREAD", raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +138,7 @@ def test_gated_off_ignores_smokes(monkeypatch):
 def test_gated_non_runnable_top_loses_to_runnable(monkeypatch):
     """The headline §D2 case: a statically-faithful but non-runnable candidate
     (higher static grade) cannot win over a runnable one."""
-    monkeypatch.setenv("REPROLAB_BES_SMOKE_SELECT", "1")
+    monkeypatch.setenv("OPENRESEARCH_BES_SMOKE_SELECT", "1")
     pool = [_cand("c#0", score=0.9), _cand("c#1", score=0.2)]
     smokes = {
         "c#0": _smoke("c#0", runnable=False, complete=False, hard=2),
@@ -153,7 +153,7 @@ def test_gated_non_runnable_top_loses_to_runnable(monkeypatch):
 def test_gated_unsmoked_candidate_is_not_disqualified(monkeypatch):
     """A candidate with no smoke entry is fail-soft 'runnable' and competes on
     its score exactly as today (so a partial smoke map never drops a peer)."""
-    monkeypatch.setenv("REPROLAB_BES_SMOKE_SELECT", "1")
+    monkeypatch.setenv("OPENRESEARCH_BES_SMOKE_SELECT", "1")
     pool = [_cand("c#0", score=0.8), _cand("c#1", score=0.2)]
     winner, decision = select_best_gated(pool, smokes={})  # no smokes computed
     assert winner.candidate_id == "c#0"
@@ -168,7 +168,7 @@ def test_gated_unsmoked_candidate_is_not_disqualified(monkeypatch):
 def test_gated_sub_sigma_tie_breaks_on_completeness_not_score(monkeypatch):
     """Top-2 within the σ proxy → the COMPLETE candidate wins even though it has
     the (marginally) lower score — the grader noise is not banked."""
-    monkeypatch.setenv("REPROLAB_BES_SMOKE_SELECT", "1")
+    monkeypatch.setenv("OPENRESEARCH_BES_SMOKE_SELECT", "1")
     # spread 0.557 - 0.549 = 0.008 < 0.05 default → tie.
     pool = [_cand("c#0", score=0.549), _cand("c#1", score=0.557)]
     smokes = {
@@ -183,7 +183,7 @@ def test_gated_sub_sigma_tie_breaks_on_completeness_not_score(monkeypatch):
 
 def test_gated_sub_sigma_falls_to_lowest_index_when_all_equal(monkeypatch):
     """Equal completeness within the tie band → deterministic lowest index."""
-    monkeypatch.setenv("REPROLAB_BES_SMOKE_SELECT", "1")
+    monkeypatch.setenv("OPENRESEARCH_BES_SMOKE_SELECT", "1")
     pool = [_cand("c#0", score=0.560), _cand("c#1", score=0.561), _cand("c#2", score=0.559)]
     smokes = {c.candidate_id: _smoke(c.candidate_id, runnable=True, complete=True) for c in pool}
     winner, decision = select_best_gated(pool, smokes=smokes)
@@ -193,7 +193,7 @@ def test_gated_sub_sigma_falls_to_lowest_index_when_all_equal(monkeypatch):
 
 def test_gated_sub_sigma_is_deterministic_across_input_orderings(monkeypatch):
     """The whole point: same pool, any presentation order → same winner."""
-    monkeypatch.setenv("REPROLAB_BES_SMOKE_SELECT", "1")
+    monkeypatch.setenv("OPENRESEARCH_BES_SMOKE_SELECT", "1")
     a = _cand("c#0", score=0.560)
     b = _cand("c#1", score=0.561)
     smokes = {"c#0": _smoke("c#0", runnable=True, complete=True),
@@ -207,7 +207,7 @@ def test_gated_sub_sigma_is_deterministic_across_input_orderings(monkeypatch):
 
 def test_gated_wide_spread_keeps_the_higher_score(monkeypatch):
     """Above the σ proxy the real score wins — the tie-break must NOT fire."""
-    monkeypatch.setenv("REPROLAB_BES_SMOKE_SELECT", "1")
+    monkeypatch.setenv("OPENRESEARCH_BES_SMOKE_SELECT", "1")
     pool = [_cand("c#0", score=0.3), _cand("c#1", score=0.7)]  # spread 0.4
     smokes = {c.candidate_id: _smoke(c.candidate_id, runnable=True, complete=True) for c in pool}
     winner, decision = select_best_gated(pool, smokes=smokes)
@@ -216,9 +216,9 @@ def test_gated_wide_spread_keeps_the_higher_score(monkeypatch):
 
 
 def test_gated_min_spread_flag_widens_tie_band(monkeypatch):
-    """A larger REPROLAB_BES_SELECT_MIN_SPREAD pulls a wider gap into the tie."""
-    monkeypatch.setenv("REPROLAB_BES_SMOKE_SELECT", "1")
-    monkeypatch.setenv("REPROLAB_BES_SELECT_MIN_SPREAD", "0.30")
+    """A larger OPENRESEARCH_BES_SELECT_MIN_SPREAD pulls a wider gap into the tie."""
+    monkeypatch.setenv("OPENRESEARCH_BES_SMOKE_SELECT", "1")
+    monkeypatch.setenv("OPENRESEARCH_BES_SELECT_MIN_SPREAD", "0.30")
     pool = [_cand("c#0", score=0.5), _cand("c#1", score=0.7)]  # spread 0.2 < 0.30
     smokes = {
         "c#0": _smoke("c#0", runnable=True, complete=True),
@@ -235,7 +235,7 @@ def test_gated_min_spread_flag_widens_tie_band(monkeypatch):
 
 
 def test_gated_all_non_runnable_is_degenerate(monkeypatch):
-    monkeypatch.setenv("REPROLAB_BES_SMOKE_SELECT", "1")
+    monkeypatch.setenv("OPENRESEARCH_BES_SMOKE_SELECT", "1")
     pool = [_cand("c#0", score=0.8), _cand("c#1", score=0.6)]
     smokes = {
         "c#0": _smoke("c#0", runnable=False, hard=1),
@@ -249,7 +249,7 @@ def test_gated_all_non_runnable_is_degenerate(monkeypatch):
 
 
 def test_gated_all_failed_implementation_is_degenerate(monkeypatch):
-    monkeypatch.setenv("REPROLAB_BES_SMOKE_SELECT", "1")
+    monkeypatch.setenv("OPENRESEARCH_BES_SMOKE_SELECT", "1")
     pool = [_cand("c#0", score=None, failed=True), _cand("c#1", score=None, failed=True)]
     winner, decision = select_best_gated(pool, smokes={})
     assert winner is None
@@ -259,7 +259,7 @@ def test_gated_all_failed_implementation_is_degenerate(monkeypatch):
 def test_gated_one_runnable_survivor_is_not_degenerate(monkeypatch):
     """A single runnable survivor among non-runnable peers still wins (not
     degenerate) — the pool produced something it can ship."""
-    monkeypatch.setenv("REPROLAB_BES_SMOKE_SELECT", "1")
+    monkeypatch.setenv("OPENRESEARCH_BES_SMOKE_SELECT", "1")
     pool = [_cand("c#0", score=0.9), _cand("c#1", score=0.4)]
     smokes = {
         "c#0": _smoke("c#0", runnable=False, hard=2),
@@ -271,7 +271,7 @@ def test_gated_one_runnable_survivor_is_not_degenerate(monkeypatch):
 
 
 def test_gated_empty_pool_is_degenerate(monkeypatch):
-    monkeypatch.setenv("REPROLAB_BES_SMOKE_SELECT", "1")
+    monkeypatch.setenv("OPENRESEARCH_BES_SMOKE_SELECT", "1")
     winner, decision = select_best_gated([], smokes={})
     assert winner is None
     assert decision["degenerate"] is True

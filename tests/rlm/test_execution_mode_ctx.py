@@ -2,7 +2,7 @@
 
 Regression for the silently-dropped ``--execution-mode max``: RunContext now
 carries ``execution_mode`` (threaded from ExecutionProfile.mode by run.py, or
-autoloaded from REPROLAB_EXECUTION_MODE), and resolve_experiment_timeout_s
+autoloaded from OPENRESEARCH_EXECUTION_MODE), and resolve_experiment_timeout_s
 reads it FIRST. Previously the field did not exist, so the 6h cap applied only
 when the env var happened to be exported.
 """
@@ -40,8 +40,8 @@ def _ctx(**overrides) -> RunContext:
 def _clear_exec_env(monkeypatch):
     # Isolate from the ambient shell — these env vars otherwise leak into
     # __post_init__ autoload and the resolver fallback.
-    monkeypatch.delenv("REPROLAB_EXECUTION_MODE", raising=False)
-    monkeypatch.delenv("REPROLAB_RUN_EXPERIMENT_TIMEOUT_S", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_EXECUTION_MODE", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S", raising=False)
 
 
 class TestExecutionModeContext:
@@ -65,13 +65,13 @@ class TestExecutionModeContext:
 
     def test_post_init_autoloads_from_env(self, monkeypatch):
         # Any construction site that didn't thread it still gets the env value.
-        monkeypatch.setenv("REPROLAB_EXECUTION_MODE", "max")
+        monkeypatch.setenv("OPENRESEARCH_EXECUTION_MODE", "max")
         ctx = _ctx()  # caller did NOT pass execution_mode
         assert ctx.execution_mode == "max"
         assert resolve_experiment_timeout_s(ctx) == EXPERIMENT_TIMEOUT_BY_MODE["max"]
 
     def test_threaded_value_wins_over_env(self, monkeypatch):
-        monkeypatch.setenv("REPROLAB_EXECUTION_MODE", "efficient")
+        monkeypatch.setenv("OPENRESEARCH_EXECUTION_MODE", "efficient")
         ctx = _ctx(execution_mode="max")  # threaded value beats env autoload
         assert ctx.execution_mode == "max"
         assert resolve_experiment_timeout_s(ctx) == EXPERIMENT_TIMEOUT_BY_MODE["max"]

@@ -1,6 +1,6 @@
 """A7 EVIDENCE_GATE — the honest backstop (2026-06-16).
 
-REPROLAB_EVIDENCE_GATE default OFF → no veto (byte-for-byte today). ON → a
+OPENRESEARCH_EVIDENCE_GATE default OFF → no veto (byte-for-byte today). ON → a
 RESULT-CLAIMING leaf the grader credited (>0) whose cited per_model cell has NO
 successful on-disk evidence (matching on BOTH model and dataset) is vetoed to
 0.0 — the grader cannot credit a result that was never computed. Judgment leaves
@@ -70,8 +70,8 @@ def _by_id(result):
 @pytest.fixture(autouse=True)
 def _clear(monkeypatch):
     for v in (
-        "REPROLAB_EVIDENCE_GATE", "REPROLAB_GRADER_SAMPLES",
-        "REPROLAB_GRADER_BACKEND", "REPROLAB_DETERMINISTIC_LEAVES",
+        "OPENRESEARCH_EVIDENCE_GATE", "OPENRESEARCH_GRADER_SAMPLES",
+        "OPENRESEARCH_GRADER_BACKEND", "OPENRESEARCH_DETERMINISTIC_LEAVES",
     ):
         monkeypatch.delenv(v, raising=False)
 
@@ -117,7 +117,7 @@ def test_gate_off_is_byte_for_byte_today(tmp_path):
 
 
 def test_gate_on_vetoes_unsubstantiated_result_only(monkeypatch, tmp_path):
-    monkeypatch.setenv("REPROLAB_EVIDENCE_GATE", "1")
+    monkeypatch.setenv("OPENRESEARCH_EVIDENCE_GATE", "1")
     _write_metrics(tmp_path)
     result = score_reproduction(RUBRIC, tmp_path, _Stub(0.8), degraded=False)
     recs = _by_id(result)
@@ -134,7 +134,7 @@ def test_gate_on_vetoes_unsubstantiated_result_only(monkeypatch, tmp_path):
 
 
 def test_gate_on_empty_metrics_vetoes_all_result_claims(monkeypatch, tmp_path):
-    monkeypatch.setenv("REPROLAB_EVIDENCE_GATE", "1")
+    monkeypatch.setenv("OPENRESEARCH_EVIDENCE_GATE", "1")
     _write_metrics(tmp_path, {"per_model": {}})  # credited results, nothing computed
     result = score_reproduction(RUBRIC, tmp_path, _Stub(0.8), degraded=False)
     recs = _by_id(result)

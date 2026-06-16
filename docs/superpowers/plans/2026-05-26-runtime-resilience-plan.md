@@ -144,11 +144,11 @@ async def run_isolated(coro: Coroutine[Any, Any, T]) -> T:
     cannot affect the value the coroutine already returned. Any other exception
     from the coroutine body propagates to the caller unchanged.
 
-    Set ``REPROLAB_SDK_ISOLATION_DISABLED=true`` to bypass the workaround and
+    Set ``OPENRESEARCH_SDK_ISOLATION_DISABLED=true`` to bypass the workaround and
     run the coroutine directly on the calling event loop — useful when
     debugging a suspected isolation-induced issue.
     """
-    if os.environ.get("REPROLAB_SDK_ISOLATION_DISABLED", "").lower() in {"true", "1", "yes"}:
+    if os.environ.get("OPENRESEARCH_SDK_ISOLATION_DISABLED", "").lower() in {"true", "1", "yes"}:
         return await coro
 
     captured_result: list[T] = []
@@ -293,7 +293,7 @@ from backend.agents.rlm.primitives import resolve_experiment_timeout_s, EXPERIME
 
 @pytest.fixture(autouse=True)
 def _clear_env(monkeypatch):
-    monkeypatch.delenv("REPROLAB_RUN_EXPERIMENT_TIMEOUT_S", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S", raising=False)
 
 def _ctx(*, remaining_s=math.inf, execution_mode="efficient"):
     ctx = MagicMock()
@@ -302,11 +302,11 @@ def _ctx(*, remaining_s=math.inf, execution_mode="efficient"):
     return ctx
 
 def test_env_override_wins():
-    os.environ["REPROLAB_RUN_EXPERIMENT_TIMEOUT_S"] = "1234"
+    os.environ["OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S"] = "1234"
     try:
         assert resolve_experiment_timeout_s(_ctx(execution_mode="efficient")) == 1234
     finally:
-        del os.environ["REPROLAB_RUN_EXPERIMENT_TIMEOUT_S"]
+        del os.environ["OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S"]
 
 def test_efficient_mode_default():
     assert resolve_experiment_timeout_s(_ctx(execution_mode="efficient")) == 7200
@@ -327,12 +327,12 @@ def test_does_not_clamp_to_infinite_remaining():
     assert resolve_experiment_timeout_s(_ctx(remaining_s=math.inf, execution_mode="max")) == 21600
 
 def test_env_override_also_clamped_to_finite_remaining():
-    os.environ["REPROLAB_RUN_EXPERIMENT_TIMEOUT_S"] = "100000"
+    os.environ["OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S"] = "100000"
     try:
         result = resolve_experiment_timeout_s(_ctx(remaining_s=3600.0, execution_mode="efficient"))
         assert result == 3600
     finally:
-        del os.environ["REPROLAB_RUN_EXPERIMENT_TIMEOUT_S"]
+        del os.environ["OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S"]
 ```
 
 - [ ] **Step B2: Run test to verify it fails**
@@ -357,7 +357,7 @@ def resolve_experiment_timeout_s(ctx) -> int:
     """Resolve the wall-clock cap for a single run_experiment call.
 
     Order:
-      1. REPROLAB_RUN_EXPERIMENT_TIMEOUT_S env override (if set and > 0)
+      1. OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S env override (if set and > 0)
       2. EXPERIMENT_TIMEOUT_BY_MODE[ctx.execution_mode]
       3. _DEFAULT_EXPERIMENT_TIMEOUT_S
 
@@ -367,7 +367,7 @@ def resolve_experiment_timeout_s(ctx) -> int:
     import math as _math
     import os as _os
 
-    _env = _os.environ.get("REPROLAB_RUN_EXPERIMENT_TIMEOUT_S", "").strip()
+    _env = _os.environ.get("OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S", "").strip()
     if _env:
         try:
             override = int(_env)
@@ -776,7 +776,7 @@ Expected: PASS — both tests green.
 ```python
 # tests/test_pod_sweep_scheduler.py
 """Periodic scheduler runs sweep_stale_pods at the configured interval.
-Fail-soft on exceptions; disabled when REPROLAB_POD_SWEEP_ENABLED=false."""
+Fail-soft on exceptions; disabled when OPENRESEARCH_POD_SWEEP_ENABLED=false."""
 import asyncio
 import pytest
 from unittest.mock import MagicMock, patch
@@ -784,7 +784,7 @@ from unittest.mock import MagicMock, patch
 @pytest.mark.asyncio
 async def test_scheduler_calls_sweep_at_interval(monkeypatch):
     monkeypatch.setenv("REPROLAB_RUNPOD_API_KEY", "dummy")
-    monkeypatch.setenv("REPROLAB_POD_SWEEP_INTERVAL_S", "0.05")  # 50ms for fast test
+    monkeypatch.setenv("OPENRESEARCH_POD_SWEEP_INTERVAL_S", "0.05")  # 50ms for fast test
     sweep_calls = []
     fake_sweep = MagicMock(side_effect=lambda **kw: sweep_calls.append(kw) or {"reaped": 0})
     with patch("backend.services.runtime.pod_sweep_scheduler.sweep_stale_pods", fake_sweep):
@@ -797,7 +797,7 @@ async def test_scheduler_calls_sweep_at_interval(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_scheduler_disabled_via_env(monkeypatch):
-    monkeypatch.setenv("REPROLAB_POD_SWEEP_ENABLED", "false")
+    monkeypatch.setenv("OPENRESEARCH_POD_SWEEP_ENABLED", "false")
     monkeypatch.setenv("REPROLAB_RUNPOD_API_KEY", "dummy")
     fake_sweep = MagicMock(return_value={"reaped": 0})
     with patch("backend.services.runtime.pod_sweep_scheduler.sweep_stale_pods", fake_sweep):
@@ -811,7 +811,7 @@ async def test_scheduler_disabled_via_env(monkeypatch):
 @pytest.mark.asyncio
 async def test_scheduler_fail_soft_on_sweep_exception(monkeypatch):
     monkeypatch.setenv("REPROLAB_RUNPOD_API_KEY", "dummy")
-    monkeypatch.setenv("REPROLAB_POD_SWEEP_INTERVAL_S", "0.05")
+    monkeypatch.setenv("OPENRESEARCH_POD_SWEEP_INTERVAL_S", "0.05")
     calls = []
     def _flaky_sweep(**kw):
         calls.append(kw)
@@ -845,7 +845,7 @@ running.
 
 Disabled when:
   - REPROLAB_RUNPOD_API_KEY is unset (no RunPod usage)
-  - REPROLAB_POD_SWEEP_ENABLED=false
+  - OPENRESEARCH_POD_SWEEP_ENABLED=false
 """
 from __future__ import annotations
 
@@ -868,25 +868,25 @@ class PodSweepScheduler:
     def _enabled(self) -> bool:
         if not os.environ.get("REPROLAB_RUNPOD_API_KEY"):
             return False
-        if os.environ.get("REPROLAB_POD_SWEEP_ENABLED", "true").lower() in {"false", "0", "no", "off"}:
+        if os.environ.get("OPENRESEARCH_POD_SWEEP_ENABLED", "true").lower() in {"false", "0", "no", "off"}:
             return False
         return True
 
     def _interval_s(self) -> float:
         try:
-            return float(os.environ.get("REPROLAB_POD_SWEEP_INTERVAL_S", "1800"))
+            return float(os.environ.get("OPENRESEARCH_POD_SWEEP_INTERVAL_S", "1800"))
         except ValueError:
             return 1800.0
 
     def _max_age_s(self) -> int:
         try:
-            return int(os.environ.get("REPROLAB_POD_SWEEP_MAX_AGE_S", "7200"))
+            return int(os.environ.get("OPENRESEARCH_POD_SWEEP_MAX_AGE_S", "7200"))
         except ValueError:
             return 7200
 
     async def start(self) -> None:
         if not self._enabled():
-            logger.info("pod_sweep_scheduler: disabled (no RUNPOD_API_KEY or REPROLAB_POD_SWEEP_ENABLED=false)")
+            logger.info("pod_sweep_scheduler: disabled (no RUNPOD_API_KEY or OPENRESEARCH_POD_SWEEP_ENABLED=false)")
             return
         self._stop_event.clear()
         self._task = asyncio.create_task(self._run())
@@ -939,7 +939,7 @@ _pod_sweep_scheduler = PodSweepScheduler()
 async def lifespan(app: FastAPI):
     # Startup
     try:
-        if os.environ.get("REPROLAB_RUNPOD_API_KEY") and os.environ.get("REPROLAB_POD_SWEEP_ENABLED", "true").lower() not in {"false", "0", "no", "off"}:
+        if os.environ.get("REPROLAB_RUNPOD_API_KEY") and os.environ.get("OPENRESEARCH_POD_SWEEP_ENABLED", "true").lower() not in {"false", "0", "no", "off"}:
             try:
                 summary = sweep_stale_pods(max_age_seconds=7200, dry_run=False)
                 logger.info("startup pod sweep: %s", summary)

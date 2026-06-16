@@ -2,7 +2,7 @@
 
 The leaf grade is a non-deterministic LLM call. A1 takes N samples per batch and
 the per-leaf MEDIAN so transient noise (and the all-0.0 batch_error outlier) is
-shrugged off. N=1 (REPROLAB_GRADER_SAMPLES default) must reproduce today's
+shrugged off. N=1 (OPENRESEARCH_GRADER_SAMPLES default) must reproduce today's
 single-sample behavior byte-for-byte. A5 routes through grader_transport, which
 falls back to N× complete() on a client without complete_samples.
 """
@@ -53,13 +53,13 @@ class _CyclingClient:
 
 @pytest.fixture(autouse=True)
 def _clear_grader_env(monkeypatch):
-    monkeypatch.delenv("REPROLAB_GRADER_SAMPLES", raising=False)
-    monkeypatch.delenv("REPROLAB_GRADER_BACKEND", raising=False)
-    monkeypatch.delenv("REPROLAB_GRADER_MODEL", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_GRADER_SAMPLES", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_GRADER_BACKEND", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_GRADER_MODEL", raising=False)
 
 
 def test_default_n1_is_single_sample(tmp_path):
-    """REPROLAB_GRADER_SAMPLES unset → exactly one grader call, today's score."""
+    """OPENRESEARCH_GRADER_SAMPLES unset → exactly one grader call, today's score."""
     client = _CyclingClient([_resp(0.9, 0.8)])
     score = score_reproduction(RUBRIC, tmp_path, client, degraded=False)
     assert score["overall_score"] == pytest.approx(0.86)  # 0.9*0.6 + 0.8*0.4
@@ -67,7 +67,7 @@ def test_default_n1_is_single_sample(tmp_path):
 
 
 def test_n3_takes_per_leaf_median(monkeypatch, tmp_path):
-    monkeypatch.setenv("REPROLAB_GRADER_SAMPLES", "3")
+    monkeypatch.setenv("OPENRESEARCH_GRADER_SAMPLES", "3")
     client = _CyclingClient([_resp(0.9, 0.8), _resp(0.7, 0.8), _resp(0.8, 0.8)])
     score = score_reproduction(RUBRIC, tmp_path, client, degraded=False)
     # per-leaf median: code median(0.9,0.7,0.8)=0.8; results median(0.8,0.8,0.8)=0.8
@@ -78,7 +78,7 @@ def test_n3_takes_per_leaf_median(monkeypatch, tmp_path):
 
 def test_n3_median_shrugs_off_zero_outlier(monkeypatch, tmp_path):
     """One unparseable draw (→ all-0.0) must not sink a clearly-good grade."""
-    monkeypatch.setenv("REPROLAB_GRADER_SAMPLES", "3")
+    monkeypatch.setenv("OPENRESEARCH_GRADER_SAMPLES", "3")
     client = _CyclingClient([_resp(0.85, 0.85), "TOTALLY NOT JSON", _resp(0.85, 0.85)])
     score = score_reproduction(RUBRIC, tmp_path, client, degraded=False)
     # garbage sample → 0.0 for both leaves; median(0.85, 0.0, 0.85) = 0.85
@@ -87,7 +87,7 @@ def test_n3_median_shrugs_off_zero_outlier(monkeypatch, tmp_path):
 
 def test_n3_even_sample_count_still_medians(monkeypatch, tmp_path):
     """Non-odd N is clamped-friendly: statistics.median averages the two middle."""
-    monkeypatch.setenv("REPROLAB_GRADER_SAMPLES", "2")
+    monkeypatch.setenv("OPENRESEARCH_GRADER_SAMPLES", "2")
     client = _CyclingClient([_resp(0.9, 0.8), _resp(0.7, 0.8)])
     score = score_reproduction(RUBRIC, tmp_path, client, degraded=False)
     # code median(0.9,0.7)=0.8; results median(0.8,0.8)=0.8 → 0.8
@@ -96,7 +96,7 @@ def test_n3_even_sample_count_still_medians(monkeypatch, tmp_path):
 
 
 def test_invalid_samples_env_falls_back_to_one(monkeypatch, tmp_path):
-    monkeypatch.setenv("REPROLAB_GRADER_SAMPLES", "not-a-number")
+    monkeypatch.setenv("OPENRESEARCH_GRADER_SAMPLES", "not-a-number")
     client = _CyclingClient([_resp(0.9, 0.8)])
     score = score_reproduction(RUBRIC, tmp_path, client, degraded=False)
     assert score["overall_score"] == pytest.approx(0.86)

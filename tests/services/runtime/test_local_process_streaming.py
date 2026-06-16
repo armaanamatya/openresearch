@@ -10,7 +10,7 @@ process-tree CPU-util}. Every augmentation is fail-soft.
 These are integration-y (real subprocesses) but FAST: every stall/timeout window is
 1–3 s. They follow the repo pattern of a sync test function wrapping ``asyncio.run`` of
 the coroutine (see test_gpu_device_ids.py). The sandbox carries NO gpu_device_ids and
-``REPROLAB_EXPERIMENT_GPU_LIVENESS=0`` so nothing queries a real GPU (the host's GPU is
+``OPENRESEARCH_EXPERIMENT_GPU_LIVENESS=0`` so nothing queries a real GPU (the host's GPU is
 never touched — ``_gpu_busy_blocking(())`` short-circuits on empty device_ids anyway).
 """
 
@@ -62,7 +62,7 @@ def _make_sandbox(tmp_path: Path) -> Sandbox:
 @pytest.fixture(autouse=True)
 def _no_gpu_liveness(monkeypatch: pytest.MonkeyPatch) -> None:
     """No real GPU in CI: disable GPU-util polling by default (test 7 re-enables it)."""
-    monkeypatch.setenv("REPROLAB_EXPERIMENT_GPU_LIVENESS", "0")
+    monkeypatch.setenv("OPENRESEARCH_EXPERIMENT_GPU_LIVENESS", "0")
 
 
 def _run(sandbox: Sandbox, command: str, timeout: int):
@@ -77,7 +77,7 @@ def _run(sandbox: Sandbox, command: str, timeout: int):
 def test_normal_exit_streams_to_live_log_and_heartbeat(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("REPROLAB_EXPERIMENT_STALL_S", "0")
+    monkeypatch.setenv("OPENRESEARCH_EXPERIMENT_STALL_S", "0")
     sandbox = _make_sandbox(tmp_path)
 
     r = _run(sandbox, "echo hello && echo done", timeout=30)
@@ -105,7 +105,7 @@ def test_normal_exit_streams_to_live_log_and_heartbeat(
 def test_exec_stalled_on_silent_sleep(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("REPROLAB_EXPERIMENT_STALL_S", "1")
+    monkeypatch.setenv("OPENRESEARCH_EXPERIMENT_STALL_S", "1")
     sandbox = _make_sandbox(tmp_path)
 
     t0 = time.monotonic()
@@ -127,7 +127,7 @@ def test_exec_timeout_hard_cap_on_cpu_busy(
 ) -> None:
     # Disable the stall window so only the hard timeout can fire; the job is CPU-busy
     # (so it would never be "stalled" anyway) and must be cut at the budget cap.
-    monkeypatch.setenv("REPROLAB_EXPERIMENT_STALL_S", "0")
+    monkeypatch.setenv("OPENRESEARCH_EXPERIMENT_STALL_S", "0")
     sandbox = _make_sandbox(tmp_path)
 
     t0 = time.monotonic()
@@ -149,7 +149,7 @@ def test_cpu_liveness_keeps_busy_job_alive(
 ) -> None:
     # Stall window (2 s) < job length (5 s), but the job is CPU-busy with NO output,
     # so the process-tree CPU-time delta is the liveness signal that prevents a kill.
-    monkeypatch.setenv("REPROLAB_EXPERIMENT_STALL_S", "2")
+    monkeypatch.setenv("OPENRESEARCH_EXPERIMENT_STALL_S", "2")
     sandbox = _make_sandbox(tmp_path)
 
     t0 = time.monotonic()
@@ -170,7 +170,7 @@ def test_cpu_liveness_keeps_busy_job_alive(
 def test_no_sleep_orphan_after_stall_kill(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("REPROLAB_EXPERIMENT_STALL_S", "1")
+    monkeypatch.setenv("OPENRESEARCH_EXPERIMENT_STALL_S", "1")
     sandbox = _make_sandbox(tmp_path)
 
     # A unique per-test token so the count isolates THIS run's process tree from any
@@ -221,7 +221,7 @@ def test_no_sleep_orphan_after_stall_kill(
 def test_retained_text_is_capped_but_live_log_keeps_all(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("REPROLAB_EXPERIMENT_STALL_S", "0")
+    monkeypatch.setenv("OPENRESEARCH_EXPERIMENT_STALL_S", "0")
     sandbox = _make_sandbox(tmp_path)
 
     line = "A" * 44  # fixed 44-char ASCII line → 45 bytes with newline
@@ -249,8 +249,8 @@ def test_gpu_liveness_poll_exception_is_swallowed(
 ) -> None:
     # Re-enable GPU liveness (the autouse fixture disabled it) and make the poll raise;
     # the monitor must swallow it and let the happy path complete.
-    monkeypatch.setenv("REPROLAB_EXPERIMENT_GPU_LIVENESS", "1")
-    monkeypatch.setenv("REPROLAB_EXPERIMENT_STALL_S", "0")
+    monkeypatch.setenv("OPENRESEARCH_EXPERIMENT_GPU_LIVENESS", "1")
+    monkeypatch.setenv("OPENRESEARCH_EXPERIMENT_STALL_S", "0")
 
     def _boom(*_a, **_k):
         raise RuntimeError("nvidia-smi exploded")

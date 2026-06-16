@@ -1,6 +1,6 @@
 import "server-only";
 
-// Reads the REPROLAB_DEMO_SECRET server env var, which must never reach the
+// Reads the OPENRESEARCH_DEMO_SECRET server env var, which must never reach the
 // client bundle. The `server-only` import above turns an accidental client
 // import into a build error instead of a silent failure.
 
@@ -8,7 +8,7 @@ export const COOKIE_NAME = "reprolab_session";
 export const COOKIE_MAX_AGE = 60 * 60 * 12; // 12 hours
 
 export function gateSecret(): string {
-  return process.env.REPROLAB_DEMO_SECRET ?? "";
+  return process.env.OPENRESEARCH_DEMO_SECRET ?? "";
 }
 
 export function isGateEnabled(): boolean {

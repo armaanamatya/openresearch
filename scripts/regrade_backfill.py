@@ -31,7 +31,7 @@ What it does, per run dir (and per ``attempts/<ts>/`` sub-dir):
        * ``rubric_evaluation.json`` → fields land at the top level (flat dict — it
          *is* the enriched ``score_reproduction`` result).
      The stamp is ``grader_version`` (default ``"v1"``), ``grader_samples``
-     (``REPROLAB_GRADER_SAMPLES`` or 1), ``grader_temperature`` (0). The fresh
+     (``OPENRESEARCH_GRADER_SAMPLES`` or 1), ``grader_temperature`` (0). The fresh
      scoring values (``overall_score``, ``target_score``, ``meets_target`` derived as
      ``overall >= target``, ``leaf_count``, ``graded``, ``coverage_pct``,
      ``compute_adjusted_score`` mirrored from ``overall_score``, ``leaf_scores``,
@@ -103,12 +103,12 @@ class _LlmClient(Protocol):
 
 
 def _grader_samples_from_env() -> int:
-    """Number of grader samples to record, from ``REPROLAB_GRADER_SAMPLES`` (default 1).
+    """Number of grader samples to record, from ``OPENRESEARCH_GRADER_SAMPLES`` (default 1).
 
     Pure read of the env at call time; an unparseable / non-positive value falls
     back to 1 rather than raising (the stamp is provenance, not a control knob).
     """
-    raw = os.environ.get("REPROLAB_GRADER_SAMPLES", "")
+    raw = os.environ.get("OPENRESEARCH_GRADER_SAMPLES", "")
     try:
         n = int(str(raw).strip())
     except (TypeError, ValueError):
@@ -125,7 +125,7 @@ def build_stamp(
     """Return the provenance stamp dict applied to a rubric block.
 
     ``grader_samples`` defaults to :func:`_grader_samples_from_env` when omitted so
-    the CLI honours ``REPROLAB_GRADER_SAMPLES`` while tests can pin it explicitly.
+    the CLI honours ``OPENRESEARCH_GRADER_SAMPLES`` while tests can pin it explicitly.
     """
     return {
         "grader_version": grader_version,

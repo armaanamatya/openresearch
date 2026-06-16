@@ -12,7 +12,7 @@ async-deferred traceback pointing at the wrong line.
 Design (robust + low-false-positive):
   * It exports ``CUDA_LAUNCH_BLOCKING=1`` so CUDA kernels run synchronously and the
     crash surfaces AT THE REAL LINE in seconds, not deferred to some later allocation.
-  * It exports ``REPROLAB_SMOKE_STEPS=<steps>`` (default 1) so a cooperating entry
+  * It exports ``OPENRESEARCH_SMOKE_STEPS=<steps>`` (default 1) so a cooperating entry
     script does one optimizer step on tiny data and exits 0 — the whole point is that
     this is cheap (seconds), not a real run.
   * It wraps the entry script in ``timeout <timeout_s>``. A script that IGNORES the
@@ -22,12 +22,12 @@ Design (robust + low-false-positive):
     positive that costs more than the bug it might catch.
   * It inherits the sandbox's isolation (network/mem/fs controls, hard command
     timeout) — the sandbox is the isolation boundary, exactly as for the import smoke.
-  * Gated behind ``REPROLAB_EXECUTION_SMOKE`` (default OFF) — opt-in, since it actually
+  * Gated behind ``OPENRESEARCH_EXECUTION_SMOKE`` (default OFF) — opt-in, since it actually
     executes the agent's training code (one step). Off by default; the sandbox bounds it.
 
 Unlike the import smoke, this does NOT emit a generated helper script — it runs the
 agent's OWN entry script (``train.py`` by default) with a step-cap env var. The
-contract is "honor ``REPROLAB_SMOKE_STEPS`` and exit, or be timed out and skipped".
+contract is "honor ``OPENRESEARCH_SMOKE_STEPS`` and exit, or be timed out and skipped".
 The emitted command is a single ``sh -c '...'`` string (stdlib-only to build), the
 same shape :mod:`preflight_smoke` uses, so the wiring can treat both identically.
 """
@@ -43,11 +43,11 @@ from pathlib import Path
 MARKER = "# reprolab:execution-smoke"
 
 # The entry script reads this to cap itself to N steps on tiny data for the dry-run.
-SMOKE_STEPS_ENV = "REPROLAB_SMOKE_STEPS"
+SMOKE_STEPS_ENV = "OPENRESEARCH_SMOKE_STEPS"
 
 
 def is_enabled() -> bool:
-    """True when ``REPROLAB_EXECUTION_SMOKE`` is truthy (default OFF — opt-in).
+    """True when ``OPENRESEARCH_EXECUTION_SMOKE`` is truthy (default OFF — opt-in).
 
     Runs the agent's entry for ONE step on tiny data with ``CUDA_LAUNCH_BLOCKING=1``
     before the full GPU run, so a runtime crash (e.g. the Adam VAE BCELoss device-side
@@ -55,10 +55,10 @@ def is_enabled() -> bool:
     step cap is killed by ``timeout`` (exit 124) → SOFT PASS; only a genuine crash
     blocks. Kept OPT-IN (vs the always-on import smoke) because it changes the cell
     route for every multi-cell local run (runs a pre-grid smoke) — enable it on the
-    validated GPU launch via ``REPROLAB_EXECUTION_SMOKE=1`` rather than globally
+    validated GPU launch via ``OPENRESEARCH_EXECUTION_SMOKE=1`` rather than globally
     (issue #5, 2026-06-15: default-ON had un-validated blast radius across the suite).
     """
-    return os.environ.get("REPROLAB_EXECUTION_SMOKE", "").strip().lower() in (
+    return os.environ.get("OPENRESEARCH_EXECUTION_SMOKE", "").strip().lower() in (
         "1", "true", "yes", "on",
     )
 
@@ -76,7 +76,7 @@ def smoke_command(
       * ``cd``s into ``code_dir``,
       * resolves a working interpreter at run time (``python3`` then ``python``) so the
         step is robust across the runpod image and the local per-run venv,
-      * exports ``REPROLAB_SMOKE_STEPS=<steps>`` (cap the run to N steps on tiny data)
+      * exports ``OPENRESEARCH_SMOKE_STEPS=<steps>`` (cap the run to N steps on tiny data)
         and ``CUDA_LAUNCH_BLOCKING=1`` (synchronous kernels → real crash line),
       * runs ``<entry_script>`` under ``timeout <timeout_s>`` so a script that ignores
         the smoke env and tries the full run is killed (exit 124), not hung forever.
@@ -100,7 +100,7 @@ def interpret_exit(code: int) -> tuple[str, bool]:
       * ``0`` → ``("ok", False)`` — the entry script honored the step cap and exited
         cleanly; the one-step run did not crash. Proceed to the full training run.
       * ``124`` → ``("not_honored", False)`` — ``timeout`` killed the script (it ignored
-        ``REPROLAB_SMOKE_STEPS`` and attempted the full run). A non-honoring script is
+        ``OPENRESEARCH_SMOKE_STEPS`` and attempted the full run). A non-honoring script is
         NOT necessarily broken, so this is a SOFT pass: skip the smoke, do NOT block.
       * any other non-zero → ``("crash", True)`` — the entry script genuinely failed
         (a real runtime error like ``CUDA error: device-side assert triggered``). This

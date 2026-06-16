@@ -60,10 +60,10 @@ def _warn_no_remote_stall_detection_once() -> None:
     documents the gap loudly and exactly once per process so an operator
     watching a stuck pod knows the early-kill they get on ``local`` is absent.
     Fired once because it is invariant for the whole run; suppress with
-    ``REPROLAB_RUNPOD_STALL_WARN=0``.
+    ``OPENRESEARCH_RUNPOD_STALL_WARN=0``.
     """
     global _STALL_WARN_EMITTED
-    if os.environ.get("REPROLAB_RUNPOD_STALL_WARN", "1").strip().lower() not in (
+    if os.environ.get("OPENRESEARCH_RUNPOD_STALL_WARN", "1").strip().lower() not in (
         "1", "true", "yes", "on"
     ):
         return
@@ -78,7 +78,7 @@ def _warn_no_remote_stall_detection_once() -> None:
         "burn the full per-command timeout before it is reaped; only the hard "
         "wall-clock cap (exec_timeout) applies, not an early stall kill. Output "
         "is still teed to <artifact_root>/exec.log for live `tail -f` diagnosis. "
-        "Set REPROLAB_RUNPOD_STALL_WARN=0 to silence this notice."
+        "Set OPENRESEARCH_RUNPOD_STALL_WARN=0 to silence this notice."
     )
 
 
@@ -161,7 +161,7 @@ class RunpodBackend(RuntimeBackend):
         # error — defense in depth on top of ``delete_on_destroy=false``
         # so a logic bug or rogue caller can never delete a pod created
         # outside our process (e.g. a coworker's pod on the same account,
-        # or a persistent pod attached via REPROLAB_RUNPOD_POD_ID).
+        # or a persistent pod attached via OPENRESEARCH_RUNPOD_POD_ID).
         self._owned_pod_ids: set[str] = set()
         self._run_budget = run_budget
 
@@ -197,7 +197,7 @@ class RunpodBackend(RuntimeBackend):
         config.resolved_artifact_root().mkdir(parents=True, exist_ok=True)
         image = self.image_name or config.image
 
-        # Persistent-pod mode: REPROLAB_RUNPOD_POD_ID points at an existing pod.
+        # Persistent-pod mode: OPENRESEARCH_RUNPOD_POD_ID points at an existing pod.
         # If it's RUNNING, attach. If it's missing/stopped, fall through to
         # create a new pod (and log the new ID prominently so the user can
         # update .env). Either way the resulting pod is never deleted on
@@ -207,7 +207,7 @@ class RunpodBackend(RuntimeBackend):
             if attached is not None:
                 return attached
             _log.warning(
-                "REPROLAB_RUNPOD_POD_ID=%r is unusable; creating a new persistent pod. "
+                "OPENRESEARCH_RUNPOD_POD_ID=%r is unusable; creating a new persistent pod. "
                 "Update .env with the new pod id printed below to reuse it next run.",
                 self.pod_id,
             )
@@ -215,7 +215,7 @@ class RunpodBackend(RuntimeBackend):
             pod_id = str(pod["id"])
             _log.warning(
                 "RUNPOD_PERSISTENT_POD_CREATED pod_id=%s name=%s — "
-                "set REPROLAB_RUNPOD_POD_ID=%s in .env to reuse it.",
+                "set OPENRESEARCH_RUNPOD_POD_ID=%s in .env to reuse it.",
                 pod_id,
                 pod.get("name") or _pod_name(config),
                 pod_id,
@@ -228,7 +228,7 @@ class RunpodBackend(RuntimeBackend):
                 # We created it but it failed to come up; user will see it
                 # in their dashboard with the warned id. We do NOT delete
                 # because the user opted into persistent mode by setting
-                # REPROLAB_RUNPOD_POD_ID.
+                # OPENRESEARCH_RUNPOD_POD_ID.
                 raise
 
         # Per-run create-and-(maybe-)destroy mode (existing behavior).
@@ -361,7 +361,7 @@ class RunpodBackend(RuntimeBackend):
                     )
             except BudgetExhausted:
                 # Track whether destroy actually deleted the pod. For persistent
-                # pods (REPROLAB_RUNPOD_POD_ID), the pod_id is intentionally not
+                # pods (OPENRESEARCH_RUNPOD_POD_ID), the pod_id is intentionally not
                 # in _owned_pod_ids so destroy() returns without deleting —
                 # which means the pod keeps billing. The operator must see this
                 # explicitly, not buried as an INFO log inside destroy().
@@ -380,7 +380,7 @@ class RunpodBackend(RuntimeBackend):
                     if not pod_was_owned:
                         _log.error(
                             "RUNPOD_BUDGET_EXHAUSTED_PERSISTENT_POD_NOT_DELETED "
-                            "sandbox_id=%s — persistent pod (REPROLAB_RUNPOD_POD_ID) "
+                            "sandbox_id=%s — persistent pod (OPENRESEARCH_RUNPOD_POD_ID) "
                             "is unowned by this backend, destroy skipped; pod is STILL "
                             "RUNNING and billing. Stop it manually via the RunPod dashboard.",
                             sandbox.sandbox_id,
@@ -574,7 +574,7 @@ class RunpodBackend(RuntimeBackend):
                     exc_info=True,
                 )
         self._connections.pop(sandbox.sandbox_id, None)
-        # Persistent pods (attached via REPROLAB_RUNPOD_POD_ID, or any pod
+        # Persistent pods (attached via OPENRESEARCH_RUNPOD_POD_ID, or any pod
         # not in our ownership allowlist) are never deleted. The
         # _delete_pod guard would also refuse, but short-circuiting here
         # avoids a noisy SandboxRuntimeError and keeps logs clean.
@@ -714,7 +714,7 @@ class RunpodBackend(RuntimeBackend):
             env.setdefault("TRANSFORMERS_CACHE", f"{mount}/cache/hf/transformers")
             env.setdefault("TORCH_HOME", f"{mount}/cache/torch")
             # Make the cache dirs exist before any pip install runs.
-            env.setdefault("REPROLAB_BOOTSTRAP_MKDIRS", f"{mount}/cache/pip {mount}/cache/hf {mount}/cache/torch")
+            env.setdefault("OPENRESEARCH_BOOTSTRAP_MKDIRS", f"{mount}/cache/pip {mount}/cache/hf {mount}/cache/torch")
 
         # Map gpu_mode to RunPod compute type.
         # "off"          → CPU-only pod (no GPU allocation, lower cost).
@@ -1402,7 +1402,7 @@ def ensure_runpod_available() -> None:
         raise SandboxRuntimeError(
             RuntimeCauseKind.backend_unavailable,
             f"RunPod sandbox is selected but SSH private key was not found: {ssh_key_path}. "
-            "Set REPROLAB_RUNPOD_SSH_KEY_PATH or create ~/.ssh/id_ed25519.",
+            "Set OPENRESEARCH_RUNPOD_SSH_KEY_PATH or create ~/.ssh/id_ed25519.",
         )
 
 

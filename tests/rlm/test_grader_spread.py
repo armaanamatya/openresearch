@@ -1,6 +1,6 @@
 """F7 — surface grader-noise spread under median-of-N (2026-06-16).
 
-When REPROLAB_GRADER_SAMPLES > 1 (A1 median-of-N), score_reproduction surfaces the
+When OPENRESEARCH_GRADER_SAMPLES > 1 (A1 median-of-N), score_reproduction surfaces the
 grader provenance + worst per-leaf noise spread so the report/UI can show the
 denoising headroom. At N=1 (default) none of these keys appear → byte-for-byte.
 """
@@ -36,7 +36,7 @@ class _VaryingStub:
 
 @pytest.fixture(autouse=True)
 def _clear(monkeypatch):
-    for v in ("REPROLAB_GRADER_SAMPLES", "REPROLAB_GRADER_BACKEND", "REPROLAB_EVIDENCE_GATE"):
+    for v in ("OPENRESEARCH_GRADER_SAMPLES", "OPENRESEARCH_GRADER_BACKEND", "OPENRESEARCH_EVIDENCE_GATE"):
         monkeypatch.delenv(v, raising=False)
 
 
@@ -49,7 +49,7 @@ def test_n1_no_spread_keys(tmp_path):
 
 
 def test_median_of_n_surfaces_spread(monkeypatch, tmp_path):
-    monkeypatch.setenv("REPROLAB_GRADER_SAMPLES", "3")
+    monkeypatch.setenv("OPENRESEARCH_GRADER_SAMPLES", "3")
     # 0.2, 0.6, 1.0 → median 0.6, spread 0.8
     result = score_reproduction(RUBRIC, tmp_path, _VaryingStub([0.2, 0.6, 1.0]), degraded=False)
     assert result["grader_samples"] == 3

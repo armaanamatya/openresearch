@@ -2,7 +2,7 @@ import "server-only";
 import type { LeaderboardRow } from "./types";
 
 function backendUrl(): string {
-  return (process.env.REPROLAB_BACKEND_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
+  return (process.env.OPENRESEARCH_BACKEND_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
 }
 
 export interface FetchLeaderboardParams {

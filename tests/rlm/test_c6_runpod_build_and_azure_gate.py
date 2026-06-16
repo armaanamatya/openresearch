@@ -6,14 +6,14 @@ Two independent harness rough edges pinned here:
 (a) ``build_environment`` under ``sandbox_mode == "runpod"`` must short-circuit
     to a no-op (like ``local``/``azure``) so a runpod run no longer pays a
     discarded local ``docker build`` and no longer hard-requires a local Docker
-    daemon for an image the pod never uses (it boots ``REPROLAB_RUNPOD_IMAGE``
-    over SSH). Flag-gated: ``REPROLAB_RUNPOD_SKIP_BUILD=0`` restores the build.
+    daemon for an image the pod never uses (it boots ``OPENRESEARCH_RUNPOD_IMAGE``
+    over SSH). Flag-gated: ``OPENRESEARCH_RUNPOD_SKIP_BUILD=0`` restores the build.
 
 (b) The ``run_experiment`` cell-matrix entry gate (historically
     ``("local","docker")``) must admit ``"azure"`` so the azure K8s branch in
     ``_execute_cell_matrix`` (which routes ``k8s_job_cell_runner.run_matrix``)
     is reachable — it was unreachable-by-gate before. Flag-gated:
-    ``REPROLAB_AZURE_CELL_ROUTE=0`` restores the local/docker-only gate.
+    ``OPENRESEARCH_AZURE_CELL_ROUTE=0`` restores the local/docker-only gate.
     ``runpod`` is NEVER admitted (it uses the SSH exec path, not this route).
 """
 
@@ -68,7 +68,7 @@ def test_build_environment_runpod_returns_noop_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """runpod (flag default ON) must return ok/skipped/empty-tag WITHOUT Docker."""
-    monkeypatch.delenv("REPROLAB_RUNPOD_SKIP_BUILD", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_RUNPOD_SKIP_BUILD", raising=False)
     _poison_docker(monkeypatch)
 
     from backend.agents.rlm.primitives import build_environment
@@ -90,8 +90,8 @@ def test_build_environment_runpod_returns_noop_success(
 def test_build_environment_runpod_skip_flag_truthy_values(
     monkeypatch: pytest.MonkeyPatch, flag: str
 ) -> None:
-    """All truthy spellings of REPROLAB_RUNPOD_SKIP_BUILD short-circuit."""
-    monkeypatch.setenv("REPROLAB_RUNPOD_SKIP_BUILD", flag)
+    """All truthy spellings of OPENRESEARCH_RUNPOD_SKIP_BUILD short-circuit."""
+    monkeypatch.setenv("OPENRESEARCH_RUNPOD_SKIP_BUILD", flag)
     _poison_docker(monkeypatch)
 
     from backend.agents.rlm.primitives import build_environment
@@ -104,14 +104,14 @@ def test_build_environment_runpod_skip_flag_truthy_values(
 def test_build_environment_runpod_skip_disabled_reaches_docker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """REPROLAB_RUNPOD_SKIP_BUILD=0 restores the prior build path (reaches Docker).
+    """OPENRESEARCH_RUNPOD_SKIP_BUILD=0 restores the prior build path (reaches Docker).
 
     With the flag off, the runpod short-circuit is bypassed and the function
     proceeds to the content-addressed existence check (`_image_exists`). We
     poison `_image_exists` to raise a *sentinel* so we can prove the build path
     was entered without standing up a real Docker daemon.
     """
-    monkeypatch.setenv("REPROLAB_RUNPOD_SKIP_BUILD", "0")
+    monkeypatch.setenv("OPENRESEARCH_RUNPOD_SKIP_BUILD", "0")
 
     import backend.agents.rlm.primitives as _prim
 
@@ -174,7 +174,7 @@ def test_build_environment_azure_short_circuit_unchanged(
 # The gate is an inline predicate inside ``run_experiment``:
 #
 #     _cell_route_kinds = ["local", "docker"]
-#     if REPROLAB_AZURE_CELL_ROUTE truthy:
+#     if OPENRESEARCH_AZURE_CELL_ROUTE truthy:
 #         _cell_route_kinds.append("azure")
 #     if _caps.backend_kind in _cell_route_kinds and ...:
 #         _execute_cell_matrix(...)
@@ -194,7 +194,7 @@ def _admitted_kinds(flag_value: str | None) -> set[str]:
     import os
 
     kinds = ["local", "docker"]
-    val = (os.environ.get("REPROLAB_AZURE_CELL_ROUTE", "1") if flag_value is None else flag_value)
+    val = (os.environ.get("OPENRESEARCH_AZURE_CELL_ROUTE", "1") if flag_value is None else flag_value)
     if val.strip().lower() in ("1", "true", "yes", "on"):
         kinds.append("azure")
     return set(kinds)
@@ -226,7 +226,7 @@ def test_gate_flag_off_excludes_azure_keeps_local_docker(flag: str) -> None:
 
 
 def test_run_experiment_source_contains_flag_gated_azure_gate() -> None:
-    """Source guard: the inline gate must be flag-gated on REPROLAB_AZURE_CELL_ROUTE
+    """Source guard: the inline gate must be flag-gated on OPENRESEARCH_AZURE_CELL_ROUTE
     and admit azure into _cell_route_kinds — catches a refactor that drops it or
     hardcodes ("local","docker") again."""
     import inspect
@@ -234,8 +234,8 @@ def test_run_experiment_source_contains_flag_gated_azure_gate() -> None:
     from backend.agents.rlm import primitives
 
     src = inspect.getsource(primitives.run_experiment)
-    assert "REPROLAB_AZURE_CELL_ROUTE" in src, (
-        "run_experiment lost the REPROLAB_AZURE_CELL_ROUTE gate flag"
+    assert "OPENRESEARCH_AZURE_CELL_ROUTE" in src, (
+        "run_experiment lost the OPENRESEARCH_AZURE_CELL_ROUTE gate flag"
     )
     assert "_cell_route_kinds" in src and '"azure"' in src, (
         "run_experiment no longer admits azure into the cell-route gate"

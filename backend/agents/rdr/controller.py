@@ -421,7 +421,7 @@ async def _dispatch_competing_candidates(
     import shutil as _shutil
 
     # D2: mirror the RLM path — smoke-gate the SELECT signal (drop non-runnable
-    # candidates before choosing) when REPROLAB_BES_SMOKE_SELECT is on. Off →
+    # candidates before choosing) when OPENRESEARCH_BES_SMOKE_SELECT is on. Off →
     # select_best_gated is a pass-through to select_best (byte-for-byte today).
     _smoke_select_on = _os_d2.environ.get(ENV_SMOKE_SELECT, "").strip().lower() in (
         "1", "true", "yes", "on",

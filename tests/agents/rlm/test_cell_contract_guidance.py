@@ -24,7 +24,7 @@ def test_cell_path_injects_contract_budget_and_suppresses_torchrun():
     assert "harness-owned cell matrix (one GPU per cell)" in g
     # The torchrun multi-GPU instruction must NOT appear — it fights one-cell-per-GPU.
     assert "torchrun --standalone" not in g
-    assert "REPROLAB_CELL_PARAMS" in g and "REPROLAB_CELL_BATCH_SCALE" in g
+    assert "OPENRESEARCH_CELL_PARAMS" in g and "OPENRESEARCH_CELL_BATCH_SCALE" in g
 
 
 def test_memory_discipline_is_always_on_even_without_gpu():

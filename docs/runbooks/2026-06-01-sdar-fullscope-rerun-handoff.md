@@ -69,8 +69,8 @@ future runs automatically.
    is excluded (not zeroed) every run. Follow-up: switch the launcher to `sys.executable` and
    `uv pip install web_agent_site` into the base venv. Expected, not an error.
 3. **Dense retrieval OFF.** No verified wiki-18 E5 index repo, so Search-QA uses BM25/lexical
-   overlap + kept HotpotQA context. For max score: set `REPROLAB_SEARCH_QA_DENSE=1` +
-   `REPROLAB_SEARCH_QA_INDEX_REPO=<hf wiki-18 e5 repo>` (disk now has room).
+   overlap + kept HotpotQA context. For max score: set `OPENRESEARCH_SEARCH_QA_DENSE=1` +
+   `OPENRESEARCH_SEARCH_QA_INDEX_REPO=<hf wiki-18 e5 repo>` (disk now has room).
 
 ---
 

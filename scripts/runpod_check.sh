@@ -141,19 +141,19 @@ else:
 step "1. Environment"
 
 # Apply config.py defaults so the user can leave them unset in .env.
-: "${REPROLAB_RUNPOD_API_BASE_URL:=https://rest.runpod.io/v1}"
-: "${REPROLAB_RUNPOD_IMAGE:=runpod/pytorch:2.1.0-py3.10-cuda11.8.0-runtime-ubuntu22.04}"
-: "${REPROLAB_RUNPOD_GPU_TYPE:=NVIDIA GeForce RTX 4090}"
-: "${REPROLAB_RUNPOD_GPU_COUNT:=1}"
-: "${REPROLAB_RUNPOD_CLOUD_TYPE:=SECURE}"
-: "${REPROLAB_RUNPOD_CONTAINER_DISK_GB:=50}"
-: "${REPROLAB_RUNPOD_VOLUME_GB:=20}"
-: "${REPROLAB_RUNPOD_VOLUME_MOUNT_PATH:=/workspace}"
-: "${REPROLAB_RUNPOD_NETWORK_VOLUME_ID:=}"
-: "${REPROLAB_RUNPOD_DATA_CENTER_IDS:=}"
-: "${REPROLAB_RUNPOD_SSH_USER:=root}"
-: "${REPROLAB_RUNPOD_BOOT_TIMEOUT_SECONDS:=900}"
-: "${REPROLAB_RUNPOD_DELETE_ON_DESTROY:=true}"
+: "${OPENRESEARCH_RUNPOD_API_BASE_URL:=https://rest.runpod.io/v1}"
+: "${OPENRESEARCH_RUNPOD_IMAGE:=runpod/pytorch:2.1.0-py3.10-cuda11.8.0-runtime-ubuntu22.04}"
+: "${OPENRESEARCH_RUNPOD_GPU_TYPE:=NVIDIA GeForce RTX 4090}"
+: "${OPENRESEARCH_RUNPOD_GPU_COUNT:=1}"
+: "${OPENRESEARCH_RUNPOD_CLOUD_TYPE:=SECURE}"
+: "${OPENRESEARCH_RUNPOD_CONTAINER_DISK_GB:=50}"
+: "${OPENRESEARCH_RUNPOD_VOLUME_GB:=20}"
+: "${OPENRESEARCH_RUNPOD_VOLUME_MOUNT_PATH:=/workspace}"
+: "${OPENRESEARCH_RUNPOD_NETWORK_VOLUME_ID:=}"
+: "${OPENRESEARCH_RUNPOD_DATA_CENTER_IDS:=}"
+: "${OPENRESEARCH_RUNPOD_SSH_USER:=root}"
+: "${OPENRESEARCH_RUNPOD_BOOT_TIMEOUT_SECONDS:=900}"
+: "${OPENRESEARCH_RUNPOD_DELETE_ON_DESTROY:=true}"
 
 # Fall back to RUNPOD_API_KEY if REPROLAB_RUNPOD_API_KEY is unset
 # (mirrors RunpodBackend.__init__).
@@ -165,41 +165,41 @@ if [[ -z "${API_KEY}" ]]; then
 fi
 ok "API key set ($(mask "${API_KEY}"))"
 
-if [[ -z "${REPROLAB_RUNPOD_SSH_KEY_PATH:-}" ]]; then
-    fail "REPROLAB_RUNPOD_SSH_KEY_PATH is empty"
+if [[ -z "${OPENRESEARCH_RUNPOD_SSH_KEY_PATH:-}" ]]; then
+    fail "OPENRESEARCH_RUNPOD_SSH_KEY_PATH is empty"
     exit 2
 fi
-ok "SSH key path set (${REPROLAB_RUNPOD_SSH_KEY_PATH})"
+ok "SSH key path set (${OPENRESEARCH_RUNPOD_SSH_KEY_PATH})"
 
-if [[ -z "${REPROLAB_RUNPOD_SSH_PUBLIC_KEY:-}" ]]; then
-    SSH_KEY_CANDIDATE="$(eval echo "${REPROLAB_RUNPOD_SSH_KEY_PATH}")"  # expand ~
+if [[ -z "${OPENRESEARCH_RUNPOD_SSH_PUBLIC_KEY:-}" ]]; then
+    SSH_KEY_CANDIDATE="$(eval echo "${OPENRESEARCH_RUNPOD_SSH_KEY_PATH}")"  # expand ~
     if [[ -f "${SSH_KEY_CANDIDATE}" ]] && command -v ssh-keygen >/dev/null 2>&1; then
         DERIVED_PUBLIC_KEY="$(ssh-keygen -y -f "${SSH_KEY_CANDIDATE}" 2>/dev/null || true)"
         if [[ -n "${DERIVED_PUBLIC_KEY}" ]]; then
-            REPROLAB_RUNPOD_SSH_PUBLIC_KEY="${DERIVED_PUBLIC_KEY}"
-            export REPROLAB_RUNPOD_SSH_PUBLIC_KEY
+            OPENRESEARCH_RUNPOD_SSH_PUBLIC_KEY="${DERIVED_PUBLIC_KEY}"
+            export OPENRESEARCH_RUNPOD_SSH_PUBLIC_KEY
             ok "SSH public key derived from private key"
         fi
     fi
 fi
-if [[ -z "${REPROLAB_RUNPOD_SSH_PUBLIC_KEY:-}" ]]; then
-    fail "REPROLAB_RUNPOD_SSH_PUBLIC_KEY is empty (and could not be derived from private key)"
+if [[ -z "${OPENRESEARCH_RUNPOD_SSH_PUBLIC_KEY:-}" ]]; then
+    fail "OPENRESEARCH_RUNPOD_SSH_PUBLIC_KEY is empty (and could not be derived from private key)"
     exit 2
 fi
 ok "SSH public key available"
 
-ok "GPU type:   ${REPROLAB_RUNPOD_GPU_TYPE}"
-ok "GPU count:  ${REPROLAB_RUNPOD_GPU_COUNT}"
-ok "Cloud type: ${REPROLAB_RUNPOD_CLOUD_TYPE}"
-ok "Image:      ${REPROLAB_RUNPOD_IMAGE}"
-ok "API base:   ${REPROLAB_RUNPOD_API_BASE_URL}"
+ok "GPU type:   ${OPENRESEARCH_RUNPOD_GPU_TYPE}"
+ok "GPU count:  ${OPENRESEARCH_RUNPOD_GPU_COUNT}"
+ok "Cloud type: ${OPENRESEARCH_RUNPOD_CLOUD_TYPE}"
+ok "Image:      ${OPENRESEARCH_RUNPOD_IMAGE}"
+ok "API base:   ${OPENRESEARCH_RUNPOD_API_BASE_URL}"
 
 # ---------------------------------------------------------------------------
 # 2. RunPod API auth (GET /pods)
 # ---------------------------------------------------------------------------
 step "2. RunPod API authentication"
 
-AUTH_URL="${REPROLAB_RUNPOD_API_BASE_URL%/}/pods"
+AUTH_URL="${OPENRESEARCH_RUNPOD_API_BASE_URL%/}/pods"
 AUTH_BODY="$(mktemp)"
 AUTH_CODE="$(curl -sS -o "${AUTH_BODY}" -w "%{http_code}" \
     -H "Authorization: Bearer ${API_KEY}" \
@@ -226,7 +226,7 @@ rm -f "${AUTH_BODY}"
 # The configured GPU id is validated by the API at pod creation time, so the
 # only way to definitively confirm availability is `--start-pod`.
 step "3. GPU offering check"
-warn "REST v1 doesn't expose GPU listings — '${REPROLAB_RUNPOD_GPU_TYPE}' will be"
+warn "REST v1 doesn't expose GPU listings — '${OPENRESEARCH_RUNPOD_GPU_TYPE}' will be"
 warn "validated at pod creation. Use --start-pod for an end-to-end smoke test."
 
 # ---------------------------------------------------------------------------
@@ -234,7 +234,7 @@ warn "validated at pod creation. Use --start-pod for an end-to-end smoke test."
 # ---------------------------------------------------------------------------
 step "4. SSH key"
 
-SSH_KEY="$(eval echo "${REPROLAB_RUNPOD_SSH_KEY_PATH}")"  # expand ~
+SSH_KEY="$(eval echo "${OPENRESEARCH_RUNPOD_SSH_KEY_PATH}")"  # expand ~
 SSH_KEY="$(normalize_ssh_key_path "${SSH_KEY}")"
 
 if [[ ! -f "${SSH_KEY}" ]]; then
@@ -260,16 +260,16 @@ if [[ -z "${PUB_FROM_PRIV}" ]]; then
 else
     # Compare just the key payload (field 2), not the comment, since the .env
     # comment "appradhann@gmail.com" won't appear in ssh-keygen -y output.
-    PUB_PAYLOAD_ENV="$(echo "${REPROLAB_RUNPOD_SSH_PUBLIC_KEY}" | awk '{print $2}')"
+    PUB_PAYLOAD_ENV="$(echo "${OPENRESEARCH_RUNPOD_SSH_PUBLIC_KEY}" | awk '{print $2}')"
     PUB_PAYLOAD_FILE="$(echo "${PUB_FROM_PRIV}" | awk '{print $2}')"
     if [[ -n "${PUB_PAYLOAD_ENV}" && "${PUB_PAYLOAD_ENV}" == "${PUB_PAYLOAD_FILE}" ]]; then
-        ok "REPROLAB_RUNPOD_SSH_PUBLIC_KEY matches the private key"
+        ok "OPENRESEARCH_RUNPOD_SSH_PUBLIC_KEY matches the private key"
     else
-        fail "REPROLAB_RUNPOD_SSH_PUBLIC_KEY does NOT match ${SSH_KEY}"
+        fail "OPENRESEARCH_RUNPOD_SSH_PUBLIC_KEY does NOT match ${SSH_KEY}"
         echo "       The pod will boot with the .env public key but your" >&2
         echo "       private key won't be able to log in." >&2
         echo "       Fix with:" >&2
-        echo "         REPROLAB_RUNPOD_SSH_PUBLIC_KEY=\"$(ssh-keygen -y -f "${SSH_KEY}")\"" >&2
+        echo "         OPENRESEARCH_RUNPOD_SSH_PUBLIC_KEY=\"$(ssh-keygen -y -f "${SSH_KEY}")\"" >&2
         exit 5
     fi
 fi
@@ -290,20 +290,20 @@ require_cmd ssh
 require_cmd ssh-keygen
 
 POD_NAME="reprolab-smoke-$(date +%s)"
-echo "Creating pod ${POD_NAME} with ${REPROLAB_RUNPOD_GPU_TYPE}..."
+echo "Creating pod ${POD_NAME} with ${OPENRESEARCH_RUNPOD_GPU_TYPE}..."
 
 CREATE_PAYLOAD="$(
     POD_NAME="${POD_NAME}" \
-    CLOUD="${REPROLAB_RUNPOD_CLOUD_TYPE}" \
-    IMAGE="${REPROLAB_RUNPOD_IMAGE}" \
-    GPU="${REPROLAB_RUNPOD_GPU_TYPE}" \
-    GPU_COUNT="${REPROLAB_RUNPOD_GPU_COUNT}" \
-    DISK="${REPROLAB_RUNPOD_CONTAINER_DISK_GB}" \
-    VOL="${REPROLAB_RUNPOD_VOLUME_GB}" \
-    MOUNT="${REPROLAB_RUNPOD_VOLUME_MOUNT_PATH}" \
-    PUBKEY="${REPROLAB_RUNPOD_SSH_PUBLIC_KEY}" \
-    DCS="${REPROLAB_RUNPOD_DATA_CENTER_IDS}" \
-    NV="${REPROLAB_RUNPOD_NETWORK_VOLUME_ID}" \
+    CLOUD="${OPENRESEARCH_RUNPOD_CLOUD_TYPE}" \
+    IMAGE="${OPENRESEARCH_RUNPOD_IMAGE}" \
+    GPU="${OPENRESEARCH_RUNPOD_GPU_TYPE}" \
+    GPU_COUNT="${OPENRESEARCH_RUNPOD_GPU_COUNT}" \
+    DISK="${OPENRESEARCH_RUNPOD_CONTAINER_DISK_GB}" \
+    VOL="${OPENRESEARCH_RUNPOD_VOLUME_GB}" \
+    MOUNT="${OPENRESEARCH_RUNPOD_VOLUME_MOUNT_PATH}" \
+    PUBKEY="${OPENRESEARCH_RUNPOD_SSH_PUBLIC_KEY}" \
+    DCS="${OPENRESEARCH_RUNPOD_DATA_CENTER_IDS}" \
+    NV="${OPENRESEARCH_RUNPOD_NETWORK_VOLUME_ID}" \
     python3 -c "
 import json, os
 payload = {
@@ -336,7 +336,7 @@ POD_RESP="$(curl -sS -X POST \
     -H "Authorization: Bearer ${API_KEY}" \
     -H "Content-Type: application/json" \
     -d "${CREATE_PAYLOAD}" \
-    "${REPROLAB_RUNPOD_API_BASE_URL%/}/pods")"
+    "${OPENRESEARCH_RUNPOD_API_BASE_URL%/}/pods")"
 
 POD_ID="$(echo "${POD_RESP}" | python3 -c "
 import json, sys
@@ -357,19 +357,19 @@ cleanup_pod() {
     echo "Destroying pod ${POD_ID}..."
     curl -sS -X DELETE \
         -H "Authorization: Bearer ${API_KEY}" \
-        "${REPROLAB_RUNPOD_API_BASE_URL%/}/pods/${POD_ID}" >/dev/null || true
+        "${OPENRESEARCH_RUNPOD_API_BASE_URL%/}/pods/${POD_ID}" >/dev/null || true
     ok "Pod ${POD_ID} delete request sent"
 }
 trap cleanup_pod EXIT
 
-DEADLINE=$(( $(date +%s) + REPROLAB_RUNPOD_BOOT_TIMEOUT_SECONDS ))
+DEADLINE=$(( $(date +%s) + OPENRESEARCH_RUNPOD_BOOT_TIMEOUT_SECONDS ))
 PUBLIC_IP=""
 SSH_PORT=""
-echo "Waiting up to ${REPROLAB_RUNPOD_BOOT_TIMEOUT_SECONDS}s for pod to expose SSH..."
+echo "Waiting up to ${OPENRESEARCH_RUNPOD_BOOT_TIMEOUT_SECONDS}s for pod to expose SSH..."
 while (( $(date +%s) < DEADLINE )); do
     POD_INFO="$(curl -sS \
         -H "Authorization: Bearer ${API_KEY}" \
-        "${REPROLAB_RUNPOD_API_BASE_URL%/}/pods/${POD_ID}")"
+        "${OPENRESEARCH_RUNPOD_API_BASE_URL%/}/pods/${POD_ID}")"
     read -r PUBLIC_IP SSH_PORT < <(echo "${POD_INFO}" | python3 -c "
 import json, sys
 try:
@@ -392,10 +392,10 @@ print(f'{ip} {port}')
 done
 
 if [[ -z "${PUBLIC_IP}" || -z "${SSH_PORT}" ]]; then
-    fail "Pod never exposed SSH within ${REPROLAB_RUNPOD_BOOT_TIMEOUT_SECONDS}s"
+    fail "Pod never exposed SSH within ${OPENRESEARCH_RUNPOD_BOOT_TIMEOUT_SECONDS}s"
     exit 6
 fi
-ok "Pod reachable at ${REPROLAB_RUNPOD_SSH_USER}@${PUBLIC_IP}:${SSH_PORT}"
+ok "Pod reachable at ${OPENRESEARCH_RUNPOD_SSH_USER}@${PUBLIC_IP}:${SSH_PORT}"
 
 SSH_OPTS=(
     -i "${SSH_KEY}"
@@ -409,7 +409,7 @@ SSH_OPTS=(
 # Retry SSH a few times — sshd often comes up a beat after the port is open.
 SSH_OK=0
 for attempt in 1 2 3 4 5; do
-    if ssh "${SSH_OPTS[@]}" "${REPROLAB_RUNPOD_SSH_USER}@${PUBLIC_IP}" \
+    if ssh "${SSH_OPTS[@]}" "${OPENRESEARCH_RUNPOD_SSH_USER}@${PUBLIC_IP}" \
         'nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader' \
         2>/tmp/runpod_ssh_err; then
         SSH_OK=1; break

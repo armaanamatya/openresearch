@@ -26,7 +26,7 @@ env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY \
 ```
 
 Notes:
-- Full paper scope (no `REPROLAB_BASELINE_EXTRA_GUIDANCE` restriction) — the bundle's rubric covers both GPT2-medium and Llama2-7b
+- Full paper scope (no `OPENRESEARCH_BASELINE_EXTRA_GUIDANCE` restriction) — the bundle's rubric covers both GPT2-medium and Llama2-7b
 - `--sandbox runpod` is the production target; we accept the capacity-exhaustion risk as a real-world signal
 - `--max-usd 15` ceiling — Llama2-7b on RTX 4090 community tier (~$0.34/hr) for 2h is ~$0.68; rest of the budget covers retries
 - `--preflight-sanity` is the new flag from P3 below

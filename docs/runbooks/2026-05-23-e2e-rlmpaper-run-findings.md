@@ -48,7 +48,7 @@ Verified artifacts:
 | id | issue | status |
 |---|---|---|
 | F1 | `start.sh` failed under macOS bash 3.2 with an empty array under `set -u` | fixed, verified |
-| F2 | `REPROLAB_FORCE_SANDBOX` default silently pinned every run to Docker | fixed in working tree, verified by Run 2 |
+| F2 | `OPENRESEARCH_FORCE_SANDBOX` default silently pinned every run to Docker | fixed in working tree, verified by Run 2 |
 | F3 | `/models` exposed only `sonnet` and `opus` despite a larger RLM registry | fixed in working tree, tested |
 | F4 | `.env` sandbox default disagreed with `start.sh` | fixed in local `.env`, `.env.example` already aligned |
 | F5 | RDR artifact polling spammed 404s throughout active non-RDR runs | partially fixed, superseded by F7 |
@@ -74,7 +74,7 @@ Fix: commit `13793f0` uses the bash-3.2-safe expansion
 
 Verified: `./start.sh` boots the backend on macOS 25.
 
-### F2 - `REPROLAB_FORCE_SANDBOX` default pinned runs to Docker
+### F2 - `OPENRESEARCH_FORCE_SANDBOX` default pinned runs to Docker
 
 Symptom: `POST /api/demo/arxiv` with body `sandbox=runpod` returned
 `sandboxMode=docker`.
@@ -86,9 +86,9 @@ default.
 
 Fix:
 
-- Initial session fix: local `.env` set `REPROLAB_FORCE_SANDBOX=` explicitly.
+- Initial session fix: local `.env` set `OPENRESEARCH_FORCE_SANDBOX=` explicitly.
 - Post-run cleanup: `backend/config.py` now defaults `force_sandbox` to `""`.
-  Deployments that need hard pinning must set `REPROLAB_FORCE_SANDBOX=docker`
+  Deployments that need hard pinning must set `OPENRESEARCH_FORCE_SANDBOX=docker`
   or `local` explicitly.
 - `backend/config.py` also defaults `default_sandbox` to `runpod`, matching
   `start.sh`, `.env.example`, and frontend run-start requests.
@@ -124,8 +124,8 @@ Verified:
 
 ### F4 - `.env` sandbox default disagreed with `start.sh`
 
-Symptom: `start.sh` defaulted `REPROLAB_DEFAULT_SANDBOX` to `runpod`, but the
-local `.env` had `REPROLAB_DEFAULT_SANDBOX=docker`.
+Symptom: `start.sh` defaulted `OPENRESEARCH_DEFAULT_SANDBOX` to `runpod`, but the
+local `.env` had `OPENRESEARCH_DEFAULT_SANDBOX=docker`.
 
 Fix: `backend/config.py`, local ignored `.env`, `start.sh`, and `.env.example`
 now agree on `runpod` as the development default.

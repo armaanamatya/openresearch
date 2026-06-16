@@ -201,7 +201,7 @@ def _repair_setup(tmp_path: Path, *, trainer: bool, stash: bool):
 
 
 def test_auto_restores_manifest_when_trainer_survives(tmp_path, monkeypatch):
-    monkeypatch.delenv("REPROLAB_CELLS_ROUTE_RETENTION", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_CELLS_ROUTE_RETENTION", raising=False)
     ctx, code = _repair_setup(tmp_path, trainer=True, stash=True)
     result = {"ok": True}
 
@@ -215,7 +215,7 @@ def test_auto_restores_manifest_when_trainer_survives(tmp_path, monkeypatch):
 
 def test_no_restore_without_trainer(tmp_path, monkeypatch):
     """Manifest without a per-cell trainer is useless — warn-only."""
-    monkeypatch.delenv("REPROLAB_CELLS_ROUTE_RETENTION", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_CELLS_ROUTE_RETENTION", raising=False)
     ctx, code = _repair_setup(tmp_path, trainer=False, stash=True)
     out = _check_cells_manifest_retention(
         {"ok": True}, code_dir=code, had_manifest=True, is_repair=True, ctx=ctx,
@@ -226,7 +226,7 @@ def test_no_restore_without_trainer(tmp_path, monkeypatch):
 
 def test_no_restore_after_cells_route_failure(tmp_path, monkeypatch):
     """The repair may be deliberately abandoning a broken route — warn-only."""
-    monkeypatch.delenv("REPROLAB_CELLS_ROUTE_RETENTION", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_CELLS_ROUTE_RETENTION", raising=False)
     ctx, code = _repair_setup(tmp_path, trainer=True, stash=True)
     out = _check_cells_manifest_retention(
         {"ok": True}, code_dir=code, had_manifest=True, is_repair=True, ctx=ctx,
@@ -237,7 +237,7 @@ def test_no_restore_after_cells_route_failure(tmp_path, monkeypatch):
 
 
 def test_flag_disables_restore(tmp_path, monkeypatch):
-    monkeypatch.setenv("REPROLAB_CELLS_ROUTE_RETENTION", "0")
+    monkeypatch.setenv("OPENRESEARCH_CELLS_ROUTE_RETENTION", "0")
     ctx, code = _repair_setup(tmp_path, trainer=True, stash=True)
     out = _check_cells_manifest_retention(
         {"ok": True}, code_dir=code, had_manifest=True, is_repair=True, ctx=ctx,
@@ -247,7 +247,7 @@ def test_flag_disables_restore(tmp_path, monkeypatch):
 
 
 def test_missing_stash_degrades_to_warning(tmp_path, monkeypatch):
-    monkeypatch.delenv("REPROLAB_CELLS_ROUTE_RETENTION", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_CELLS_ROUTE_RETENTION", raising=False)
     ctx, code = _repair_setup(tmp_path, trainer=True, stash=False)
     out = _check_cells_manifest_retention(
         {"ok": True}, code_dir=code, had_manifest=True, is_repair=True, ctx=ctx,

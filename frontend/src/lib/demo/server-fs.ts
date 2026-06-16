@@ -81,7 +81,7 @@ export interface TelemetryRecord {
 }
 
 export function repoRoot(): string {
-  const override = process.env.REPROLAB_REPO_ROOT?.trim();
+  const override = process.env.OPENRESEARCH_REPO_ROOT?.trim();
   if (override) {
     return override;
   }

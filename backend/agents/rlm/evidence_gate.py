@@ -17,7 +17,7 @@ data-unavailable detector uses) and this module makes the pure veto decision.
 This module is **pure + stdlib-only** so it is trivially unit-testable and carries
 no import dependency on leaf_scorer (no circular import).
 
-``REPROLAB_EVIDENCE_GATE`` is **default-OFF**: with the flag unset
+``OPENRESEARCH_EVIDENCE_GATE`` is **default-OFF**: with the flag unset
 :func:`evidence_gate_enabled` returns False and the leaf_scorer never calls
 :func:`gate_decision`, so scoring is byte-for-byte identical to today. The gate is
 flipped ON only after the calibration σ-gate clears (see the spec's rollout
@@ -40,12 +40,12 @@ _RESULT_CATEGORY_HINTS: tuple[str, ...] = ("result", "metric")
 
 
 def evidence_gate_enabled() -> bool:
-    """True iff ``REPROLAB_EVIDENCE_GATE`` opts the gate ON.
+    """True iff ``OPENRESEARCH_EVIDENCE_GATE`` opts the gate ON.
 
     Default-OFF: any unset/empty/falsey value disables the gate entirely so the
     leaf_scorer behaves byte-for-byte as it does today.
     """
-    return os.environ.get("REPROLAB_EVIDENCE_GATE", "").strip().lower() in (
+    return os.environ.get("OPENRESEARCH_EVIDENCE_GATE", "").strip().lower() in (
         "1",
         "true",
         "yes",

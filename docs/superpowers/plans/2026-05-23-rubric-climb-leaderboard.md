@@ -545,7 +545,7 @@ Create `backend/routes/leaderboard.py`:
 
 Scans `runs/<id>/final_report.json` (+ `demo_status.json` for sandbox /
 status fallback) and returns ranked rows. Read-only; not gated by
-REPROLAB_DEMO_SECRET per spec §3 #10.
+OPENRESEARCH_DEMO_SECRET per spec §3 #10.
 
 Spec: docs/superpowers/specs/2026-05-23-rubric-climb-leaderboard.md §4.4–§4.5.
 """
@@ -698,7 +698,7 @@ def list_leaderboard_runs(
 ):
     """Return ranked leaderboard rows aggregated from on-disk runs.
 
-    Read-only; not gated by REPROLAB_DEMO_SECRET.
+    Read-only; not gated by OPENRESEARCH_DEMO_SECRET.
     """
     settings = get_settings()
     runs_root = Path(settings.runs_dir) if getattr(settings, "runs_dir", None) else Path("runs")
@@ -790,14 +790,14 @@ def _seed_run(runs_root: Path, project_id: str, score: float, paper_id="p1") -> 
 
 @pytest.fixture
 def app_with_runs(tmp_path, monkeypatch):
-    """Boot the FastAPI app with REPROLAB_RUNS_DIR pointed at a tmp dir."""
+    """Boot the FastAPI app with OPENRESEARCH_RUNS_DIR pointed at a tmp dir."""
     runs_root = tmp_path / "runs"
     runs_root.mkdir()
     _seed_run(runs_root, "prj_a", 0.42)
     _seed_run(runs_root, "prj_b", 0.71)
 
-    monkeypatch.setenv("REPROLAB_RUNS_DIR", str(runs_root))
-    monkeypatch.delenv("REPROLAB_DEMO_SECRET", raising=False)
+    monkeypatch.setenv("OPENRESEARCH_RUNS_DIR", str(runs_root))
+    monkeypatch.delenv("OPENRESEARCH_DEMO_SECRET", raising=False)
 
     # Reset cached settings.
     from backend.config import get_settings
@@ -823,7 +823,7 @@ def test_get_leaderboard_filters_by_paper(app_with_runs, tmp_path):
 
 
 def test_get_leaderboard_ignores_demo_secret_gate(app_with_runs, monkeypatch):
-    monkeypatch.setenv("REPROLAB_DEMO_SECRET", "shh")
+    monkeypatch.setenv("OPENRESEARCH_DEMO_SECRET", "shh")
     from backend.config import get_settings
     get_settings.cache_clear()  # type: ignore[attr-defined]
 
@@ -838,7 +838,7 @@ def test_get_leaderboard_ignores_demo_secret_gate(app_with_runs, monkeypatch):
 - [ ] **Step 2: Run the test to confirm it fails**
 
 Run: `.venv/bin/python -m pytest tests/routes/test_leaderboard_http.py -v`
-Expected: 404 or import errors — the router is not mounted yet, and `REPROLAB_RUNS_DIR` may not be a known setting.
+Expected: 404 or import errors — the router is not mounted yet, and `OPENRESEARCH_RUNS_DIR` may not be a known setting.
 
 - [ ] **Step 3: Add `runs_dir` field to `Settings` (verified missing)**
 
@@ -851,7 +851,7 @@ The 2026-05-23 advisor-checkpoint verification confirmed `Settings` (at `backend
     )
 ```
 
-Pydantic BaseSettings reads `REPROLAB_RUNS_DIR` from env automatically when the project's env_prefix is `REPROLAB_` (confirm by inspecting neighbouring fields like `demo_secret` → `REPROLAB_DEMO_SECRET`).
+Pydantic BaseSettings reads `OPENRESEARCH_RUNS_DIR` from env automatically when the project's env_prefix is `REPROLAB_` (confirm by inspecting neighbouring fields like `demo_secret` → `OPENRESEARCH_DEMO_SECRET`).
 
 - [ ] **Step 4: Mount the router in `backend/app.py`**
 
@@ -2119,7 +2119,7 @@ vi.mock("server-only", () => ({}));
 
 describe("/api/demo/leaderboard proxy", () => {
   beforeEach(() => {
-    vi.stubEnv("REPROLAB_BACKEND_URL", "http://backend.test");
+    vi.stubEnv("OPENRESEARCH_BACKEND_URL", "http://backend.test");
   });
 
   afterEach(() => {
@@ -2184,7 +2184,7 @@ import "server-only";
 export async function GET(req: Request): Promise<Response> {
   // Sibling convention (see frontend/src/app/api/demo/events/route.ts:27):
   // default to localhost backend when env is unset.
-  const backendUrl = (process.env.REPROLAB_BACKEND_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
+  const backendUrl = (process.env.OPENRESEARCH_BACKEND_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
   const incoming = new URL(req.url);
   const search = incoming.search; // includes leading ? when non-empty
   const target = `${backendUrl}/leaderboard${search}`;
@@ -2610,7 +2610,7 @@ import { LeaderboardTable, type LeaderboardRow } from "./leaderboard-table";
 export const dynamic = "force-dynamic";
 
 async function fetchRows(): Promise<LeaderboardRow[]> {
-  const backendUrl = process.env.REPROLAB_BACKEND_URL;
+  const backendUrl = process.env.OPENRESEARCH_BACKEND_URL;
   if (!backendUrl) return [];
   try {
     const resp = await fetch(`${backendUrl.replace(/\/$/, "")}/leaderboard`, {
@@ -2741,7 +2741,7 @@ Run: `cd frontend && npx playwright test e2e/leaderboard.spec.ts e2e/rubric-clim
 
 If failing because the dev server isn't running, start it in the background first:
 
-Run (background): `cd frontend && PORT=3000 REPROLAB_BACKEND_URL=http://127.0.0.1:8000 npm run dev`
+Run (background): `cd frontend && PORT=3000 OPENRESEARCH_BACKEND_URL=http://127.0.0.1:8000 npm run dev`
 
 Then re-run the playwright command.
 
@@ -2846,7 +2846,7 @@ Add a new "Leaderboard endpoint" subsection in the lab/API overview:
 
 `GET /leaderboard` returns ranked rows aggregated at request time from
 `runs/*/final_report.json` + `demo_status.json`. Read-only; not gated by
-`REPROLAB_DEMO_SECRET`.
+`OPENRESEARCH_DEMO_SECRET`.
 
 Query params:
 

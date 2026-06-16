@@ -11,7 +11,7 @@
 #       frontend.log     # Next.js dev combined stdout+stderr
 #     prj_<id>/...       # per-pipeline-run workspaces (unchanged contract)
 #
-# Pipeline runs land under REPROLAB_RUNS_ROOT, which we point at logs/<TS>/ —
+# Pipeline runs land under OPENRESEARCH_RUNS_ROOT, which we point at logs/<TS>/ —
 # so every prj_* directory the pipeline creates sits alongside server/.
 #
 # Stop with Ctrl-C (or TaskStop from the agent harness). meta.json is updated
@@ -67,7 +67,7 @@ LOG_DIR="logs/$TS"
 SERVER_DIR="$LOG_DIR/server"
 mkdir -p "$SERVER_DIR"
 
-export REPROLAB_RUNS_ROOT="$PWD/$LOG_DIR"
+export OPENRESEARCH_RUNS_ROOT="$PWD/$LOG_DIR"
 
 # Force UTF-8 for all Python processes started under this launcher (uvicorn +
 # any subprocess it spawns, e.g. the pipeline CLI). On Windows the default
@@ -79,7 +79,7 @@ export PYTHONUTF8=1
 export PYTHONIOENCODING=utf-8
 
 GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-SANDBOX="${REPROLAB_DEFAULT_SANDBOX:-docker}"
+SANDBOX="${OPENRESEARCH_DEFAULT_SANDBOX:-docker}"
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ENDED_REASON="exit"
 
@@ -102,7 +102,7 @@ write_meta () {
   "ended_reason": "$ENDED_REASON",
   "git_sha": "$GIT_SHA",
   "sandbox_mode": "$SANDBOX",
-  "runs_root": "$REPROLAB_RUNS_ROOT",
+  "runs_root": "$OPENRESEARCH_RUNS_ROOT",
   "label": "$LABEL",
   "backend_pid": ${BACKEND_PID:-null},
   "frontend_pid": ${FRONTEND_PID:-null},
@@ -174,7 +174,7 @@ fi
 
 echo "[dev.sh] logs    -> $LOG_DIR"
 echo "[dev.sh] sandbox -> $SANDBOX"
-echo "[dev.sh] runs    -> $REPROLAB_RUNS_ROOT"
+echo "[dev.sh] runs    -> $OPENRESEARCH_RUNS_ROOT"
 
 if [ "$WANT_BACKEND" = "1" ]; then
     # --reload-dir backend: only watch backend/ source for hot-reload. The
@@ -187,7 +187,7 @@ fi
 
 if [ "$WANT_FRONTEND" = "1" ]; then
     (
-        cd frontend && REPROLAB_BACKEND_URL=http://127.0.0.1:8000 npm run dev
+        cd frontend && OPENRESEARCH_BACKEND_URL=http://127.0.0.1:8000 npm run dev
     ) > "$SERVER_DIR/frontend.log" 2>&1 &
     FRONTEND_PID=$!
 fi

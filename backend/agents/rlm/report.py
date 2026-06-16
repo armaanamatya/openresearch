@@ -147,11 +147,11 @@ class RLMFinalReport(BaseModel):
         description="ISO-8601 UTC timestamp when the report was written.",
     )
     title: str | None = Field(
-        default_factory=lambda: (os.environ.get("REPROLAB_RUN_TITLE") or "").strip() or None,
+        default_factory=lambda: (os.environ.get("OPENRESEARCH_RUN_TITLE") or "").strip() or None,
         description=(
             "Human-readable run title (e.g. 'SDAR full · 2026-05-31 19:05'), "
             "surfaced as the leaderboard row label so repeated runs of the same "
-            "paper are distinguishable. Sourced from REPROLAB_RUN_TITLE at "
+            "paper are distinguishable. Sourced from OPENRESEARCH_RUN_TITLE at "
             "report-construction time."
         ),
     )
@@ -722,10 +722,10 @@ def _collect_degradations(project_dir: "Path") -> "list[dict[str, Any]]":
 
 def _evidence_fingerprint_enabled() -> bool:
     """A3 (2026-06-16): median-within-evidence-state aggregation instead of the
-    global-MAX best-of-run floor. REPROLAB_EVIDENCE_FINGERPRINT, default OFF →
+    global-MAX best-of-run floor. OPENRESEARCH_EVIDENCE_FINGERPRINT, default OFF →
     legacy global-max floor (byte-for-byte today)."""
     import os as _os
-    return _os.environ.get("REPROLAB_EVIDENCE_FINGERPRINT", "").strip().lower() in (
+    return _os.environ.get("OPENRESEARCH_EVIDENCE_FINGERPRINT", "").strip().lower() in (
         "1", "true", "yes", "on",
     )
 
@@ -788,7 +788,7 @@ def _apply_best_of_run_floor(rubric: dict, project_dir: "Path") -> dict:
     used to run only AFTER reconciliation, leaving verdict and score inconsistent on
     the no-amend path. No-op when no better score was recorded.
 
-    A3 (2026-06-16): with REPROLAB_EVIDENCE_FINGERPRINT on, ``best`` is the MEDIAN
+    A3 (2026-06-16): with OPENRESEARCH_EVIDENCE_FINGERPRINT on, ``best`` is the MEDIAN
     of the latest evidence state (no global max — that banked the luckiest draw);
     off, it is the legacy global-max high-water mark (byte-for-byte today).
     """
@@ -813,9 +813,9 @@ def _apply_best_of_run_floor(rubric: dict, project_dir: "Path") -> dict:
 
 def _champion_artifact_enabled() -> bool:
     """A4 (2026-06-16): restore the best-graded CODE snapshot at finalize.
-    REPROLAB_CHAMPION_ARTIFACT, default OFF."""
+    OPENRESEARCH_CHAMPION_ARTIFACT, default OFF."""
     import os as _os
-    return _os.environ.get("REPROLAB_CHAMPION_ARTIFACT", "").strip().lower() in (
+    return _os.environ.get("OPENRESEARCH_CHAMPION_ARTIFACT", "").strip().lower() in (
         "1", "true", "yes", "on",
     )
 
@@ -941,7 +941,7 @@ def build_final_report(
     # section must be backed by the primitive that produces it.
     trace = _authoritative_primitive_trace(ctx)
     summary = str(parsed.get("reproduction_summary") or "")
-    # §5b metric projection (REPROLAB_METRIC_PROVENANCE, default true): the final
+    # §5b metric projection (OPENRESEARCH_METRIC_PROVENANCE, default true): the final
     # baseline_metrics are PROJECTED from the canonical experiment artifact — the
     # root no longer types ground-truth numbers (mirrors RDR, controller.py:1184
     # `baseline_metrics=exp.get("metrics")`). The root's self-attested numbers are
@@ -986,7 +986,7 @@ def build_final_report(
     # leaving verdict and the displayed score inconsistent on the no-amend path.)
     rubric_floored = _apply_best_of_run_floor(parsed.get("rubric") or {}, ctx.project_dir)
     # A4: restore the best-graded code snapshot and ship its grade (score ≡ best
-    # artifact). No-op unless REPROLAB_CHAMPION_ARTIFACT is on and a better
+    # artifact). No-op unless OPENRESEARCH_CHAMPION_ARTIFACT is on and a better
     # snapshot than the current state was recorded.
     rubric_floored = _apply_champion_artifact(rubric_floored, ctx.project_dir)
 
@@ -1101,7 +1101,7 @@ def build_final_report(
     # and supersedes the best-of-run high-water (which could preserve a gamed score).
     try:
         import os as _os
-        _rescore_on = _os.environ.get("REPROLAB_FINALIZE_RESCORE", "1").strip().lower() \
+        _rescore_on = _os.environ.get("OPENRESEARCH_FINALIZE_RESCORE", "1").strip().lower() \
             not in {"0", "false", "no", "off"}
     except Exception:  # noqa: BLE001
         _rescore_on = True
@@ -1247,12 +1247,12 @@ def _canonical_experiment_provenance(project_dir: Path) -> dict:
 
 
 def _metric_provenance_enabled() -> bool:
-    """``REPROLAB_METRIC_PROVENANCE`` (default true): project ``baseline_metrics``
+    """``OPENRESEARCH_METRIC_PROVENANCE`` (default true): project ``baseline_metrics``
     from the canonical experiment artifact instead of trusting root-typed values
     (§5b). Disable to fall back to the prior root-attested + honesty-guard path."""
     import os
 
-    return os.environ.get("REPROLAB_METRIC_PROVENANCE", "true").strip().lower() not in (
+    return os.environ.get("OPENRESEARCH_METRIC_PROVENANCE", "true").strip().lower() not in (
         "0",
         "false",
         "no",
@@ -1409,7 +1409,7 @@ def write_final_report_rlm(
     # project the legacy verdict from FIDELITY (A4).  Operates on the serialized dict so
     # RLMFinalReport needs no new fields; syncs the model verdict so the .preserved/timing
     # gates below agree.  Fail-soft → plain model dump on any error; byte-for-byte
-    # unchanged when REPROLAB_TWO_AXIS_VERDICT is off.
+    # unchanged when OPENRESEARCH_TWO_AXIS_VERDICT is off.
     json_content = report.model_dump_json(indent=2)
     try:
         from backend.agents.rlm.two_axis_report import compute_and_attach as _attach_two_axis
@@ -1498,9 +1498,9 @@ def write_final_report_rlm(
     # C4 — Auto-recompute calibration priors at every finalize (best-effort,
     # non-fatal).  Runs unconditionally on non-failed verdicts so each completed
     # run tightens token estimates for the next one.  The env-var opt-out
-    # REPROLAB_UPDATE_CALIBRATION=false disables the auto-update (useful in
+    # OPENRESEARCH_UPDATE_CALIBRATION=false disables the auto-update (useful in
     # CI or when a single smoke run must not overwrite the historical corpus).
-    _update_cal = os.environ.get("REPROLAB_UPDATE_CALIBRATION", "").lower()
+    _update_cal = os.environ.get("OPENRESEARCH_UPDATE_CALIBRATION", "").lower()
     _cal_enabled = _update_cal not in {"false", "0", "no", "off"}
     if report.verdict != "failed" and _cal_enabled:
         try:

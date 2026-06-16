@@ -7,14 +7,14 @@ often didn't: leaf ``fe5e7900`` shipped with its figure un-rendered and
 ``ac4006bf`` shipped with its failed cell un-re-run, each a clean ``0.0``.
 
 This module is the OPTIONAL actuator that closes the loop. When
-``REPROLAB_LEAF_ACTUATE`` is on it turns the cheapest, most deterministic repair
+``OPENRESEARCH_LEAF_ACTUATE`` is on it turns the cheapest, most deterministic repair
 classes into concrete repair ARTIFACTS the EXISTING execution routes consume:
 
 * **L4** — a ``result_quality`` leaf (inverted paper ordering ≈ an untuned
   per-condition lr) → a synthesized per-condition ``search`` section
   (``staged_search.synthesize_search_from_leaf``) the staged-search route runs.
 * **L5** — a leaf demanding variance/CI over seeds → a budget-gated seed-count
-  plan (``plan_seed_expansion``), behind the GPU-cost ``REPROLAB_LEAF_ACTUATE_SEEDS``
+  plan (``plan_seed_expansion``), behind the GPU-cost ``OPENRESEARCH_LEAF_ACTUATE_SEEDS``
   sub-gate, with ``expand_cells_for_seeds`` the pure replication the route applies.
 * **L6** — an ``aggregation_gap`` leaf → a declared-vs-aggregated completeness
   audit (``cell_matrix.audit_aggregation_completeness``) surfacing silently-lost
@@ -27,7 +27,7 @@ Design discipline (matches ``staged_search``/``leaf_triage``):
     to ``rlm_state/leaf_actuation.json``; the existing routes pick it up on the
     NEXT iteration (the spec's ordering seam — repaired evidence then flows back
     through the operator's A1 median-of-N → A3 floor → A4 champion pipeline).
-  * **Default-OFF, fail-soft:** ``REPROLAB_LEAF_ACTUATE`` unset == today
+  * **Default-OFF, fail-soft:** ``OPENRESEARCH_LEAF_ACTUATE`` unset == today
     byte-for-byte; every entry point swallows and falls back to the advisory
     directive, so enabling the flag can only ADD a repair attempt.
 
@@ -48,10 +48,10 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-ENV_FLAG = "REPROLAB_LEAF_ACTUATE"               # master, default OFF
-MAX_COST_FLAG = "REPROLAB_LEAF_ACTUATE_MAX_COST"  # "none" | "targeted_rerun"
-SEEDS_FLAG = "REPROLAB_LEAF_ACTUATE_SEEDS"        # L5 GPU-cost sub-gate, default OFF
-SEED_MAX_FLAG = "REPROLAB_LEAF_SEED_MAX"          # hard ceiling on auto seeds
+ENV_FLAG = "OPENRESEARCH_LEAF_ACTUATE"               # master, default OFF
+MAX_COST_FLAG = "OPENRESEARCH_LEAF_ACTUATE_MAX_COST"  # "none" | "targeted_rerun"
+SEEDS_FLAG = "OPENRESEARCH_LEAF_ACTUATE_SEEDS"        # L5 GPU-cost sub-gate, default OFF
+SEED_MAX_FLAG = "OPENRESEARCH_LEAF_SEED_MAX"          # hard ceiling on auto seeds
 STATE_FILE = "leaf_actuation.json"
 
 _DEFAULT_SEED_MAX = 5

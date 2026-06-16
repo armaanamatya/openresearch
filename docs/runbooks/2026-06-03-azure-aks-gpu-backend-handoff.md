@@ -90,7 +90,7 @@ Do not proceed until this passes.
 
 ## 4. Phase 1b — one SDAR cell end-to-end
 
-`.env` (or shell) needs the `REPROLAB_AZURE_*` block (resource group, region, storage account, blob container, files share, ACR login server, AKS cluster, namespace, SA, node pool, per-GPU VRAM=80, max nodes, base image). See spec §4b.
+`.env` (or shell) needs the `OPENRESEARCH_AZURE_*` block (resource group, region, storage account, blob container, files share, ACR login server, AKS cluster, namespace, SA, node pool, per-GPU VRAM=80, max nodes, base image). See spec §4b.
 
 ```bash
 # NOTE the shell-vs-.env precedence pitfall (CLAUDE.md): unset stale keys so .env wins.
@@ -100,7 +100,7 @@ env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY \
     --max-usd 20 --max-wall-clock 50400 \
     --project-id sdar_azure_smoke_$(date +%s)
 ```
-(Smallest-two scope via `REPROLAB_BASELINE_EXTRA_GUIDANCE` — see `docs/runbooks/2026-05-23-sdar-baseline-handoff.md`. Walltime 50400s = 14h per operator preference.)
+(Smallest-two scope via `OPENRESEARCH_BASELINE_EXTRA_GUIDANCE` — see `docs/runbooks/2026-05-23-sdar-baseline-handoff.md`. Walltime 50400s = 14h per operator preference.)
 
 **GATE:** one cell's `metrics.json` lands in `runs/<id>/code/outputs/<id>/<cell>/metrics.json` and `aggregate_cell_metrics` folds it.
 

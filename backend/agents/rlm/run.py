@@ -98,7 +98,7 @@ logger = logging.getLogger(__name__)
 _MAX_ITERATIONS = 20          # paper Appendix A
 _MAX_DEPTH = 2                # brief §3 — depth-2 enables real rlm_query recursion
 # 2026-05-25 — the rlm/ctx wall-clock ceiling is FULLY USER-CONTROLLED. When no
-# ``--max-wall-clock`` flag (or REPROLAB_MAX_WALL_CLOCK_S env var) is set, rlm's
+# ``--max-wall-clock`` flag (or OPENRESEARCH_MAX_WALL_CLOCK_S env var) is set, rlm's
 # own between-iteration timeout and every per-primitive deadline are unbounded —
 # the user mandate is "no truncation of a long reproduction unless the operator
 # opts in." 2026-06-01 — but "unbounded" must NOT mean "can hang forever with no
@@ -107,7 +107,7 @@ _MAX_DEPTH = 2                # brief §3 — depth-2 enables real rlm_query rec
 # partial report and hard-exits. The 2026-06-01 SDAR run hung ~3h inside one
 # synchronous run_experiment (every soft bound collapsed to None, watchdog unarmed),
 # the user killed it, and NO final_report was written — this backstop closes that
-# gap. Opt fully out with REPROLAB_WATCHDOG_HARD_CEILING_S=0.
+# gap. Opt fully out with OPENRESEARCH_WATCHDOG_HARD_CEILING_S=0.
 _DEFAULT_WALL_CLOCK_S: float | None = None
 _WATCHDOG_GRACE_S = 120.0     # watchdog fires only past rlm's own max_timeout
 _WATCHDOG_EXIT_CODE = 75      # EX_TEMPFAIL — "the run was hard-stopped"
@@ -118,11 +118,11 @@ def _watchdog_hard_ceiling_s() -> float:
     """Always-on watchdog backstop (seconds), used when no explicit wall-clock is set.
 
     Read at arm-time (not import-time) so tests and operators can tune it via
-    ``REPROLAB_WATCHDOG_HARD_CEILING_S``. ``0`` (or empty) disables the backstop
+    ``OPENRESEARCH_WATCHDOG_HARD_CEILING_S``. ``0`` (or empty) disables the backstop
     entirely, restoring the pre-2026-06-01 fully-unbounded behaviour. A malformed
     value falls back to the 14h default rather than crashing the run.
     """
-    raw = os.environ.get("REPROLAB_WATCHDOG_HARD_CEILING_S", "").strip()
+    raw = os.environ.get("OPENRESEARCH_WATCHDOG_HARD_CEILING_S", "").strip()
     if raw == "":
         return _WATCHDOG_HARD_CEILING_DEFAULT_S
     try:
@@ -171,7 +171,7 @@ class RLMRunResult:
 
 
 def _accelerator_grader_offloaded(scope: str | None) -> bool:
-    """Whether ``REPROLAB_ACCELERATOR_SCOPE`` routes the rubric grader to the accelerator.
+    """Whether ``OPENRESEARCH_ACCELERATOR_SCOPE`` routes the rubric grader to the accelerator.
 
     The grader is ``ctx.llm_client`` (used by ``verify_against_rubric`` and
     ``propose_improvements`` — quality-critical judgment/generation). Default
@@ -220,7 +220,7 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
     bk = root_model.backend_kwargs
     sub_bk = root_model.sub_backend_kwargs
 
-    # Optional quality pin (2026-06-11): REPROLAB_PRIMITIVE_LLM_MODEL routes the
+    # Optional quality pin (2026-06-11): OPENRESEARCH_PRIMITIVE_LLM_MODEL routes the
     # shared primitive LlmClient (plan_reproduction, propose_improvements,
     # generate_rubric_tree, repro-spec extraction, tool-recommendation) to an
     # explicit Claude model id (e.g. an Opus id) instead of the claude CLI's
@@ -229,7 +229,7 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
     # accelerator and the root loop rides backend_kwargs, both unaffected.
     # Unset/empty → ClaudeLlmClient falls back to default_oauth_model() (Sonnet),
     # NOT the bundled CLI's mutable default (the 2026-06-14 Fable-5 wedge fix).
-    _pinned_model = os.environ.get("REPROLAB_PRIMITIVE_LLM_MODEL", "").strip() or None
+    _pinned_model = os.environ.get("OPENRESEARCH_PRIMITIVE_LLM_MODEL", "").strip() or None
 
     # 1. claude-oauth — explicit OAuth path, no api_key in kwargs
     if backend == "anthropic-oauth":
@@ -346,7 +346,7 @@ def _resolve_agent_runtime(
     if runtime is not None:
         return runtime, None, "caller-supplied"
 
-    # Executor tier (REPROLAB_EXECUTOR): run the code-writing agent on a local Qwen
+    # Executor tier (OPENRESEARCH_EXECUTOR): run the code-writing agent on a local Qwen
     # (vLLM) instead of Sonnet to save Sonnet usage. Health-probed with graceful
     # fallback to the default below when the endpoint is unset/unreachable.
     try:
@@ -398,8 +398,8 @@ def _resolve_custom_tools(ctx: RunContext) -> tuple[dict, str]:
     regardless; the fallback is loud (a WARNING with the underlying exception)
     — it degrades, it never silently masks.
     """
-    if os.environ.get("REPROLAB_RLM_STUB_PRIMITIVES") == "1":
-        return build_stub_custom_tools(ctx), "stub (REPROLAB_RLM_STUB_PRIMITIVES=1)"
+    if os.environ.get("OPENRESEARCH_RLM_STUB_PRIMITIVES") == "1":
+        return build_stub_custom_tools(ctx), "stub (OPENRESEARCH_RLM_STUB_PRIMITIVES=1)"
     try:
         from backend.agents.rlm.binding import build_custom_tools
 
@@ -584,7 +584,7 @@ def _assert_paper_text_precondition(project_dir: Path, *, allow_lossy: bool) -> 
         raise RuntimeError(
             f"parsed_full_text.txt missing or <1KB at {parsed_path}. "
             f"Parser likely failed. Re-run ingestion or set "
-            f"REPROLAB_ALLOW_LOSSY_PAPER_TEXT=true."
+            f"OPENRESEARCH_ALLOW_LOSSY_PAPER_TEXT=true."
         )
     logger.warning(
         "paper text degraded — proceeding with lossy workspace fallback "
@@ -624,7 +624,7 @@ def _assert_disk_headroom(runs_root: Path, *, min_gb: float) -> str | None:
             f"Only {free_gb:.1f} GB free on the runs root ({runs_root}) — below the "
             f"{min_gb:.0f} GB floor. A run on a near-full disk hangs/orphans on "
             f"checkpoint writes. Free space, point --runs-root at a disk with room "
-            f"(e.g. --runs-root /scratch/runs), or set REPROLAB_MIN_DISK_GB=0 to override."
+            f"(e.g. --runs-root /scratch/runs), or set OPENRESEARCH_MIN_DISK_GB=0 to override."
         )
     if free_gb < min_gb * 2:
         return (
@@ -1081,7 +1081,7 @@ def _arm_watchdog(
     ``--max-wall-clock``), the watchdog falls back to the always-on hard-ceiling
     backstop (``_watchdog_hard_ceiling_s``) so a wedged/hung run still ships a
     partial report; it returns ``None`` (fully bypassed) only when that backstop
-    is disabled via ``REPROLAB_WATCHDOG_HARD_CEILING_S=0``.
+    is disabled via ``OPENRESEARCH_WATCHDOG_HARD_CEILING_S=0``.
     """
     if deadline_s is None:
         ceiling = _watchdog_hard_ceiling_s()
@@ -1090,7 +1090,7 @@ def _arm_watchdog(
         deadline_s = ceiling
         logger.warning(
             "run_pipeline_rlm: no explicit wall-clock ceiling; arming the always-on "
-            "watchdog backstop at %.0fs (REPROLAB_WATCHDOG_HARD_CEILING_S=0 disables)",
+            "watchdog backstop at %.0fs (OPENRESEARCH_WATCHDOG_HARD_CEILING_S=0 disables)",
             deadline_s,
         )
     def _fire() -> None:
@@ -1296,28 +1296,28 @@ def _update_cost_summary_loop(
 
 
 def _parse_gpu_device_ids() -> tuple[str, ...]:
-    """Parse REPROLAB_GPU_DEVICE_IDS (CSV of GPU UUIDs/indices) into a tuple.
+    """Parse OPENRESEARCH_GPU_DEVICE_IDS (CSV of GPU UUIDs/indices) into a tuple.
 
     Empty / unset => () meaning "no explicit pin" (backend default). A batch
     launcher exports this per run so the experiment subprocess is pinned to a
     disjoint GPU subset; CUDA_VISIBLE_DEVICES is also set by the launcher, so
     this is the explicit, testable companion that flows into SandboxConfig.
     """
-    raw = (os.environ.get("REPROLAB_GPU_DEVICE_IDS") or "").strip()
+    raw = (os.environ.get("OPENRESEARCH_GPU_DEVICE_IDS") or "").strip()
     if not raw:
         return ()
     return tuple(part.strip() for part in raw.split(",") if part.strip())
 
 
 def _parse_gpu_parallelism() -> str:
-    """REPROLAB_GPU_PARALLELISM -> one of {auto,single,multi}; default 'auto'."""
-    val = (os.environ.get("REPROLAB_GPU_PARALLELISM") or "auto").strip().lower()
+    """OPENRESEARCH_GPU_PARALLELISM -> one of {auto,single,multi}; default 'auto'."""
+    val = (os.environ.get("OPENRESEARCH_GPU_PARALLELISM") or "auto").strip().lower()
     return val if val in {"auto", "single", "multi"} else "auto"
 
 
 def _visible_gpu_count() -> int | None:
     """Best-effort count of GPUs visible to this run, for the multi-GPU guidance
-    hint. Prefer the explicit lease (REPROLAB_GPU_DEVICE_IDS), then
+    hint. Prefer the explicit lease (OPENRESEARCH_GPU_DEVICE_IDS), then
     CUDA_VISIBLE_DEVICES; None when neither is set (agent relies on runtime
     torch.cuda.device_count() inside the sandbox)."""
     ids = _parse_gpu_device_ids()
@@ -1344,7 +1344,7 @@ def _ensure_local_data_root(sandbox_mode: object, runs_root: Path) -> None:
     On a local box ``os.makedirs('/workspace/...')`` raises PermissionError, the
     agent's env loader swallows it, and every algorithm reports ``env_load_failed``
     with zero reward while the GPUs sit idle (the 2026-05-29 SDAR local failure).
-    Repoint ``REPROLAB_RUNPOD_VOLUME_MOUNT_PATH`` at a writable, SHARED (download-once)
+    Repoint ``OPENRESEARCH_RUNPOD_VOLUME_MOUNT_PATH`` at a writable, SHARED (download-once)
     cache dir so ALFWorld/WebShop/HF setup actually succeeds.  No-op for runpod/docker
     (they keep the real ``/workspace`` volume); an explicit non-default operator
     override always wins.
@@ -1354,12 +1354,12 @@ def _ensure_local_data_root(sandbox_mode: object, runs_root: Path) -> None:
     key = getattr(sandbox_mode, "value", str(sandbox_mode or "")).lower()
     if "local" not in key:
         return
-    current = (_os.environ.get("REPROLAB_RUNPOD_VOLUME_MOUNT_PATH") or "").strip()
+    current = (_os.environ.get("OPENRESEARCH_RUNPOD_VOLUME_MOUNT_PATH") or "").strip()
     if current and current != "/workspace":
         return  # operator pinned an explicit writable root — respect it
     data_root = (runs_root / ".cache" / "data").resolve()
     data_root.mkdir(parents=True, exist_ok=True)
-    _os.environ["REPROLAB_RUNPOD_VOLUME_MOUNT_PATH"] = str(data_root)
+    _os.environ["OPENRESEARCH_RUNPOD_VOLUME_MOUNT_PATH"] = str(data_root)
     logger.info(
         "local sandbox: volume-mount data root → %s (writable shared cache; "
         "/workspace is RunPod-only)", data_root,
@@ -1367,7 +1367,7 @@ def _ensure_local_data_root(sandbox_mode: object, runs_root: Path) -> None:
 
 
 def _load_reusable_rubric(project_dir: Path) -> dict | None:
-    """REPROLAB_REUSE_RUBRIC=1 → the pre-seeded generated_rubric.json, else None.
+    """OPENRESEARCH_REUSE_RUBRIC=1 → the pre-seeded generated_rubric.json, else None.
 
     Rubric generation is an LLM call, so every re-run otherwise grades against
     a slightly different rubric — rubric drift alone moves scores. A/B arms
@@ -1376,7 +1376,7 @@ def _load_reusable_rubric(project_dir: Path) -> dict | None:
     change, not rubric variance. Default OFF; fail-soft — a missing/corrupt
     file returns None and the caller falls through to generation as before.
     """
-    enabled = os.environ.get("REPROLAB_REUSE_RUBRIC", "").strip().lower() not in (
+    enabled = os.environ.get("OPENRESEARCH_REUSE_RUBRIC", "").strip().lower() not in (
         "", "0", "false", "off",
     )
     if not enabled:
@@ -1389,7 +1389,7 @@ def _load_reusable_rubric(project_dir: Path) -> dict | None:
             return existing
     except (OSError, json.JSONDecodeError, ValueError):
         logger.warning(
-            "REPROLAB_REUSE_RUBRIC set but no readable generated_rubric.json — "
+            "OPENRESEARCH_REUSE_RUBRIC set but no readable generated_rubric.json — "
             "falling through to rubric generation"
         )
     return None
@@ -1441,9 +1441,9 @@ async def run_pipeline_rlm(
 
     # Disk-headroom preflight (2026-06-15): abort before any GPU work when the runs
     # root is near-full, so a run can't hang/orphan on checkpoint writes (the SDAR
-    # disk-100% incident). Paper-agnostic; REPROLAB_MIN_DISK_GB=0 disables it.
+    # disk-100% incident). Paper-agnostic; OPENRESEARCH_MIN_DISK_GB=0 disables it.
     try:
-        _min_disk_gb = float(os.environ.get("REPROLAB_MIN_DISK_GB", "10") or "10")
+        _min_disk_gb = float(os.environ.get("OPENRESEARCH_MIN_DISK_GB", "10") or "10")
     except ValueError:
         _min_disk_gb = 10.0
     _disk_warn_reason = _assert_disk_headroom(runs_root, min_gb=_min_disk_gb)
@@ -1461,7 +1461,7 @@ async def run_pipeline_rlm(
             project_id, _archived["attempt_dir"], len(_archived["moved"]),
         )
 
-    # Anti-regression seeding (2026-06-11, REPROLAB_SEED_BEST_ATTEMPT): copy the
+    # Anti-regression seeding (2026-06-11, OPENRESEARCH_SEED_BEST_ATTEMPT): copy the
     # best prior attempt's working code into code/_best_attempt/ so the
     # implementer starts FROM the proven solution. Each Adam attempt used to
     # re-derive everything from scratch and routinely landed below the 0.831
@@ -1499,7 +1499,7 @@ async def run_pipeline_rlm(
     # wall_clock_s is intentionally Optional[float] — None means unbounded
     # (no watchdog, no rlm max_timeout, no ctx deadline). The user mandates
     # the operator must opt-in to a ceiling via --max-wall-clock or
-    # REPROLAB_MAX_WALL_CLOCK_S; otherwise long-running paper reproductions
+    # OPENRESEARCH_MAX_WALL_CLOCK_S; otherwise long-running paper reproductions
     # are not artificially truncated. See _DEFAULT_WALL_CLOCK_S.
     wall_clock_s: float | None = _DEFAULT_WALL_CLOCK_S
     if run_budget is not None and run_budget.max_wall_clock_seconds:
@@ -1519,9 +1519,9 @@ async def run_pipeline_rlm(
     llm_client, llm_model = _build_llm_client(provider, root_model)
 
     # 3a. Accelerator override — route cheap calls to a fast endpoint when
-    # REPROLAB_ACCELERATOR is set to anything other than "off".
+    # OPENRESEARCH_ACCELERATOR is set to anything other than "off".
     import os as _os
-    _accel_mode = (_os.environ.get("REPROLAB_ACCELERATOR") or "off").strip().lower()
+    _accel_mode = (_os.environ.get("OPENRESEARCH_ACCELERATOR") or "off").strip().lower()
     _accel_ep = None
     if _accel_mode != "off":
         try:
@@ -1534,7 +1534,7 @@ async def run_pipeline_rlm(
             )
             _accel_ep = None
         if _accel_ep is not None:
-            # REPROLAB_ACCELERATOR_SCOPE — which call tiers the accelerator serves:
+            # OPENRESEARCH_ACCELERATOR_SCOPE — which call tiers the accelerator serves:
             #   "navigation" (default): only the rlms rlm_query/llm_query context-navigation
             #     calls (high-volume, low-judgment) route to the accelerator (see
             #     other_backends below). The quality-critical GRADER + improvement calls
@@ -1544,7 +1544,7 @@ async def run_pipeline_rlm(
             #   "all": also route ctx.llm_client to the accelerator (max offload). Only
             #     sensible when the accelerator is itself strong (e.g. a 32B), else grading
             #     quality drops.
-            _accel_scope = (_os.environ.get("REPROLAB_ACCELERATOR_SCOPE") or "navigation").strip().lower()
+            _accel_scope = (_os.environ.get("OPENRESEARCH_ACCELERATOR_SCOPE") or "navigation").strip().lower()
             if _accelerator_grader_offloaded(_accel_scope):
                 llm_client = build_accelerator_client(_accel_ep)   # grader + nav both on accel
                 llm_model = _accel_ep.model
@@ -1576,12 +1576,12 @@ async def run_pipeline_rlm(
     # Per-run VRAM override from --vram-gb CLI flag (set as env var by cli.py
     # before Settings construction; consumed here so RunContext carries it and
     # resolve_gpu_requirements can bypass the LLM VRAM estimate).
-    _vram_override_env = os.environ.get("REPROLAB_VRAM_OVERRIDE_GB")
+    _vram_override_env = os.environ.get("OPENRESEARCH_VRAM_OVERRIDE_GB")
     _vram_override: int | None = int(_vram_override_env) if _vram_override_env else None
 
-    # Per-run ScopeSpec from REPROLAB_SCOPE_SPEC_JSON (set by cli.cmd_reproduce
+    # Per-run ScopeSpec from OPENRESEARCH_SCOPE_SPEC_JSON (set by cli.cmd_reproduce
     # from --scope-spec + --paper-hint merge). Empty/unset → None (no constraint).
-    _scope_json = os.environ.get("REPROLAB_SCOPE_SPEC_JSON", "").strip()
+    _scope_json = os.environ.get("OPENRESEARCH_SCOPE_SPEC_JSON", "").strip()
     if _scope_json:
         from backend.agents.schemas import ScopeSpec as _ScopeSpec
         _scope_spec = _ScopeSpec.model_validate_json(_scope_json)
@@ -1728,14 +1728,14 @@ async def run_pipeline_rlm(
 
     # arXiv runs arrive with no rubric_spec — derive a PaperBench-shaped rubric
     # from the paper so the run is scorable (bundle runs already carry one).
-    # REPROLAB_REUSE_RUBRIC=1 reuses a pre-seeded generated_rubric.json instead
+    # OPENRESEARCH_REUSE_RUBRIC=1 reuses a pre-seeded generated_rubric.json instead
     # (see _load_reusable_rubric) so A/B arms grade against the SAME rubric.
     if not context_dict.get("rubric_spec") and context_dict.get("paper_text"):
         _reused_rubric = _load_reusable_rubric(project_dir)
         if _reused_rubric is not None:
             context_dict["rubric_spec"] = _reused_rubric
             logger.info(
-                "run_pipeline_rlm: REPROLAB_REUSE_RUBRIC — reusing on-disk "
+                "run_pipeline_rlm: OPENRESEARCH_REUSE_RUBRIC — reusing on-disk "
                 "generated_rubric.json (no regeneration)"
             )
     if not context_dict.get("rubric_spec") and context_dict.get("paper_text"):
@@ -1888,7 +1888,7 @@ async def run_pipeline_rlm(
     settings = get_settings()
     min_iterations = int(getattr(settings, "min_rubric_iterations", 2))
     # PR-ι.1: per-run iteration budget from env var (CLI sets this before calling us).
-    _raw_max_iter = os.environ.get("REPROLAB_MAX_RLM_ITERATIONS", "").strip()
+    _raw_max_iter = os.environ.get("OPENRESEARCH_MAX_RLM_ITERATIONS", "").strip()
     _max_rlm_iterations: int | None = int(_raw_max_iter) if _raw_max_iter.isdigit() and int(_raw_max_iter) > 0 else None
 
     def _emit_forced_iteration_warning(message: str) -> None:
@@ -2004,7 +2004,7 @@ async def run_pipeline_rlm(
         # this is the backstop for the rarer case where the PINNED model is itself
         # down. Fail-soft on ambiguous/transient probe errors (a network blip never
         # aborts a good run); abort ONLY on the definitive 'unavailable' block.
-        if _os.environ.get("REPROLAB_MODEL_PREFLIGHT", "1").strip() not in ("0", "false", ""):
+        if _os.environ.get("OPENRESEARCH_MODEL_PREFLIGHT", "1").strip() not in ("0", "false", ""):
             from backend.services.context.workspace.tools.rlm_query import (
                 preflight_model_available,
             )
@@ -2019,8 +2019,8 @@ async def run_pipeline_rlm(
                         ),
                         "failure_class": "model_unavailable",
                         "suggested_fix": (
-                            "Set REPROLAB_OAUTH_FALLBACK_MODEL to an available Claude "
-                            "model id, or REPROLAB_MODEL_PREFLIGHT=0 to bypass."
+                            "Set OPENRESEARCH_OAUTH_FALLBACK_MODEL to an available Claude "
+                            "model id, or OPENRESEARCH_MODEL_PREFLIGHT=0 to bypass."
                         ),
                     },
                 )
@@ -2201,18 +2201,18 @@ def _finalize(
     # default accelerator scope="navigation" this stays the strong root model
     # (Sonnet) even when a small accelerator serves rlm_query/llm_query nav.
     # F5: the GRADER (leaf scorer) rides the same client by default, but A5's
-    # decoupled transport (REPROLAB_GRADER_BACKEND/_MODEL) can move it onto an
+    # decoupled transport (OPENRESEARCH_GRADER_BACKEND/_MODEL) can move it onto an
     # independent sampler-capable model — and ACCELERATOR_SCOPE=all routes it onto
     # the accelerator. Stamp what ACTUALLY graded so the leaderboard is honest;
     # default (no override) → llm_model, byte-for-byte today.
     _grader_stamp = (
-        os.environ.get("REPROLAB_GRADER_MODEL", "").strip()
-        or os.environ.get("REPROLAB_GRADER_BACKEND", "").strip()
+        os.environ.get("OPENRESEARCH_GRADER_MODEL", "").strip()
+        or os.environ.get("OPENRESEARCH_GRADER_BACKEND", "").strip()
         or (
-            os.environ.get("REPROLAB_ACCELERATOR_MODEL", "").strip()
+            os.environ.get("OPENRESEARCH_ACCELERATOR_MODEL", "").strip()
             if (
-                os.environ.get("REPROLAB_ACCELERATOR_SCOPE", "").strip().lower() == "all"
-                and os.environ.get("REPROLAB_ACCELERATOR", "").strip().lower() == "endpoint"
+                os.environ.get("OPENRESEARCH_ACCELERATOR_SCOPE", "").strip().lower() == "all"
+                and os.environ.get("OPENRESEARCH_ACCELERATOR", "").strip().lower() == "endpoint"
             )
             else ""
         )
@@ -2275,7 +2275,7 @@ def _finalize(
 
     # Two-axis reproducibility verdict producers (U14/U16, flag-gated + fail-soft):
     # write repro_spec.json (claims) + fidelity_certificate.json so write_final_report_rlm
-    # can attach the verdict.  No-ops entirely unless REPROLAB_TWO_AXIS_VERDICT is set.
+    # can attach the verdict.  No-ops entirely unless OPENRESEARCH_TWO_AXIS_VERDICT is set.
     try:
         from backend.agents.rlm import repro_spec_extractor, fidelity_certificate_builder
         if repro_spec_extractor.is_enabled():
@@ -2297,7 +2297,7 @@ def _finalize(
     # E1 (NEGATIVE_LESSONS): mine agent-correctable failure_class rows from this
     # run's experiment_runs.jsonl into runs/_lessons/<arxiv_id>.json so the NEXT
     # run of the same paper injects them into implementer guidance. Flag-gated
-    # (REPROLAB_NEGATIVE_LESSONS) + fail-soft; off / no arxiv_id → no-op (today).
+    # (OPENRESEARCH_NEGATIVE_LESSONS) + fail-soft; off / no arxiv_id → no-op (today).
     try:
         from backend.agents.rlm import lesson_distiller as _ld
         _ld.mine_lessons(project_dir, project_dir.parent, getattr(ctx, "arxiv_id", None))

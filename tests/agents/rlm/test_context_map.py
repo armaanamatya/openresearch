@@ -1,4 +1,4 @@
-"""PEEK-lite intra-run context map (FLAG-1, REPROLAB_CONTEXT_MAP)."""
+"""PEEK-lite intra-run context map (FLAG-1, OPENRESEARCH_CONTEXT_MAP)."""
 import json
 
 import pytest
@@ -8,12 +8,12 @@ from backend.agents.rlm import context_map as cm
 
 @pytest.fixture
 def on(monkeypatch):
-    monkeypatch.setenv("REPROLAB_CONTEXT_MAP", "on")
+    monkeypatch.setenv("OPENRESEARCH_CONTEXT_MAP", "on")
 
 
 @pytest.fixture
 def off(monkeypatch):
-    monkeypatch.delenv("REPROLAB_CONTEXT_MAP", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_CONTEXT_MAP", raising=False)
 
 
 # --- off-state contract -----------------------------------------------------

@@ -24,17 +24,17 @@ def test_sanity_flag_is_recognized():
 
 
 def test_resolve_max_pod_seconds_prefers_cli_over_env(monkeypatch):
-    monkeypatch.setenv("REPROLAB_MAX_POD_SECONDS", "3600")
+    monkeypatch.setenv("OPENRESEARCH_MAX_POD_SECONDS", "3600")
     assert _resolve_max_pod_seconds(1800.0) == 1800.0
 
 
 def test_resolve_max_pod_seconds_falls_back_to_env_when_cli_none(monkeypatch):
-    monkeypatch.setenv("REPROLAB_MAX_POD_SECONDS", "3600")
+    monkeypatch.setenv("OPENRESEARCH_MAX_POD_SECONDS", "3600")
     assert _resolve_max_pod_seconds(None) == 3600.0
 
 
 def test_resolve_max_pod_seconds_returns_none_when_neither_set(monkeypatch):
-    monkeypatch.delenv("REPROLAB_MAX_POD_SECONDS", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_MAX_POD_SECONDS", raising=False)
     assert _resolve_max_pod_seconds(None) is None
 
 
@@ -45,5 +45,5 @@ def test_resolve_max_pod_seconds_honors_explicit_zero_kill_switch(monkeypatch):
     raises when elapsed >= max_pod_seconds, so cap=0 fires on the first exec.
     Regression guard for the `or`-trap fixed in commit d250578.
     """
-    monkeypatch.setenv("REPROLAB_MAX_POD_SECONDS", "3600")
+    monkeypatch.setenv("OPENRESEARCH_MAX_POD_SECONDS", "3600")
     assert _resolve_max_pod_seconds(0.0) == 0.0

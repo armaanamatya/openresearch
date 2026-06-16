@@ -9,7 +9,7 @@ Covers:
     and returns n items; degrades to N sequential calls on a ``TypeError``.
   * ``AnthropicMessagesClient`` complete + complete_samples shape + usage.
   * ``build_grader_client`` returns the fallback unchanged when env unset, and a
-    new client when ``REPROLAB_GRADER_BACKEND=anthropic``.
+    new client when ``OPENRESEARCH_GRADER_BACKEND=anthropic``.
 """
 
 from __future__ import annotations
@@ -267,8 +267,8 @@ def test_anthropic_messages_client_complete_samples_sequential(_patch_anthropic)
 
 
 def test_build_grader_client_passthrough_when_env_unset(monkeypatch):
-    monkeypatch.delenv("REPROLAB_GRADER_BACKEND", raising=False)
-    monkeypatch.delenv("REPROLAB_GRADER_MODEL", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_GRADER_BACKEND", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_GRADER_MODEL", raising=False)
 
     sentinel = object()
     client, label = build_grader_client(sentinel, "root-label")
@@ -278,8 +278,8 @@ def test_build_grader_client_passthrough_when_env_unset(monkeypatch):
 
 def test_build_grader_client_model_only_is_passthrough(monkeypatch):
     # A model override with no backend can't pick a transport → passthrough.
-    monkeypatch.delenv("REPROLAB_GRADER_BACKEND", raising=False)
-    monkeypatch.setenv("REPROLAB_GRADER_MODEL", "claude-sonnet-4-6")
+    monkeypatch.delenv("OPENRESEARCH_GRADER_BACKEND", raising=False)
+    monkeypatch.setenv("OPENRESEARCH_GRADER_MODEL", "claude-sonnet-4-6")
 
     sentinel = object()
     client, label = build_grader_client(sentinel, "root-label")
@@ -292,8 +292,8 @@ def test_build_grader_client_anthropic_backend(monkeypatch, _patch_anthropic):
         AnthropicMessagesClient,
     )
 
-    monkeypatch.setenv("REPROLAB_GRADER_BACKEND", "anthropic")
-    monkeypatch.delenv("REPROLAB_GRADER_MODEL", raising=False)
+    monkeypatch.setenv("OPENRESEARCH_GRADER_BACKEND", "anthropic")
+    monkeypatch.delenv("OPENRESEARCH_GRADER_MODEL", raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key")
 
     sentinel = object()
@@ -304,8 +304,8 @@ def test_build_grader_client_anthropic_backend(monkeypatch, _patch_anthropic):
 
 
 def test_build_grader_client_anthropic_respects_model_override(monkeypatch, _patch_anthropic):
-    monkeypatch.setenv("REPROLAB_GRADER_BACKEND", "anthropic")
-    monkeypatch.setenv("REPROLAB_GRADER_MODEL", "claude-opus-4-8")
+    monkeypatch.setenv("OPENRESEARCH_GRADER_BACKEND", "anthropic")
+    monkeypatch.setenv("OPENRESEARCH_GRADER_MODEL", "claude-opus-4-8")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key")
 
     client, label = build_grader_client(object(), "root-label")
@@ -323,8 +323,8 @@ def test_build_grader_client_oauth_backend(monkeypatch):
             self.model = model
 
     monkeypatch.setattr(_rq, "ClaudeLlmClient", _FakeOAuth)
-    monkeypatch.setenv("REPROLAB_GRADER_BACKEND", "oauth")
-    monkeypatch.delenv("REPROLAB_GRADER_MODEL", raising=False)
+    monkeypatch.setenv("OPENRESEARCH_GRADER_BACKEND", "oauth")
+    monkeypatch.delenv("OPENRESEARCH_GRADER_MODEL", raising=False)
 
     client, label = build_grader_client(object(), "root-label")
     assert isinstance(client, _FakeOAuth)
@@ -340,9 +340,9 @@ def test_build_grader_client_oauth_aliases_and_model_override(monkeypatch):
             self.model = model
 
     monkeypatch.setattr(_rq, "ClaudeLlmClient", _FakeOAuth)
-    monkeypatch.setenv("REPROLAB_GRADER_MODEL", "claude-opus-4-8")
+    monkeypatch.setenv("OPENRESEARCH_GRADER_MODEL", "claude-opus-4-8")
     for alias in ("claude-oauth", "anthropic-oauth"):
-        monkeypatch.setenv("REPROLAB_GRADER_BACKEND", alias)
+        monkeypatch.setenv("OPENRESEARCH_GRADER_BACKEND", alias)
         client, label = build_grader_client(object(), "root-label")
         assert isinstance(client, _FakeOAuth)
         assert client.model == "claude-opus-4-8"
@@ -350,8 +350,8 @@ def test_build_grader_client_oauth_aliases_and_model_override(monkeypatch):
 
 
 def test_build_grader_client_unknown_backend_falls_back(monkeypatch):
-    monkeypatch.setenv("REPROLAB_GRADER_BACKEND", "bananas")
-    monkeypatch.delenv("REPROLAB_GRADER_MODEL", raising=False)
+    monkeypatch.setenv("OPENRESEARCH_GRADER_BACKEND", "bananas")
+    monkeypatch.delenv("OPENRESEARCH_GRADER_MODEL", raising=False)
 
     sentinel = object()
     client, label = build_grader_client(sentinel, "root-label")
@@ -368,8 +368,8 @@ def test_build_grader_client_construction_error_falls_back(monkeypatch):
         raise RuntimeError("no SDK / no key")
 
     monkeypatch.setattr(amc, "AnthropicMessagesClient", _boom)
-    monkeypatch.setenv("REPROLAB_GRADER_BACKEND", "anthropic")
-    monkeypatch.delenv("REPROLAB_GRADER_MODEL", raising=False)
+    monkeypatch.setenv("OPENRESEARCH_GRADER_BACKEND", "anthropic")
+    monkeypatch.delenv("OPENRESEARCH_GRADER_MODEL", raising=False)
 
     sentinel = object()
     client, label = build_grader_client(sentinel, "root-label")

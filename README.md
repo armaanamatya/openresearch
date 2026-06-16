@@ -115,7 +115,7 @@ cp .env.example .env
 
 # Terminal 2: frontend
 cd frontend
-export REPROLAB_BACKEND_URL=http://127.0.0.1:8000
+export OPENRESEARCH_BACKEND_URL=http://127.0.0.1:8000
 npm run dev
 # Open http://localhost:3000
 ```
@@ -168,13 +168,13 @@ Full provisioning + run steps: **[docs/guides/azure-kubernetes-gpu-setup.md](doc
 |---|---|---|
 | `OPENAI_API_KEY` | One of these | Root model (GPT-5) |
 | `ANTHROPIC_API_KEY` | required | Sub-agents (Sonnet). Leave empty to use Claude OAuth. |
-| `REPROLAB_DEFAULT_SANDBOX` | No | `auto` / `local` / `docker` / `runpod` / `azure` |
+| `OPENRESEARCH_DEFAULT_SANDBOX` | No | `auto` / `local` / `docker` / `runpod` / `azure` |
 | `REPROLAB_RUNPOD_API_KEY` | For RunPod | RunPod GPU sandbox |
-| `REPROLAB_RUNPOD_SSH_KEY_PATH` | For RunPod | SSH key for pod access |
-| `REPROLAB_AZURE_*` | For Azure | AKS GPU sandbox (cluster, storage, base image). See the [Azure guide](docs/guides/azure-kubernetes-gpu-setup.md). |
-| `REPROLAB_DEMO_SECRET` | No | Gate run-start endpoints with a shared secret |
-| `REPROLAB_DYNAMIC_GPU` | No | `true` (default): auto-select GPU SKU per paper |
-| `REPROLAB_MAX_RUN_GPU_USD` | No | Per-run GPU spend cap (float, default 10.0) |
+| `OPENRESEARCH_RUNPOD_SSH_KEY_PATH` | For RunPod | SSH key for pod access |
+| `OPENRESEARCH_AZURE_*` | For Azure | AKS GPU sandbox (cluster, storage, base image). See the [Azure guide](docs/guides/azure-kubernetes-gpu-setup.md). |
+| `OPENRESEARCH_DEMO_SECRET` | No | Gate run-start endpoints with a shared secret |
+| `OPENRESEARCH_DYNAMIC_GPU` | No | `true` (default): auto-select GPU SKU per paper |
+| `OPENRESEARCH_MAX_RUN_GPU_USD` | No | Per-run GPU spend cap (float, default 10.0) |
 
 See `.env.example` for the full list.
 
@@ -251,7 +251,7 @@ docs/                 # Design docs, runbooks, setup guides
 
 ## Dynamic GPU Selection
 
-When `REPROLAB_DYNAMIC_GPU=true` (default), the root model estimates VRAM requirements from the paper and the system selects the cheapest matching RunPod SKU from a static catalog (8 GPUs, RTX 4090 through H200). On CUDA OOM, the system auto-escalates to the next tier (up to 2 escalations). Override with `--vram-gb <n>`.
+When `OPENRESEARCH_DYNAMIC_GPU=true` (default), the root model estimates VRAM requirements from the paper and the system selects the cheapest matching RunPod SKU from a static catalog (8 GPUs, RTX 4090 through H200). On CUDA OOM, the system auto-escalates to the next tier (up to 2 escalations). Override with `--vram-gb <n>`.
 
 ## LLM Auth Model
 

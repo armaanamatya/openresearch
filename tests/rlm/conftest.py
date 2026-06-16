@@ -20,7 +20,7 @@ def _allow_lossy_stub_papers(monkeypatch):
     context, the SDAR 469-char incident) doesn't block them. The abort behavior itself
     is covered by tests/services/ingestion/parser/test_precondition.py.
     """
-    monkeypatch.setenv("REPROLAB_ALLOW_LOSSY_PAPER_TEXT", "true")
+    monkeypatch.setenv("OPENRESEARCH_ALLOW_LOSSY_PAPER_TEXT", "true")
 
 
 class FakeLlmClient:

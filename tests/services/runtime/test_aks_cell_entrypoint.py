@@ -644,15 +644,15 @@ class TestMainIntegration:
     @pytest.fixture(autouse=True)
     def set_env(self, monkeypatch, tmp_path):
         """Set required env vars; point cache mount to a temp dir."""
-        monkeypatch.setenv("REPROLAB_CELL_ID", "int-cell-001")
-        monkeypatch.setenv("REPROLAB_AZURE_STORAGE_ACCOUNT", "testacc")
-        monkeypatch.setenv("REPROLAB_AZURE_BLOB_CONTAINER", "testcont")
-        monkeypatch.setenv("REPROLAB_BLOB_CODE_PREFIX", "runs/run1/code")
-        monkeypatch.setenv("REPROLAB_BLOB_OUTPUT_PREFIX", "runs/run1/cells")
-        monkeypatch.setenv("REPROLAB_CELL_MAX_OOM_RETRIES", "2")
-        monkeypatch.setenv("REPROLAB_CACHE_MOUNT", str(tmp_path / "cache"))
+        monkeypatch.setenv("OPENRESEARCH_CELL_ID", "int-cell-001")
+        monkeypatch.setenv("OPENRESEARCH_AZURE_STORAGE_ACCOUNT", "testacc")
+        monkeypatch.setenv("OPENRESEARCH_AZURE_BLOB_CONTAINER", "testcont")
+        monkeypatch.setenv("OPENRESEARCH_BLOB_CODE_PREFIX", "runs/run1/code")
+        monkeypatch.setenv("OPENRESEARCH_BLOB_OUTPUT_PREFIX", "runs/run1/cells")
+        monkeypatch.setenv("OPENRESEARCH_CELL_MAX_OOM_RETRIES", "2")
+        monkeypatch.setenv("OPENRESEARCH_CACHE_MOUNT", str(tmp_path / "cache"))
         monkeypatch.setenv(
-            "REPROLAB_CELL_PARAMS",
+            "OPENRESEARCH_CELL_PARAMS",
             json.dumps({"model_id": "Qwen/Qwen3-1.7B", "baseline": "sdar", "env": "search_qa"}),
         )
         (tmp_path / "cache").mkdir(parents=True, exist_ok=True)
@@ -790,26 +790,26 @@ class TestPlanAttemptsEnvOverride:
     """P1-fix-9: plan_attempts must read batch-scale ratios from env vars."""
 
     def test_custom_step1_from_env(self, ep, monkeypatch):
-        monkeypatch.setenv("REPROLAB_CELL_OOM_BATCH_SCALE_STEP1", "0.3")
-        monkeypatch.setenv("REPROLAB_CELL_OOM_BATCH_SCALE_FLOOR", "0.1")
+        monkeypatch.setenv("OPENRESEARCH_CELL_OOM_BATCH_SCALE_STEP1", "0.3")
+        monkeypatch.setenv("OPENRESEARCH_CELL_OOM_BATCH_SCALE_FLOOR", "0.1")
         attempts = ep.plan_attempts(2)
         assert attempts[1]["batch_scale"] == 0.3, (
-            "P1-fix-9: REPROLAB_CELL_OOM_BATCH_SCALE_STEP1 must override step-1 scale"
+            "P1-fix-9: OPENRESEARCH_CELL_OOM_BATCH_SCALE_STEP1 must override step-1 scale"
         )
         assert attempts[2]["batch_scale"] == 0.1, (
-            "P1-fix-9: REPROLAB_CELL_OOM_BATCH_SCALE_FLOOR must override floor scale"
+            "P1-fix-9: OPENRESEARCH_CELL_OOM_BATCH_SCALE_FLOOR must override floor scale"
         )
 
     def test_defaults_when_env_absent(self, ep, monkeypatch):
-        monkeypatch.delenv("REPROLAB_CELL_OOM_BATCH_SCALE_STEP1", raising=False)
-        monkeypatch.delenv("REPROLAB_CELL_OOM_BATCH_SCALE_FLOOR", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_CELL_OOM_BATCH_SCALE_STEP1", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_CELL_OOM_BATCH_SCALE_FLOOR", raising=False)
         attempts = ep.plan_attempts(2)
         assert attempts[1]["batch_scale"] == 0.5
         assert attempts[2]["batch_scale"] == 0.25
 
     def test_kwarg_overrides_env(self, ep, monkeypatch):
         """Explicit kwargs take priority over env vars."""
-        monkeypatch.setenv("REPROLAB_CELL_OOM_BATCH_SCALE_STEP1", "0.9")
+        monkeypatch.setenv("OPENRESEARCH_CELL_OOM_BATCH_SCALE_STEP1", "0.9")
         attempts = ep.plan_attempts(2, batch_scale_step1=0.4)
         assert attempts[1]["batch_scale"] == 0.4, (
             "explicit batch_scale_step1 kwarg must override env var"

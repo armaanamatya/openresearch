@@ -61,7 +61,7 @@ def test_non_injection_primitive_untouched(make_context, tmp_path):
 
 
 def test_flag_off_disables(make_context, tmp_path, monkeypatch):
-    monkeypatch.setenv("REPROLAB_INJECT_STEERING", "0")
+    monkeypatch.setenv("OPENRESEARCH_INJECT_STEERING", "0")
     ctx = make_context(tmp_path)
     _steer(ctx, "msg")
     assert "operator_messages" not in _wrapped_run_experiment(ctx)()

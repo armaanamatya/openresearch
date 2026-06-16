@@ -139,25 +139,25 @@ class TestAzureEnvContract:
         """Core contract: entrypoint must not read any var the runner does not inject.
 
         This is the regression test for P0-fix-1, which found that the runner
-        was injecting REPROLAB_BLOB_ACCOUNT / REPROLAB_BLOB_CONTAINER while the
-        entrypoint was reading REPROLAB_AZURE_STORAGE_ACCOUNT / REPROLAB_AZURE_BLOB_CONTAINER —
+        was injecting OPENRESEARCH_BLOB_ACCOUNT / OPENRESEARCH_BLOB_CONTAINER while the
+        entrypoint was reading OPENRESEARCH_AZURE_STORAGE_ACCOUNT / OPENRESEARCH_AZURE_BLOB_CONTAINER —
         causing every Blob I/O call to fail silently.
         """
         injected = _extract_injected_env_names()
         entrypoint_reads = _extract_entrypoint_read_env_names()
 
         # Some env vars the entrypoint reads are set by OTHER means (e.g. by the
-        # trainer subprocess itself, or by the REPROLAB_CELL_* vars the runner also
+        # trainer subprocess itself, or by the OPENRESEARCH_CELL_* vars the runner also
         # injects but might be set by the Job spec in different ways).  We focus
         # on the Blob / storage / cell config variables the runner is responsible for.
         # Exclude vars that are legitimately set by other agents (HF_HOME, etc.)
         # or are the OOM shrink vars set WITHIN the entrypoint itself (not by runner).
         runner_responsible_prefixes = (
-            "REPROLAB_AZURE_",
-            "REPROLAB_BLOB_",
-            "REPROLAB_CELL_",
-            "REPROLAB_CACHE_",
-            "REPROLAB_BOOTSTRAP_",
+            "OPENRESEARCH_AZURE_",
+            "OPENRESEARCH_BLOB_",
+            "OPENRESEARCH_CELL_",
+            "OPENRESEARCH_CACHE_",
+            "OPENRESEARCH_BOOTSTRAP_",
         )
         entrypoint_runner_vars = {
             k for k in entrypoint_reads
@@ -173,35 +173,35 @@ class TestAzureEnvContract:
         )
 
     def test_old_mismatched_names_not_injected(self):
-        """The pre-fix names (REPROLAB_BLOB_ACCOUNT, REPROLAB_BLOB_CONTAINER) must
+        """The pre-fix names (OPENRESEARCH_BLOB_ACCOUNT, OPENRESEARCH_BLOB_CONTAINER) must
         NOT appear in the injected set — they were the wrong names."""
         injected = _extract_injected_env_names()
-        assert "REPROLAB_BLOB_ACCOUNT" not in injected, (
-            "REPROLAB_BLOB_ACCOUNT is the old (wrong) name; entrypoint reads "
-            "REPROLAB_AZURE_STORAGE_ACCOUNT.  Remove the old name from the manifest."
+        assert "OPENRESEARCH_BLOB_ACCOUNT" not in injected, (
+            "OPENRESEARCH_BLOB_ACCOUNT is the old (wrong) name; entrypoint reads "
+            "OPENRESEARCH_AZURE_STORAGE_ACCOUNT.  Remove the old name from the manifest."
         )
-        assert "REPROLAB_BLOB_CONTAINER" not in injected, (
-            "REPROLAB_BLOB_CONTAINER is the old (wrong) name; entrypoint reads "
-            "REPROLAB_AZURE_BLOB_CONTAINER.  Remove the old name from the manifest."
+        assert "OPENRESEARCH_BLOB_CONTAINER" not in injected, (
+            "OPENRESEARCH_BLOB_CONTAINER is the old (wrong) name; entrypoint reads "
+            "OPENRESEARCH_AZURE_BLOB_CONTAINER.  Remove the old name from the manifest."
         )
 
     def test_correct_azure_names_are_injected(self):
-        """The correct REPROLAB_AZURE_* names must appear in the injected set."""
+        """The correct OPENRESEARCH_AZURE_* names must appear in the injected set."""
         injected = _extract_injected_env_names()
-        assert "REPROLAB_AZURE_STORAGE_ACCOUNT" in injected, (
-            "Runner must inject REPROLAB_AZURE_STORAGE_ACCOUNT "
+        assert "OPENRESEARCH_AZURE_STORAGE_ACCOUNT" in injected, (
+            "Runner must inject OPENRESEARCH_AZURE_STORAGE_ACCOUNT "
             "(the name the entrypoint reads)."
         )
-        assert "REPROLAB_AZURE_BLOB_CONTAINER" in injected, (
-            "Runner must inject REPROLAB_AZURE_BLOB_CONTAINER "
+        assert "OPENRESEARCH_AZURE_BLOB_CONTAINER" in injected, (
+            "Runner must inject OPENRESEARCH_AZURE_BLOB_CONTAINER "
             "(the name the entrypoint reads)."
         )
 
     def test_cache_mount_injected(self):
-        """REPROLAB_CACHE_MOUNT must be injected (entrypoint uses it to set HF_HOME etc.)."""
+        """OPENRESEARCH_CACHE_MOUNT must be injected (entrypoint uses it to set HF_HOME etc.)."""
         injected = _extract_injected_env_names()
-        assert "REPROLAB_CACHE_MOUNT" in injected, (
-            "Runner must inject REPROLAB_CACHE_MOUNT so the entrypoint can set "
+        assert "OPENRESEARCH_CACHE_MOUNT" in injected, (
+            "Runner must inject OPENRESEARCH_CACHE_MOUNT so the entrypoint can set "
             "HF_HOME / PIP_CACHE_DIR under the Azure Files mount."
         )
 
@@ -215,13 +215,13 @@ class TestAzureEnvContract:
         """Sanity: the entrypoint module must be parseable by the AST extractor."""
         keys = _extract_entrypoint_read_env_names()
         # Must find at least the core storage vars.
-        assert "REPROLAB_AZURE_STORAGE_ACCOUNT" in keys, (
-            "AST extractor should find REPROLAB_AZURE_STORAGE_ACCOUNT in entrypoint"
+        assert "OPENRESEARCH_AZURE_STORAGE_ACCOUNT" in keys, (
+            "AST extractor should find OPENRESEARCH_AZURE_STORAGE_ACCOUNT in entrypoint"
         )
-        assert "REPROLAB_AZURE_BLOB_CONTAINER" in keys, (
-            "AST extractor should find REPROLAB_AZURE_BLOB_CONTAINER in entrypoint"
+        assert "OPENRESEARCH_AZURE_BLOB_CONTAINER" in keys, (
+            "AST extractor should find OPENRESEARCH_AZURE_BLOB_CONTAINER in entrypoint"
         )
-        assert "REPROLAB_CELL_ID" in keys
+        assert "OPENRESEARCH_CELL_ID" in keys
 
     def test_contract_with_gpu_plan_bound(self):
         """Contract must hold even when a gpu_plan is provided."""
@@ -255,11 +255,11 @@ class TestAzureEnvContract:
         entrypoint_reads = _extract_entrypoint_read_env_names()
 
         runner_responsible_prefixes = (
-            "REPROLAB_AZURE_",
-            "REPROLAB_BLOB_",
-            "REPROLAB_CELL_",
-            "REPROLAB_CACHE_",
-            "REPROLAB_BOOTSTRAP_",
+            "OPENRESEARCH_AZURE_",
+            "OPENRESEARCH_BLOB_",
+            "OPENRESEARCH_CELL_",
+            "OPENRESEARCH_CACHE_",
+            "OPENRESEARCH_BOOTSTRAP_",
         )
         entrypoint_runner_vars = {
             k for k in entrypoint_reads

@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 #
 # Intentionally EXCLUDES ``implement_baseline`` and ``run_experiment`` — both
 # have existing, separately-designed caps (4h aclose watchdog and
-# REPROLAB_RUN_EXPERIMENT_TIMEOUT_S / ctx.remaining_s() respectively).
+# OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S / ctx.remaining_s() respectively).
 # The default for any primitive NOT in the table is 1800 s (30 min).
 # ---------------------------------------------------------------------------
 
@@ -303,7 +303,7 @@ _STEERING_INJECT_PRIMITIVES = frozenset({
 def _inject_operator_messages(name: str, result: Any, ctx: "RunContext") -> Any:
     """Attach unread operator chat messages to a primitive's dict result.
 
-    Fail-soft and flag-gated (``REPROLAB_INJECT_STEERING=0`` disables). Returns
+    Fail-soft and flag-gated (``OPENRESEARCH_INJECT_STEERING=0`` disables). Returns
     ``result`` unchanged unless ``name`` is a steering-injection primitive, the
     result is a dict, and unread user messages exist.
     """
@@ -313,7 +313,7 @@ def _inject_operator_messages(name: str, result: Any, ctx: "RunContext") -> Any:
 
     try:
         if _os.environ.get(
-            "REPROLAB_INJECT_STEERING", ""
+            "OPENRESEARCH_INJECT_STEERING", ""
         ).strip().lower() in ("0", "false", "off"):
             return result
         if name not in _STEERING_INJECT_PRIMITIVES or not isinstance(result, dict):
@@ -509,7 +509,7 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                         # C2: the abandoned worker thread may still hold an
                         # experiment subprocess group (GPU/VRAM). SIGKILL the
                         # registered groups so the retry this timeout authorises
-                        # isn't starved. No-op unless REPROLAB_ORPHAN_GUARD is on →
+                        # isn't starved. No-op unless OPENRESEARCH_ORPHAN_GUARD is on →
                         # byte-for-byte today.
                         _killed = 0
                         try:
@@ -607,7 +607,7 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                 _emit_supplemental(name, result, ctx, _emit_extra)
                 # E1 (CONTEXT_MAP): union this primitive's structured output into
                 # rlm_state/context_map.json. Self-filtering — no-ops unless
-                # REPROLAB_CONTEXT_MAP is on AND name is an orientation primitive
+                # OPENRESEARCH_CONTEXT_MAP is on AND name is an orientation primitive
                 # (understand_section/extract_hyperparameters/detect_environment);
                 # off → byte-for-byte today. Fail-soft (orientation aid, never fatal).
                 try:
@@ -751,7 +751,7 @@ def _emit_supplemental(
         # above, so we never reach here for a failed verification.
         score = result.get("overall_score")
         target = result.get("target_score")
-        # Anti-regression target floor (2026-06-11, REPROLAB_TARGET_BEST_FLOOR):
+        # Anti-regression target floor (2026-06-11, OPENRESEARCH_TARGET_BEST_FLOOR):
         # raise the in-run target to the best prior attempt's score so the
         # forced-iteration policy refuses to finish below the proven baseline
         # while budget remains. No-op when the flag is off / no prior attempt.
@@ -782,10 +782,10 @@ def _emit_supplemental(
             # restore the best-graded ARTIFACT (score ≡ code). Flag-gated + fail-soft.
             _evidence_key: str | None = None
             import os as _os_a3
-            _fp_on_a3 = _os_a3.environ.get("REPROLAB_EVIDENCE_FINGERPRINT", "").strip().lower() in (
+            _fp_on_a3 = _os_a3.environ.get("OPENRESEARCH_EVIDENCE_FINGERPRINT", "").strip().lower() in (
                 "1", "true", "yes", "on",
             )
-            _champ_on_a3 = _os_a3.environ.get("REPROLAB_CHAMPION_ARTIFACT", "").strip().lower() in (
+            _champ_on_a3 = _os_a3.environ.get("OPENRESEARCH_CHAMPION_ARTIFACT", "").strip().lower() in (
                 "1", "true", "yes", "on",
             )
             if _fp_on_a3 or _champ_on_a3:
@@ -952,7 +952,7 @@ def build_custom_tools(
         registry = registry if registry is not None else _p.PRIMITIVE_REGISTRY
         descriptions = descriptions if descriptions is not None else _p.PRIMITIVE_DESCRIPTIONS
     # E1: read_context_map lives in the registry unconditionally (so it's importable
-    # + testable) but is only ADVERTISED to the root when REPROLAB_CONTEXT_MAP is on.
+    # + testable) but is only ADVERTISED to the root when OPENRESEARCH_CONTEXT_MAP is on.
     # Off → it is filtered out here, so the off-state tool list is byte-for-byte today.
     try:
         from backend.agents.rlm.context_map import _enabled as _context_map_enabled

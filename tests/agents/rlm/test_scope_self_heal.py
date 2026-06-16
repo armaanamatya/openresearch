@@ -87,7 +87,7 @@ def test_plateau_disabled_when_window_le_1():
 # --- rubric decline (regression) detector --------------------------------------
 # §3.5 (grader-noise companion): the overthinking / inverse-scaling signal the
 # flatline detector above MISSES — the score peaked and recent changes made it
-# worse. Drives a regression convergence_note (flag REPROLAB_RUBRIC_DECLINE_ADVISORY).
+# worse. Drives a regression convergence_note (flag OPENRESEARCH_RUBRIC_DECLINE_ADVISORY).
 
 
 def test_decline_needs_full_window():

@@ -82,7 +82,7 @@ RunPod COMMUNITY rates from the system's own catalog (`backend/services/runtime/
 **Pod-lifecycle assumption:** RunPod bills wall-clock; pods are *owned and swept* (`pod_sweeper.delete_pod`, `_owned_pod_ids`). A long run that **holds one pod across multiple `run_experiment` calls** pays *idle GPU* while the LLM writes code between experiments. We add a **+20% idle factor** to active GPU-hours. (Per-experiment spin-up instead recurs 5–10 min provisioning each call — comparable order; +20% covers either.)
 
 ### Tier 1 — Lean / mechanism-level (the system's default guardrails)
-ReproLab ships `REPROLAB_MAX_RUN_GPU_USD=10.0` and `REPROLAB_MAX_GPU_USD_PER_HOUR=10.0`. Under the $10 cap you get ≈ **29 GPU-hr on RTX 4090** or **~5 hr on A100-80** — enough to load **real Qwen3-1.7B weights + real ALFWorld episodes** and run a **short (~10–30 step) training** that demonstrates the SDAR loss `g_t = σ(β·Δ_t)`, stop-gradient gate, λ=0.1, β=10.
+ReproLab ships `OPENRESEARCH_MAX_RUN_GPU_USD=10.0` and `OPENRESEARCH_MAX_GPU_USD_PER_HOUR=10.0`. Under the $10 cap you get ≈ **29 GPU-hr on RTX 4090** or **~5 hr on A100-80** — enough to load **real Qwen3-1.7B weights + real ALFWorld episodes** and run a **short (~10–30 step) training** that demonstrates the SDAR loss `g_t = σ(β·Δ_t)`, stop-gradient gate, λ=0.1, β=10.
 
 - **Rubric reality:** this **clears the code-inspection leaves and the "real weights/data load + trains" leaves** → a *partial, non-zero* score. It does **not** reproduce paper-level metrics (150 steps × all cells). A pure-code surrogate with no GPU scores *lower* — so the $10 floor is the minimum to score meaningfully.
 - **GPU:** **$3–10.** LLM: $1–2 (Regime B) / $20–40 (Regime A). **Total: ~$5–50/run.**
@@ -141,8 +141,8 @@ GPU$ = N_cells × hrs_per_cell × N_gpus × $/hr × contingency
 - **OAuth sub-agents** (`claude login`) → Sonnet coding at **$0** (Regime C). Cuts LLM by ~95%.
 - **`--model qwen3-coder-featherless`** flat root → ~$0 marginal root.
 - **RunPod COMMUNITY** (default) vs SECURE saves ~45%; **`cuda-runtime` image** (default) saves $0.50–1.50 + 5–10 min/run vs `devel`.
-- **`--max-usd` / `REPROLAB_MAX_RUN_GPU_USD`** hard caps per run — set these to fence each tier.
-- **Smallest-two scope** (`REPROLAB_BASELINE_EXTRA_GUIDANCE`) keeps iteration in Tier 1/2.
+- **`--max-usd` / `OPENRESEARCH_MAX_RUN_GPU_USD`** hard caps per run — set these to fence each tier.
+- **Smallest-two scope** (`OPENRESEARCH_BASELINE_EXTRA_GUIDANCE`) keeps iteration in Tier 1/2.
 
 ---
 

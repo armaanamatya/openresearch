@@ -73,7 +73,7 @@ Cascade in the same 30ms:
 5. `verify_against_rubric` ran on the empty result and scored **0.0 / 0.6
    target across all 6 areas** (Method 0.0/.38, Data 0.0/.13, Execution
    0.0/.18, Eval 0.0/.16, Match 0.0/.10, Artifacts 0.0/.05). Total fail.
-6. Forced-iteration policy (`REPROLAB_MIN_RUBRIC_ITERATIONS=2`) will refuse
+6. Forced-iteration policy (`OPENRESEARCH_MIN_RUBRIC_ITERATIONS=2`) will refuse
    `FINAL_VAR` and force iteration 1.
 
 **This is the Adam+VAE rubric=0 cascade shape PR-π.1 hotfix
@@ -104,7 +104,7 @@ contract.
    - Two watchdogs guard against this in
      `primitives.py` (already in the codebase; both fired correctly here):
      - **Pre-emit stall watchdog** (240s, `_PRE_EMIT_STALL_S`, set by
-       `REPROLAB_PRE_EMIT_STALL_S` env, default 240). Fires if no file
+       `OPENRESEARCH_PRE_EMIT_STALL_S` env, default 240). Fires if no file
        has been written to `runs/<id>/code/` since the primitive started.
        Returns a `repairable` error dict, **explicitly NOT cached** so a
        retry is fresh (line 1488-1490 comment). This is what fired in

@@ -175,7 +175,7 @@ docker push "${ACR}/reprolab/aks-cell-base:${TAG}"
 ```
 
 Remember `${ACR}/reprolab/aks-cell-base:${TAG}` — it becomes
-`REPROLAB_AZURE_BASE_IMAGE` in Step 8. Contract details:
+`OPENRESEARCH_AZURE_BASE_IMAGE` in Step 8. Contract details:
 [`docker/aks-cell-base/README.md`](../../docker/aks-cell-base/README.md).
 
 ### 6. Get cluster credentials
@@ -219,17 +219,17 @@ Add these to your repo-root `.env` (host-side; all use the `REPROLAB_` prefix �
 see the block in [`.env.example`](../../.env.example)):
 
 ```bash
-REPROLAB_AZURE_RESOURCE_GROUP=<resource_group_name>
-REPROLAB_AZURE_AKS_CLUSTER=<cluster_name>
-REPROLAB_AZURE_STORAGE_ACCOUNT=<storage_account_name>
-REPROLAB_AZURE_ACR_LOGIN_SERVER=<acr_login_server>
-REPROLAB_AZURE_BASE_IMAGE=<ACR>/reprolab/aks-cell-base:<TAG>   # pinned tag from Step 5
+OPENRESEARCH_AZURE_RESOURCE_GROUP=<resource_group_name>
+OPENRESEARCH_AZURE_AKS_CLUSTER=<cluster_name>
+OPENRESEARCH_AZURE_STORAGE_ACCOUNT=<storage_account_name>
+OPENRESEARCH_AZURE_ACR_LOGIN_SERVER=<acr_login_server>
+OPENRESEARCH_AZURE_BASE_IMAGE=<ACR>/reprolab/aks-cell-base:<TAG>   # pinned tag from Step 5
 # Defaults below already match the Helm chart — override only if you changed them:
-REPROLAB_AZURE_NAMESPACE=reprolab
-REPROLAB_AZURE_SERVICE_ACCOUNT=reprolab-sa
-REPROLAB_AZURE_NODE_POOL_NAME=gpua100
-REPROLAB_AZURE_BLOB_CONTAINER=reprolab-artifacts
-REPROLAB_AZURE_FILES_SHARE=reprolab-cache
+OPENRESEARCH_AZURE_NAMESPACE=reprolab
+OPENRESEARCH_AZURE_SERVICE_ACCOUNT=reprolab-sa
+OPENRESEARCH_AZURE_NODE_POOL_NAME=gpua100
+OPENRESEARCH_AZURE_BLOB_CONTAINER=reprolab-artifacts
+OPENRESEARCH_AZURE_FILES_SHARE=reprolab-cache
 ```
 
 ### 9. Smoke test, then run
@@ -261,11 +261,11 @@ message. The common ones:
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `requires 'azure-identity' / 'kubernetes'` | Deps missing in the venv | `pip install -r backend/requirements.txt` |
-| `REPROLAB_AZURE_BASE_IMAGE ... is not set` | No pinned image | Set it to the Step 5 tag (never `:latest`) |
+| `OPENRESEARCH_AZURE_BASE_IMAGE ... is not set` | No pinned image | Set it to the Step 5 tag (never `:latest`) |
 | `DefaultAzureCredential could not acquire a token` | Not logged in | `az login` (or set `AZURE_CLIENT_ID/SECRET/TENANT_ID`) |
 | `could not load kubeconfig` | No cluster creds | Re-run Step 6 (`az aks get-credentials`) |
 | Cell stuck `Pending` then `capacity_exhausted` | GPU cold-start from 0 (10–12 min) or quota = 0 | Confirm Step 1 quota approved; the default pending timeout is 1500s |
-| Pod 401 / silent auth failure | SA name ≠ federated-credential subject | `REPROLAB_AZURE_SERVICE_ACCOUNT` must equal the Helm `reprolab-sa` and the Terraform `system:serviceaccount:reprolab:reprolab-sa` |
+| Pod 401 / silent auth failure | SA name ≠ federated-credential subject | `OPENRESEARCH_AZURE_SERVICE_ACCOUNT` must equal the Helm `reprolab-sa` and the Terraform `system:serviceaccount:reprolab:reprolab-sa` |
 
 Inspect a run live:
 
@@ -280,9 +280,9 @@ kubectl logs -n reprolab job/<job-name> --follow
 
 - **Idle cost is ~$0** — the GPU pool is scale-to-zero. The CPU system pool and
   storage incur small standing charges.
-- Per-GPU budget tracking uses `REPROLAB_AZURE_GPU_USD_PER_HOUR` (default `3.67`,
+- Per-GPU budget tracking uses `OPENRESEARCH_AZURE_GPU_USD_PER_HOUR` (default `3.67`,
   the A100 on-demand list price). Set your negotiated rate. The per-run cap is
-  `REPROLAB_MAX_RUN_GPU_USD`.
+  `OPENRESEARCH_MAX_RUN_GPU_USD`.
 - **Tear down everything:**
 
   ```bash

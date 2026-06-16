@@ -27,7 +27,7 @@ programmatically via slices and recursive sub-calls. Twelve core domain primitiv
 `check_user_messages`, `respond_to_user`) — plus the orchestration/aux primitives
 `heartbeat`, `recommend_next_tool`, `resolve_gpu_requirements`, `codex_repair`, and
 `read_context_map` (the intra-run orientation cache, advertised only under
-`REPROLAB_CONTEXT_MAP`), for **17** registered in total — are exposed as REPL
+`OPENRESEARCH_CONTEXT_MAP`), for **17** registered in total — are exposed as REPL
 callables in `backend/agents/rlm/primitives.py`. The root decides what to call and
 in what order by writing Python — there is no fixed stage order and no gate
 control-flow.
@@ -51,7 +51,7 @@ Run state is **file-backed**, not a service — `runs/<project_id>/` holds the
 status snapshot (`demo_status.json`), per-iteration checkpoints (`rlm_state/`),
 `final_report.{json,md}`, `dashboard_events.jsonl`, `cost_ledger.jsonl`,
 `experiment_runs.jsonl`, the reproduced `code/`, and Hermes audit artifacts.
-SQLite (`REPROLAB_DATABASE_URL`) is the event/persistence store.
+SQLite (`OPENRESEARCH_DATABASE_URL`) is the event/persistence store.
 
 ## Paper ingestion
 
@@ -139,7 +139,7 @@ see `docs/superpowers/specs/2026-05-28-rlm-stability-remediation-design.md`.
 
 ## Dynamic GPU selection (spec 2026-05-23)
 
-When `REPROLAB_DYNAMIC_GPU=true` (the default), the root model calls the `resolve_gpu_requirements` primitive once per run with LLM-derived hardware clues (VRAM estimate, paper GPU string, confidence). The pure-Python resolver (`backend/services/runtime/gpu_resolver.py`) maps those clues to the cheapest matching entry in the static SKU catalog (`backend/services/runtime/gpu_catalog.py`, 8 SKUs from RTX 4090 to H200), applying a headroom multiplier (`REPROLAB_DYNAMIC_GPU_HEADROOM=1.25` by default) before tier-up. The resolved `GpuPlan` is persisted atomically to `runs/<id>/rlm_state/gpu_plan.json` (idempotent on re-call) and passed to `RunpodBackend`, overriding the legacy `gpu_type` setting. On CUDA OOM, `run_experiment` auto-escalates up the `GpuPlan.ladder_remaining` sequence (up to `REPROLAB_DYNAMIC_GPU_MAX_ESCALATIONS=2`), re-persisting the updated plan and emitting a `gpu_escalated` event. Per-GPU cost is bounded by `REPROLAB_MAX_GPU_USD_PER_HOUR` (float, `0` = no cap); total run-level pod spend by `REPROLAB_MAX_RUN_GPU_USD` (also float, `0` = no cap), enforced by `RunBudget.check_run_gpu_usd`. Multi-GPU is opt-in: `REPROLAB_FORCE_SINGLE_GPU=true` (default) caps count=1. `--vram-gb` CLI flag routes through `REPROLAB_VRAM_OVERRIDE_GB` → `ctx.vram_override` → resolver, bypassing the LLM estimate. OAuth orthogonality invariant: `ANTHROPIC_API_KEY` is never injected into the RunPod pod environment — the pod runs ML code only.
+When `OPENRESEARCH_DYNAMIC_GPU=true` (the default), the root model calls the `resolve_gpu_requirements` primitive once per run with LLM-derived hardware clues (VRAM estimate, paper GPU string, confidence). The pure-Python resolver (`backend/services/runtime/gpu_resolver.py`) maps those clues to the cheapest matching entry in the static SKU catalog (`backend/services/runtime/gpu_catalog.py`, 8 SKUs from RTX 4090 to H200), applying a headroom multiplier (`OPENRESEARCH_DYNAMIC_GPU_HEADROOM=1.25` by default) before tier-up. The resolved `GpuPlan` is persisted atomically to `runs/<id>/rlm_state/gpu_plan.json` (idempotent on re-call) and passed to `RunpodBackend`, overriding the legacy `gpu_type` setting. On CUDA OOM, `run_experiment` auto-escalates up the `GpuPlan.ladder_remaining` sequence (up to `OPENRESEARCH_DYNAMIC_GPU_MAX_ESCALATIONS=2`), re-persisting the updated plan and emitting a `gpu_escalated` event. Per-GPU cost is bounded by `OPENRESEARCH_MAX_GPU_USD_PER_HOUR` (float, `0` = no cap); total run-level pod spend by `OPENRESEARCH_MAX_RUN_GPU_USD` (also float, `0` = no cap), enforced by `RunBudget.check_run_gpu_usd`. Multi-GPU is opt-in: `OPENRESEARCH_FORCE_SINGLE_GPU=true` (default) caps count=1. `--vram-gb` CLI flag routes through `OPENRESEARCH_VRAM_OVERRIDE_GB` → `ctx.vram_override` → resolver, bypassing the LLM estimate. OAuth orthogonality invariant: `ANTHROPIC_API_KEY` is never injected into the RunPod pod environment — the pod runs ML code only.
 
 ## Chat steering surface (2026-05-23)
 

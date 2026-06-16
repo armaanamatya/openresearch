@@ -69,7 +69,7 @@ __all__ = [
 ]
 
 # Default VRAM headroom multiplier — must match the dynamic-GPU resolver
-# (``REPROLAB_DYNAMIC_GPU_HEADROOM=1.25``) so the gate and the scheduler agree on
+# (``OPENRESEARCH_DYNAMIC_GPU_HEADROOM=1.25``) so the gate and the scheduler agree on
 # what "fits" a card.  Kept here as a named constant for the same reason
 # ``gpu_cell_runner`` names ``_OOM_BATCH_SCALES``.
 DEFAULT_HEADROOM: float = 1.25
@@ -299,7 +299,7 @@ def capacity_gate(
                           unknown — keep everything.
         headroom:         Multiplier applied to ``est_vram_gb`` before the
                           comparison.  Defaults to :data:`DEFAULT_HEADROOM`
-                          (1.25), matching ``REPROLAB_DYNAMIC_GPU_HEADROOM``.
+                          (1.25), matching ``OPENRESEARCH_DYNAMIC_GPU_HEADROOM``.
 
     Returns:
         ``(kept_cells, gap_entries, models_skipped)`` where:

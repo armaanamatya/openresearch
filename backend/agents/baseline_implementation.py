@@ -923,8 +923,8 @@ _AZURE_VM_SKU_CATALOG: dict[str, tuple[str, int, int]] = {
 def _resolve_cloud_hardware(sandbox_mode: object) -> dict | None:
     """Resolve concrete hardware specs from whichever cloud the run targets.
 
-    Multi-cloud — works for RunPod (REPROLAB_RUNPOD_*), Azure ML
-    (REPROLAB_AZURE_*), and Brev (REPROLAB_BREV_*).  Returns a normalised
+    Multi-cloud — works for RunPod (OPENRESEARCH_RUNPOD_*), Azure ML
+    (OPENRESEARCH_AZURE_*), and Brev (OPENRESEARCH_BREV_*).  Returns a normalised
     dict::
 
         {
@@ -945,29 +945,29 @@ def _resolve_cloud_hardware(sandbox_mode: object) -> dict | None:
     import os as _os
 
     mode = str(sandbox_mode or "").lower()
-    vram_override_str = _os.environ.get("REPROLAB_VRAM_OVERRIDE_GB", "").strip()
+    vram_override_str = _os.environ.get("OPENRESEARCH_VRAM_OVERRIDE_GB", "").strip()
     vram_override = int(vram_override_str) if vram_override_str.isdigit() else None
 
     # --- RunPod ---
-    rp_gpu = _os.environ.get("REPROLAB_RUNPOD_GPU_TYPE", "").strip()
+    rp_gpu = _os.environ.get("OPENRESEARCH_RUNPOD_GPU_TYPE", "").strip()
     if "runpod" in mode and rp_gpu:
         vram_gb: int | None = vram_override or _GPU_VRAM_ESTIMATE_GB.get(rp_gpu)
         return {
             "cloud": "RunPod",
             "gpu": rp_gpu,
-            "gpu_count": int(_os.environ.get("REPROLAB_RUNPOD_GPU_COUNT", "1") or "1"),
-            "tier": _os.environ.get("REPROLAB_RUNPOD_CLOUD_TYPE", "SECURE").strip(),
+            "gpu_count": int(_os.environ.get("OPENRESEARCH_RUNPOD_GPU_COUNT", "1") or "1"),
+            "tier": _os.environ.get("OPENRESEARCH_RUNPOD_CLOUD_TYPE", "SECURE").strip(),
             "vram_gb": vram_gb,
             "vram_known": vram_gb is not None,
-            "image": _os.environ.get("REPROLAB_RUNPOD_IMAGE", "").strip(),
-            "container_disk_gb": int(_os.environ.get("REPROLAB_RUNPOD_CONTAINER_DISK_GB", "50") or "50"),
-            "volume_gb": int(_os.environ.get("REPROLAB_RUNPOD_VOLUME_GB", "20") or "20"),
-            "volume_mount": _os.environ.get("REPROLAB_RUNPOD_VOLUME_MOUNT_PATH", "/workspace").strip(),
+            "image": _os.environ.get("OPENRESEARCH_RUNPOD_IMAGE", "").strip(),
+            "container_disk_gb": int(_os.environ.get("OPENRESEARCH_RUNPOD_CONTAINER_DISK_GB", "50") or "50"),
+            "volume_gb": int(_os.environ.get("OPENRESEARCH_RUNPOD_VOLUME_GB", "20") or "20"),
+            "volume_mount": _os.environ.get("OPENRESEARCH_RUNPOD_VOLUME_MOUNT_PATH", "/workspace").strip(),
         }
 
     # --- Azure ML ---
-    az_size = _os.environ.get("REPROLAB_AZURE_VM_SIZE", "").strip()
-    if ("azure" in mode or _os.environ.get("REPROLAB_AZURE_REGION")) and az_size:
+    az_size = _os.environ.get("OPENRESEARCH_AZURE_VM_SIZE", "").strip()
+    if ("azure" in mode or _os.environ.get("OPENRESEARCH_AZURE_REGION")) and az_size:
         sku = _AZURE_VM_SKU_CATALOG.get(az_size)
         if sku is not None:
             gpu_model, gpu_count, per_gpu_vram = sku
@@ -978,31 +978,31 @@ def _resolve_cloud_hardware(sandbox_mode: object) -> dict | None:
             "cloud": "Azure ML",
             "gpu": gpu_model,
             "gpu_count": gpu_count,
-            "tier": _os.environ.get("REPROLAB_AZURE_REGION", "").strip(),
+            "tier": _os.environ.get("OPENRESEARCH_AZURE_REGION", "").strip(),
             "vram_gb": vram_gb,
             "vram_known": vram_gb is not None,
             "image": _os.environ.get(
-                "REPROLAB_AZURE_IMAGE",
+                "OPENRESEARCH_AZURE_IMAGE",
                 "mcr.microsoft.com/azureml/curated/acpt-pytorch-2.2-cuda12.1:latest",
             ).strip(),
-            "container_disk_gb": int(_os.environ.get("REPROLAB_AZURE_DATA_DISK_GB", "100") or "100"),
-            "volume_gb": int(_os.environ.get("REPROLAB_AZURE_DATASTORE_GB", "0") or "0"),
-            "volume_mount": _os.environ.get("REPROLAB_AZURE_DATASTORE_MOUNT", "/mnt/azureml").strip(),
+            "container_disk_gb": int(_os.environ.get("OPENRESEARCH_AZURE_DATA_DISK_GB", "100") or "100"),
+            "volume_gb": int(_os.environ.get("OPENRESEARCH_AZURE_DATASTORE_GB", "0") or "0"),
+            "volume_mount": _os.environ.get("OPENRESEARCH_AZURE_DATASTORE_MOUNT", "/mnt/azureml").strip(),
         }
 
     # --- Brev ---
-    brev_gpu = _os.environ.get("REPROLAB_BREV_GPU_TYPE", "").strip()
+    brev_gpu = _os.environ.get("OPENRESEARCH_BREV_GPU_TYPE", "").strip()
     if "brev" in mode and brev_gpu:
         vram_gb = vram_override or _GPU_VRAM_ESTIMATE_GB.get(brev_gpu)
         return {
             "cloud": "Brev",
             "gpu": brev_gpu,
-            "gpu_count": int(_os.environ.get("REPROLAB_BREV_GPU_COUNT", "1") or "1"),
-            "tier": _os.environ.get("REPROLAB_BREV_REGION", "").strip(),
+            "gpu_count": int(_os.environ.get("OPENRESEARCH_BREV_GPU_COUNT", "1") or "1"),
+            "tier": _os.environ.get("OPENRESEARCH_BREV_REGION", "").strip(),
             "vram_gb": vram_gb,
             "vram_known": vram_gb is not None,
-            "image": _os.environ.get("REPROLAB_BREV_IMAGE", "").strip(),
-            "container_disk_gb": int(_os.environ.get("REPROLAB_BREV_CONTAINER_DISK_GB", "50") or "50"),
+            "image": _os.environ.get("OPENRESEARCH_BREV_IMAGE", "").strip(),
+            "container_disk_gb": int(_os.environ.get("OPENRESEARCH_BREV_CONTAINER_DISK_GB", "50") or "50"),
             "volume_gb": 0,
             "volume_mount": "",
         }
@@ -1137,15 +1137,15 @@ _PROVENANCE_BLOCK = (
 
 
 _SMOKE_BLOCK = (
-    "\n\nEXECUTION SMOKE — honor REPROLAB_SMOKE_STEPS (a FREE pre-run crash check):\n"
-    "Before the full run the harness may launch your entry script with REPROLAB_SMOKE_STEPS\n"
+    "\n\nEXECUTION SMOKE — honor OPENRESEARCH_SMOKE_STEPS (a FREE pre-run crash check):\n"
+    "Before the full run the harness may launch your entry script with OPENRESEARCH_SMOKE_STEPS\n"
     "set (e.g. =1) and CUDA_LAUNCH_BLOCKING=1. When it is set, run a MINIMAL dry-run:\n"
     "construct EVERY model/experiment you would run for real (especially the riskiest — a\n"
     "VAE, a custom loss) and take that many optimizer steps on a TINY data slice (≈2\n"
     "batches), then sys.exit(0). Skip full epochs, heavy downloads, and figure/metrics\n"
     "writing. Pattern:\n"
     "  import os, sys\n"
-    "  SMOKE = int(os.environ.get('REPROLAB_SMOKE_STEPS', '0') or 0)\n"
+    "  SMOKE = int(os.environ.get('OPENRESEARCH_SMOKE_STEPS', '0') or 0)\n"
     "  ...\n"
     "  for step, batch in enumerate(loader):\n"
     "      train_step(batch)\n"
@@ -1212,7 +1212,7 @@ _RUBRIC_GUARD_BLOCK = (
     "    live in metrics.json (not only logs), and every named series is an ARRAY\n"
     "    over t (never a lone scalar). A missing curve / sweep / series then raises\n"
     "    RubricGuardFailure with the exact gap so you repair it BEFORE finalizing.\n"
-    "    (This enforcement is active only when REPROLAB_FIDELITY_EVIDENCE is set; the\n"
+    "    (This enforcement is active only when OPENRESEARCH_FIDELITY_EVIDENCE is set; the\n"
     "    call is harmless otherwise.)\n"
 )
 
@@ -1249,8 +1249,8 @@ _MEMORY_DISCIPLINE_BLOCK = (
     "  - torch.gather on logits for the taken tokens + a CHUNKED logsumexp over the vocab dim.\n"
     "Always: bf16 autocast (do NOT upcast logits to fp32), model.config.use_cache=False,\n"
     "model.gradient_checkpointing_enable(), and per-device mini_batch <= 2 for models >= 3B.\n"
-    "When the harness sets REPROLAB_CELL_BATCH_SCALE (a float in (0,1]) multiply your\n"
-    "per-device batch by it, and when it sets REPROLAB_CELL_GRAD_CHECKPOINT=1 enable\n"
+    "When the harness sets OPENRESEARCH_CELL_BATCH_SCALE (a float in (0,1]) multiply your\n"
+    "per-device batch by it, and when it sets OPENRESEARCH_CELL_GRAD_CHECKPOINT=1 enable\n"
     "gradient checkpointing — these are the harness's per-cell OOM-shrink retries.\n"
 )
 
@@ -1268,16 +1268,16 @@ _CELL_CONTRACT_BLOCK = (
     "the cell sees only cuda:0) and runs min(free_gpus, num_cells) cells in parallel.\n"
     "\n"
     "train_cell.py MUST:\n"
-    "  - ACCEPT the cell runner's exact invocation. The runner sets env REPROLAB_CELL_PARAMS\n"
-    "    (JSON of ONE cells.json entry) + REPROLAB_CELL_OUTPUT_DIR AND runs\n"
+    "  - ACCEPT the cell runner's exact invocation. The runner sets env OPENRESEARCH_CELL_PARAMS\n"
+    "    (JSON of ONE cells.json entry) + OPENRESEARCH_CELL_OUTPUT_DIR AND runs\n"
     "    `python train_cell.py --cell-id=<id> --output-dir=<dir>`. Your argparse MUST DEFINE\n"
     "    `--cell-id` and `--output-dir` (e.g. parser.add_argument('--cell-id')) so it does NOT\n"
     "    error on them. Do NOT invent other names like `--cell-params` — argparse then rejects\n"
     "    `--cell-id` and EVERY cell dies with 'unrecognized arguments: --cell-id'. Read the\n"
-    "    cell config from REPROLAB_CELL_PARAMS; resolve the output dir from --output-dir or\n"
-    "    REPROLAB_CELL_OUTPUT_DIR;\n"
+    "    cell config from OPENRESEARCH_CELL_PARAMS; resolve the output dir from --output-dir or\n"
+    "    OPENRESEARCH_CELL_OUTPUT_DIR;\n"
     "  - train on cuda:0 only — NO torchrun, NO DDP/FSDP, NO device loop, NO 'cuda:1';\n"
-    "  - honor REPROLAB_CELL_BATCH_SCALE / REPROLAB_CELL_GRAD_CHECKPOINT (see memory discipline);\n"
+    "  - honor OPENRESEARCH_CELL_BATCH_SCALE / OPENRESEARCH_CELL_GRAD_CHECKPOINT (see memory discipline);\n"
     "  - write metrics.json into the output dir as a FLAT leaf dict for THIS cell:\n"
     '      {"status": "ok", "metric": <float>, "steps_run": <int>, "reward_mean": <float>}\n'
     "    The harness nests it at per_model.<model_key>.<env>.<baseline> and aggregates the grid;\n"
@@ -1327,7 +1327,7 @@ def _gpu_budget_brief_block(num_gpus: int, per_gpu_vram_gb: float) -> str:
 
 
 # ---------------------------------------------------------------------------
-# RL Scaffold guidance block (opt-in: REPROLAB_RL_SCAFFOLD=1)
+# RL Scaffold guidance block (opt-in: OPENRESEARCH_RL_SCAFFOLD=1)
 # ---------------------------------------------------------------------------
 _RL_SCAFFOLD_BLOCK = (
     "\n\nRL SCAFFOLD — harness-owned GRPO + vLLM training scaffold:\n"
@@ -1347,9 +1347,9 @@ _RL_SCAFFOLD_BLOCK = (
     "      ref_model_name=\"Qwen/Qwen3-1.7B\",  # teacher = student (self-distill)\n"
     "      reward_fn=my_reward_fn,\n"
     "      custom_loss_term=opsd_custom_loss_term,  # SDAR OPSD; None = plain GRPO\n"
-    "      vllm_server_host=os.environ.get('REPROLAB_VLLM_HOST', 'localhost'),\n"
-    "      vllm_server_port=int(os.environ.get('REPROLAB_VLLM_PORT', '8000')),\n"
-    "      num_trainer_gpus=int(os.environ.get('REPROLAB_TRAINER_GPUS', '1')),\n"
+    "      vllm_server_host=os.environ.get('OPENRESEARCH_VLLM_HOST', 'localhost'),\n"
+    "      vllm_server_port=int(os.environ.get('OPENRESEARCH_VLLM_PORT', '8000')),\n"
+    "      num_trainer_gpus=int(os.environ.get('OPENRESEARCH_TRAINER_GPUS', '1')),\n"
     "      output_dir=os.path.join(os.environ.get('OUTPUT_DIR', '/artifacts'), 'rl_output'),\n"
     "      metrics_path=os.path.join(os.environ.get('OUTPUT_DIR', '/artifacts'), 'metrics.json'),\n"
     "      model_tag='qwen3_1.7b',\n"
@@ -1393,7 +1393,7 @@ _RL_SCAFFOLD_BLOCK = (
 
 
 # ---------------------------------------------------------------------------
-# SDAR baseline-coverage guidance block (opt-in: REPROLAB_SDAR_BASELINES=1)
+# SDAR baseline-coverage guidance block (opt-in: OPENRESEARCH_SDAR_BASELINES=1)
 # ---------------------------------------------------------------------------
 # BES Phase 1 — Coverage Completion (spec
 # docs/superpowers/specs/2026-06-07-bes-integration/phase-1-coverage-completion.md).
@@ -1529,13 +1529,13 @@ _EAGER_METRICS_BLOCK = (
 def _resolve_data_root() -> str:
     """Writable data root for the active sandbox.
 
-    ``run.py`` points ``REPROLAB_RUNPOD_VOLUME_MOUNT_PATH`` at a writable shared dir for
+    ``run.py`` points ``OPENRESEARCH_RUNPOD_VOLUME_MOUNT_PATH`` at a writable shared dir for
     LOCAL sandboxes (where ``/workspace`` does not exist); RunPod/Docker keep
     ``/workspace`` (the real pod/container volume). Reading the env var here keeps the
     guidance the agent sees identical to where data actually lands at runtime.
     """
     import os
-    return (os.environ.get("REPROLAB_RUNPOD_VOLUME_MOUNT_PATH") or "/workspace").strip() or "/workspace"
+    return (os.environ.get("OPENRESEARCH_RUNPOD_VOLUME_MOUNT_PATH") or "/workspace").strip() or "/workspace"
 
 
 def _dataset_setup_block(data_root: str = "/workspace") -> str:
@@ -2237,7 +2237,7 @@ def _compute_constraint_guidance(
     4. _DATASET_SETUP_BLOCK (always-on)
     5. Rubric auto-checklist (when generated_rubric.json exists)
     6. Per-paper override (when docs/papers/<arxiv_id>.yaml exists)
-    7. REPROLAB_BASELINE_EXTRA_GUIDANCE env-var block
+    7. OPENRESEARCH_BASELINE_EXTRA_GUIDANCE env-var block
     8. gpu_mode policy overlays (off / max)
     """
     mode_str = str(sandbox_mode).lower() if sandbox_mode else ""
@@ -2266,7 +2266,7 @@ def _compute_constraint_guidance(
     # without any wall-clock signal.
     # 2.5. PER-MODEL METRICS — multi-scale-paper output shape (Lane γ), follows
     # RUNTIME_DETECTION so the agent understands compute constraints first.
-    # Budget block: governed by REPROLAB_BUDGET_AWARENESS_MODE.
+    # Budget block: governed by OPENRESEARCH_BUDGET_AWARENESS_MODE.
     #   - "auto" (default): include only on cost-bearing sandboxes (runpod /
     #     brev) where every minute of overrun maps to real $.  Local docker /
     #     local-process sandboxes pay only with wall-clock; the user can
@@ -2358,23 +2358,23 @@ def _compute_constraint_guidance(
     # into code/) + the preflight_ast env-contract backstop.
     guidance += _SDAR_ENV_ABC_BLOCK
 
-    # 5.85. RL scaffold guidance — opt-in (REPROLAB_RL_SCAFFOLD=1).
+    # 5.85. RL scaffold guidance — opt-in (OPENRESEARCH_RL_SCAFFOLD=1).
     # Tells the agent to copy rl_scaffold.py, write a thin train.py with
     # GRPOScaffold + the OPSD custom-loss term, emit rl_launch.py, and pin
     # trl/vllm/torch in requirements.txt.
     # DEFAULT OFF → not injected → guidance byte-identical to today.
     import os as _os_scaffold
-    if _os_scaffold.environ.get("REPROLAB_RL_SCAFFOLD", "").strip().lower() in ("1", "true", "yes"):
+    if _os_scaffold.environ.get("OPENRESEARCH_RL_SCAFFOLD", "").strip().lower() in ("1", "true", "yes"):
         guidance += _RL_SCAFFOLD_BLOCK
 
-    # 5.86. SDAR baseline-coverage guidance — opt-in (REPROLAB_SDAR_BASELINES=1).
+    # 5.86. SDAR baseline-coverage guidance — opt-in (OPENRESEARCH_SDAR_BASELINES=1).
     # BES Phase 1 (Coverage Completion). Tells the agent to ALSO emit the three
     # missing SDAR baselines (standalone OPSD, Skill-SD, RLSD) so all five are
     # present, plus provenance link + per-step curves.json. Search-QA only — it
     # deliberately does NOT activate ALFWorld/WebShop env cells (the sequencing
     # trap: an env that can't learn turns excluded leaves into counted zeros).
     # DEFAULT OFF → not injected → guidance byte-identical to today.
-    if _os_scaffold.environ.get("REPROLAB_SDAR_BASELINES", "").strip().lower() in ("1", "true", "yes"):
+    if _os_scaffold.environ.get("OPENRESEARCH_SDAR_BASELINES", "").strip().lower() in ("1", "true", "yes"):
         guidance += _SDAR_BASELINES_BLOCK
 
     # 5.9. θ: metrics_shape binding — when plan_reproduction declared a non-empty
@@ -2429,7 +2429,7 @@ def _compute_constraint_guidance(
         except Exception:  # noqa: BLE001 — advisory, never fatal
             logger.debug("leaf_triage guidance block skipped", exc_info=True)
 
-    # 6.7b Leaf actuation (L4/L5/L6, 2026-06-16, default-OFF REPROLAB_LEAF_ACTUATE):
+    # 6.7b Leaf actuation (L4/L5/L6, 2026-06-16, default-OFF OPENRESEARCH_LEAF_ACTUATE):
     # the harness-staged repairs from the last verify — a synthesized per-condition
     # lr search (auto-consumed by the staged-search route), a budget-gated seed
     # directive, and a declared-vs-aggregated completeness audit. Empty string when
@@ -2442,7 +2442,7 @@ def _compute_constraint_guidance(
             logger.debug("leaf_actuator guidance block skipped", exc_info=True)
 
     # 6.8 Fidelity-certificate invariant tests (2026-06-14, gated on
-    # REPROLAB_TWO_AXIS_VERDICT): ask the agent to write code/test_reproduction.py
+    # OPENRESEARCH_TWO_AXIS_VERDICT): ask the agent to write code/test_reproduction.py
     # so the certificate can go green and the two-axis verdict can reach
     # faithful/contradicted instead of always 'inconclusive'. No-op (empty string)
     # when the flag is off, so default behaviour is byte-for-byte unchanged.
@@ -2454,7 +2454,7 @@ def _compute_constraint_guidance(
     except Exception:  # noqa: BLE001 — advisory, never fatal
         logger.debug("fidelity_certificate guidance block skipped", exc_info=True)
 
-    # 7. Per-run extra guidance from REPROLAB_BASELINE_EXTRA_GUIDANCE env var.
+    # 7. Per-run extra guidance from OPENRESEARCH_BASELINE_EXTRA_GUIDANCE env var.
     # Generic paper-agnostic hook so an operator can scope a specific run
     # without modifying source. Common uses:
     #   - "reproduce only the smallest 2 model variants the paper tests"
@@ -2463,7 +2463,7 @@ def _compute_constraint_guidance(
     # The guidance is appended verbatim, so the operator is responsible for
     # phrasing it so it doesn't contradict the NO STUB block above.
     import os as _os
-    extra = _os.environ.get("REPROLAB_BASELINE_EXTRA_GUIDANCE", "").strip()
+    extra = _os.environ.get("OPENRESEARCH_BASELINE_EXTRA_GUIDANCE", "").strip()
     if extra:
         guidance += (
             "\n\nOPERATOR GUIDANCE — per-run scope override:\n"
@@ -2476,7 +2476,7 @@ def _compute_constraint_guidance(
 
     # 7.5. E1 (NEGATIVE_LESSONS): inject this paper's active cross-run failure
     # lessons (mined by lesson_distiller from prior runs' experiment_runs.jsonl).
-    # Flag-gated (REPROLAB_NEGATIVE_LESSONS) + advisory; returns "" when off / no
+    # Flag-gated (OPENRESEARCH_NEGATIVE_LESSONS) + advisory; returns "" when off / no
     # arxiv_id / no promoted lessons → byte-for-byte today. Fail-soft.
     if project_dir is not None and arxiv_id:
         try:

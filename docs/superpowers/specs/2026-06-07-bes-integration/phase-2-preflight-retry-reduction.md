@@ -3,7 +3,7 @@
 **Status:** 🟡 PROPOSED. **Mode-agnostic** pre-run preflight — independent of the BES work (decision D2). Catches cheap errors *off the GPU path* so runs stop burning hours on dep/schema/code-bug failures.
 **Goal:** Reduce failed/retried GPU runs by extending the existing pre-run gate, not by adding BES.
 
-> **Codex review (2026-06-07) — applied.** (1) Component A: the local bootstrap uses `|| true` (`primitives.py:2760-2781`), so a synthesized `requirements.txt` does **not** guarantee the import succeeds — A must **verify imports post-bootstrap** and return a `repairable` dependency failure; "matplotlib impossible" softened. (2) Component B: `CUDA_VISIBLE_DEVICES=""` is **not** isolation — importing agent-generated code is code execution and must run **inside the sandbox** (no secrets/network, read-only workspace, resource limits, hard timeout). (3) This phase also **owns the mode-agnostic RDR pre-run-gate wiring** (moved out of the BES deltas — flag `REPROLAB_RDR_PREFLIGHT_GATE`); the corrected seam detail is in Phase 3 §2.
+> **Codex review (2026-06-07) — applied.** (1) Component A: the local bootstrap uses `|| true` (`primitives.py:2760-2781`), so a synthesized `requirements.txt` does **not** guarantee the import succeeds — A must **verify imports post-bootstrap** and return a `repairable` dependency failure; "matplotlib impossible" softened. (2) Component B: `CUDA_VISIBLE_DEVICES=""` is **not** isolation — importing agent-generated code is code execution and must run **inside the sandbox** (no secrets/network, read-only workspace, resource limits, hard timeout). (3) This phase also **owns the mode-agnostic RDR pre-run-gate wiring** (moved out of the BES deltas — flag `OPENRESEARCH_RDR_PREFLIGHT_GATE`); the corrected seam detail is in Phase 3 §2.
 
 ---
 
@@ -31,7 +31,7 @@
 
 **The change (PROPOSED, L, gated):** a new helper invoked from `validate_code_pre_flight` (near the `scan_code_dir` bridge, `pre_flight_validator.py:1344`) that `import`s the agent's training module and **constructs** each `*Env`/dataset object, catching + reporting failures.
 - **⚠ Isolation (Codex):** importing agent-generated code is *code execution* — `CUDA_VISIBLE_DEVICES=""` is **not** isolation (no filesystem, credential, process, or network containment). Run the construct probe **inside the existing sandbox** (Docker/local backend) with **no secrets, no network, a read-only workspace, resource limits, and a hard timeout**. Today's preflight (`pre_flight_validator.py:1344-1358`) is static AST only — this is the first preflight step that *executes* code, so it must be sandboxed accordingly.
-- Gate behind `REPROLAB_PREFLIGHT_SMOKE=1`, time-boxed.
+- Gate behind `OPENRESEARCH_PREFLIGHT_SMOKE=1`, time-boxed.
 - FP risk: low-medium — construction may legitimately need GPU/network; report-not-block on ambiguous failures, per the `:12` contract.
 - Pairs with the **Phase 0 Component C routing fix** so the surfaced code-bug becomes a floor-enforced repairable patch.
 
@@ -69,7 +69,7 @@ Only after building the shallow import-resolution the `:808-818` comment asks fo
 ## 8. Definition of done
 
 - [ ] Component A lands: requirements synthesized **and imports verified post-bootstrap** on local; a dep failure returns `repairable` (no silent `|| true` pass-through).
-- [ ] Component B behind `REPROLAB_PREFLIGHT_SMOKE`, time-boxed, report-not-block on ambiguity.
+- [ ] Component B behind `OPENRESEARCH_PREFLIGHT_SMOKE`, time-boxed, report-not-block on ambiguity.
 - [ ] Component C only after the real swallow site is read; ships `soft`.
 - [ ] Component D remains deferred unless import-resolution groundwork lands.
 - [ ] No new `hard` block raises the false-positive rate above today's (regression-measured on the run corpus).

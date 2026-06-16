@@ -1,6 +1,6 @@
 # Leaf-Frontier & Out-of-Scope Remediation — Design Spec
 
-**Date:** 2026-06-16 · **Branch:** `feat/grader-fidelity` · **Status:** L1 + L3 SHIPPED (`45c3d32`); L4 + L6 + the L5 planner/detector/directive SHIPPED (`leaf_actuator.py`); **L2b SHIPPED** (closed the render loop — `emit_figure_sidecars` + the `_ground` `has_results` fix; the one open-loop `0.0` leaf remaining after the first tier); L5 hot-path seed *replication* + cross-seed mean±std aggregation = documented GPU-validated follow-on. All new behaviour default-OFF (`REPROLAB_LEAF_ACTUATE` unset == today byte-for-byte).
+**Date:** 2026-06-16 · **Branch:** `feat/grader-fidelity` · **Status:** L1 + L3 SHIPPED (`45c3d32`); L4 + L6 + the L5 planner/detector/directive SHIPPED (`leaf_actuator.py`); **L2b SHIPPED** (closed the render loop — `emit_figure_sidecars` + the `_ground` `has_results` fix; the one open-loop `0.0` leaf remaining after the first tier); L5 hot-path seed *replication* + cross-seed mean±std aggregation = documented GPU-validated follow-on. All new behaviour default-OFF (`OPENRESEARCH_LEAF_ACTUATE` unset == today byte-for-byte).
 
 **Sibling specs (this doc does NOT re-design any of them):**
 - `2026-06-16-grader-fidelity-and-harness-remediation-design.md` — the LOCKED grader-fidelity workstreams **A1–A7 / B / C / D / E** (median-of-N, `deterministic_leaf_checker`, evidence-fingerprint, champion-artifact, decoupled transport, EVIDENCE_GATE, `ab_compare` validator, BES). **Owned by the operator.**
@@ -53,7 +53,7 @@ ResNet's 10 excluded ids are all ImageNet-training / COCO-detection / 3-layer-bo
 ## 3. SHIPPED tier (commit `45c3d32`, `lolout1`, no-trailer; 2157 blast-radius tests, 0 regress)
 
 ### L1 — out-of-inclusion-scope exclusion, applied **in-loop** (the dominant fix)
-**Root finding (reproducible):** `_detect_out_of_inclusion_scope_leaves` + flag `REPROLAB_SCOPE_INCLUSION_EXCLUDE` ran at **finalize only** (`finalize_rescore`). The in-loop grade (`score_reproduction`) had **no `operator_dataset_inclusion` parameter at all** — it excluded data-unavailable + theory leaves but not out-of-scope ones. So the two artifacts disagreed by 0.25 **and** the agent was shown 10 un-fixable "weak leaves".
+**Root finding (reproducible):** `_detect_out_of_inclusion_scope_leaves` + flag `OPENRESEARCH_SCOPE_INCLUSION_EXCLUDE` ran at **finalize only** (`finalize_rescore`). The in-loop grade (`score_reproduction`) had **no `operator_dataset_inclusion` parameter at all** — it excluded data-unavailable + theory leaves but not out-of-scope ones. So the two artifacts disagreed by 0.25 **and** the agent was shown 10 un-fixable "weak leaves".
 
 **Fix:** `score_reproduction` gains `operator_dataset_inclusion`, applies the detector in its `skip_set` (excluded leaves also skip LLM grading), plumbed from `ctx.scope_spec.datasets` at the verify site (`primitives.py:6644`) and the freshness-regrade site (`finalize_regrade.py:214` `maybe_regrade` — **not** the no-ctx `regrade_for_hard_stop`). Operator-sourced (paper-hint `default_scope` / `--scope-spec`, never agent prose); evidence-safe (a leaf naming any in-scope dataset is never excluded). No-op unless the flag is on **and** an inclusion list is provided.
 
@@ -66,7 +66,7 @@ ResNet's 10 excluded ids are all ImageNet-training / COCO-detection / 3-layer-bo
 
 **L2b (the closed-loop fix, 2026-06-16):** classification alone left `fe5e7900` at `0.0` because the directive was *advisory* and two things compounded:
 1. **The grounding was too aggressive.** `_ground` (`:204`) demoted `render_artifact`→`protocol_gap` whenever there were no per-step curves on disk — but the Adam run had only scalar `per_model` finals (0 `training_curves.json`), and a *comparison* figure (final metric by condition) is perfectly renderable from scalars. `_ground` now also keeps `render_artifact` when measured results exist (`facts["has_results"]` = `per_model` non-empty OR `outputs/*/*/metrics.json` present).
-2. **No actuator closed the loop.** The grader is **text-only** — `leaf_scorer._gather_figure_sidecars` reads `fig_*.json` JSON sidecars (axis scale + series), never the PNG. `leaf_actuator.emit_figure_sidecars` now writes a GROUNDED sidecar straight from the measured on-disk metrics (one comparison figure per `(model_key, env)` group; a numeric array → a downsampled curve; scalars → a by-condition comparison), named `fig_auto_*` so it never clobbers an agent-rendered `fig_*.json`, skipped entirely when the agent already emitted one, and honest (a `note` field marks it a measured comparison, never a fabricated result). Fires at the default `none` cost ceiling under `REPROLAB_LEAF_ACTUATE`. **Verified end-to-end on the real Adam `metrics.json`:** triage `protocol_gap`→`render_artifact`, 6 sidecars emitted, all read back by the grader's own `_gather_figure_sidecars`.
+2. **No actuator closed the loop.** The grader is **text-only** — `leaf_scorer._gather_figure_sidecars` reads `fig_*.json` JSON sidecars (axis scale + series), never the PNG. `leaf_actuator.emit_figure_sidecars` now writes a GROUNDED sidecar straight from the measured on-disk metrics (one comparison figure per `(model_key, env)` group; a numeric array → a downsampled curve; scalars → a by-condition comparison), named `fig_auto_*` so it never clobbers an agent-rendered `fig_*.json`, skipped entirely when the agent already emitted one, and honest (a `note` field marks it a measured comparison, never a fabricated result). Fires at the default `none` cost ceiling under `OPENRESEARCH_LEAF_ACTUATE`. **Verified end-to-end on the real Adam `metrics.json`:** triage `protocol_gap`→`render_artifact`, 6 sidecars emitted, all read back by the grader's own `_gather_figure_sidecars`.
 
 ### L3 — in-scope cell failure
 New `cell_failure` class (`leaf_triage.py:97`, checked **last** so a contradiction still wins `result_quality`): an in-scope cell that `provenance.json`/`cells.json` records as **attempted but produced no result** → `targeted_rerun` directive *"RE-RUN the failed cell(s), don't exclude … excluding it would hide a real miss."* (`:137`). This is the deliberate complement to L1: out-of-scope → exclude; in-scope-but-failed → re-run, never exclude.
@@ -89,10 +89,10 @@ New `cell_failure` class (`leaf_triage.py:97`, checked **last** so a contradicti
 **There is no wire between the diagnosis and the actuators.** We add one thin dispatcher, gated by a single master flag and a cost ceiling, that executes the deterministic repairs the agent skipped, then **re-verifies only the affected leaves** so the repaired evidence enters the operator's grading pipeline.
 
 ```
-REPROLAB_LEAF_ACTUATE=0            # master gate (default OFF == today)
-REPROLAB_LEAF_ACTUATE_MAX_COST=none   # ceiling: none | targeted_rerun  (free repairs only by default)
-REPROLAB_LEAF_ACTUATE_SEEDS=0     # sub-gate for the GPU-cost seed expansion (L5)
-REPROLAB_LEAF_SEED_MAX=5          # seed ceiling (default = paper N, hard cap 5)
+OPENRESEARCH_LEAF_ACTUATE=0            # master gate (default OFF == today)
+OPENRESEARCH_LEAF_ACTUATE_MAX_COST=none   # ceiling: none | targeted_rerun  (free repairs only by default)
+OPENRESEARCH_LEAF_ACTUATE_SEEDS=0     # sub-gate for the GPU-cost seed expansion (L5)
+OPENRESEARCH_LEAF_SEED_MAX=5          # seed ceiling (default = paper N, hard cap 5)
 ```
 
 Dispatch contract (pure, fail-soft, one actuator per leaf, idempotent): each `plan[]` entry already carries `repair_class` + `cost`. The dispatcher runs only entries with `cost ≤ ceiling`, cheapest-first (the plan is already sorted), each wrapped so a failure logs a `leaf_actuate_failed` warning and falls back to the *existing* advisory directive — i.e. raising the flag can only ever *add* a repair attempt, never remove today's behaviour.
@@ -107,11 +107,11 @@ Dispatch contract (pure, fail-soft, one actuator per leaf, idempotent): each `pl
 ### 4.2 L5 — budget-gated multi-seed (ResNet's 1-seed-vs-5, 3×`0.4`)
 **Symptom:** a leaf demands mean±std / CI over the paper's N seeds; we ran 1 → capped at `0.4` ("single seed, no variance"). This is a *capacity* decision, not an agent bug.
 
-**Actuator (budget-gated, no silent cap):** a **seed-replication planner** that fires only when (a) a leaf's text demands variance/CI **and** (b) `describe_capacity(ctx)` + `ctx.remaining_s()` + `RunBudget.check_run_gpu_usd` confirm `N_extra_seeds` fit the remaining wall-clock and USD budget. It expands the cell's existing `ScopeSpec` seed axis to `min(paper_N, REPROLAB_LEAF_SEED_MAX, budget_fit)` and `log()`s exactly how many it dropped (the codebase's no-silent-truncation rule). Behind `REPROLAB_LEAF_ACTUATE_SEEDS` because it is the only GPU-cost actuator; default OFF.
+**Actuator (budget-gated, no silent cap):** a **seed-replication planner** that fires only when (a) a leaf's text demands variance/CI **and** (b) `describe_capacity(ctx)` + `ctx.remaining_s()` + `RunBudget.check_run_gpu_usd` confirm `N_extra_seeds` fit the remaining wall-clock and USD budget. It expands the cell's existing `ScopeSpec` seed axis to `min(paper_N, OPENRESEARCH_LEAF_SEED_MAX, budget_fit)` and `log()`s exactly how many it dropped (the codebase's no-silent-truncation rule). Behind `OPENRESEARCH_LEAF_ACTUATE_SEEDS` because it is the only GPU-cost actuator; default OFF.
 
 **Composes:** seed is already a first-class `ScopeSpec`/`cells.json` axis, so this re-uses the one-GPU-per-cell `run_matrix` placement unchanged; it borrows nothing from the locked BES/A-B workstream D.
 
-**Shipped scope (deliberate):** `plan_seed_expansion` (the budget arithmetic), `_wants_variance` (the detector), `expand_cells_for_seeds` (the pure replication), the staged seed plan, and the agent-facing seed directive are all built + tested. The *hot-path* replication is intentionally NOT wired into the run yet: replicated seed-cells produce N separate `per_model` leaves, but the leaf actually wants a single mean±std *aggregated* across seeds — that cross-seed aggregation is the GPU-validated follow-on. Wiring replication before it would burn N× the GPU for a still-unsatisfied leaf. So L5 today STAGES the plan + directs the agent; the auto-replication flips on with the aggregation step (behind the same `REPROLAB_LEAF_ACTUATE_SEEDS` sub-gate).
+**Shipped scope (deliberate):** `plan_seed_expansion` (the budget arithmetic), `_wants_variance` (the detector), `expand_cells_for_seeds` (the pure replication), the staged seed plan, and the agent-facing seed directive are all built + tested. The *hot-path* replication is intentionally NOT wired into the run yet: replicated seed-cells produce N separate `per_model` leaves, but the leaf actually wants a single mean±std *aggregated* across seeds — that cross-seed aggregation is the GPU-validated follow-on. Wiring replication before it would burn N× the GPU for a still-unsatisfied leaf. So L5 today STAGES the plan + directs the agent; the auto-replication flips on with the aggregation step (behind the same `OPENRESEARCH_LEAF_ACTUATE_SEEDS` sub-gate).
 
 ### 4.3 L6 — aggregation-completeness critic + arch preflight (VAE β-sweep)
 Two sub-issues, both `cost: none` or preflight:
@@ -144,15 +144,15 @@ Actuators mutate `code/` (render a figure, fold cells, re-run a cell). To stay h
 ---
 
 ## 7. Rollout sequence (each independently flag-gated + validated)
-1. **[DONE]** L1/L2/L3 — `45c3d32`. Validate: set `REPROLAB_SCOPE_INCLUSION_EXCLUDE=1` + a `--scope-spec` on a ResNet re-grade; confirm in-loop == shipped (0.6201).
+1. **[DONE]** L1/L2/L3 — `45c3d32`. Validate: set `OPENRESEARCH_SCOPE_INCLUSION_EXCLUDE=1` + a `--scope-spec` on a ResNet re-grade; confirm in-loop == shipped (0.6201).
 2. **L6(a)** aggregation-completeness critic (pure, free) — lowest risk, ship first of the new tier.
 3. **L4** leaf→search synthesizer (`cost: targeted_rerun`, rides existing staged-search).
-4. **L5** budget-gated seeds (`REPROLAB_LEAF_ACTUATE_SEEDS`, GPU-cost) — last, behind its own sub-gate.
-5. Master `REPROLAB_LEAF_ACTUATE` flips ON only after a clean A/B on Adam+ResNet shows actuation ≥ advisory at equal budget.
+4. **L5** budget-gated seeds (`OPENRESEARCH_LEAF_ACTUATE_SEEDS`, GPU-cost) — last, behind its own sub-gate.
+5. Master `OPENRESEARCH_LEAF_ACTUATE` flips ON only after a clean A/B on Adam+ResNet shows actuation ≥ advisory at equal budget.
 
 ## 8. Validation gate (how we prove it helped, not just changed)
 - **Deterministic re-roll** (no GPU, like the L1 proof): replay the saved Adam/ResNet leaves through the dispatcher; assert the free actuators (`render`/`aggregate`) recover the named `0.0` leaves and the score rises, with the excluded set unchanged.
-- **A/B** (the operator's `ab_compare.py` validator, D1): one paper, `REPROLAB_LEAF_ACTUATE` on vs off, same seed/budget/`generated_rubric.json` (`REPROLAB_REUSE_RUBRIC=1`); adopt only if Δ ≥ 0 at equal cost and no leaf regressed.
+- **A/B** (the operator's `ab_compare.py` validator, D1): one paper, `OPENRESEARCH_LEAF_ACTUATE` on vs off, same seed/budget/`generated_rubric.json` (`OPENRESEARCH_REUSE_RUBRIC=1`); adopt only if Δ ≥ 0 at equal cost and no leaf regressed.
 - **No silent caps:** every dropped seed / skipped actuation emits a `log()` line.
 
 ## 9. Test plan

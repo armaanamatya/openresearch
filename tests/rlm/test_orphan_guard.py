@@ -1,6 +1,6 @@
 """C2 — mid-run orphan-resource guard (2026-06-16).
 
-REPROLAB_ORPHAN_GUARD default OFF → kill_orphans is a no-op (byte-for-byte today);
+OPENRESEARCH_ORPHAN_GUARD default OFF → kill_orphans is a no-op (byte-for-byte today);
 ON → every registered experiment process group is SIGKILLed on abandonment.
 """
 
@@ -15,7 +15,7 @@ from backend.agents.rlm import orphan_guard as og
 
 @pytest.fixture(autouse=True)
 def _clear(monkeypatch):
-    monkeypatch.delenv("REPROLAB_ORPHAN_GUARD", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_ORPHAN_GUARD", raising=False)
     with og._lock:
         og._active_pgids.clear()
 
@@ -31,7 +31,7 @@ def test_off_state_kill_is_noop(monkeypatch):
 
 
 def test_on_state_kills_registered_groups(monkeypatch):
-    monkeypatch.setenv("REPROLAB_ORPHAN_GUARD", "1")
+    monkeypatch.setenv("OPENRESEARCH_ORPHAN_GUARD", "1")
     og.register(111)
     og.register(222)
     killed: list[tuple[int, int]] = []
@@ -43,7 +43,7 @@ def test_on_state_kills_registered_groups(monkeypatch):
 
 
 def test_deregister_prevents_kill(monkeypatch):
-    monkeypatch.setenv("REPROLAB_ORPHAN_GUARD", "1")
+    monkeypatch.setenv("OPENRESEARCH_ORPHAN_GUARD", "1")
     og.register(111)
     og.register(222)
     og.deregister(111)
@@ -54,7 +54,7 @@ def test_deregister_prevents_kill(monkeypatch):
 
 
 def test_dead_pgid_is_failsoft(monkeypatch):
-    monkeypatch.setenv("REPROLAB_ORPHAN_GUARD", "1")
+    monkeypatch.setenv("OPENRESEARCH_ORPHAN_GUARD", "1")
     og.register(999)
 
     def _raise(pid, sig):

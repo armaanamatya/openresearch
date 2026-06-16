@@ -6,7 +6,7 @@ logged but the scheduler keeps running.
 
 Disabled when:
   - REPROLAB_RUNPOD_API_KEY is unset (no RunPod usage)
-  - REPROLAB_POD_SWEEP_ENABLED=false
+  - OPENRESEARCH_POD_SWEEP_ENABLED=false
 """
 from __future__ import annotations
 
@@ -29,20 +29,20 @@ class PodSweepScheduler:
     def _enabled(self) -> bool:
         if not os.environ.get("REPROLAB_RUNPOD_API_KEY"):
             return False
-        val = os.environ.get("REPROLAB_POD_SWEEP_ENABLED", "true").lower()
+        val = os.environ.get("OPENRESEARCH_POD_SWEEP_ENABLED", "true").lower()
         if val in {"false", "0", "no", "off"}:
             return False
         return True
 
     def _interval_s(self) -> float:
         try:
-            return float(os.environ.get("REPROLAB_POD_SWEEP_INTERVAL_S", "1800"))
+            return float(os.environ.get("OPENRESEARCH_POD_SWEEP_INTERVAL_S", "1800"))
         except ValueError:
             return 1800.0
 
     def _max_age_s(self) -> int:
         try:
-            return int(os.environ.get("REPROLAB_POD_SWEEP_MAX_AGE_S", "7200"))
+            return int(os.environ.get("OPENRESEARCH_POD_SWEEP_MAX_AGE_S", "7200"))
         except ValueError:
             return 7200
 
@@ -50,7 +50,7 @@ class PodSweepScheduler:
         if not self._enabled():
             logger.info(
                 "pod_sweep_scheduler: disabled "
-                "(no REPROLAB_RUNPOD_API_KEY or REPROLAB_POD_SWEEP_ENABLED=false)"
+                "(no REPROLAB_RUNPOD_API_KEY or OPENRESEARCH_POD_SWEEP_ENABLED=false)"
             )
             return
         self._stop_event = asyncio.Event()

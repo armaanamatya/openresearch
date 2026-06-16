@@ -124,9 +124,9 @@ def test_is_dead_training_marker():
     assert is_dead_training("clean run, no marker") is False
 
 def test_is_enabled_default_off(monkeypatch):
-    monkeypatch.delenv("REPROLAB_DEAD_LOSS_EARLYSTOP", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_DEAD_LOSS_EARLYSTOP", raising=False)
     assert is_enabled() is False
-    monkeypatch.setenv("REPROLAB_DEAD_LOSS_EARLYSTOP", "1")
+    monkeypatch.setenv("OPENRESEARCH_DEAD_LOSS_EARLYSTOP", "1")
     assert is_enabled() is True
 
 
@@ -138,10 +138,10 @@ def test_run_matrix_early_stops_dead_cell(tmp_path, monkeypatch):
     """A cell whose loss is pinned gets killed mid-run and recorded as
     training_diverged (not 'ok'), with the flag ON. Proves the reader→kill→status
     wiring end-to-end through a real subprocess."""
-    monkeypatch.setenv("REPROLAB_DEAD_LOSS_EARLYSTOP", "1")
-    monkeypatch.setenv("REPROLAB_DEAD_LOSS_WINDOW", "5")
-    monkeypatch.setenv("REPROLAB_DEAD_LOSS_EPS", "1e-3")
-    monkeypatch.setenv("REPROLAB_DEAD_LOSS_MIN", "0.2")
+    monkeypatch.setenv("OPENRESEARCH_DEAD_LOSS_EARLYSTOP", "1")
+    monkeypatch.setenv("OPENRESEARCH_DEAD_LOSS_WINDOW", "5")
+    monkeypatch.setenv("OPENRESEARCH_DEAD_LOSS_EPS", "1e-3")
+    monkeypatch.setenv("OPENRESEARCH_DEAD_LOSS_MIN", "0.2")
     from backend.agents.rlm import gpu_cell_runner as gcr
 
     # A cell that emits a pinned loss forever, then would sleep 600s (the guard must
@@ -164,8 +164,8 @@ def test_run_matrix_early_stops_dead_cell(tmp_path, monkeypatch):
 
 def test_run_matrix_healthy_cell_not_flagged(tmp_path, monkeypatch):
     """A descending-loss cell completes normally as 'ok' even with the guard ON."""
-    monkeypatch.setenv("REPROLAB_DEAD_LOSS_EARLYSTOP", "1")
-    monkeypatch.setenv("REPROLAB_DEAD_LOSS_WINDOW", "5")
+    monkeypatch.setenv("OPENRESEARCH_DEAD_LOSS_EARLYSTOP", "1")
+    monkeypatch.setenv("OPENRESEARCH_DEAD_LOSS_WINDOW", "5")
     from backend.agents.rlm import gpu_cell_runner as gcr
     import json as _json
     script = tmp_path / "good_cell.py"
@@ -175,7 +175,7 @@ def test_run_matrix_healthy_cell_not_flagged(tmp_path, monkeypatch):
         "for i in range(30):\n"
         "    loss*=0.9\n"
         "    print(f'epoch {i} train_loss={loss:.4f}', flush=True)\n"
-        "od=os.environ['REPROLAB_CELL_OUTPUT_DIR']\n"
+        "od=os.environ['OPENRESEARCH_CELL_OUTPUT_DIR']\n"
         "json.dump({'status':'ok','test_accuracy':0.8}, open(od+'/metrics.json','w'))\n",
         encoding="utf-8",
     )

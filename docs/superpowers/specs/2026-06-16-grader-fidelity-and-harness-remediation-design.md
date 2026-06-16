@@ -29,11 +29,11 @@ A four-agent code-grounded audit of orchestration, the execution harness, gradin
 **Fix:** in `_grade_batch` (`leaf_scorer.py:1646`), call `complete_samples(n=N)` and take the **per-leaf median** of the N scores, then `roll_up` **once**. Per-*leaf* median is the right granularity; roll-up stays deterministic.
 
 - **Median, not mean** — deliberately. The all-`0.0`-on-failure fallback is an outlier a median over N≥3 shrugs off; this *also fixes* the "one failure zeroes 15 leaves" bug for free.
-- **N=3 default**, flag `REPROLAB_GRADER_SAMPLES` (`=1` → today's exact behavior). Odd for a clean median; √3≈1.7× variance cut.
+- **N=3 default**, flag `OPENRESEARCH_GRADER_SAMPLES` (`=1` → today's exact behavior). Odd for a clean median; √3≈1.7× variance cut.
 - **Concurrency:** reuse the existing ≤8 ThreadPool; submit the N copies as extra futures.
 - **Cost:** transient 3× grader calls; **cost-neutral at steady state** once A2 peels ~12 mechanical leaves off the LLM (≈7 judgment leaves × 3 ≈ today's 20 × 1).
 
-**Effort:** S. **Flag:** `REPROLAB_GRADER_SAMPLES=3`.
+**Effort:** S. **Flag:** `OPENRESEARCH_GRADER_SAMPLES=3`.
 
 ### A2. Deterministic-by-construction routing (shrink the noisy surface) — Q2
 
@@ -58,7 +58,7 @@ A new pure-Python `deterministic_leaf_checker` (built on the existing `run_invar
 
 **Modular/additive guarantee:** a leaf with **no** structured assertion (old rubric) falls back to LLM median-of-N. Deterministic routing only *adds* where annotations exist; it can never break an un-annotated rubric. Producer dependency: rubric-gen emits the assertions; reliable `provenance.json` (Workstream C / scoring-fairness D2).
 
-**Effort:** L (checker M + rubric-gen annotation M). **Flag:** `REPROLAB_DETERMINISTIC_LEAVES=1`.
+**Effort:** L (checker M + rubric-gen annotation M). **Flag:** `OPENRESEARCH_DETERMINISTIC_LEAVES=1`.
 
 ### A3. Evidence fingerprint + median-within-state; retire the MAX floor — Q3
 
@@ -72,7 +72,7 @@ A new pure-Python `deterministic_leaf_checker` (built on the existing `run_invar
 
 `_apply_best_of_run_floor`'s global `max()` is **stripped**. The disk-reader survives **demoted**: salvage/fallback **only** (run killed, or fresh grading impossible), returning `median-at-latest-evidence-key`, never global max.
 
-**Effort:** M. **Flag:** `REPROLAB_EVIDENCE_FINGERPRINT=1` (gates the new aggregation; off → legacy floor).
+**Effort:** M. **Flag:** `OPENRESEARCH_EVIDENCE_FINGERPRINT=1` (gates the new aggregation; off → legacy floor).
 
 ### A4. Champion-artifact aggregation (honest anti-regression) — Q3
 
@@ -80,14 +80,14 @@ A new pure-Python `deterministic_leaf_checker` (built on the existing `run_invar
 
 **Fix:** snapshot `code/` at each `verify_against_rubric`, content-addressed by `evidence_key` (reuse BES `_snapshot_code` + `_SNAPSHOT_IGNORE` — heavy artifacts excluded, so it's just source). At finalize, restore the snapshot whose **median-of-N grade is highest** and ship *that* grade → `score ≡ best artifact actually produced`. Unifies with BES (parallel-candidate champion) and best_attempt (cross-attempt champion) under one snapshot-grade-restore primitive.
 
-**Effort:** M. **Flag:** `REPROLAB_CHAMPION_ARTIFACT=1`.
+**Effort:** M. **Flag:** `OPENRESEARCH_CHAMPION_ARTIFACT=1`.
 
 ### A5. Decoupled, sampler-capable grader transport — Q5
 
 **Problem:** the grader rides the *root model's* `ctx.llm_client` (`run.py:186`) — so a root/CLI wedge takes grading down with it (the OmniZip failure). The OAuth SDK path exposes no temp/seed (`rlm_query.py:584`); the OpenAI path already sets `temperature=0` (`openai_client.py:~115`) but no `seed`/`n`.
 
 **Fix:**
-1. **Decouple** grader transport via `REPROLAB_GRADER_BACKEND`/`REPROLAB_GRADER_MODEL` (default = Sonnet, honoring the CLAUDE.md "grader stays Sonnet-quality" rule). Robustness: grading survives a root/CLI wedge.
+1. **Decouple** grader transport via `OPENRESEARCH_GRADER_BACKEND`/`OPENRESEARCH_GRADER_MODEL` (default = Sonnet, honoring the CLAUDE.md "grader stays Sonnet-quality" rule). Robustness: grading survives a root/CLI wedge.
 2. **One optional protocol method, backwards-compatible:**
    ```python
    # mixin default — every existing client works unchanged
@@ -99,7 +99,7 @@ A new pure-Python `deterministic_leaf_checker` (built on the existing `run_invar
    - `ClaudeLlmClient` (SDK) keeps the sequential fallback → median-of-N is its denoiser.
 3. **Graceful degradation:** grader always calls `complete_samples(n=N, temperature=0, seed=fixed)`; each backend honors what it can; median-of-N is the universal floor. OAuth-only → SDK Sonnet + median-of-3 ($0, rate-bounded); `ANTHROPIC_API_KEY` → raw temp=0 Sonnet; OpenAI-root → temp=0 + seed + native-n (near-deterministic, cheapest).
 
-**Effort:** M. **Flags:** `REPROLAB_GRADER_BACKEND`, `REPROLAB_GRADER_MODEL`.
+**Effort:** M. **Flags:** `OPENRESEARCH_GRADER_BACKEND`, `OPENRESEARCH_GRADER_MODEL`.
 
 ### A6. Evidence *visibility* (the grader must see what the harness wrote) — folds in Tier-2 #4
 
@@ -109,13 +109,13 @@ A new pure-Python `deterministic_leaf_checker` (built on the existing `run_invar
 - Replace the byte-slice with a **count-based deterministic per-cell digest** (every cell: `{status, headline metric, n_epochs}`) so no cell silently vanishes from the grader prompt regardless of grid width.
 - `_latest_metrics_path` ranks on `_per_model_has_measured_value`, not truthiness.
 
-**Effort:** S–M. **Flag:** `REPROLAB_GRADER_DIGEST=1`.
+**Effort:** S–M. **Flag:** `OPENRESEARCH_GRADER_DIGEST=1`.
 
 ### A7. `degraded` foot-gun + `meets_target` bug + EVIDENCE_GATE reconciliation
 
 - **`degraded` auto-detect** reads a possibly-stale `final_report.json` and can cap a *complete* grid at 0.35× (the regrade paths already pass `degraded=False` twice to dodge it, `finalize_regrade.py:219`). **Fix:** make `degraded` an explicit required arg; remove the `None` auto-detect default.
 - **`meets_target` bug:** both All-CNN arms show `meets_target=True` while `adjusted < target`. **Fix:** compute `meets_target` from the authoritative post-rescore score consistently.
-- **`REPROLAB_EVIDENCE_GATE`** is documented in CLAUDE.md as "the backstop" but has **zero `.py` references** (confirmed). **Fix:** either implement it (verify every cited `per_model` leaf exists on disk before the report is written) or strike the doc claim and document the 0.35 degraded cap as the actual (weaker) backstop. **Recommend: implement** — it's the honest backstop the deterministic checker (A2) can share.
+- **`OPENRESEARCH_EVIDENCE_GATE`** is documented in CLAUDE.md as "the backstop" but has **zero `.py` references** (confirmed). **Fix:** either implement it (verify every cited `per_model` leaf exists on disk before the report is written) or strike the doc claim and document the 0.35 degraded cap as the actual (weaker) backstop. **Recommend: implement** — it's the honest backstop the deterministic checker (A2) can share.
 
 **Effort:** S (each).
 
@@ -134,13 +134,13 @@ A new pure-Python `deterministic_leaf_checker` (built on the existing `run_invar
 ## Workstream C — Execution correctness (harness)
 
 ### C1. `--execution-mode max` is silently half-dropped (orchestration W1) — Tier-1 #2
-`resolve_experiment_timeout_s` reads `getattr(ctx, "execution_mode", None)` 3× but **`RunContext` has no `execution_mode` field** (confirmed) → the 6h max cap only applies if *also* exported as `REPROLAB_EXECUTION_MODE`. Operators get 2h on long papers and then the `partial_timeout` salvage everyone built. **Fix:** add `execution_mode` to `RunContext` and thread `execution_profile.execution_mode` at `run.py:1603` (or delete the dead ctx branch and make the env var the single source). **Effort:** S. **High leverage.**
+`resolve_experiment_timeout_s` reads `getattr(ctx, "execution_mode", None)` 3× but **`RunContext` has no `execution_mode` field** (confirmed) → the 6h max cap only applies if *also* exported as `OPENRESEARCH_EXECUTION_MODE`. Operators get 2h on long papers and then the `partial_timeout` salvage everyone built. **Fix:** add `execution_mode` to `RunContext` and thread `execution_profile.execution_mode` at `run.py:1603` (or delete the dead ctx branch and make the env var the single source). **Effort:** S. **High leverage.**
 
 ### C2. Mid-run orphan-resource guard (orchestration W7)
 The per-primitive daemon-thread timeout (`binding.py:524`) returns `retryable` to the caller but the abandoned `run_experiment` thread keeps holding GPU/VRAM. **Fix:** signal the experiment subprocess's process-group for termination on abandonment (reuse the cell runner's process-group-kill). **Effort:** M.
 
 ### C3. OOM mitigation: advisory → enforced
-The harness only *sets* `REPROLAB_CELL_BATCH_SCALE`; a non-cooperating `train_cell.py` OOMs identically 3×. OOM detection is stderr substring-match (`_OOM_SIGNATURES`) — a non-matching message misclassifies terminal→repairable. **Fix:** inject a `torch.cuda.set_per_process_memory_fraction` shim on retry; broaden OOM classification. **Effort:** M.
+The harness only *sets* `OPENRESEARCH_CELL_BATCH_SCALE`; a non-cooperating `train_cell.py` OOMs identically 3×. OOM detection is stderr substring-match (`_OOM_SIGNATURES`) — a non-matching message misclassifies terminal→repairable. **Fix:** inject a `torch.cuda.set_per_process_memory_fraction` shim on retry; broaden OOM classification. **Effort:** M.
 
 ### C4. env_pin docker coverage gap
 `base_tag_for` claims `cu121` for docker, but the `.pth`-following `LD_LIBRARY_PATH` prepend lives only in `LocalProcessBackend` — docker exec doesn't get it. **Fix:** route docker exec through the same prepend, or stop claiming cu121 for docker so strip + lib-fix agree on scope. **Effort:** S.
@@ -173,7 +173,7 @@ With 1 clean pair (+0.085 < within-paper variance) and the repo's own ≥3-paire
 ## Workstream E — Integration & posture
 
 ### E1. Resolve the negative-lessons / context-map merge debt — Tier-3 #7
-**Confirmed:** `context_map.py` + `lesson_distiller.py` exist on `m2`/`m4`/`m9`/`origin/bes`/`origin/feat/rlm-wedge-hardening` but **not on `feat/azure-aks-gpu`**; CLAUDE.md here documents `REPROLAB_*` flags while `origin/bes` ships them as **`OPENRESEARCH_*`** (prefix drifted). An audit already exists: `docs/audits/2026-06-07-bes-doc-alignment-audit.md` (on `m2`). Today `REPROLAB_NEGATIVE_LESSONS=1` is a **silent no-op** on this branch → operators believe a cross-run learning loop is active when nothing learns across runs. **Fix:** merge the two modules into this branch under **one canonical flag prefix**, or strike the CLAUDE.md paragraphs. **Recommend merge** — cross-run failure memory is the single biggest *missing* self-improvement lever. **Effort:** M (merge + flag reconciliation).
+**Confirmed:** `context_map.py` + `lesson_distiller.py` exist on `m2`/`m4`/`m9`/`origin/bes`/`origin/feat/rlm-wedge-hardening` but **not on `feat/azure-aks-gpu`**; CLAUDE.md here documents `REPROLAB_*` flags while `origin/bes` ships them as **`OPENRESEARCH_*`** (prefix drifted). An audit already exists: `docs/audits/2026-06-07-bes-doc-alignment-audit.md` (on `m2`). Today `OPENRESEARCH_NEGATIVE_LESSONS=1` is a **silent no-op** on this branch → operators believe a cross-run learning loop is active when nothing learns across runs. **Fix:** merge the two modules into this branch under **one canonical flag prefix**, or strike the CLAUDE.md paragraphs. **Recommend merge** — cross-run failure memory is the single biggest *missing* self-improvement lever. **Effort:** M (merge + flag reconciliation).
 
 ### E2. Flip proven default-OFF guards ON — Tier-3 #8
 `best_attempt`, `dead_training_guard`, `execution_smoke`, `preflight_smoke` are real, tested, and credited with recoveries — yet default-OFF, while unproven BES got an A/B harness. **Fix:** flip them ON (or add a one-line rationale per flag). `dead_training_guard`'s false-positive design is conservative (4 simultaneous conditions); the cost it prevents (~19min/dead cell, fake-ok scoring) is high. **Effort:** S.
@@ -182,7 +182,7 @@ With 1 clean pair (+0.085 < within-paper variance) and the repo's own ≥3-paire
 "Fail-soft everywhere" = silent degradation everywhere (cells→monolithic fallthrough, env_pin `|| true`, duplicate-triple overwrite, graded-but-warned verify). **Fix:** every degrade emits a coded `run_warning` and appends to a `degradations_taken[]` list in the report (the pattern already exists for `cells_manifest_restored` — make it universal). **Effort:** M.
 
 ### E4. Doc/code reconciliation
-Beyond E1: `REPROLAB_EVIDENCE_GATE` (A7), "12 primitives" (actually 16, `primitives.py:7182`), the "azure = NotImplementedError stub" claim (code returns a populated `GpuCapacity`). **Fix:** reconcile CLAUDE.md to the union-vs-checkout reality, or annotate per-branch. **Effort:** S.
+Beyond E1: `OPENRESEARCH_EVIDENCE_GATE` (A7), "12 primitives" (actually 16, `primitives.py:7182`), the "azure = NotImplementedError stub" claim (code returns a populated `GpuCapacity`). **Fix:** reconcile CLAUDE.md to the union-vs-checkout reality, or annotate per-branch. **Effort:** S.
 
 ---
 
@@ -190,14 +190,14 @@ Beyond E1: `REPROLAB_EVIDENCE_GATE` (A7), "12 primitives" (actually 16, `primiti
 
 | Flag | Default | Workstream | Effect |
 |---|---|---|---|
-| `REPROLAB_GRADER_SAMPLES` | `3` (was `1`) | A1 | median-of-N per leaf |
-| `REPROLAB_DETERMINISTIC_LEAVES` | `1` | A2 | route mechanical leaves to Python checker |
-| `REPROLAB_EVIDENCE_FINGERPRINT` | `1` | A3 | median-within-state; strip MAX floor |
-| `REPROLAB_CHAMPION_ARTIFACT` | `1` | A4 | ship best artifact, graded fresh |
-| `REPROLAB_GRADER_BACKEND` / `_MODEL` | Sonnet | A5 | decoupled, sampler-capable transport |
-| `REPROLAB_GRADER_DIGEST` | `1` | A6 | count-based per-cell grader digest |
-| `REPROLAB_EVIDENCE_GATE` | `1` | A7 | verify cited leaves exist on disk |
-| `REPROLAB_REQUIRE_STAMPED_AB` | `1` | D1 | ab_compare validator mode |
+| `OPENRESEARCH_GRADER_SAMPLES` | `3` (was `1`) | A1 | median-of-N per leaf |
+| `OPENRESEARCH_DETERMINISTIC_LEAVES` | `1` | A2 | route mechanical leaves to Python checker |
+| `OPENRESEARCH_EVIDENCE_FINGERPRINT` | `1` | A3 | median-within-state; strip MAX floor |
+| `OPENRESEARCH_CHAMPION_ARTIFACT` | `1` | A4 | ship best artifact, graded fresh |
+| `OPENRESEARCH_GRADER_BACKEND` / `_MODEL` | Sonnet | A5 | decoupled, sampler-capable transport |
+| `OPENRESEARCH_GRADER_DIGEST` | `1` | A6 | count-based per-cell grader digest |
+| `OPENRESEARCH_EVIDENCE_GATE` | `1` | A7 | verify cited leaves exist on disk |
+| `OPENRESEARCH_REQUIRE_STAMPED_AB` | `1` | D1 | ab_compare validator mode |
 | (flip ON) `best_attempt`, `dead_training_guard`, `execution_smoke`, `preflight_smoke` | ON | E2 | proven guards on by default |
 
 All new behavior flag-gated; `=0`/`off` restores prior behavior byte-for-byte. Default-ON only after the validation gate (below) passes.
@@ -251,12 +251,12 @@ A literature-grounding companion — **`2026-06-16-grader-noise-and-harness-reme
 
 **Addenda (non-binding):**
 - **A1** — make median-of-N a *cascade* (escalate only judgment / first-two-samples-*disagree* leaves; cost-saving cascades arXiv:2502.09054; panel benefit plateaus at n_eff≈2.2, arXiv:2605.29800 → cap N≈3) and gate its default-ON on the **Lane-0 calibration σ-drop** — Rating Roulette (arXiv:2510.27106) warns same-model resampling may not converge at fixed settings, so *measure* σ-before/after, don't assume √N. Escalate on cross-sample disagreement, **not** verbalized confidence (judge ECE up to 39%, arXiv:2508.06225).
-- **A5** — add an *optional cross-family* judgment-leaf grader, gated on a **measured** self-preference gap: Sonnet grades Sonnet-authored code, and cross-family > self-verification (arXiv:2512.02304, arXiv:2402.11436). A5's `REPROLAB_GRADER_BACKEND`/`_MODEL` mechanism already supports it — it is just never *used* for diversity. (Bias fix, not variance — low priority, off by default.)
+- **A5** — add an *optional cross-family* judgment-leaf grader, gated on a **measured** self-preference gap: Sonnet grades Sonnet-authored code, and cross-family > self-verification (arXiv:2512.02304, arXiv:2402.11436). A5's `OPENRESEARCH_GRADER_BACKEND`/`_MODEL` mechanism already supports it — it is just never *used* for diversity. (Bias fix, not variance — low priority, off by default.)
 - **B2** — surface prior grades/failures to the root as *tool/memory observations*, not its own prior prose (+23–93pp correction, Self-Correction Illusion arXiv:2606.05976). The harness already does this structurally; lean into the framing.
 - **D1** — report every Δ relative to the **measured σ_grader band** (Lane-0); gate "significant" on Δ > kσ or a conformal bound (arXiv:2602.03814).
 
 **New levers from the companion (§3.5):**
-- **IMPLEMENTED 2026-06-16 (this branch):** a **decline-aware convergence advisory.** The existing flatline detector (`_rubric_plateaued`) misses a *declining* trajectory — the overthinking / inverse-scaling signal (arXiv:2604.10739, arXiv:2507.14417): the score peaked and recent changes made it worse, yet the run loops to the cap degrading further. Added `_rubric_declining` + `_decline_advisory_note` + a flag-gated (`REPROLAB_RUBRIC_DECLINE_ADVISORY`, **default-off**) regression `convergence_note`. Purely advisory (a tool-result note, never a forced stop); fail-soft; 0-regress when off. (Budget surfacing intentionally omitted for now — the note carries no wall-clock.) `backend/agents/rlm/primitives.py`; 15 unit tests in `tests/agents/rlm/test_scope_self_heal.py` (green). *Stash-verified isolated from the in-flight `leaf_scorer.py` refactor.*
+- **IMPLEMENTED 2026-06-16 (this branch):** a **decline-aware convergence advisory.** The existing flatline detector (`_rubric_plateaued`) misses a *declining* trajectory — the overthinking / inverse-scaling signal (arXiv:2604.10739, arXiv:2507.14417): the score peaked and recent changes made it worse, yet the run loops to the cap degrading further. Added `_rubric_declining` + `_decline_advisory_note` + a flag-gated (`OPENRESEARCH_RUBRIC_DECLINE_ADVISORY`, **default-off**) regression `convergence_note`. Purely advisory (a tool-result note, never a forced stop); fail-soft; 0-regress when off. (Budget surfacing intentionally omitted for now — the note carries no wall-clock.) `backend/agents/rlm/primitives.py`; 15 unit tests in `tests/agents/rlm/test_scope_self_heal.py` (green). *Stash-verified isolated from the in-flight `leaf_scorer.py` refactor.*
 - **Design-only (deferred):** broader per-iteration budget surfacing + capped / oscillation-aware forced-iteration (BATS / AgentStop arXiv:2605.15206 / overthinking) — needs a proactive per-iteration injection surface (e.g. piggyback `check_user_messages`), so deferred to avoid an invasive change to a hot file.
 
 Full grounding, the SOTA→workstream map, the efficiency ledger, and the "where this could fail" stress-test live in the companion.

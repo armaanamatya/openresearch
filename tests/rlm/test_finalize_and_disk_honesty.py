@@ -10,7 +10,7 @@ Three pure(ish) helpers are pinned here:
     placeholder (or no file) stays the empty-fail tagged ``exec_timeout``/``exec_stalled``.
   * ``_dir_footprint_gb`` — approximate on-disk footprint, skipping the harness
     per-run ``.venv`` (and ``__pycache__``/``.git``).
-  * ``_disk_floor_violation`` — fires ``disk_exhausted`` below ``REPROLAB_DISK_FLOOR_GB``,
+  * ``_disk_floor_violation`` — fires ``disk_exhausted`` below ``OPENRESEARCH_DISK_FLOOR_GB``,
     but attributes a small-run-on-a-full-volume to OTHER runs' caches (GC advice).
 
 Style mirrors tests/rlm/test_run_experiment_timeout.py: sync test functions,
@@ -194,7 +194,7 @@ def test_disk_floor_small_run_on_full_volume_blames_other_runs(
             total=11 * 10**12, used=11 * 10**12 - 2 * 10**9, free=2 * 10**9
         ),
     )
-    monkeypatch.setenv("REPROLAB_DISK_FLOOR_GB", "15")
+    monkeypatch.setenv("OPENRESEARCH_DISK_FLOOR_GB", "15")
 
     out = P._disk_floor_violation([str(tmp_path)])
     assert out is not None
@@ -214,19 +214,19 @@ def test_disk_floor_above_floor_returns_none(
             total=11 * 10**12, used=10 * 10**12, free=500 * 10**9
         ),
     )
-    monkeypatch.setenv("REPROLAB_DISK_FLOOR_GB", "15")
+    monkeypatch.setenv("OPENRESEARCH_DISK_FLOOR_GB", "15")
     assert P._disk_floor_violation([str(tmp_path)]) is None
 
 
 def test_disk_floor_disabled_returns_none(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """REPROLAB_DISK_FLOOR_GB=0 disables the check regardless of free space."""
+    """OPENRESEARCH_DISK_FLOOR_GB=0 disables the check regardless of free space."""
     monkeypatch.setattr(
         "shutil.disk_usage",
         lambda p: types.SimpleNamespace(
             total=11 * 10**12, used=11 * 10**12 - 1 * 10**9, free=1 * 10**9
         ),
     )
-    monkeypatch.setenv("REPROLAB_DISK_FLOOR_GB", "0")
+    monkeypatch.setenv("OPENRESEARCH_DISK_FLOOR_GB", "0")
     assert P._disk_floor_violation([str(tmp_path)]) is None

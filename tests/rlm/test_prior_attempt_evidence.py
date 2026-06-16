@@ -22,11 +22,11 @@ def _write_cell(root, attempt, run_id, cell, payload):
 
 
 def test_flag_default_off(monkeypatch):
-    monkeypatch.delenv("REPROLAB_PRIOR_ATTEMPT_EVIDENCE", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_PRIOR_ATTEMPT_EVIDENCE", raising=False)
     assert is_enabled() is False
-    monkeypatch.setenv("REPROLAB_PRIOR_ATTEMPT_EVIDENCE", "1")
+    monkeypatch.setenv("OPENRESEARCH_PRIOR_ATTEMPT_EVIDENCE", "1")
     assert is_enabled() is True
-    monkeypatch.setenv("REPROLAB_PRIOR_ATTEMPT_EVIDENCE", "off")
+    monkeypatch.setenv("OPENRESEARCH_PRIOR_ATTEMPT_EVIDENCE", "off")
     assert is_enabled() is False
 
 
@@ -85,12 +85,12 @@ def test_guidance_hook_integration(tmp_path, monkeypatch):
 
     _write_cell(tmp_path, "20260609T000000-000000-ffffff", "r1",
                 "a_base_cifar10", {"status": "ok", "test_error_pct": 12.9, "lr": 0.05})
-    monkeypatch.setenv("REPROLAB_PRIOR_ATTEMPT_EVIDENCE", "1")
+    monkeypatch.setenv("OPENRESEARCH_PRIOR_ATTEMPT_EVIDENCE", "1")
     guidance = _compute_constraint_guidance("local", None, project_dir=tmp_path)
     assert "PRIOR-ATTEMPT MEASURED EVIDENCE" in guidance
     assert "a_base_cifar10" in guidance
 
-    monkeypatch.delenv("REPROLAB_PRIOR_ATTEMPT_EVIDENCE")
+    monkeypatch.delenv("OPENRESEARCH_PRIOR_ATTEMPT_EVIDENCE")
     guidance_off = _compute_constraint_guidance("local", None, project_dir=tmp_path)
     assert "PRIOR-ATTEMPT MEASURED EVIDENCE" not in guidance_off
 

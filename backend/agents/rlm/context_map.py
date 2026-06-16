@@ -1,4 +1,4 @@
-"""PEEK-lite intra-run context map (FLAG-1, ``REPROLAB_CONTEXT_MAP``).
+"""PEEK-lite intra-run context map (FLAG-1, ``OPENRESEARCH_CONTEXT_MAP``).
 
 A free, deterministic orientation cache. The structured outputs of the three
 orientation primitives — ``understand_section``, ``extract_hyperparameters``,
@@ -7,9 +7,9 @@ orientation primitives — ``understand_section``, ``extract_hyperparameters``,
 facts before re-deriving them.
 
 Navigation aid ONLY — never a report source (the evidence gate
-``REPROLAB_EVIDENCE_GATE`` remains the backstop).
+``OPENRESEARCH_EVIDENCE_GATE`` remains the backstop).
 
-Off-state contract: when ``REPROLAB_CONTEXT_MAP`` is not enabled,
+Off-state contract: when ``OPENRESEARCH_CONTEXT_MAP`` is not enabled,
 :func:`update_context_map` is a no-op and :func:`read_context_map` returns ``{}``.
 
 Bounds (deterministic): ``MAX_FIELDS`` distinct fields, ``MAX_VALUES`` values
@@ -17,7 +17,7 @@ per field, ``MAX_BYTES`` serialized ceiling. Thread-safe (a module lock guards
 the read-modify-write) and fail-soft (any error is swallowed — a broken
 orientation cache must never break a primitive call).
 
-The config shim aliases ``REPROLAB_CONTEXT_MAP`` <-> ``REPROLAB_CONTEXT_MAP``
+The config shim aliases ``OPENRESEARCH_CONTEXT_MAP`` <-> ``OPENRESEARCH_CONTEXT_MAP``
 bidirectionally, so either spelling enables it.
 """
 from __future__ import annotations
@@ -43,7 +43,7 @@ _LOCK = threading.Lock()
 
 
 def _enabled() -> bool:
-    return os.environ.get("REPROLAB_CONTEXT_MAP", "").strip().lower() in (
+    return os.environ.get("OPENRESEARCH_CONTEXT_MAP", "").strip().lower() in (
         "on",
         "1",
         "true",

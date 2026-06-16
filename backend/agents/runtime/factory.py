@@ -214,7 +214,7 @@ def selected_provider(provider: ProviderName | str | None = None) -> ProviderNam
     """Resolve the requested provider from argument, env, or settings."""
     raw = (
         provider
-        or os.getenv("REPROLAB_LLM_PROVIDER")
+        or os.getenv("OPENRESEARCH_LLM_PROVIDER")
         or get_settings().llm_provider
         or "anthropic"
     )
@@ -262,7 +262,7 @@ def validate_provider_credentials(provider: ProviderName | str | None = None) ->
             raise ProviderConfigurationError(
                 provider=resolved,
                 reason=(
-                    "REPROLAB_LLM_AUTH_STRATEGY=api_only requires a funded "
+                    "OPENRESEARCH_LLM_AUTH_STRATEGY=api_only requires a funded "
                     "ANTHROPIC_API_KEY but none was found.  Either set the API "
                     "key, or switch the strategy to 'auto' / 'oauth_only'."
                 ),
@@ -271,7 +271,7 @@ def validate_provider_credentials(provider: ProviderName | str | None = None) ->
             raise ProviderConfigurationError(
                 provider=resolved,
                 reason=(
-                    "REPROLAB_LLM_AUTH_STRATEGY=oauth_only requires a logged-in "
+                    "OPENRESEARCH_LLM_AUTH_STRATEGY=oauth_only requires a logged-in "
                     "Claude Code CLI subscription but none was detected.  Run "
                     "`claude login` or switch the strategy to 'auto' / 'api_only'."
                 ),

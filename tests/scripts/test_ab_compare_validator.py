@@ -1,13 +1,13 @@
 """scripts/ab_compare.py — D1 validator mode + D3 BES default posture.
 
-Validator mode (``--require-stamped`` / ``REPROLAB_REQUIRE_STAMPED_AB``,
+Validator mode (``--require-stamped`` / ``OPENRESEARCH_REQUIRE_STAMPED_AB``,
 default OFF) must refuse an apples-to-oranges Δ: it requires BOTH arms to be
 stamped, their ``rubric_tree.json`` sha256 to match, and their recorded
 ``scope`` to match — selecting the BEST report per arm. Reporter mode (flag
 off) must stay byte-for-byte unchanged.
 
 D3 asserts the BES master gate (``Settings.bes_enabled`` /
-``REPROLAB_BES_ENABLED``) defaults OFF — BES stays default-OFF per the
+``OPENRESEARCH_BES_ENABLED``) defaults OFF — BES stays default-OFF per the
 2026-06-16 posture (1 clean pair, the ≥3-paired-SDAR bar unmet).
 """
 
@@ -264,12 +264,12 @@ def test_reporter_mode_still_admits_unstamped_control(tmp_path: Path):
 
 
 def test_env_flag_enables_validator_via_main(tmp_path: Path, monkeypatch, capsys):
-    # REPROLAB_REQUIRE_STAMPED_AB=1 turns on validator mode through main();
+    # OPENRESEARCH_REQUIRE_STAMPED_AB=1 turns on validator mode through main();
     # an unstamped control is refused with a nonzero exit + REFUSED on stderr.
     _write_arm(tmp_path, "prj_legacy", arm=None, score=0.55)
     _write_arm(tmp_path, "prj_bes", arm="bes", score=0.60)
 
-    monkeypatch.setenv("REPROLAB_REQUIRE_STAMPED_AB", "1")
+    monkeypatch.setenv("OPENRESEARCH_REQUIRE_STAMPED_AB", "1")
     monkeypatch.setattr(
         sys, "argv",
         ["ab_compare.py", "--pair-id", "ab-1", "--runs-root", str(tmp_path),
@@ -284,7 +284,7 @@ def test_env_flag_enables_validator_via_main(tmp_path: Path, monkeypatch, capsys
 def test_reporter_mode_exit_zero_on_valid_pair_via_main(tmp_path: Path, monkeypatch, capsys):
     # Flag OFF (default): a basic valid pair exits 0, no REFUSED, unchanged.
     _valid_pair(tmp_path)
-    monkeypatch.delenv("REPROLAB_REQUIRE_STAMPED_AB", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_REQUIRE_STAMPED_AB", raising=False)
     monkeypatch.setattr(
         sys, "argv",
         ["ab_compare.py", "--pair-id", "ab-1", "--runs-root", str(tmp_path),
@@ -318,7 +318,7 @@ def test_bes_rlm_enabled_helper_is_false_by_default(monkeypatch):
     # must report BES disabled (enabled AND n>1 are both required).
     from backend.config import Settings
 
-    for var in ("REPROLAB_BES_ENABLED", "REPROLAB_BES_CANDIDATES_PER_CLUSTER"):
+    for var in ("OPENRESEARCH_BES_ENABLED", "OPENRESEARCH_BES_CANDIDATES_PER_CLUSTER"):
         monkeypatch.delenv(var, raising=False)
     s = Settings()
     bes_active = bool(s.bes_enabled) and int(s.bes_candidates_per_cluster) > 1

@@ -166,7 +166,7 @@ def extract_select_value(metrics: dict | None, metric_key: str) -> float | None:
 def _set_both(cell: dict, key: str, value: Any) -> None:
     """Write a param to BOTH ``cell[key]`` and ``cell["params"][key]``.
 
-    The cell runner serializes the WHOLE cell to ``REPROLAB_CELL_PARAMS`` and a
+    The cell runner serializes the WHOLE cell to ``OPENRESEARCH_CELL_PARAMS`` and a
     given paper's ``train_cell.py`` may read its lr/epochs from EITHER the top level
     (All-CNN) OR ``["params"]`` (Adam). Writing both makes the synthesized cell
     train at the intended value regardless of which shape the trainer reads, and

@@ -25,8 +25,8 @@ Qwen weights, real ALFWorld episodes, etc.
 **Default test invocation** (smallest-two scope, capped for cost):
 
 ```
-REPROLAB_RUNPOD_CLOUD_TYPE=COMMUNITY \
-REPROLAB_BASELINE_EXTRA_GUIDANCE="SCOPE: reproduce SDAR using ONLY the two SMALLEST model variants the paper tests — Qwen3-1.7B-Instruct and Qwen2.5-3B-Instruct. SKIP Qwen2.5-7B entirely. Use the real pretrained weights from HuggingFace (no surrogate) and the real ALFWorld + Search-QA + WebShop datasets, but evaluate on a small representative slice (e.g. 32 tasks per env) to keep wall-clock practical on a single 24–48GB GPU. Report results for both 1.7B and 3B." \
+OPENRESEARCH_RUNPOD_CLOUD_TYPE=COMMUNITY \
+OPENRESEARCH_BASELINE_EXTRA_GUIDANCE="SCOPE: reproduce SDAR using ONLY the two SMALLEST model variants the paper tests — Qwen3-1.7B-Instruct and Qwen2.5-3B-Instruct. SKIP Qwen2.5-7B entirely. Use the real pretrained weights from HuggingFace (no surrogate) and the real ALFWorld + Search-QA + WebShop datasets, but evaluate on a small representative slice (e.g. 32 tasks per env) to keep wall-clock practical on a single 24–48GB GPU. Report results for both 1.7B and 3B." \
 .venv/bin/python -m backend.cli reproduce 2605.15155 \
   --mode rlm --sandbox runpod --model claude-oauth \
   --vram-gb 38 --max-wall-clock 5400 --max-pod-seconds 5400 --max-usd 20
@@ -38,7 +38,7 @@ REPROLAB_BASELINE_EXTRA_GUIDANCE="SCOPE: reproduce SDAR using ONLY the two SMALL
 |---|---|---|
 | React duplicate-key warnings (`baseline-candidate-path_1/2/3`) on every multi-iteration run — root cause: foldCandidateProposed blindly appends when the LLM root re-emits candidate IDs across iterations | dedupe by node.id in foldCandidateProposed + dedupe edges in layoutConstellation | `c4860e3` |
 | Agent wrote a TinyLM surrogate against synthetic ALFWorld-like data (rubric ceiling 0.13 even on a real A6000) | NO STUB block in baseline-implementation prompt + RUNTIME COMPUTE DETECTION (popped from stash) | `4b6798f` |
-| No clean way to scope a paper to a subset of its model sweep (e.g. "only Qwen 1.7B + 3B") | `REPROLAB_BASELINE_EXTRA_GUIDANCE` per-run env-var hook (paper-agnostic) | `9f5233c` |
+| No clean way to scope a paper to a subset of its model sweep (e.g. "only Qwen 1.7B + 3B") | `OPENRESEARCH_BASELINE_EXTRA_GUIDANCE` per-run env-var hook (paper-agnostic) | `9f5233c` |
 | RunPod returns HTTP 500 "no instances currently available" — the resolver's ladder existed but didn't auto-advance on capacity errors | Capacity-error escalation in `runpod_backend._request_json` (`RUNPOD_CAPACITY_EXHAUSTED:` sentinel) + run_experiment escalation loop now matches it | `aae89ad` |
 | Elapsed-clock badge kept ticking on a dead/failed run, showing "elapsed: 5h" misleadingly | runMeta.completedAt forwarded only when status is terminal; elapsedMs uses completedAtMs as reference when present | `d3151d5` |
 | `pip install -q -r requirements.txt && python train.py` silently masked bitsandbytes-install failures on the cuda-runtime image (no dev headers), causing downstream "ModuleNotFoundError: transformers" | POD SETUP block in prompt + reverted default `runpod_image` to cuda-devel-ubuntu22.04 | `88c45b0` |

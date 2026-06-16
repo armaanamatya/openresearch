@@ -386,7 +386,7 @@ class TestWriteFinalReport:
         project_dir = tmp_path / "project"
         project_dir.mkdir()
         report = self._build_report()
-        monkeypatch.delenv("REPROLAB_UPDATE_CALIBRATION", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_UPDATE_CALIBRATION", raising=False)
 
         def fail_recompute(*args, **kwargs):
             raise AssertionError("calibration recompute should be opt-in")
@@ -734,7 +734,7 @@ class TestMetricProvenance:
         assert report.metrics_sha256 == "abc123"
 
     def test_hatch_off_keeps_root_metrics(self, make_context, tmp_path, monkeypatch):
-        monkeypatch.setenv("REPROLAB_METRIC_PROVENANCE", "false")
+        monkeypatch.setenv("OPENRESEARCH_METRIC_PROVENANCE", "false")
         ctx = _record_run_experiment(make_context(tmp_path))
         (ctx.project_dir / "experiment_runs.jsonl").write_text(
             json.dumps({"success": True, "experiment_run_id": "r1", "metrics": {"accuracy": 0.81}}) + "\n",
@@ -767,10 +767,10 @@ class TestMetricProvenance:
         assert _latest_successful_experiment_record(tmp_path) is None
 
     def test_metric_provenance_hatch_parsing(self, monkeypatch):
-        monkeypatch.delenv("REPROLAB_METRIC_PROVENANCE", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_METRIC_PROVENANCE", raising=False)
         assert _metric_provenance_enabled() is True
         for off in ("false", "0", "no", "off"):
-            monkeypatch.setenv("REPROLAB_METRIC_PROVENANCE", off)
+            monkeypatch.setenv("OPENRESEARCH_METRIC_PROVENANCE", off)
             assert _metric_provenance_enabled() is False, off
 
 
@@ -787,8 +787,8 @@ class TestExperimentArmStamp:
                 bes_select_metric="cluster_score",
             ),
         )
-        monkeypatch.delenv("REPROLAB_AB_ARM", raising=False)
-        monkeypatch.delenv("REPROLAB_AB_PAIR_ID", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_AB_ARM", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_AB_PAIR_ID", raising=False)
         project_dir = tmp_path / "project"
         project_dir.mkdir()
         report = RLMFinalReport(**_BASE_REPORT_DICT)
@@ -808,7 +808,7 @@ class TestExperimentArmStamp:
                 bes_select_metric="cluster_score",
             ),
         )
-        monkeypatch.setenv("REPROLAB_AB_PAIR_ID", "allcnn-ab-1")
+        monkeypatch.setenv("OPENRESEARCH_AB_PAIR_ID", "allcnn-ab-1")
         project_dir = tmp_path / "project"
         (project_dir / "rlm_state").mkdir(parents=True)
         (project_dir / "rlm_state" / "bes_candidates.json").write_text(json.dumps({

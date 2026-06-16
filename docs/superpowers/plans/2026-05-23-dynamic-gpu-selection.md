@@ -879,13 +879,13 @@ def test_default_values_match_spec():
 
 
 def test_env_var_overrides(monkeypatch):
-    monkeypatch.setenv("REPROLAB_DYNAMIC_GPU", "false")
-    monkeypatch.setenv("REPROLAB_FORCE_SINGLE_GPU", "false")
-    monkeypatch.setenv("REPROLAB_MAX_GPU_USD_PER_HOUR", "2.5")
-    monkeypatch.setenv("REPROLAB_MAX_RUN_GPU_USD", "3.0")
-    monkeypatch.setenv("REPROLAB_DYNAMIC_GPU_HEADROOM", "1.5")
-    monkeypatch.setenv("REPROLAB_DYNAMIC_GPU_FALLBACK_VRAM_GB", "40")
-    monkeypatch.setenv("REPROLAB_DYNAMIC_GPU_MAX_ESCALATIONS", "3")
+    monkeypatch.setenv("OPENRESEARCH_DYNAMIC_GPU", "false")
+    monkeypatch.setenv("OPENRESEARCH_FORCE_SINGLE_GPU", "false")
+    monkeypatch.setenv("OPENRESEARCH_MAX_GPU_USD_PER_HOUR", "2.5")
+    monkeypatch.setenv("OPENRESEARCH_MAX_RUN_GPU_USD", "3.0")
+    monkeypatch.setenv("OPENRESEARCH_DYNAMIC_GPU_HEADROOM", "1.5")
+    monkeypatch.setenv("OPENRESEARCH_DYNAMIC_GPU_FALLBACK_VRAM_GB", "40")
+    monkeypatch.setenv("OPENRESEARCH_DYNAMIC_GPU_MAX_ESCALATIONS", "3")
     s = Settings()
     assert s.dynamic_gpu_enabled is False
     assert s.force_single_gpu is False
@@ -897,8 +897,8 @@ def test_env_var_overrides(monkeypatch):
 
 
 def test_empty_cost_caps_treated_as_no_cap(monkeypatch):
-    monkeypatch.setenv("REPROLAB_MAX_GPU_USD_PER_HOUR", "0")
-    monkeypatch.setenv("REPROLAB_MAX_RUN_GPU_USD", "")
+    monkeypatch.setenv("OPENRESEARCH_MAX_GPU_USD_PER_HOUR", "0")
+    monkeypatch.setenv("OPENRESEARCH_MAX_RUN_GPU_USD", "")
     s = Settings()
     # 0 is allowed numerically; consumer treats 0 as "no cap" (see resolver test).
     assert s.max_gpu_usd_per_hour == 0.0
@@ -1294,7 +1294,7 @@ def test_backend_uses_gpu_plan_when_provided():
 def test_backend_back_compat_no_plan_uses_settings():
     """When gpu_plan is None, backend falls back to legacy Settings defaults."""
     backend = RunpodBackend(api_key="dummy", gpu_plan=None)
-    # Default per repo: REPROLAB_RUNPOD_GPU_TYPE="NVIDIA GeForce RTX 4090"
+    # Default per repo: OPENRESEARCH_RUNPOD_GPU_TYPE="NVIDIA GeForce RTX 4090"
     assert "RTX 4090" in backend.gpu_type or "4090" in backend.gpu_type
     assert backend.gpu_count == 1
 
@@ -1696,7 +1696,7 @@ def test_oom_with_empty_ladder_fails_with_cost_summary(ctx):
 
 def test_max_escalations_cap_honored(ctx, monkeypatch):
     """If max_escalations=1, second OOM must not trigger a third attempt."""
-    monkeypatch.setenv("REPROLAB_DYNAMIC_GPU_MAX_ESCALATIONS", "1")
+    monkeypatch.setenv("OPENRESEARCH_DYNAMIC_GPU_MAX_ESCALATIONS", "1")
     from backend.config import get_settings
     get_settings.cache_clear() if hasattr(get_settings, "cache_clear") else None
     from backend.agents.rlm import primitives
@@ -1881,7 +1881,7 @@ Adds _detect_cuda_oom() helper (exit-137 OR stderr substring match against
 the four documented OOM markers). run_experiment now wraps the sandbox
 execution in a bounded escalation loop: on detected OOM, pop the next short_name
 from GpuPlan.ladder_remaining, rebuild the plan with the larger SKU, persist
-atomically, emit gpu_escalated, and re-run. Capped at REPROLAB_DYNAMIC_GPU_MAX_ESCALATIONS=2
+atomically, emit gpu_escalated, and re-run. Capped at OPENRESEARCH_DYNAMIC_GPU_MAX_ESCALATIONS=2
 by default. Non-OOM failures (ImportError, etc.) skip the escalation gate
 and surface as today. Empty ladder + OOM = structured terminal failure with
 cumulative cost summary."
@@ -2009,32 +2009,32 @@ After the existing `--max-pod-seconds` block (~line 1080), append:
         dest="dynamic_gpu",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Enable dynamic GPU SKU selection from paper hardware clues (default: from REPROLAB_DYNAMIC_GPU).",
+        help="Enable dynamic GPU SKU selection from paper hardware clues (default: from OPENRESEARCH_DYNAMIC_GPU).",
     )
     reproduce.add_argument(
         "--force-single-gpu",
         dest="force_single_gpu",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="When dynamic-gpu is on, cap GPU count at 1 (default: from REPROLAB_FORCE_SINGLE_GPU).",
+        help="When dynamic-gpu is on, cap GPU count at 1 (default: from OPENRESEARCH_FORCE_SINGLE_GPU).",
     )
     reproduce.add_argument(
         "--max-gpu-usd-per-hour",
         type=float,
         default=None,
-        help="Per-GPU $/hr cap for SKU selection (default: from REPROLAB_MAX_GPU_USD_PER_HOUR=10.0).",
+        help="Per-GPU $/hr cap for SKU selection (default: from OPENRESEARCH_MAX_GPU_USD_PER_HOUR=10.0).",
     )
     reproduce.add_argument(
         "--max-run-gpu-usd",
         type=float,
         default=None,
-        help="Total RunPod USD cap per run (default: from REPROLAB_MAX_RUN_GPU_USD=10.0).",
+        help="Total RunPod USD cap per run (default: from OPENRESEARCH_MAX_RUN_GPU_USD=10.0).",
     )
     reproduce.add_argument(
         "--dynamic-gpu-headroom",
         type=float,
         default=None,
-        help="Multiplier on LLM VRAM estimate before tier-up (default: from REPROLAB_DYNAMIC_GPU_HEADROOM=1.25).",
+        help="Multiplier on LLM VRAM estimate before tier-up (default: from OPENRESEARCH_DYNAMIC_GPU_HEADROOM=1.25).",
     )
     reproduce.add_argument(
         "--vram-gb",
@@ -2054,15 +2054,15 @@ Simplest path: BEFORE `Settings()` is constructed for the run, set os.environ ov
     # CLI overrides for dynamic GPU (Settings-derived; env precedence)
     import os as _os
     if args.dynamic_gpu is not None:
-        _os.environ["REPROLAB_DYNAMIC_GPU"] = "true" if args.dynamic_gpu else "false"
+        _os.environ["OPENRESEARCH_DYNAMIC_GPU"] = "true" if args.dynamic_gpu else "false"
     if args.force_single_gpu is not None:
-        _os.environ["REPROLAB_FORCE_SINGLE_GPU"] = "true" if args.force_single_gpu else "false"
+        _os.environ["OPENRESEARCH_FORCE_SINGLE_GPU"] = "true" if args.force_single_gpu else "false"
     if args.max_gpu_usd_per_hour is not None:
-        _os.environ["REPROLAB_MAX_GPU_USD_PER_HOUR"] = str(args.max_gpu_usd_per_hour)
+        _os.environ["OPENRESEARCH_MAX_GPU_USD_PER_HOUR"] = str(args.max_gpu_usd_per_hour)
     if args.max_run_gpu_usd is not None:
-        _os.environ["REPROLAB_MAX_RUN_GPU_USD"] = str(args.max_run_gpu_usd)
+        _os.environ["OPENRESEARCH_MAX_RUN_GPU_USD"] = str(args.max_run_gpu_usd)
     if args.dynamic_gpu_headroom is not None:
-        _os.environ["REPROLAB_DYNAMIC_GPU_HEADROOM"] = str(args.dynamic_gpu_headroom)
+        _os.environ["OPENRESEARCH_DYNAMIC_GPU_HEADROOM"] = str(args.dynamic_gpu_headroom)
     # vram_gb is a per-run override, not a Settings field; pass through ctx.
 ```
 
@@ -2254,7 +2254,7 @@ After the "Sandbox config gotcha" paragraph, add:
 
 ```markdown
 ### Dynamic GPU selection (spec 2026-05-23)
-When `REPROLAB_DYNAMIC_GPU=on` (default), the RLM root calls `resolve_gpu_requirements(...)` once per run to map paper hardware clues to a RunPod SKU. The plan caches to `runs/<id>/rlm_state/gpu_plan.json` and is consumed by every subsequent `run_experiment`. On CUDA OOM, `run_experiment` auto-escalates up the catalog ladder up to `REPROLAB_DYNAMIC_GPU_MAX_ESCALATIONS=2` times, capped by `REPROLAB_MAX_GPU_USD_PER_HOUR=10.0`. Total run-level pod spend is bounded by `REPROLAB_MAX_RUN_GPU_USD=10.0` via `RunBudget.check_run_gpu_usd`. Multi-GPU is opt-in: `REPROLAB_FORCE_SINGLE_GPU=on` (default) hard-caps count=1; when off, count is `min(paper_count, floor(max_gpu_usd_per_hour / per_gpu_hr))`. SKU catalog: `backend/services/runtime/gpu_catalog.py` — refresh quarterly.
+When `OPENRESEARCH_DYNAMIC_GPU=on` (default), the RLM root calls `resolve_gpu_requirements(...)` once per run to map paper hardware clues to a RunPod SKU. The plan caches to `runs/<id>/rlm_state/gpu_plan.json` and is consumed by every subsequent `run_experiment`. On CUDA OOM, `run_experiment` auto-escalates up the catalog ladder up to `OPENRESEARCH_DYNAMIC_GPU_MAX_ESCALATIONS=2` times, capped by `OPENRESEARCH_MAX_GPU_USD_PER_HOUR=10.0`. Total run-level pod spend is bounded by `OPENRESEARCH_MAX_RUN_GPU_USD=10.0` via `RunBudget.check_run_gpu_usd`. Multi-GPU is opt-in: `OPENRESEARCH_FORCE_SINGLE_GPU=on` (default) hard-caps count=1; when off, count is `min(paper_count, floor(max_gpu_usd_per_hour / per_gpu_hr))`. SKU catalog: `backend/services/runtime/gpu_catalog.py` — refresh quarterly.
 ```
 
 - [ ] **Step 2: Update `system_overview.md` if present**

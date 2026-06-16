@@ -1,4 +1,4 @@
-"""MUSE-lite per-paper negative lessons (FLAG-2, REPROLAB_NEGATIVE_LESSONS)."""
+"""MUSE-lite per-paper negative lessons (FLAG-2, OPENRESEARCH_NEGATIVE_LESSONS)."""
 import json
 
 import pytest
@@ -8,12 +8,12 @@ from backend.agents.rlm import lesson_distiller as ld
 
 @pytest.fixture
 def on(monkeypatch):
-    monkeypatch.setenv("REPROLAB_NEGATIVE_LESSONS", "1")
+    monkeypatch.setenv("OPENRESEARCH_NEGATIVE_LESSONS", "1")
 
 
 @pytest.fixture
 def off(monkeypatch):
-    monkeypatch.delenv("REPROLAB_NEGATIVE_LESSONS", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_NEGATIVE_LESSONS", raising=False)
 
 
 def _run_dir(tmp_path, name, rows):

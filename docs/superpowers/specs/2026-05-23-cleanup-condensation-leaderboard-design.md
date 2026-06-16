@@ -346,7 +346,7 @@ For CLI / non-UI runs, the budget is either passed via flag (`--max-usd $X --max
 - `GET /leaderboard/runs/{run_id}` — full run detail (proxies existing `/runs/{id}`).
 - `POST /leaderboard/rerun` — body: `{ paper_id, mode, models, budget_override? }`, returns the new `run_id`; spawns a new run via the existing subprocess path.
 
-All endpoints under the existing FastAPI app; gated by `REPROLAB_DEMO_SECRET` if set (same as current demo gate).
+All endpoints under the existing FastAPI app; gated by `OPENRESEARCH_DEMO_SECRET` if set (same as current demo gate).
 
 **Acceptance.** Each endpoint has a Pydantic schema, a unit test, and an integration test that exercises a 2-row leaderboard.
 
@@ -393,7 +393,7 @@ Shrink PR #74's branch to ≤2 files: `docs/wow-factor-poll.html` + the Discord 
 
 #### 5.6.4 Demo gate (5.4)
 
-Confirm `REPROLAB_DEMO_SECRET` gating is enabled by default in the Docker compose file. Note in README that local dev runs unsecured.
+Confirm `OPENRESEARCH_DEMO_SECRET` gating is enabled by default in the Docker compose file. Note in README that local dev runs unsecured.
 
 #### 5.6.5 Phase 5 PR (5.5)
 

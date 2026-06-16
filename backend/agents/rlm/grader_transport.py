@@ -12,7 +12,7 @@ sampler API directly:
 
 - ``build_grader_client(fallback_client, fallback_label)`` — optionally swap
   the grader onto an INDEPENDENT, sampler-capable transport via
-  ``REPROLAB_GRADER_BACKEND`` / ``REPROLAB_GRADER_MODEL``. Default (both unset)
+  ``OPENRESEARCH_GRADER_BACKEND`` / ``OPENRESEARCH_GRADER_MODEL``. Default (both unset)
   returns the fallback UNCHANGED — today's behaviour, the grader rides the root
   client. On any construction error it falls back too, never raising — grading
   must survive a misconfigured backend.
@@ -75,15 +75,15 @@ def sample_completions(
 def build_grader_client(
     fallback_client: Any, fallback_label: str = ""
 ) -> tuple[Any, str]:
-    """Resolve the grader's transport, honouring ``REPROLAB_GRADER_BACKEND``.
+    """Resolve the grader's transport, honouring ``OPENRESEARCH_GRADER_BACKEND``.
 
     Returns ``(client, label)``.
 
-    - Both ``REPROLAB_GRADER_BACKEND`` and ``REPROLAB_GRADER_MODEL`` unset/empty
+    - Both ``OPENRESEARCH_GRADER_BACKEND`` and ``OPENRESEARCH_GRADER_MODEL`` unset/empty
       → ``(fallback_client, fallback_label)`` UNCHANGED. This is the default:
       the grader rides the root model's client exactly as today.
-    - ``REPROLAB_GRADER_BACKEND`` in {anthropic, openai, azure} → construct the
-      corresponding sampler-capable client from env (``REPROLAB_GRADER_MODEL``
+    - ``OPENRESEARCH_GRADER_BACKEND`` in {anthropic, openai, azure} → construct the
+      corresponding sampler-capable client from env (``OPENRESEARCH_GRADER_MODEL``
       overrides the model id; anthropic defaults to Sonnet). The label is
       ``"grader:<backend>:<model>"``.
     - Any other backend value, or any construction error (missing SDK, missing
@@ -91,8 +91,8 @@ def build_grader_client(
       grading must survive a misconfigured grader backend (and a root/CLI wedge
       is exactly when this decoupling matters most).
     """
-    backend = _flag_value("REPROLAB_GRADER_BACKEND")
-    model_override = os.environ.get("REPROLAB_GRADER_MODEL", "").strip() or None
+    backend = _flag_value("OPENRESEARCH_GRADER_BACKEND")
+    model_override = os.environ.get("OPENRESEARCH_GRADER_MODEL", "").strip() or None
 
     # Default path: nothing requested → ride the root client unchanged.
     if not backend and not model_override:
@@ -149,7 +149,7 @@ def build_grader_client(
             azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
             if not azure_endpoint:
                 raise ValueError(
-                    "REPROLAB_GRADER_BACKEND=azure requires AZURE_OPENAI_ENDPOINT"
+                    "OPENRESEARCH_GRADER_BACKEND=azure requires AZURE_OPENAI_ENDPOINT"
                 )
             azure_deployment = (
                 os.environ.get("AZURE_OPENAI_DEPLOYMENT", "").strip() or None
@@ -165,7 +165,7 @@ def build_grader_client(
             return client, f"grader:azure:{model}"
 
         logger.warning(
-            "grader_transport: unknown REPROLAB_GRADER_BACKEND=%r — falling back "
+            "grader_transport: unknown OPENRESEARCH_GRADER_BACKEND=%r — falling back "
             "to the root client. Supported: anthropic, openai, azure.",
             backend,
         )

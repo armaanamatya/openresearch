@@ -16,12 +16,12 @@ from backend.agents.rlm import execution_smoke
 
 def test_is_enabled_reads_flag(monkeypatch):
     # Opt-in (default OFF): unset → disabled; enabled only on explicit truthy.
-    monkeypatch.delenv("REPROLAB_EXECUTION_SMOKE", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_EXECUTION_SMOKE", raising=False)
     assert execution_smoke.is_enabled() is False
     for v in ("1", "true", "yes", "on", "ON"):
-        monkeypatch.setenv("REPROLAB_EXECUTION_SMOKE", v)
+        monkeypatch.setenv("OPENRESEARCH_EXECUTION_SMOKE", v)
         assert execution_smoke.is_enabled() is True
-    monkeypatch.setenv("REPROLAB_EXECUTION_SMOKE", "0")
+    monkeypatch.setenv("OPENRESEARCH_EXECUTION_SMOKE", "0")
     assert execution_smoke.is_enabled() is False
 
 
@@ -44,11 +44,11 @@ def test_smoke_command_forces_synchronous_cuda(tmp_path: Path):
 
 def test_smoke_command_caps_steps(tmp_path: Path):
     cmd = execution_smoke.smoke_command(tmp_path / "code")
-    assert "REPROLAB_SMOKE_STEPS=1" in cmd
-    assert execution_smoke.SMOKE_STEPS_ENV == "REPROLAB_SMOKE_STEPS"
+    assert "OPENRESEARCH_SMOKE_STEPS=1" in cmd
+    assert execution_smoke.SMOKE_STEPS_ENV == "OPENRESEARCH_SMOKE_STEPS"
     # A custom step count is honored.
     cmd5 = execution_smoke.smoke_command(tmp_path / "code", steps=5)
-    assert "REPROLAB_SMOKE_STEPS=5" in cmd5
+    assert "OPENRESEARCH_SMOKE_STEPS=5" in cmd5
 
 
 def test_smoke_command_wraps_in_timeout(tmp_path: Path):

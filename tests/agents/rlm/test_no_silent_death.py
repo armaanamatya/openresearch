@@ -7,7 +7,7 @@ close that gap; this suite pins each contract:
 
   C-B1  ``_arm_watchdog`` arms an always-on hard-ceiling backstop even when no
         explicit wall-clock is set, so a wedged run still ships a report; disabled
-        only by ``REPROLAB_WATCHDOG_HARD_CEILING_S=0``.
+        only by ``OPENRESEARCH_WATCHDOG_HARD_CEILING_S=0``.
   C-B2  ``gpu_cell_runner.run_matrix`` honours an ``overall_timeout_s`` budget — it
         stops launching cells past the deadline (status ``timeout``) and clamps each
         in-flight cell's timeout to the time remaining, so the matrix can't run for
@@ -34,30 +34,30 @@ import backend.agents.rlm.gpu_cell_runner as gcr
 
 class TestWatchdogHardCeiling:
     def test_default_when_unset(self, monkeypatch):
-        monkeypatch.delenv("REPROLAB_WATCHDOG_HARD_CEILING_S", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_WATCHDOG_HARD_CEILING_S", raising=False)
         assert run._watchdog_hard_ceiling_s() == run._WATCHDOG_HARD_CEILING_DEFAULT_S
 
     def test_env_override(self, monkeypatch):
-        monkeypatch.setenv("REPROLAB_WATCHDOG_HARD_CEILING_S", "3600")
+        monkeypatch.setenv("OPENRESEARCH_WATCHDOG_HARD_CEILING_S", "3600")
         assert run._watchdog_hard_ceiling_s() == 3600.0
 
     def test_zero_disables(self, monkeypatch):
-        monkeypatch.setenv("REPROLAB_WATCHDOG_HARD_CEILING_S", "0")
+        monkeypatch.setenv("OPENRESEARCH_WATCHDOG_HARD_CEILING_S", "0")
         assert run._watchdog_hard_ceiling_s() == 0.0
 
     def test_empty_falls_back_to_default(self, monkeypatch):
-        monkeypatch.setenv("REPROLAB_WATCHDOG_HARD_CEILING_S", "")
+        monkeypatch.setenv("OPENRESEARCH_WATCHDOG_HARD_CEILING_S", "")
         assert run._watchdog_hard_ceiling_s() == run._WATCHDOG_HARD_CEILING_DEFAULT_S
 
     def test_malformed_falls_back_to_default(self, monkeypatch):
-        monkeypatch.setenv("REPROLAB_WATCHDOG_HARD_CEILING_S", "not-a-number")
+        monkeypatch.setenv("OPENRESEARCH_WATCHDOG_HARD_CEILING_S", "not-a-number")
         assert run._watchdog_hard_ceiling_s() == run._WATCHDOG_HARD_CEILING_DEFAULT_S
 
 
 class TestArmWatchdog:
     def test_armed_even_without_wall_clock(self, tmp_path, monkeypatch):
         """The bug: a None deadline used to return None (no backstop)."""
-        monkeypatch.delenv("REPROLAB_WATCHDOG_HARD_CEILING_S", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_WATCHDOG_HARD_CEILING_S", raising=False)
         t = run._arm_watchdog(
             None, project_dir=tmp_path, emit=MagicMock(), iteration_count=lambda: 0
         )
@@ -71,14 +71,14 @@ class TestArmWatchdog:
                 t.cancel()
 
     def test_disabled_when_ceiling_zero(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("REPROLAB_WATCHDOG_HARD_CEILING_S", "0")
+        monkeypatch.setenv("OPENRESEARCH_WATCHDOG_HARD_CEILING_S", "0")
         t = run._arm_watchdog(
             None, project_dir=tmp_path, emit=MagicMock(), iteration_count=lambda: 0
         )
         assert t is None  # operator opted fully out
 
     def test_explicit_deadline_takes_precedence(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("REPROLAB_WATCHDOG_HARD_CEILING_S", "99999")
+        monkeypatch.setenv("OPENRESEARCH_WATCHDOG_HARD_CEILING_S", "99999")
         t = run._arm_watchdog(
             123.0, project_dir=tmp_path, emit=MagicMock(), iteration_count=lambda: 0
         )

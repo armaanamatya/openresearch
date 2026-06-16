@@ -144,7 +144,7 @@ export default function HomePage(): never {
 ```bash
 cd frontend
 npx tsc --noEmit 2>&1 | grep -E "landing|app/page" || echo "OK: no landing-related TS errors"
-REPROLAB_BACKEND_URL=http://127.0.0.1:8000 npm run build 2>&1 | tail -20
+OPENRESEARCH_BACKEND_URL=http://127.0.0.1:8000 npm run build 2>&1 | tail -20
 ```
 
 Expected: tsc grep returns "OK"; build completes (warnings OK; no errors). If build fails, fix before committing.
@@ -235,7 +235,7 @@ The CSS-variable names `--font-inter` / `--font-jetbrains-mono` are intentionall
 
 ```bash
 cd frontend
-REPROLAB_BACKEND_URL=http://127.0.0.1:8000 npm run dev &
+OPENRESEARCH_BACKEND_URL=http://127.0.0.1:8000 npm run dev &
 sleep 4
 ./scripts/landing-screenshots.sh http://localhost:3001/lab lab-with-geist
 ```
@@ -429,7 +429,7 @@ export default function HomePage(): React.JSX.Element {
 
 ```bash
 cd frontend
-REPROLAB_BACKEND_URL=http://127.0.0.1:8000 npm run dev &
+OPENRESEARCH_BACKEND_URL=http://127.0.0.1:8000 npm run dev &
 sleep 4
 ./scripts/landing-screenshots.sh http://localhost:3001/ landing-scaffold
 ```
@@ -1448,7 +1448,7 @@ This is a per-panel escape valve, not a global toggle. Use sparingly — every u
 
 ```bash
 cd frontend
-REPROLAB_BACKEND_URL=http://127.0.0.1:8000 npm run build 2>&1 | tee /tmp/build.log | tail -40
+OPENRESEARCH_BACKEND_URL=http://127.0.0.1:8000 npm run build 2>&1 | tee /tmp/build.log | tail -40
 ```
 
 Expected: build completes with no errors. Warnings about CSS being too large, or about "use client" boundary inferences, are OK.
@@ -1462,7 +1462,7 @@ If build fails:
 - [ ] **Step 2: Run the production server briefly and re-screenshot**
 
 ```bash
-REPROLAB_BACKEND_URL=http://127.0.0.1:8000 npm run start &
+OPENRESEARCH_BACKEND_URL=http://127.0.0.1:8000 npm run start &
 sleep 5
 ./scripts/landing-screenshots.sh http://localhost:3000/ landing-prod
 ./scripts/landing-screenshots.sh http://localhost:3000/lab lab-prod
@@ -1542,7 +1542,7 @@ git commit -m "chore: gitignore landing screenshots, remove orphaned PNGs
 - [ ] **Step 1: With production server running, capture full sweep**
 
 ```bash
-REPROLAB_BACKEND_URL=http://127.0.0.1:8000 npm run start &
+OPENRESEARCH_BACKEND_URL=http://127.0.0.1:8000 npm run start &
 sleep 5
 for route in "" "lab" "library" "paperbench" "lab?rlmFixture=1"; do
   safe=$(echo "$route" | tr '/?&=' '____')

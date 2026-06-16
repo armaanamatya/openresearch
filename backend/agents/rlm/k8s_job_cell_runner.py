@@ -16,12 +16,12 @@ Key design choices (locked 2026-06-03):
 * **OOM in-Job** — the Job wrapper owns the shrink ladder; the orchestrator
   resubmits on OOM only when a ``gpu_plan`` with ``ladder_remaining`` is bound.
   ``max_oom_retries`` is forwarded to the Job as
-  ``REPROLAB_CELL_MAX_OOM_RETRIES``.
+  ``OPENRESEARCH_CELL_MAX_OOM_RETRIES``.
 * **Blob artifact bus** — code is uploaded once from
   ``Path(cell_script).parent``; per-cell ``metrics.json`` is downloaded after
   Job completion.
 * **Resume parity** — mirrors ``gpu_cell_runner``'s Track-B resume: when
-  ``REPROLAB_RESUME_CELLS`` is truthy, a prior ``cell_manifest.json`` with
+  ``OPENRESEARCH_RESUME_CELLS`` is truthy, a prior ``cell_manifest.json`` with
   ``status=="ok"`` + matching fingerprint + not in ``force_cells`` → skip.
 * **Budget** — before each submit, reserved GPU-seconds are checked against
   ``RunBudget.max_pod_seconds`` and ``RunBudget.max_run_gpu_usd``; caps
@@ -464,7 +464,7 @@ def _build_job_manifest(
     # using whatever :latest resolves to at runtime.
     if not base_image:
         raise ValueError(
-            "k8s_job_cell_runner: azure_base_image is empty — set REPROLAB_AZURE_BASE_IMAGE "
+            "k8s_job_cell_runner: azure_base_image is empty — set OPENRESEARCH_AZURE_BASE_IMAGE "
             "or the azure_base_image config field before submitting AKS Jobs."
         )
 
@@ -472,41 +472,41 @@ def _build_job_manifest(
 
     # P0-fix-1: env-var NAMES must exactly match what aks_cell_entrypoint.py reads.
     # Canonical contract (runner injects → entrypoint reads):
-    #   REPROLAB_CELL_ID               → os.environ.get("REPROLAB_CELL_ID")
-    #   REPROLAB_CELL_PARAMS           → os.environ.get("REPROLAB_CELL_PARAMS")
-    #   REPROLAB_CELL_OUTPUT_DIR       → env["REPROLAB_CELL_OUTPUT_DIR"] in subprocess
-    #   REPROLAB_CELL_MAX_OOM_RETRIES  → os.environ.get("REPROLAB_CELL_MAX_OOM_RETRIES")
-    #   REPROLAB_AZURE_STORAGE_ACCOUNT → os.environ.get("REPROLAB_AZURE_STORAGE_ACCOUNT")
-    #   REPROLAB_AZURE_BLOB_CONTAINER  → os.environ.get("REPROLAB_AZURE_BLOB_CONTAINER")
-    #   REPROLAB_BLOB_CODE_PREFIX      → os.environ.get("REPROLAB_BLOB_CODE_PREFIX")
-    #   REPROLAB_BLOB_OUTPUT_PREFIX    → os.environ.get("REPROLAB_BLOB_OUTPUT_PREFIX")
-    #   REPROLAB_CACHE_MOUNT           → os.environ.get("REPROLAB_CACHE_MOUNT")
-    #   REPROLAB_CELL_OOM_BATCH_SCALE_STEP1  → (entrypoint plan_attempts)
-    #   REPROLAB_CELL_OOM_BATCH_SCALE_FLOOR  → (entrypoint plan_attempts)
-    #   REPROLAB_BOOTSTRAP_PIP_TIMEOUT_S     → (entrypoint _bootstrap pip install)
+    #   OPENRESEARCH_CELL_ID               → os.environ.get("OPENRESEARCH_CELL_ID")
+    #   OPENRESEARCH_CELL_PARAMS           → os.environ.get("OPENRESEARCH_CELL_PARAMS")
+    #   OPENRESEARCH_CELL_OUTPUT_DIR       → env["OPENRESEARCH_CELL_OUTPUT_DIR"] in subprocess
+    #   OPENRESEARCH_CELL_MAX_OOM_RETRIES  → os.environ.get("OPENRESEARCH_CELL_MAX_OOM_RETRIES")
+    #   OPENRESEARCH_AZURE_STORAGE_ACCOUNT → os.environ.get("OPENRESEARCH_AZURE_STORAGE_ACCOUNT")
+    #   OPENRESEARCH_AZURE_BLOB_CONTAINER  → os.environ.get("OPENRESEARCH_AZURE_BLOB_CONTAINER")
+    #   OPENRESEARCH_BLOB_CODE_PREFIX      → os.environ.get("OPENRESEARCH_BLOB_CODE_PREFIX")
+    #   OPENRESEARCH_BLOB_OUTPUT_PREFIX    → os.environ.get("OPENRESEARCH_BLOB_OUTPUT_PREFIX")
+    #   OPENRESEARCH_CACHE_MOUNT           → os.environ.get("OPENRESEARCH_CACHE_MOUNT")
+    #   OPENRESEARCH_CELL_OOM_BATCH_SCALE_STEP1  → (entrypoint plan_attempts)
+    #   OPENRESEARCH_CELL_OOM_BATCH_SCALE_FLOOR  → (entrypoint plan_attempts)
+    #   OPENRESEARCH_BOOTSTRAP_PIP_TIMEOUT_S     → (entrypoint _bootstrap pip install)
     env_vars = [
-        {"name": "REPROLAB_CELL_ID",               "value": cell_id},
-        {"name": "REPROLAB_CELL_PARAMS",            "value": cell_params_json},
-        {"name": "REPROLAB_CELL_OUTPUT_DIR",        "value": f"/mnt/outputs/{cell_id}"},
-        {"name": "REPROLAB_CELL_MAX_OOM_RETRIES",   "value": str(max_oom_retries)},
-        # P0-fix-1: standardised on REPROLAB_AZURE_* names the entrypoint reads.
-        {"name": "REPROLAB_AZURE_STORAGE_ACCOUNT",  "value": storage_account},
-        {"name": "REPROLAB_AZURE_BLOB_CONTAINER",   "value": blob_container},
-        {"name": "REPROLAB_BLOB_CODE_PREFIX",       "value": code_blob_prefix},
-        {"name": "REPROLAB_BLOB_OUTPUT_PREFIX",     "value": output_blob_prefix},
-        {"name": "REPROLAB_CACHE_MOUNT",            "value": cache_mount_path},
+        {"name": "OPENRESEARCH_CELL_ID",               "value": cell_id},
+        {"name": "OPENRESEARCH_CELL_PARAMS",            "value": cell_params_json},
+        {"name": "OPENRESEARCH_CELL_OUTPUT_DIR",        "value": f"/mnt/outputs/{cell_id}"},
+        {"name": "OPENRESEARCH_CELL_MAX_OOM_RETRIES",   "value": str(max_oom_retries)},
+        # P0-fix-1: standardised on OPENRESEARCH_AZURE_* names the entrypoint reads.
+        {"name": "OPENRESEARCH_AZURE_STORAGE_ACCOUNT",  "value": storage_account},
+        {"name": "OPENRESEARCH_AZURE_BLOB_CONTAINER",   "value": blob_container},
+        {"name": "OPENRESEARCH_BLOB_CODE_PREFIX",       "value": code_blob_prefix},
+        {"name": "OPENRESEARCH_BLOB_OUTPUT_PREFIX",     "value": output_blob_prefix},
+        {"name": "OPENRESEARCH_CACHE_MOUNT",            "value": cache_mount_path},
         # P1-fix-9: OOM shrink ratios + pip timeout forwarded from settings.
-        {"name": "REPROLAB_CELL_OOM_BATCH_SCALE_STEP1",
+        {"name": "OPENRESEARCH_CELL_OOM_BATCH_SCALE_STEP1",
          "value": str(oom_batch_scale_step1)},
-        {"name": "REPROLAB_CELL_OOM_BATCH_SCALE_FLOOR",
+        {"name": "OPENRESEARCH_CELL_OOM_BATCH_SCALE_FLOOR",
          "value": str(oom_batch_scale_floor)},
-        {"name": "REPROLAB_BOOTSTRAP_PIP_TIMEOUT_S",
+        {"name": "OPENRESEARCH_BOOTSTRAP_PIP_TIMEOUT_S",
          "value": str(bootstrap_pip_timeout_s)},
     ]
     if fingerprint:
-        env_vars.append({"name": "REPROLAB_CELL_FINGERPRINT", "value": fingerprint})
+        env_vars.append({"name": "OPENRESEARCH_CELL_FINGERPRINT", "value": fingerprint})
     if now_iso:
-        env_vars.append({"name": "REPROLAB_CELL_NOW_ISO", "value": now_iso})
+        env_vars.append({"name": "OPENRESEARCH_CELL_NOW_ISO", "value": now_iso})
 
     # GPU count: from plan when available, else 1.
     gpu_count_str: str
@@ -1214,7 +1214,7 @@ def run_matrix(
         max_parallel:        Orchestrator-side concurrency cap.  Defaults to
                              ``azure_max_nodes``.
         max_oom_retries:     Forwarded to the in-Job wrapper as
-                             ``REPROLAB_CELL_MAX_OOM_RETRIES``.
+                             ``OPENRESEARCH_CELL_MAX_OOM_RETRIES``.
         per_cell_timeout_s:  Maps to Job ``activeDeadlineSeconds``.
         overall_timeout_s:   Wall-clock cap for the WHOLE matrix.
         gpus_per_cell:       Must be 1; any other value returns ``"error"`` for

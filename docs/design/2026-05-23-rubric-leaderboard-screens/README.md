@@ -5,7 +5,7 @@ Visual evidence for the rubric-climb panel + leaderboard delivery
 
 Captured against `npm run dev` on port 3001. The lab captures use the existing
 `?rlmFixture=1` URL (an instant-replayed fixture). The leaderboard captures
-were re-shot with the backend running (`REPROLAB_RUNS_ROOT=/tmp/reprolab_leaderboard_fixtures`)
+were re-shot with the backend running (`OPENRESEARCH_RUNS_ROOT=/tmp/reprolab_leaderboard_fixtures`)
 against three seeded demo rows so the populated view is visible.
 
 ## Captures

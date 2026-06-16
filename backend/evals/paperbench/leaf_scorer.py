@@ -271,32 +271,32 @@ def _code_file_priority(path: Path) -> tuple[int, int, str]:
 
 def _grader_digest_enabled() -> bool:
     """A6 (2026-06-16): count-based per-cell grader digest on metrics overflow +
-    measured-value ranking of the metrics path. REPROLAB_GRADER_DIGEST, default
+    measured-value ranking of the metrics path. OPENRESEARCH_GRADER_DIGEST, default
     OFF — opt-in until the calibration gate promotes it. Off → byte-slice +
     truthiness rank (today's behavior, byte-for-byte)."""
-    return os.environ.get("REPROLAB_GRADER_DIGEST", "").strip().lower() in (
+    return os.environ.get("OPENRESEARCH_GRADER_DIGEST", "").strip().lower() in (
         "1", "true", "yes", "on",
     )
 
 
 def _deterministic_leaves_enabled() -> bool:
     """A2 (2026-06-16): route mechanically-checkable leaves to the pure-Python
-    deterministic_leaf_checker instead of the noisy LLM. REPROLAB_DETERMINISTIC_LEAVES,
+    deterministic_leaf_checker instead of the noisy LLM. OPENRESEARCH_DETERMINISTIC_LEAVES,
     default OFF — every eligible leaf goes to the LLM exactly as today until the
     calibration gate + a reliable provenance.json producer are in place."""
-    return os.environ.get("REPROLAB_DETERMINISTIC_LEAVES", "").strip().lower() in (
+    return os.environ.get("OPENRESEARCH_DETERMINISTIC_LEAVES", "").strip().lower() in (
         "1", "true", "yes", "on",
     )
 
 
 def _evidence_gate_enabled() -> bool:
-    """A7 (2026-06-16): the honest backstop. REPROLAB_EVIDENCE_GATE, default OFF.
+    """A7 (2026-06-16): the honest backstop. OPENRESEARCH_EVIDENCE_GATE, default OFF.
     When ON, veto to 0.0 any result-claiming leaf the grader credited (>0) whose
     cited per_model cell has no successful on-disk evidence (the MLR-Bench
     fabrication failure mode). Off → no veto, scoring byte-for-byte as today. The
     veto decision lives in the pure backend/agents/rlm/evidence_gate.py (imported
     only when ON), which composes with this module's subject/alias matching."""
-    return os.environ.get("REPROLAB_EVIDENCE_GATE", "").strip().lower() in (
+    return os.environ.get("OPENRESEARCH_EVIDENCE_GATE", "").strip().lower() in (
         "1", "true", "yes", "on",
     )
 
@@ -681,7 +681,7 @@ def _result_leaf_substantiated(
     leaf that names a cell that truly ran. The dataset half is alias-expanded
     (imagenet↔ilsvrc) so a true-synonym leaf is never false-vetoed.
 
-    Used ONLY by the evidence gate (REPROLAB_EVIDENCE_GATE, default-OFF); never in
+    Used ONLY by the evidence gate (OPENRESEARCH_EVIDENCE_GATE, default-OFF); never in
     the default scoring path. An empty/absent ``per_model`` returns False, so a run
     that credited results while computing nothing has every result leaf vetoed.
     """
@@ -1153,7 +1153,7 @@ def _detect_data_unavailable_leaves(
 # Conservative: fire only on UNAMBIGUOUS proof language, and NEVER when the leaf
 # also asks for an empirical artifact (code/metrics/figure), since a leaf like
 # "verify the convergence claim empirically via the loss curve" IS gradeable.
-# Flag-gated (REPROLAB_EXCLUDE_THEORY_LEAVES, default OFF) + fail-soft.
+# Flag-gated (OPENRESEARCH_EXCLUDE_THEORY_LEAVES, default OFF) + fail-soft.
 _THEORY_MARKERS: tuple[str, ...] = (
     "theorem", "regret bound", "regret analysis", "convergence proof",
     "proof of", "prove that", "proof that", "lemma", "corollary",
@@ -1167,8 +1167,8 @@ _EMPIRICAL_MARKERS: tuple[str, ...] = (
 
 
 def _theory_leaf_exclusion_enabled() -> bool:
-    """True when ``REPROLAB_EXCLUDE_THEORY_LEAVES`` is truthy (default OFF — opt-in)."""
-    return os.environ.get("REPROLAB_EXCLUDE_THEORY_LEAVES", "").strip().lower() in (
+    """True when ``OPENRESEARCH_EXCLUDE_THEORY_LEAVES`` is truthy (default OFF — opt-in)."""
+    return os.environ.get("OPENRESEARCH_EXCLUDE_THEORY_LEAVES", "").strip().lower() in (
         "1", "true", "yes", "on",
     )
 
@@ -1207,7 +1207,7 @@ _DATASET_TOKENS: tuple[str, ...] = (
 
 
 def _inclusion_scope_exclusion_enabled() -> bool:
-    val = os.environ.get("REPROLAB_SCOPE_INCLUSION_EXCLUDE", "").strip().lower()
+    val = os.environ.get("OPENRESEARCH_SCOPE_INCLUSION_EXCLUDE", "").strip().lower()
     return bool(val) and val not in ("0", "false", "off")
 
 
@@ -1224,7 +1224,7 @@ def _detect_out_of_inclusion_scope_leaves(
     the agent's prose gap declaration matched nothing). Conservative on two
     axes: only tokens from the fixed ``_DATASET_TOKENS`` catalog count, and a
     leaf is excluded only when it mentions an out-of-scope dataset and NO
-    in-scope one. Empty set unless ``REPROLAB_SCOPE_INCLUSION_EXCLUDE`` is on
+    in-scope one. Empty set unless ``OPENRESEARCH_SCOPE_INCLUSION_EXCLUDE`` is on
     and an inclusion list is provided.
     """
     if not _inclusion_scope_exclusion_enabled() or not inclusion_datasets:
@@ -1569,9 +1569,9 @@ def finalize_rescore(
             extra_scope=extra_scope,
         )
         # Layer 3: theory-only leaves are inapplicable to a code repro — exclude them
-        # from the re-roll-up too (no-op unless REPROLAB_EXCLUDE_THEORY_LEAVES is on).
+        # from the re-roll-up too (no-op unless OPENRESEARCH_EXCLUDE_THEORY_LEAVES is on).
         # Layer 4: leaves about datasets outside the OPERATOR's inclusion scope
-        # (no-op unless REPROLAB_SCOPE_INCLUSION_EXCLUDE is on + a list is given).
+        # (no-op unless OPENRESEARCH_SCOPE_INCLUSION_EXCLUDE is on + a list is given).
         skip_set = frozenset(
             set(unavailable)
             | _detect_theory_only_leaves(leaves)
@@ -1631,7 +1631,7 @@ def score_reproduction(
     datasets OUTSIDE it are excluded from grading AND the roll-up — identical to
     :func:`finalize_rescore`, so the in-loop grade and the shipped report agree
     instead of the agent being shown un-fixable out-of-scope leaves as "weak".
-    No-op unless ``REPROLAB_SCOPE_INCLUSION_EXCLUDE`` is on and a list is given
+    No-op unless ``OPENRESEARCH_SCOPE_INCLUSION_EXCLUDE`` is on and a list is given
     (default-OFF / omitted == today's behaviour, byte-for-byte).
 
     Returns a dict with overall_score, leaf_count, graded, rubric_source,
@@ -1770,7 +1770,7 @@ def score_reproduction(
     # disagrees with the shipped report (ResNet: 0.368 in-loop vs 0.620 final — the
     # 10 ImageNet/COCO leaves on a CIFAR-10-scoped run). Excluded leaves also skip
     # LLM grading below, so no grader call is spent on a dataset the run was never
-    # scoped to. No-op unless REPROLAB_SCOPE_INCLUSION_EXCLUDE is on AND a list is
+    # scoped to. No-op unless OPENRESEARCH_SCOPE_INCLUSION_EXCLUDE is on AND a list is
     # provided (default-OFF == today). Operator-sourced + in-detector guards keep
     # it safe (a leaf that names an in-scope dataset is never excluded).
     unavailable_ids |= _detect_out_of_inclusion_scope_leaves(
@@ -1787,7 +1787,7 @@ def score_reproduction(
     # transport so a root/CLI wedge can't take grading down with it (the OmniZip
     # failure mode), and so it can take median-of-N at temperature 0.
     # build_grader_client returns the passed client UNCHANGED when
-    # REPROLAB_GRADER_BACKEND is unset (default == today's behavior, grader rides
+    # OPENRESEARCH_GRADER_BACKEND is unset (default == today's behavior, grader rides
     # the root client). _resolve_grader_samples is 1 by default (one call per
     # batch == today). Fail-soft: any transport-build error falls back to llm_client.
     try:
@@ -1803,7 +1803,7 @@ def score_reproduction(
     # existence vs filesystem, numeric trend vs metrics.json — so they never hit
     # the noisy LLM. A leaf with no recognized annotation returns None and falls
     # through to the LLM (additive — never breaks an un-annotated rubric).
-    # REPROLAB_DETERMINISTIC_LEAVES default OFF → every eligible leaf goes to the
+    # OPENRESEARCH_DETERMINISTIC_LEAVES default OFF → every eligible leaf goes to the
     # LLM exactly as today. Fail-soft: any checker error routes that leaf to LLM.
     _deterministic_records: list[dict[str, Any]] = []
     if _deterministic_leaves_enabled():
@@ -1947,7 +1947,7 @@ def score_reproduction(
     # A7 EVIDENCE_GATE (2026-06-16): the honest backstop. The grader is an LLM and
     # can credit a measured result that was never computed (MLR-Bench ~80%
     # fabrication; RewardHacking env-hardening −87.7% exploits). When
-    # REPROLAB_EVIDENCE_GATE is ON, veto to 0.0 any RESULT-CLAIMING leaf the grader
+    # OPENRESEARCH_EVIDENCE_GATE is ON, veto to 0.0 any RESULT-CLAIMING leaf the grader
     # credited (>0) whose cited per_model cell has NO successful on-disk evidence.
     # Composes with this module's subject matching + the same alias loosening the
     # data-unavailable detector uses (so a synonym leaf is never false-vetoed).
@@ -2131,7 +2131,7 @@ def _parse_batch_response(
 def _resolve_grader_samples() -> int:
     """Number of grader samples per batch for median-of-N denoising (A1, 2026-06-16).
 
-    REPROLAB_GRADER_SAMPLES — **default 1**. The calibration σ-gate (2026-06-16)
+    OPENRESEARCH_GRADER_SAMPLES — **default 1**. The calibration σ-gate (2026-06-16)
     re-graded prj_4627097f8362928c K=3 through the production OAuth Sonnet grader
     at temperature=0 and measured overall **σ=0.0067 at samples=1** — already
     within the ≤0.02 promotion band, so the default is validated-sufficient and
@@ -2143,7 +2143,7 @@ def _resolve_grader_samples() -> int:
     clean median. Data: data/grader_calibration.json; decision rationale: memory
     grader-fidelity-implementation.
     """
-    raw = os.environ.get("REPROLAB_GRADER_SAMPLES", "").strip()
+    raw = os.environ.get("OPENRESEARCH_GRADER_SAMPLES", "").strip()
     if not raw:
         return 1
     try:
@@ -2268,7 +2268,7 @@ def amend_final_report(run_dir: Path, score: dict[str, Any]) -> None:
     report["overall_score"] = score["overall_score"]
     report["meets_target"] = meets_target
 
-    # Two-axis reproducibility verdict (U11 / A4): when REPROLAB_TWO_AXIS_VERDICT
+    # Two-axis reproducibility verdict (U11 / A4): when OPENRESEARCH_TWO_AXIS_VERDICT
     # is enabled, this attaches implementation_verdict ⟂ replication_verdict, sets
     # schema_version=2, and projects report["verdict"] from the FIDELITY axis — so
     # a faithful-but-contradicted run is NOT collapsed to "failed" by the blended-

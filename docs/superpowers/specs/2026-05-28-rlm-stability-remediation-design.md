@@ -283,7 +283,7 @@ Plus emit a `run_warning` with `code="forced_iteration"` and a tailored message:
 
 Wall-clock bypass (already in place) still wins: when `ctx.remaining_s() <= 60s`, the policy yields and ships the partial report.
 
-`REPROLAB_MIN_RUBRIC_ITERATIONS=0` still disables the policy entirely.
+`OPENRESEARCH_MIN_RUBRIC_ITERATIONS=0` still disables the policy entirely.
 
 Validation:
 1. Unit test: construct a policy with `min_iterations=2`, `latest_rubric_score=None`, `iteration_count=1` → expect `should_refuse_final_var()` returns True.

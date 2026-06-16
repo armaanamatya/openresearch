@@ -1,4 +1,4 @@
-"""MUSE-lite per-paper negative lessons (FLAG-2, ``REPROLAB_NEGATIVE_LESSONS``).
+"""MUSE-lite per-paper negative lessons (FLAG-2, ``OPENRESEARCH_NEGATIVE_LESSONS``).
 
 Cross-run, per-paper failure memory. After a run finalizes, mine the
 agent-correctable ``failure_class`` rows from ``experiment_runs.jsonl`` into
@@ -19,7 +19,7 @@ Guardrails:
 
 Default OFF: when the flag is unset, mining is a no-op and the block is "".
 Needs ``arxiv_id``; absent → no-op. Fail-soft throughout. The config shim
-aliases ``REPROLAB_NEGATIVE_LESSONS`` <-> ``REPROLAB_NEGATIVE_LESSONS``.
+aliases ``OPENRESEARCH_NEGATIVE_LESSONS`` <-> ``OPENRESEARCH_NEGATIVE_LESSONS``.
 """
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ RETIRE_STALENESS = 3
 
 
 def _enabled() -> bool:
-    return os.environ.get("REPROLAB_NEGATIVE_LESSONS", "").strip().lower() in (
+    return os.environ.get("OPENRESEARCH_NEGATIVE_LESSONS", "").strip().lower() in (
         "1",
         "on",
         "true",

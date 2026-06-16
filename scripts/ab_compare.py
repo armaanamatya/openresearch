@@ -15,7 +15,7 @@ Usage:
     python scripts/ab_compare.py --paper 1412.6980 --select best
     python scripts/ab_compare.py --pair-id allcnn-ab-20260611 --require-stamped
 
-Validator mode (``--require-stamped`` / ``REPROLAB_REQUIRE_STAMPED_AB=1``,
+Validator mode (``--require-stamped`` / ``OPENRESEARCH_REQUIRE_STAMPED_AB=1``,
 default OFF = reporter behaviour, byte-for-byte): refuses to emit a Δ unless
 BOTH arms carry an ``experiment_arm`` stamp, their ``rubric_tree.json`` sha256
 match, and their recorded ``scope`` match — so a reported Δ can never be
@@ -129,12 +129,12 @@ def validate_stamped_pair(control: dict, bes: dict) -> str | None:
     if not control.get("_stamped"):
         return (
             "control arm is unstamped (no experiment_arm.arm) — re-run the control "
-            "with REPROLAB_AB_ARM=control so the pair is explicitly labelled"
+            "with OPENRESEARCH_AB_ARM=control so the pair is explicitly labelled"
         )
     if not bes.get("_stamped"):
         return (
             "bes arm is unstamped (no experiment_arm.arm) — re-run the bes arm "
-            "with REPROLAB_AB_ARM=bes so the pair is explicitly labelled"
+            "with OPENRESEARCH_AB_ARM=bes so the pair is explicitly labelled"
         )
 
     c_sha = _rubric_tree_sha256(control["_run_dir"])
@@ -147,7 +147,7 @@ def validate_stamped_pair(control: dict, bes: dict) -> str | None:
         return (
             "rubric_tree.json differs between arms "
             f"(control {c_sha[:12]} != bes {b_sha[:12]}) — the arms were graded "
-            "against different rubrics; pin one with REPROLAB_REUSE_RUBRIC=1"
+            "against different rubrics; pin one with OPENRESEARCH_REUSE_RUBRIC=1"
         )
 
     if _scope_key(control["_scope"]) != _scope_key(bes["_scope"]):
@@ -340,10 +340,10 @@ def build_comparison(
             found = ", ".join(f"{a}×{len(items)}" for a, items in sorted(by_arm.items())) or "none"
             # In validator mode unstamped runs are NOT admitted as control, so
             # name them explicitly when their exclusion is why an arm is empty
-            # — the refusal stays actionable (re-run the arm with REPROLAB_AB_ARM).
+            # — the refusal stays actionable (re-run the arm with OPENRESEARCH_AB_ARM).
             unstamped_note = (
                 " (unstamped runs are not admissible as control in validator mode — "
-                "re-run the control with REPROLAB_AB_ARM=control)"
+                "re-run the control with OPENRESEARCH_AB_ARM=control)"
                 if by_arm.get("unstamped") and not control
                 else ""
             )
@@ -464,7 +464,7 @@ _SLIM_DROP = ("leaf_scores", "_run_dir", "_scope", "_stamped")
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--paper", default=None, help="Paper id to pair (final_report.json paper.id).")
-    ap.add_argument("--pair-id", default=None, help="Explicit REPROLAB_AB_PAIR_ID to pair on.")
+    ap.add_argument("--pair-id", default=None, help="Explicit OPENRESEARCH_AB_PAIR_ID to pair on.")
     ap.add_argument("--runs-root", default="runs", help="Runs root directory.")
     ap.add_argument("--out", default=None, help="Output dir (default <runs-root>/_ab/<key>/).")
     ap.add_argument("--select", choices=["latest", "best"], default="best",
@@ -472,13 +472,13 @@ def main() -> int:
     ap.add_argument("--require-stamped", action="store_true", default=False,
                     help="Validator mode: refuse a Δ unless both arms are stamped and "
                          "their rubric_tree.json sha + scope match "
-                         "(also via REPROLAB_REQUIRE_STAMPED_AB=1).")
+                         "(also via OPENRESEARCH_REQUIRE_STAMPED_AB=1).")
     args = ap.parse_args()
 
     if not args.paper and not args.pair_id:
         ap.error("one of --paper / --pair-id is required")
 
-    require_stamped = args.require_stamped or _flag_on("REPROLAB_REQUIRE_STAMPED_AB")
+    require_stamped = args.require_stamped or _flag_on("OPENRESEARCH_REQUIRE_STAMPED_AB")
 
     runs_root = Path(args.runs_root)
     cmp = build_comparison(

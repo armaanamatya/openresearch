@@ -15,8 +15,8 @@ If you are triaging a run **right now**, start at §1 (UI signal interpretation)
 | 3 | SSR↔client hydration mismatch in resize handles | dev-mode warning | **resolved 2026-05-23** | `frontend/src/hooks/use-resizable-panels.ts` — `useState` seeds with `defaultSizes`, storage hydrated in post-mount `useEffect` |
 | 4 | UI "no signal Xs" chip false-alarms during long primitives | UX | resolved 2026-05-23 | `RlmHeader` now shows the in-flight primitive instead |
 | 5 | Sub-RLM root strategy queries the same paper slice repeatedly | run quality | **open** | `rlms` PyPI library — root prompt or `primitives.py` cache |
-| 6 | `REPROLAB_DEFAULT_SANDBOX=docker` disagreed with `start.sh` | gotcha | resolved 2026-05-23 | config, `.env`, and `.env.example` now match `start.sh` (`runpod`) |
-| 7 | Missing `REPROLAB_FORCE_SANDBOX` silently forced Docker | gotcha | resolved 2026-05-23 | `backend/config.py` default is now empty; explicit env still overrides |
+| 6 | `OPENRESEARCH_DEFAULT_SANDBOX=docker` disagreed with `start.sh` | gotcha | resolved 2026-05-23 | config, `.env`, and `.env.example` now match `start.sh` (`runpod`) |
+| 7 | Missing `OPENRESEARCH_FORCE_SANDBOX` silently forced Docker | gotcha | resolved 2026-05-23 | `backend/config.py` default is now empty; explicit env still overrides |
 | 8 | Anthropic API-key with no credit balance dies at first Sonnet sub-call | blocker on stale keys | documented in CLAUDE.md | `.env` — leave empty if subscription is the source |
 | 9 | macOS Keychain OAuth not detected by `factory.has_provider_credentials` | blocker | resolved 2026-05-23 | `backend/agents/.../factory.py::_has_claude_subscription_oauth` |
 | 10 | `demo_status.json::updatedAt` lags far behind real progress | confusion | **open** (architectural) | Backend writes status snapshots far less often than the SSE event stream |
@@ -339,7 +339,7 @@ print(r.stderr)  # \nTypeError: 'NoneType' object is not callable
 
 **Remediation:** extend the predicate — `None` is strictly less work than a zero score, so refuse with a tailored "no rubric score yet; call verify_against_rubric or run_experiment" message. Wall-clock bypass (`ctx.remaining_s() <= 60s`) still wins. Design + tests: same spec, Fix 4.
 
-**Operator workaround:** set `REPROLAB_MIN_RUBRIC_ITERATIONS=3` (or higher) to force more iterations before FINAL_VAR is even considered; doesn't fix the `None`-score loophole but reduces the chance of a 1-iteration give-up.
+**Operator workaround:** set `OPENRESEARCH_MIN_RUBRIC_ITERATIONS=3` (or higher) to force more iterations before FINAL_VAR is even considered; doesn't fix the `None`-score loophole but reduces the chance of a 1-iteration give-up.
 
 ---
 

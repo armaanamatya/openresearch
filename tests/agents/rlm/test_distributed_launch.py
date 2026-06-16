@@ -98,7 +98,7 @@ def test_missing_script_noop(tmp_path):
 
 
 def test_disable_toggle(tmp_path, monkeypatch):
-    monkeypatch.setenv("REPROLAB_DISABLE_TORCHRUN_WRAP", "1")
+    monkeypatch.setenv("OPENRESEARCH_DISABLE_TORCHRUN_WRAP", "1")
     code = _train(tmp_path, "fully_shard\n")
     assert _resolve_distributed_launch(["python train.py"], code, 4) == ["python train.py"]
 
@@ -106,16 +106,16 @@ def test_disable_toggle(tmp_path, monkeypatch):
 # ── NCCL safety prefix ───────────────────────────────────────────────────────
 
 def test_nccl_prefix_default_on(tmp_path, monkeypatch):
-    monkeypatch.delenv("REPROLAB_NCCL_P2P_DISABLE", raising=False)
-    monkeypatch.delenv("REPROLAB_NCCL_IB_DISABLE", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_NCCL_P2P_DISABLE", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_NCCL_IB_DISABLE", raising=False)
     code = _train(tmp_path, "fully_shard\n")
     cmd = _resolve_distributed_launch(["python train.py"], code, 4)[0]
     assert cmd.startswith("NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 accelerate launch")
 
 
 def test_nccl_prefix_can_be_disabled(tmp_path, monkeypatch):
-    monkeypatch.setenv("REPROLAB_NCCL_P2P_DISABLE", "0")
-    monkeypatch.setenv("REPROLAB_NCCL_IB_DISABLE", "0")
+    monkeypatch.setenv("OPENRESEARCH_NCCL_P2P_DISABLE", "0")
+    monkeypatch.setenv("OPENRESEARCH_NCCL_IB_DISABLE", "0")
     code = _train(tmp_path, "fully_shard\n")
     cmd = _resolve_distributed_launch(["python train.py"], code, 4)[0]
     assert cmd.startswith("accelerate launch ")
@@ -123,11 +123,11 @@ def test_nccl_prefix_can_be_disabled(tmp_path, monkeypatch):
 
 
 def test_nccl_env_prefix_helper(monkeypatch):
-    monkeypatch.delenv("REPROLAB_NCCL_P2P_DISABLE", raising=False)
-    monkeypatch.delenv("REPROLAB_NCCL_IB_DISABLE", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_NCCL_P2P_DISABLE", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_NCCL_IB_DISABLE", raising=False)
     assert _nccl_env_prefix() == "NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 "
-    monkeypatch.setenv("REPROLAB_NCCL_P2P_DISABLE", "0")
-    monkeypatch.setenv("REPROLAB_NCCL_IB_DISABLE", "0")
+    monkeypatch.setenv("OPENRESEARCH_NCCL_P2P_DISABLE", "0")
+    monkeypatch.setenv("OPENRESEARCH_NCCL_IB_DISABLE", "0")
     assert _nccl_env_prefix() == ""
 
 
@@ -140,7 +140,7 @@ def test_free_tcp_port_is_distinct_and_valid():
 
 
 def test_fsdp_config_default_is_v1(tmp_path, monkeypatch):
-    monkeypatch.delenv("REPROLAB_FSDP_VERSION", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_FSDP_VERSION", raising=False)
     txt = _write_fsdp_accelerate_config(tmp_path, 4).read_text(encoding="utf-8")
     assert "distributed_type: FSDP" in txt
     assert "fsdp_version: 1" in txt
@@ -153,7 +153,7 @@ def test_fsdp_config_default_is_v1(tmp_path, monkeypatch):
 
 
 def test_fsdp_config_v2_opt_in(tmp_path, monkeypatch):
-    monkeypatch.setenv("REPROLAB_FSDP_VERSION", "2")
+    monkeypatch.setenv("OPENRESEARCH_FSDP_VERSION", "2")
     txt = _write_fsdp_accelerate_config(tmp_path, 4).read_text(encoding="utf-8")
     assert "fsdp_version: 2" in txt
     assert "fsdp_reshard_after_forward: true" in txt
@@ -161,6 +161,6 @@ def test_fsdp_config_v2_opt_in(tmp_path, monkeypatch):
 
 
 def test_fsdp_config_bad_version_falls_back_to_v1(tmp_path, monkeypatch):
-    monkeypatch.setenv("REPROLAB_FSDP_VERSION", "9")
+    monkeypatch.setenv("OPENRESEARCH_FSDP_VERSION", "9")
     txt = _write_fsdp_accelerate_config(tmp_path, 2).read_text(encoding="utf-8")
     assert "fsdp_version: 1" in txt

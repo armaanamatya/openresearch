@@ -139,7 +139,7 @@ failure_class: None, outcome: None
 **Mechanism:** RunPod credit ran to zero mid-session on 2026-05-25 17:41 UTC. All subsequent `run_experiment` calls failed. The transient classifier (PR-ζ) correctly classifies `RUNPOD_BALANCE_TOO_LOW` as `fatal` — no retry occurs, which is correct. However, `failure_class` and `outcome` fields in `experiment_runs.jsonl` show `null` because these runs predated PR-ζ (landed 2026-05-26T05:04 UTC).  
 **Classification: RESOLVED by PR-ζ (post-landing)** — A post-PR-ζ run seeing credit exhaustion will get `failure_class=fatal`, emit a clear fatal event, and stop immediately without burning further compute on futile retries. The user will still need to refill credit — the system cannot fix that — but the failure is now surfaced clearly.
 
-**Note:** The Adam run (prj_6d41) proposed "Switch to Local CPU Sandbox" as an improvement candidate but never tried it because BALANCE_TOO_LOW fired at every attempt before sandbox fallback could be chosen. Post-PR-ζ, sandbox fallback is opt-in via `REPROLAB_SANDBOX_FALLBACK_ENABLED`; it won't auto-trigger on fatal errors by design.
+**Note:** The Adam run (prj_6d41) proposed "Switch to Local CPU Sandbox" as an improvement candidate but never tried it because BALANCE_TOO_LOW fired at every attempt before sandbox fallback could be chosen. Post-PR-ζ, sandbox fallback is opt-in via `OPENRESEARCH_SANDBOX_FALLBACK_ENABLED`; it won't auto-trigger on fatal errors by design.
 
 ---
 

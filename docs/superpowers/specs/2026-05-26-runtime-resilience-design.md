@@ -42,9 +42,9 @@ The 0.305 crash was in `baseline_implementation.py:1789` → `collect_agent_text
 
 ## Solution B — Mode-scaled `run_experiment` wall-clock cap
 
-**Decision:** efficient=2h, max=6h per single `run_experiment` call. `REPROLAB_RUN_EXPERIMENT_TIMEOUT_S` env var continues to override. Total run still bounded by `--max-wall-clock`, `--max-usd`, `--max-pod-seconds`.
+**Decision:** efficient=2h, max=6h per single `run_experiment` call. `OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S` env var continues to override. Total run still bounded by `--max-wall-clock`, `--max-usd`, `--max-pod-seconds`.
 
-**Today.** The cap derives from `ctx.remaining_s()` (run-level budget) with `REPROLAB_RUN_EXPERIMENT_TIMEOUT_S` as override (`primitives.py:2168-2179`). If the operator doesn't set the env var AND doesn't set `--max-wall-clock`, the cap is essentially unbounded — but in practice it gets squeezed by other accumulated time, leading to the 33-min surprise termination on the 0.305 run.
+**Today.** The cap derives from `ctx.remaining_s()` (run-level budget) with `OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S` as override (`primitives.py:2168-2179`). If the operator doesn't set the env var AND doesn't set `--max-wall-clock`, the cap is essentially unbounded — but in practice it gets squeezed by other accumulated time, leading to the 33-min surprise termination on the 0.305 run.
 
 **Mechanism.** A new `EXPERIMENT_TIMEOUT_BY_MODE` table in `backend/agents/rlm/primitives.py`:
 
@@ -57,7 +57,7 @@ _DEFAULT_EXPERIMENT_TIMEOUT_S: int = 7200  # fallback when execution_mode unknow
 ```
 
 Resolution order at `run_experiment` entry:
-1. If `REPROLAB_RUN_EXPERIMENT_TIMEOUT_S` set and >0, use it.
+1. If `OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S` set and >0, use it.
 2. Else if `ctx.execution_mode in EXPERIMENT_TIMEOUT_BY_MODE`, use that.
 3. Else fall back to `_DEFAULT_EXPERIMENT_TIMEOUT_S`.
 4. Clamp to `min(resolved, ctx.remaining_s())` — never exceed remaining run budget. If `remaining_s == ∞` (no `--max-wall-clock`), this clamp is a no-op.
@@ -67,7 +67,7 @@ Resolution order at `run_experiment` entry:
 - max mode: idle-watchdog (2h) < wall-clock-cap (6h) — coherent. Idle fires on stalls; wall-clock is a long-tail safety net.
 
 **Failure modes still possible:**
-- A paper genuinely needs >6h per experiment (rare for reproductions). Operator escape hatch: `REPROLAB_RUN_EXPERIMENT_TIMEOUT_S=43200` (12h).
+- A paper genuinely needs >6h per experiment (rare for reproductions). Operator escape hatch: `OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S=43200` (12h).
 
 **Tests:**
 - Unit: `tests/rlm/test_experiment_timeout_resolution.py` — table-driven over (env var, execution_mode, remaining_s) → expected cap.
@@ -96,7 +96,7 @@ Resolution order at `run_experiment` entry:
    ╚══════════════════════════════════╝
    ```
 
-3. **Forced-iteration policy extension.** The existing policy (PR-α-followup) refuses FINAL_VAR when `score < target` AND `iteration_count < REPROLAB_MIN_RUBRIC_ITERATIONS`. Extend it: also refuse FINAL_VAR when the SAME iteration contains TWO `run_experiment` calls with the latter returning `repairable`/`partial_evidence`/`fatal`. This catches the "root chained both attempts into one turn and then tries to FINAL_VAR" anti-pattern.
+3. **Forced-iteration policy extension.** The existing policy (PR-α-followup) refuses FINAL_VAR when `score < target` AND `iteration_count < OPENRESEARCH_MIN_RUBRIC_ITERATIONS`. Extend it: also refuse FINAL_VAR when the SAME iteration contains TWO `run_experiment` calls with the latter returning `repairable`/`partial_evidence`/`fatal`. This catches the "root chained both attempts into one turn and then tries to FINAL_VAR" anti-pattern.
 
 **Failure modes still possible:**
 - A future root model variant that genuinely benefits from multi-experiment turns (e.g., parameter sweeps across 3 hyperparameter values in one turn). For now this is a YAGNI; the forced-iteration policy can be relaxed when that use case lands.
@@ -133,7 +133,7 @@ Resolution order at `run_experiment` entry:
    - Started by the FastAPI lifespan together with the startup sweep.
    - Stoppable via lifespan shutdown.
    - Same fail-soft behavior.
-   - Configurable: `REPROLAB_POD_SWEEP_INTERVAL_S` (default 1800), `REPROLAB_POD_SWEEP_MAX_AGE_S` (default 7200), `REPROLAB_POD_SWEEP_ENABLED` (default true, can disable for dev/test).
+   - Configurable: `OPENRESEARCH_POD_SWEEP_INTERVAL_S` (default 1800), `OPENRESEARCH_POD_SWEEP_MAX_AGE_S` (default 7200), `OPENRESEARCH_POD_SWEEP_ENABLED` (default true, can disable for dev/test).
 
 **Sandbox-mode coverage:**
 - **runpod**: all three layers active.
@@ -199,10 +199,10 @@ Test suite must:
 
 - All four solutions land as one commit `PR-μ` per repo conventions (the user prefers infrequent, substantial commits).
 - Environment-variable kill switches for each layer:
-  - `REPROLAB_SDK_ISOLATION_DISABLED=true` — disables Solution A (bypass workaround if it causes other issues)
-  - `REPROLAB_RUN_EXPERIMENT_TIMEOUT_S` — already exists; overrides Solution B
-  - `REPROLAB_ITERATION_BOUNDARY_ENFORCEMENT=off|advise|enforce` — Solution C policy strength (default `advise` = hybrid; `enforce` = library-level forced boundary; `off` = no policy)
-  - `REPROLAB_POD_SWEEP_ENABLED=true|false` — Solution D master switch
+  - `OPENRESEARCH_SDK_ISOLATION_DISABLED=true` — disables Solution A (bypass workaround if it causes other issues)
+  - `OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S` — already exists; overrides Solution B
+  - `OPENRESEARCH_ITERATION_BOUNDARY_ENFORCEMENT=off|advise|enforce` — Solution C policy strength (default `advise` = hybrid; `enforce` = library-level forced boundary; `off` = no policy)
+  - `OPENRESEARCH_POD_SWEEP_ENABLED=true|false` — Solution D master switch
 
 ## Observability
 

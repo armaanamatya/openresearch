@@ -116,10 +116,10 @@ def test_infra_exception_is_failsoft(monkeypatch, tmp_path):
 
 
 def test_smoke_steps_env_restored(monkeypatch, tmp_path):
-    """The temporary REPROLAB_SMOKE_STEPS must not leak after the smoke."""
-    monkeypatch.delenv("REPROLAB_SMOKE_STEPS", raising=False)
+    """The temporary OPENRESEARCH_SMOKE_STEPS must not leak after the smoke."""
+    monkeypatch.delenv("OPENRESEARCH_SMOKE_STEPS", raising=False)
     _run(monkeypatch, tmp_path, _mock_run_matrix("ok", write_metrics={"x": 1.0}))
-    assert "REPROLAB_SMOKE_STEPS" not in os.environ
+    assert "OPENRESEARCH_SMOKE_STEPS" not in os.environ
 
 
 def test_crash_log_tail_read_from_disk_when_record_has_none(monkeypatch, tmp_path):

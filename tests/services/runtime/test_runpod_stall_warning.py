@@ -28,7 +28,7 @@ def test_warn_emits_once_at_warning_level(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """First call emits a single WARNING naming RUNPOD_NO_STALL_DETECTION."""
-    monkeypatch.delenv("REPROLAB_RUNPOD_STALL_WARN", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_RUNPOD_STALL_WARN", raising=False)
     with caplog.at_level(logging.WARNING, logger=rb.__name__):
         rb._warn_no_remote_stall_detection_once()
 
@@ -38,14 +38,14 @@ def test_warn_emits_once_at_warning_level(
     # The message must name what's missing AND the silence escape hatch.
     msg = warnings[0].getMessage()
     assert "stall" in msg.lower()
-    assert "REPROLAB_RUNPOD_STALL_WARN=0" in msg
+    assert "OPENRESEARCH_RUNPOD_STALL_WARN=0" in msg
 
 
 def test_warn_is_one_time_per_process(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Repeated calls emit the warning only once (guarded by the module flag)."""
-    monkeypatch.delenv("REPROLAB_RUNPOD_STALL_WARN", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_RUNPOD_STALL_WARN", raising=False)
     with caplog.at_level(logging.WARNING, logger=rb.__name__):
         for _ in range(5):
             rb._warn_no_remote_stall_detection_once()
@@ -63,8 +63,8 @@ def test_warn_is_one_time_per_process(
 def test_warn_suppressed_when_flag_disabled(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, disable: str
 ) -> None:
-    """REPROLAB_RUNPOD_STALL_WARN falsy suppresses the warning entirely."""
-    monkeypatch.setenv("REPROLAB_RUNPOD_STALL_WARN", disable)
+    """OPENRESEARCH_RUNPOD_STALL_WARN falsy suppresses the warning entirely."""
+    monkeypatch.setenv("OPENRESEARCH_RUNPOD_STALL_WARN", disable)
     with caplog.at_level(logging.WARNING, logger=rb.__name__):
         rb._warn_no_remote_stall_detection_once()
 
@@ -81,7 +81,7 @@ def test_warn_suppressed_when_flag_disabled(
 def test_warn_enabled_for_truthy_flag_values(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, enable: str
 ) -> None:
-    monkeypatch.setenv("REPROLAB_RUNPOD_STALL_WARN", enable)
+    monkeypatch.setenv("OPENRESEARCH_RUNPOD_STALL_WARN", enable)
     with caplog.at_level(logging.WARNING, logger=rb.__name__):
         rb._warn_no_remote_stall_detection_once()
     assert any(

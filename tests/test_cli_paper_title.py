@@ -8,7 +8,7 @@ These exercise the pure helpers extracted out of cmd_reproduce:
   - _derive_paper_title  — precedence: real first-line > good claim title >
                            readable <id> fallback; "paper_text" never wins.
   - _first_meaningful_line / _read_paper_text_first_line — first title-like
-    line of the pre-extracted full paper text (REPROLAB_PAPER_TEXT_PATH).
+    line of the pre-extracted full paper text (OPENRESEARCH_PAPER_TEXT_PATH).
 """
 
 from __future__ import annotations

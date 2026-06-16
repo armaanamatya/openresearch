@@ -111,7 +111,7 @@ class StepResult:
 
     **Dense intermediate reward (BES Phase 4A, opt-in).** An env MAY emit a
     positive ``reward`` on a *non-terminal* step as sub-goal-progress shaping (see
-    ``ALFWorldEnv`` behind ``REPROLAB_ALFWORLD_SHAPING``). When it does, the
+    ``ALFWorldEnv`` behind ``OPENRESEARCH_ALFWORLD_SHAPING``). When it does, the
     contract is: the **terminal** step's ``reward`` and ``info["won"]`` remain the
     SEPARATE authoritative success signal — shaping is intermediate credit only
     and must never replace or contaminate the terminal ``float(won)``. A held-out

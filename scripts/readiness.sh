@@ -51,8 +51,8 @@ SKIP_DEPLOY=0
 JSON_OUT=0
 QUIET=0
 FIX=0
-RUN_SMOKE_BUDGET_USD="${REPROLAB_READINESS_RUN_BUDGET_USD:-0.50}"
-RUN_SMOKE_WALL_S="${REPROLAB_READINESS_RUN_WALL_S:-600}"
+RUN_SMOKE_BUDGET_USD="${OPENRESEARCH_READINESS_RUN_BUDGET_USD:-0.50}"
+RUN_SMOKE_WALL_S="${OPENRESEARCH_READINESS_RUN_WALL_S:-600}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -446,7 +446,7 @@ tier5_boot_smoke() {
     rm -f "${fe_log}"
     log_check_start "frontend boots on :${fe_port}"
     t0=$(date +%s)
-    (cd frontend && REPROLAB_BACKEND_URL="http://127.0.0.1:8001" \
+    (cd frontend && OPENRESEARCH_BACKEND_URL="http://127.0.0.1:8001" \
       PORT="${fe_port}" npm run dev --silent) >"${fe_log}" 2>&1 &
     local fe_pid=$!
     BG_PIDS+=("${fe_pid}")
@@ -543,9 +543,9 @@ tier7_deploy() {
     skip_check 7 "(docker not installed)"
   fi
 
-  # Demo gate sanity: if REPROLAB_DEMO_SECRET set in .env, hint at it.
-  if [[ -f .env ]] && grep -qE '^REPROLAB_DEMO_SECRET=.+' .env; then
-    warn_check 7 "demo gate configured" "REPROLAB_DEMO_SECRET set — clients must send X-Demo-Secret header on POST /runs"
+  # Demo gate sanity: if OPENRESEARCH_DEMO_SECRET set in .env, hint at it.
+  if [[ -f .env ]] && grep -qE '^OPENRESEARCH_DEMO_SECRET=.+' .env; then
+    warn_check 7 "demo gate configured" "OPENRESEARCH_DEMO_SECRET set — clients must send X-Demo-Secret header on POST /runs"
   fi
 
   # RunPod creds (only checked, not used)

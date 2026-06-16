@@ -16,7 +16,7 @@ out the residual nondeterminism.
 
 Default model is Sonnet (``claude-sonnet-4-6`` — the same model the grader
 runs, honouring the CLAUDE.md "grader stays Sonnet-quality" rule); override via
-the constructor (``REPROLAB_GRADER_MODEL`` is read by ``grader_transport``).
+the constructor (``OPENRESEARCH_GRADER_MODEL`` is read by ``grader_transport``).
 ``import anthropic`` is lazy so this module never costs an import on the
 non-Anthropic paths.
 """

@@ -56,8 +56,8 @@ Failing a lower tier blocks higher tiers from running. (e.g. `pytest` doesn't ev
 | `READINESS_REQUIRE_CLEAN` | unset | TIER 3 fails if `git status --porcelain` is non-empty. |
 | `READINESS_FRONTEND_SMOKE` | unset | TIER 5 also boots Next.js on :3001 (slow — 60–90s extra). |
 | `READINESS_RUN_SMOKE` | unset | TIER 6 actually runs (default: SKIP). |
-| `REPROLAB_READINESS_RUN_BUDGET_USD` | `0.50` | Hard cap for TIER 6 run. |
-| `REPROLAB_READINESS_RUN_WALL_S` | `600` | Wall-clock cap for TIER 6 run. |
+| `OPENRESEARCH_READINESS_RUN_BUDGET_USD` | `0.50` | Hard cap for TIER 6 run. |
+| `OPENRESEARCH_READINESS_RUN_WALL_S` | `600` | Wall-clock cap for TIER 6 run. |
 | `NO_COLOR` | unset | Disable ANSI colors. |
 
 ## Exit codes
@@ -87,7 +87,7 @@ Failing a lower tier blocks higher tiers from running. (e.g. `pytest` doesn't ev
 | `node ≥ 20.19 (≠21) or ≥ 22.12: FAIL` | Install via `fnm` / `nvm`: `fnm install 22.12 && fnm use 22.12`. |
 | `backend factory imports cleanly: FAIL` | Read `.readiness-backend.log` (if TIER 5 ran) or run `.venv/bin/python -c "from backend.app import create_app"` manually to see the traceback. |
 | `Claude credentials: WARN` | Either `claude login` (subscription) or set `ANTHROPIC_API_KEY=<key>` in `.env`. Subscription is free, API key is per-token billed. |
-| `RunPod creds present: WARN` | Set `REPROLAB_RUNPOD_API_KEY` + `REPROLAB_RUNPOD_SSH_KEY_PATH` in `.env`, or stick to `--sandbox local`/`docker`. |
+| `RunPod creds present: WARN` | Set `REPROLAB_RUNPOD_API_KEY` + `OPENRESEARCH_RUNPOD_SSH_KEY_PATH` in `.env`, or stick to `--sandbox local`/`docker`. |
 | `ftrl --mode rlm smoke: FAIL` | Read the run dir under `${TMPDIR}` — `final_report.json` and `dashboard_events.jsonl` tell the story. Most failures are credential issues (sub-agent can't auth) — see CLAUDE.md §"RLM auth". |
 
 ## CI integration

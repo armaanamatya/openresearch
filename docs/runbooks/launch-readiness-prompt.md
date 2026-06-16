@@ -107,7 +107,7 @@ Acceptance: full request lifecycle is correct + observable.
 - [ ] Every Next.js `app/api/demo/*` proxy route forwards: the `X-Demo-Secret` header when present, the request body verbatim, and the response status + body. Verify with a `curl` round-trip on a running pair (backend on `:8001`, frontend on `:3001`).
 - [ ] SSE bridge: a single `--mode rlm` run produces `repl_iteration`, `primitive_call`, `rubric_score`, `candidate_proposed`, `candidate_outcome`, `run_complete` event types. A `--mode rdr` run produces the rdr-flavored variants (`rdr_run_started`, `rdr_cluster_started`, etc.) plus the spec-named cluster events if Phase 1 plan landed (`cluster_started`, `cluster_artifact_emitted`, `cluster_scored`, `repair_dispatched`).
 - [ ] CORS: there is NO CORS middleware (the frontend talks to backend server-side only). Verify; if a `CORSMiddleware` snuck in, remove it.
-- [ ] Demo gate: with `REPROLAB_DEMO_SECRET=foo` set, `curl http://127.0.0.1:8001/runs` (POST) returns 401 without the header, 200 with the header.
+- [ ] Demo gate: with `OPENRESEARCH_DEMO_SECRET=foo` set, `curl http://127.0.0.1:8001/runs` (POST) returns 401 without the header, 200 with the header.
 - [ ] `GET /leaderboard` is NOT gated (read-only, public by design per spec §3 #10).
 - [ ] Error handlers: a 500 in a route returns a JSON `{detail: "..."}` body, not an HTML stack trace. Test by curl-ing a route with a deliberately malformed payload.
 - [ ] Cost ledger: every primitive call appends to `runs/<id>/cost_ledger.jsonl` with `{primitive, cost_usd, tokens_in, tokens_out, timestamp}`. Verify after a tier-6 smoke run.

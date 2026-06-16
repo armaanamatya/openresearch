@@ -9,10 +9,10 @@ version + date and start a new `[Unreleased]` block above it.
 ## [Unreleased]
 
 ### Added (leaf-frontier remediation — close the leaf-repair loop; all default-OFF, fail-soft, byte-for-byte today when unset)
-- `backend/agents/rlm/leaf_actuator.py` — the actuator that closes `leaf_triage`'s open loop. Today triage only *diagnoses* a weak leaf into an advisory directive the agent may ignore (the real Adam 0.764 run shipped two clean `0.0`s that way); the actuator turns the cheapest, most-deterministic repairs into concrete artifacts the EXISTING routes consume. Master flag `REPROLAB_LEAF_ACTUATE`. Routes: **L4** `result_quality` (inverted optimizer ordering) → a synthesized per-condition lr `search` block the staged-search route tunes + re-runs; **L5** variance-demanding leaf → a budget-gated seed plan (behind `REPROLAB_LEAF_ACTUATE_SEEDS`); **L6** `aggregation_gap` → a declared-vs-aggregated completeness audit surfacing silently-lost cells; **L2b** `render_artifact` → a grounded `fig_*.json` sidecar emitted straight from the measured on-disk metrics.
+- `backend/agents/rlm/leaf_actuator.py` — the actuator that closes `leaf_triage`'s open loop. Today triage only *diagnoses* a weak leaf into an advisory directive the agent may ignore (the real Adam 0.764 run shipped two clean `0.0`s that way); the actuator turns the cheapest, most-deterministic repairs into concrete artifacts the EXISTING routes consume. Master flag `OPENRESEARCH_LEAF_ACTUATE`. Routes: **L4** `result_quality` (inverted optimizer ordering) → a synthesized per-condition lr `search` block the staged-search route tunes + re-runs; **L5** variance-demanding leaf → a budget-gated seed plan (behind `OPENRESEARCH_LEAF_ACTUATE_SEEDS`); **L6** `aggregation_gap` → a declared-vs-aggregated completeness audit surfacing silently-lost cells; **L2b** `render_artifact` → a grounded `fig_*.json` sidecar emitted straight from the measured on-disk metrics.
 - `leaf_actuator.emit_figure_sidecars` + `staged_search.synthesize_search_from_leaf` + `cell_matrix.audit_aggregation_completeness` — the pure cores (stdlib-only, fail-soft, unit-tested against plain dicts).
-- `REPROLAB_SCOPE_INCLUSION_EXCLUDE` (L1) — the in-loop verify (`score_reproduction`) now excludes out-of-inclusion-scope leaves the way *finalize* already did. Operator-sourced from `--scope-spec`/paper-hint; evidence-safe (a leaf naming an in-scope dataset is never excluded).
-- Flag knobs: `REPROLAB_LEAF_ACTUATE_MAX_COST` (`none`|`targeted_rerun`, L4 needs `targeted_rerun`), `REPROLAB_LEAF_ACTUATE_SEEDS` (L5 GPU sub-gate), `REPROLAB_LEAF_SEED_MAX` (auto-seed ceiling, default 5).
+- `OPENRESEARCH_SCOPE_INCLUSION_EXCLUDE` (L1) — the in-loop verify (`score_reproduction`) now excludes out-of-inclusion-scope leaves the way *finalize* already did. Operator-sourced from `--scope-spec`/paper-hint; evidence-safe (a leaf naming an in-scope dataset is never excluded).
+- Flag knobs: `OPENRESEARCH_LEAF_ACTUATE_MAX_COST` (`none`|`targeted_rerun`, L4 needs `targeted_rerun`), `OPENRESEARCH_LEAF_ACTUATE_SEEDS` (L5 GPU sub-gate), `OPENRESEARCH_LEAF_SEED_MAX` (auto-seed ceiling, default 5).
 
 ### Fixed (leaf-frontier — the open-loop `0.0` leaves on the real Adam/ResNet runs)
 - **`fe5e7900` figure leaf shipped at `0.0`** ("shows zero image or figure artifacts"): the grader is TEXT-ONLY — it reads `fig_*.json` JSON sidecars (axis + series), never the PNG — and `leaf_triage._ground` was *demoting* `render_artifact`→`protocol_gap` whenever no per-step curves were on disk. But a COMPARISON figure (final metric by condition) is renderable from scalar finals. `_ground` now keeps `render_artifact` when measured `per_model` results exist (`has_results`), and `emit_figure_sidecars` writes the grounded sidecar the grader actually consumes. End-to-end on the real Adam `metrics.json`: triage `protocol_gap`→`render_artifact`, 6 sidecars emitted, picked up by the grader's own `_gather_figure_sidecars`.
@@ -35,7 +35,7 @@ version + date and start a new `[Unreleased]` block above it.
 ### Changed (night)
 - `rlm-lab.tsx` swaps `ExplorationCanvas → ConstellationCanvas`. `ExplorationCanvas + layout-tree` are NOT deleted — preserved as fallback.
 - `TreeNode.kind` union extended with `primitive` and `llm_primitive`; `foldPrimitiveCall` appends one tree node per `status=ok` call keyed by `primitivePhase`. `LLM_USING_PRIMITIVES` set (understand_section, propose_improvements, recommend_next_tool, verify_against_rubric, plan_reproduction, extract_hyperparameters, detect_environment) gets the pulsing mini-RLM visual; `NON_VISUALIZED` set (heartbeat, check_user_messages, record_candidate_outcome, respond_to_user) is filtered out.
-- `run_experiment` default cap removed — only honors `REPROLAB_RUN_EXPERIMENT_TIMEOUT_S` env var OR `ctx.remaining_s()` from `--max-wall-clock`. Without either, `timeout=None` waits indefinitely (per user mandate "no cost cap until set"). The CPU-bound-baseline problem the 1800s cap was working around is now addressed at the agent prompt layer instead.
+- `run_experiment` default cap removed — only honors `OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S` env var OR `ctx.remaining_s()` from `--max-wall-clock`. Without either, `timeout=None` waits indefinitely (per user mandate "no cost cap until set"). The CPU-bound-baseline problem the 1800s cap was working around is now addressed at the agent prompt layer instead.
 - `record_candidate_outcome` — strict-reject of any outcome not in `_VALID_OUTCOMES` (commit 1f72e07) replaced with canonicalize-or-accept-literal. Empty/None outcome falls back to the literal string `"unknown"` so the event still emits.
 - `_run_baseline_with_sdk` call now threads `gpu_mode=getattr(ctx, "gpu_mode", None)` so the sandbox-aware prompt receives the real value.
 
@@ -54,8 +54,8 @@ version + date and start a new `[Unreleased]` block above it.
 ### Added (late evening — parallel paper sweep + reliability sprint)
 - `tests/services/events/test_live_runs_status_ordering.py` — 5 compile-the-wrapper tests pinning: `write_status("completed")` before `finalize_benchmark()`; finalize wrapped in try/except; `finally:` block with `os._exit`; exit code follows status; failure path also reaches finally.
 - `tests/test_eventstore_sqlite_concurrent.py` — 3 tests pinning concurrent SQLite writers under WAL: 2 threads × different aggregates both succeed; 4×20 = 80 appends complete < 25 s; same-aggregate same-version → exactly one wins with `ConcurrencyError` (not `"database is locked"`).
-- `tests/rlm/test_run_experiment_timeout.py` — 3 tests pinning new `run_experiment` cap: default 1800 s; `REPROLAB_RUN_EXPERIMENT_TIMEOUT_S` env-var override; invalid value falls back to default.
-- `REPROLAB_RUN_EXPERIMENT_TIMEOUT_S` env var — tunable aggregate cap for `run_experiment` primitive.
+- `tests/rlm/test_run_experiment_timeout.py` — 3 tests pinning new `run_experiment` cap: default 1800 s; `OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S` env-var override; invalid value falls back to default.
+- `OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S` env var — tunable aggregate cap for `run_experiment` primitive.
 - `runs/_archived_legacy_fixtures_20260523/` — 3 legacy test fixtures (`prj_verify_offline_report`, `prj_verify_offline_report2`, `prj_verify_polish`) moved here so the leaderboard scan doesn't trip on their list-shaped `rubric` fields.
 
 ### Changed (late evening)
@@ -471,7 +471,7 @@ version + date and start a new `[Unreleased]` block above it.
 - **Hybrid vision-leaning paper extraction.** A modular `PaperExtractor`
   augmentation pass runs after the base PyMuPDF parser
   (`backend/services/ingestion/parser/extractor.py`). In `hybrid` mode
-  (`REPROLAB_PAPER_EXTRACTION_MODE`, default `hybrid`) it renders
+  (`OPENRESEARCH_PAPER_EXTRACTION_MODE`, default `hybrid`) it renders
   scanned / figure-heavy pages to images and calls Claude vision
   (`vision.py`) for figure / table / equation descriptions and OCR
   text, enriching the parsed `full_text` that downstream agents
@@ -483,13 +483,13 @@ version + date and start a new `[Unreleased]` block above it.
   the Claude agent runtime registers `https://jakub-kopecky--arxiv-mcp-
   server.apify.actor/sse` as an MCP server named `apify-arxiv` (SSE
   transport, `Authorization: Bearer` header) and grants its tools to the
-  builder agents listed in `REPROLAB_APIFY_ARXIV_ENABLED_AGENTS`
+  builder agents listed in `OPENRESEARCH_APIFY_ARXIV_ENABLED_AGENTS`
   (default: `artifact-discovery,paper-understanding`). Tools surface as
   `mcp__apify-arxiv__*` and give those agents direct paper search /
   access / listing against arXiv without round-tripping through generic
   WebSearch. Empty token = MCP wiring is skipped entirely (no cold-start
   handshake, no extra latency).
-- **Persistent Runpod pod reuse via `REPROLAB_RUNPOD_POD_ID`.** When set,
+- **Persistent Runpod pod reuse via `OPENRESEARCH_RUNPOD_POD_ID`.** When set,
   `RunpodBackend.create_sandbox` attaches to the existing pod via SSH
   instead of `POST /pods`, reusing it across pipeline runs. The pod is
   structurally undeletable (never added to `_owned_pod_ids`). If the
@@ -520,8 +520,8 @@ version + date and start a new `[Unreleased]` block above it.
   `codex_cli`, which uses `codex exec` with the operator's ChatGPT OAuth
   session after API-key OpenAI is unavailable. The provider never reads
   OAuth tokens; it only checks for the binary and `~/.codex/auth.json`.
-  Optional overrides: `REPROLAB_CODEX_CLI_PATH` and
-  `REPROLAB_CODEX_AUTH_PATH`. Verified locally with `codex-cli 0.125.0`.
+  Optional overrides: `OPENRESEARCH_CODEX_CLI_PATH` and
+  `OPENRESEARCH_CODEX_AUTH_PATH`. Verified locally with `codex-cli 0.125.0`.
 - **Phase 2 research workspace services.** Added deterministic services for
   AST-backed knowledge graph construction and `graph_query()`, reusable
   cross-project memory, multi-paper comparison summaries, Git worktree

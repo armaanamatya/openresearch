@@ -38,7 +38,7 @@ Signal design — robust + near-zero false-positive, scale/num-classes-agnostic:
 All four conditions together make a false positive on healthy training essentially
 impossible: a converging model fails the FLAT test early and the NO-DESCENT test later.
 
-The whole guard is gated behind ``REPROLAB_DEAD_LOSS_EARLYSTOP`` (default OFF). When
+The whole guard is gated behind ``OPENRESEARCH_DEAD_LOSS_EARLYSTOP`` (default OFF). When
 off, the cell runner never instantiates a detector and behaviour is byte-for-byte
 unchanged. It is ``local``/cell-path scoped — the monolithic and runpod/docker exec
 paths do not call it.
@@ -63,8 +63,8 @@ _LOSS_RE = re.compile(r"(?<![\w])loss\s*[=:]\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d
 
 
 def is_enabled() -> bool:
-    """True when ``REPROLAB_DEAD_LOSS_EARLYSTOP`` is truthy (default OFF — opt-in)."""
-    return os.environ.get("REPROLAB_DEAD_LOSS_EARLYSTOP", "").strip().lower() in (
+    """True when ``OPENRESEARCH_DEAD_LOSS_EARLYSTOP`` is truthy (default OFF — opt-in)."""
+    return os.environ.get("OPENRESEARCH_DEAD_LOSS_EARLYSTOP", "").strip().lower() in (
         "1", "true", "yes", "on",
     )
 
@@ -116,10 +116,10 @@ class DeadTrainingDetector:
     without a code change), but the defaults are chosen to make a false positive on
     healthy training essentially impossible:
 
-      * ``REPROLAB_DEAD_LOSS_WINDOW``  (default 40)    consecutive flat epochs to trip
-      * ``REPROLAB_DEAD_LOSS_EPS``     (default 1e-3)  max-min flatness threshold
-      * ``REPROLAB_DEAD_LOSS_MIN``     (default 0.2)   only trip above this loss value
-      * ``REPROLAB_DEAD_LOSS_DESCENT`` (default 0.9)   best must stay >= this * first
+      * ``OPENRESEARCH_DEAD_LOSS_WINDOW``  (default 40)    consecutive flat epochs to trip
+      * ``OPENRESEARCH_DEAD_LOSS_EPS``     (default 1e-3)  max-min flatness threshold
+      * ``OPENRESEARCH_DEAD_LOSS_MIN``     (default 0.2)   only trip above this loss value
+      * ``OPENRESEARCH_DEAD_LOSS_DESCENT`` (default 0.9)   best must stay >= this * first
     """
 
     def __init__(
@@ -130,11 +130,11 @@ class DeadTrainingDetector:
         min_loss: float | None = None,
         descent_frac: float | None = None,
     ) -> None:
-        self.window = int(window if window is not None else _env_int("REPROLAB_DEAD_LOSS_WINDOW", 40))
-        self.flat_eps = float(flat_eps if flat_eps is not None else _env_float("REPROLAB_DEAD_LOSS_EPS", 1e-3))
-        self.min_loss = float(min_loss if min_loss is not None else _env_float("REPROLAB_DEAD_LOSS_MIN", 0.2))
+        self.window = int(window if window is not None else _env_int("OPENRESEARCH_DEAD_LOSS_WINDOW", 40))
+        self.flat_eps = float(flat_eps if flat_eps is not None else _env_float("OPENRESEARCH_DEAD_LOSS_EPS", 1e-3))
+        self.min_loss = float(min_loss if min_loss is not None else _env_float("OPENRESEARCH_DEAD_LOSS_MIN", 0.2))
         self.descent_frac = float(
-            descent_frac if descent_frac is not None else _env_float("REPROLAB_DEAD_LOSS_DESCENT", 0.9)
+            descent_frac if descent_frac is not None else _env_float("OPENRESEARCH_DEAD_LOSS_DESCENT", 0.9)
         )
         self.window = max(self.window, 2)  # a window of <2 is meaningless
         self._recent: deque[float] = deque(maxlen=self.window)

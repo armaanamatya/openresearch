@@ -196,7 +196,7 @@ class LocalDockerBackend(RuntimeBackend):
             run_kwargs["device_requests"] = [_gpu_device_request(config.gpu_device_ids)]
             run_kwargs["environment"] = {
                 **config.environment,
-                "REPROLAB_GPU_MODE": config.gpu_mode,
+                "OPENRESEARCH_GPU_MODE": config.gpu_mode,
                 "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
             }
 

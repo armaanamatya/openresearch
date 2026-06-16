@@ -6,7 +6,7 @@
 
 ## Why
 
-Today, RunPod sandbox runs **always** provision a fixed GPU SKU (default RTX 4090) defined by `REPROLAB_RUNPOD_GPU_TYPE`. The paper's stated hardware ("trained on 8× A100 80GB") is collected into `PaperClaimMap.hardware_clues` by `understand_section` and then **dropped on the floor** — no code consumes it. Papers that legitimately need ≥40GB VRAM fail at experiment time on RTX 4090's 24GB; papers that comfortably fit on RTX 4090 are penalty-free.
+Today, RunPod sandbox runs **always** provision a fixed GPU SKU (default RTX 4090) defined by `OPENRESEARCH_RUNPOD_GPU_TYPE`. The paper's stated hardware ("trained on 8× A100 80GB") is collected into `PaperClaimMap.hardware_clues` by `understand_section` and then **dropped on the floor** — no code consumes it. Papers that legitimately need ≥40GB VRAM fail at experiment time on RTX 4090's 24GB; papers that comfortably fit on RTX 4090 are penalty-free.
 
 We want to **read the paper's hardware claim, estimate whole-workload VRAM (training + inference + eval), pick the cheapest RunPod SKU that satisfies that VRAM with a configurable safety margin, and provision the pod accordingly** — with a hard `$/hr` cap, a `force_single_gpu` invariant on by default, and an auto-escalation path when the experiment OOMs anyway.
 
@@ -20,8 +20,8 @@ Scope is **deliberately RunPod-only**. The resolver still emits informational ev
 | D2 | Headroom: LLM estimates whole-workload `estimated_vram_gb` × multiplier (default **1.25**) + tier-up to next RunPod SKU | Q2 (option A) |
 | D3 | Catalog: static vendored `gpu_catalog.py` + fallback ladder; no live RunPod API in hot path | Q3 (option A) |
 | D4 | Extraction stage: new plan-time primitive `resolve_gpu_requirements`, RLM-native, SSE-emitted | Q4 (option A) |
-| D5 | Flags: two — `REPROLAB_DYNAMIC_GPU` and `REPROLAB_FORCE_SINGLE_GPU`. Defaults: both ON | Q5 (option B) |
-| D6 | Cost ceiling: `REPROLAB_MAX_GPU_USD_PER_HOUR` (default **10.0**); plus `REPROLAB_MAX_RUN_GPU_USD` (default **10.0**) on `RunBudget` | Q6 (option A) + user budget direction |
+| D5 | Flags: two — `OPENRESEARCH_DYNAMIC_GPU` and `OPENRESEARCH_FORCE_SINGLE_GPU`. Defaults: both ON | Q5 (option B) |
+| D6 | Cost ceiling: `OPENRESEARCH_MAX_GPU_USD_PER_HOUR` (default **10.0**); plus `OPENRESEARCH_MAX_RUN_GPU_USD` (default **10.0**) on `RunBudget` | Q6 (option A) + user budget direction |
 | D7 | OOM policy: auto-escalate up catalog ladder; max **2** escalations; gated by `$/hr` cap; transparent to the LLM | Q7 (option A) |
 | D8 | No-clues fallback: RTX 4090 (24 GB), with `gpu_fallback` SSE warning so substitution is visible | Q8 (option A) |
 | D9 | Existing `GpuMode` enum is sandbox-agnostic/Docker-focused; leave it alone. `$/hr` cap is the natural count bound when `force_single_gpu=off` | Q9 (option A) |
@@ -29,7 +29,7 @@ Scope is **deliberately RunPod-only**. The resolver still emits informational ev
 
 ## Invariants
 
-I1. **`gpu_count = 1`** whenever `REPROLAB_FORCE_SINGLE_GPU=on` (default). No code path may exceed this.
+I1. **`gpu_count = 1`** whenever `OPENRESEARCH_FORCE_SINGLE_GPU=on` (default). No code path may exceed this.
 I2. **Catalog never returns a SKU exceeding `MAX_GPU_USD_PER_HOUR × gpu_count`.** Verified by `find_ladder` unit test.
 I3. **The resolver is a pure function** of (claim_map, env_spec, settings, run_budget). No I/O. No network. No side effects except the SSE event emission, which happens in the primitive wrapper, not the resolver.
 I4. **OAuth auth never enters the pod** — pod credentials path is empty by construction. Verified by `test_oauth_runpod_orthogonality.py`.
@@ -158,7 +158,7 @@ def find_ladder(
 ) -> list[GpuSku]:
     """Returns SKUs with vram_gb >= min AND price <= cap AND cloud_type in cloud_types,
     sorted by ascending price. `cloud_types` defaults to `("COMMUNITY",)` to match the
-    repo's default `REPROLAB_RUNPOD_CLOUD_TYPE=COMMUNITY`. To unlock SECURE-only SKUs
+    repo's default `OPENRESEARCH_RUNPOD_CLOUD_TYPE=COMMUNITY`. To unlock SECURE-only SKUs
     like H200, the resolver passes `("COMMUNITY", "SECURE")` when
     `Settings.runpod_cloud_type == "SECURE"`."""
 ```
@@ -257,13 +257,13 @@ When `gpu_plan is None`: back-compat path — reads `Settings.runpod_*` as today
 
 | Env var | Settings field | Default | CLI flag |
 |---|---|---|---|
-| `REPROLAB_DYNAMIC_GPU` | `dynamic_gpu_enabled: bool` | `True` | `--dynamic-gpu / --no-dynamic-gpu` |
-| `REPROLAB_FORCE_SINGLE_GPU` | `force_single_gpu: bool` | `True` | `--force-single-gpu / --no-force-single-gpu` |
-| `REPROLAB_MAX_GPU_USD_PER_HOUR` | `max_gpu_usd_per_hour: float \| None` | `10.0` | `--max-gpu-usd-per-hour` |
-| `REPROLAB_MAX_RUN_GPU_USD` | `max_run_gpu_usd: float \| None` | `10.0` | `--max-run-gpu-usd` |
-| `REPROLAB_DYNAMIC_GPU_HEADROOM` | `dynamic_gpu_headroom: float` | `1.25` | `--dynamic-gpu-headroom` |
-| `REPROLAB_DYNAMIC_GPU_FALLBACK_VRAM_GB` | `dynamic_gpu_fallback_vram_gb: int` | `24` | (env only) |
-| `REPROLAB_DYNAMIC_GPU_MAX_ESCALATIONS` | `dynamic_gpu_max_escalations: int` | `2` | (env only) |
+| `OPENRESEARCH_DYNAMIC_GPU` | `dynamic_gpu_enabled: bool` | `True` | `--dynamic-gpu / --no-dynamic-gpu` |
+| `OPENRESEARCH_FORCE_SINGLE_GPU` | `force_single_gpu: bool` | `True` | `--force-single-gpu / --no-force-single-gpu` |
+| `OPENRESEARCH_MAX_GPU_USD_PER_HOUR` | `max_gpu_usd_per_hour: float \| None` | `10.0` | `--max-gpu-usd-per-hour` |
+| `OPENRESEARCH_MAX_RUN_GPU_USD` | `max_run_gpu_usd: float \| None` | `10.0` | `--max-run-gpu-usd` |
+| `OPENRESEARCH_DYNAMIC_GPU_HEADROOM` | `dynamic_gpu_headroom: float` | `1.25` | `--dynamic-gpu-headroom` |
+| `OPENRESEARCH_DYNAMIC_GPU_FALLBACK_VRAM_GB` | `dynamic_gpu_fallback_vram_gb: int` | `24` | (env only) |
+| `OPENRESEARCH_DYNAMIC_GPU_MAX_ESCALATIONS` | `dynamic_gpu_max_escalations: int` | `2` | (env only) |
 | (none) | (none) | (none) | `--vram-gb N` (manual override; bypasses LLM estimate) |
 
 Empty string OR `0` on `MAX_GPU_USD_PER_HOUR` and `MAX_RUN_GPU_USD` means "no cap."
@@ -288,10 +288,10 @@ All routed through `sse_bridge.sanitize_iteration` — same chokepoint as existi
 | RunPod capacity error on pod create | Drop down ladder; retry with next-cheapest viable SKU | `gpu_escalated` (reason: runpod_capacity) |
 | Pod hits CUDA OOM at experiment time | Tear down; pop ladder rung; recreate; re-run | `gpu_escalated` (reason: cuda_oom) |
 | OOM with empty ladder OR escalations exhausted | Fail with cumulative-cost report | `gpu_fallback` (terminal) |
-| `REPROLAB_DYNAMIC_GPU=off` + sandbox=runpod | Skip resolver; use legacy `Settings.runpod_gpu_type` | (no events) |
+| `OPENRESEARCH_DYNAMIC_GPU=off` + sandbox=runpod | Skip resolver; use legacy `Settings.runpod_gpu_type` | (no events) |
 | Sandbox != runpod | Resolver runs for *informational* telemetry only; plan not consumed | `gpu_resolved` (source: informational) |
 | `--vram-gb N` manual override | Skip LLM; treat N as estimate; multiplier still applied | `gpu_resolved` (source: manual) |
-| `REPROLAB_FORCE_SANDBOX=docker` overrides `--sandbox runpod` | Resolver inert; legacy Docker path | (no events) |
+| `OPENRESEARCH_FORCE_SANDBOX=docker` overrides `--sandbox runpod` | Resolver inert; legacy Docker path | (no events) |
 
 ## Testing
 
@@ -336,7 +336,7 @@ E. **No surface bloat**: `git diff --stat` shows additions concentrated in the n
 - **Live RunPod API price refresh**. Catalog stays static; quarterly manual refresh.
 - **`GpuMode` enum unification**. Existing enum stays sandbox-agnostic.
 - **Multi-region awareness** (e.g., prefer EU pods). Out of scope.
-- **Per-paper persistent pods** (re-use a warm pod across reruns). Out of scope; existing `REPROLAB_RUNPOD_POD_ID` already covers single-pod attachment.
+- **Per-paper persistent pods** (re-use a warm pod across reruns). Out of scope; existing `OPENRESEARCH_RUNPOD_POD_ID` already covers single-pod attachment.
 - **Spot/interruptible SKUs**. Out of scope.
 
 ## Operational notes

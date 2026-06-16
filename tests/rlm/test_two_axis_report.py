@@ -14,7 +14,7 @@ import pytest
 
 from backend.agents.rlm import two_axis_report as tar
 
-_FLAG = "REPROLAB_TWO_AXIS_VERDICT"
+_FLAG = "OPENRESEARCH_TWO_AXIS_VERDICT"
 
 
 def _rubric(fidelity: float = 0.9, result_match: float = 0.1) -> dict:
@@ -154,7 +154,7 @@ def test_live_write_path_attaches_verdict(monkeypatch, tmp_path):
     verdict to final_report.json and projects 'failed'→'reproduced' for a
     faithful-contradicted run — A4 end-to-end through the real writer."""
     monkeypatch.setenv(_FLAG, "1")
-    monkeypatch.setenv("REPROLAB_UPDATE_CALIBRATION", "false")
+    monkeypatch.setenv("OPENRESEARCH_UPDATE_CALIBRATION", "false")
     _write(tmp_path, "code/metrics.json", {"status": "ok", "per_model": {"m": {"v": 1.0}}})
     _write(tmp_path, "rlm_state/fidelity_certificate.json", _green_certificate())
     scope = {"model": "Qwen2.5-3B", "dataset": "ALFWorld", "split": "test"}
@@ -175,7 +175,7 @@ def test_live_write_path_attaches_verdict(monkeypatch, tmp_path):
 def test_live_write_path_unchanged_when_flag_off(monkeypatch, tmp_path):
     """Flag off → final_report.json is the plain model dump (no two-axis fields)."""
     monkeypatch.delenv(_FLAG, raising=False)
-    monkeypatch.setenv("REPROLAB_UPDATE_CALIBRATION", "false")
+    monkeypatch.setenv("OPENRESEARCH_UPDATE_CALIBRATION", "false")
     from backend.agents.rlm.report import RLMFinalReport, write_final_report_rlm
     report = RLMFinalReport(verdict="partial", rubric=_rubric())
     write_final_report_rlm(report, tmp_path)

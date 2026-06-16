@@ -357,7 +357,7 @@ def test_backfill_root_regrades_all_and_skips_gracefully(tmp_path: Path) -> None
 
 
 def test_grader_samples_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("REPROLAB_GRADER_SAMPLES", "3")
+    monkeypatch.setenv("OPENRESEARCH_GRADER_SAMPLES", "3")
     assert rb._grader_samples_from_env() == 3
     stamp = rb.build_stamp("v1")
     assert stamp == {"grader_version": "v1", "grader_samples": 3, "grader_temperature": 0}
@@ -366,11 +366,11 @@ def test_grader_samples_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_grader_samples_defaults_to_one_when_unset_or_bad(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("REPROLAB_GRADER_SAMPLES", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_GRADER_SAMPLES", raising=False)
     assert rb._grader_samples_from_env() == 1
-    monkeypatch.setenv("REPROLAB_GRADER_SAMPLES", "not-a-number")
+    monkeypatch.setenv("OPENRESEARCH_GRADER_SAMPLES", "not-a-number")
     assert rb._grader_samples_from_env() == 1
-    monkeypatch.setenv("REPROLAB_GRADER_SAMPLES", "0")
+    monkeypatch.setenv("OPENRESEARCH_GRADER_SAMPLES", "0")
     assert rb._grader_samples_from_env() == 1  # non-positive clamps to 1
 
 

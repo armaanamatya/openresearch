@@ -90,9 +90,9 @@ def _fake_implement(code_dir: Path, *, bodies: dict[int, str], fail_on: set[int]
 
 @pytest.fixture(autouse=True)
 def _no_env_leak(monkeypatch):
-    for var in ("REPROLAB_AB_ARM", "REPROLAB_AB_PAIR_ID", "REPROLAB_BES_MIN_REMAINING_S",
-                "REPROLAB_BES_CONTINUE_MIN_S", "REPROLAB_BASELINE_EXTRA_GUIDANCE",
-                "REPROLAB_BES_SMOKE_SELECT", "REPROLAB_BES_SELECT_MIN_SPREAD"):
+    for var in ("OPENRESEARCH_AB_ARM", "OPENRESEARCH_AB_PAIR_ID", "OPENRESEARCH_BES_MIN_REMAINING_S",
+                "OPENRESEARCH_BES_CONTINUE_MIN_S", "OPENRESEARCH_BASELINE_EXTRA_GUIDANCE",
+                "OPENRESEARCH_BES_SMOKE_SELECT", "OPENRESEARCH_BES_SELECT_MIN_SPREAD"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -103,9 +103,9 @@ def _no_env_leak(monkeypatch):
 
 def test_smoke_select_non_runnable_high_score_loses(tmp_path, monkeypatch):
     """Candidate #0 grades HIGHER but is non-runnable (hard AST violation);
-    the runnable #1 must win once REPROLAB_BES_SMOKE_SELECT is on."""
+    the runnable #1 must win once OPENRESEARCH_BES_SMOKE_SELECT is on."""
     monkeypatch.setattr("backend.config.get_settings", lambda: _settings(n=2))
-    monkeypatch.setenv("REPROLAB_BES_SMOKE_SELECT", "1")
+    monkeypatch.setenv("OPENRESEARCH_BES_SMOKE_SELECT", "1")
     ctx = _ctx(tmp_path)
     _write_rubric(ctx)
     code_dir = Path(ctx.runs_root) / ctx.project_id / "code"
@@ -132,7 +132,7 @@ def test_smoke_select_off_keeps_legacy_winner(tmp_path, monkeypatch):
     """Flag OFF: the higher static grade wins even if non-runnable (byte-for-byte
     today). The decision is recorded as 'legacy'; no smoke is consulted."""
     monkeypatch.setattr("backend.config.get_settings", lambda: _settings(n=2))
-    # REPROLAB_BES_SMOKE_SELECT unset by the autouse fixture.
+    # OPENRESEARCH_BES_SMOKE_SELECT unset by the autouse fixture.
     ctx = _ctx(tmp_path)
     _write_rubric(ctx)
     code_dir = Path(ctx.runs_root) / ctx.project_id / "code"
@@ -159,7 +159,7 @@ def test_degenerate_pool_falls_through_to_single_shot_repair(tmp_path, monkeypat
     """Every candidate non-runnable → a degenerate_pool run_warning + ONE extra
     single-shot repair implementation, instead of selecting a doomed winner."""
     monkeypatch.setattr("backend.config.get_settings", lambda: _settings(n=2))
-    monkeypatch.setenv("REPROLAB_BES_SMOKE_SELECT", "1")
+    monkeypatch.setenv("OPENRESEARCH_BES_SMOKE_SELECT", "1")
     ctx = _ctx(tmp_path)
     _write_rubric(ctx)
     code_dir = Path(ctx.runs_root) / ctx.project_id / "code"
@@ -193,7 +193,7 @@ def test_all_runnable_records_smoke_decision(tmp_path, monkeypatch):
     """Sanity: a healthy pool still selects and stamps a smoke_gated decision
     (not degenerate) so the A/B stamp carries the SELECT provenance."""
     monkeypatch.setattr("backend.config.get_settings", lambda: _settings(n=2))
-    monkeypatch.setenv("REPROLAB_BES_SMOKE_SELECT", "1")
+    monkeypatch.setenv("OPENRESEARCH_BES_SMOKE_SELECT", "1")
     ctx = _ctx(tmp_path)
     _write_rubric(ctx)
     code_dir = Path(ctx.runs_root) / ctx.project_id / "code"

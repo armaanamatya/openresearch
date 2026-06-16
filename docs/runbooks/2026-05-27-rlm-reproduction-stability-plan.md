@@ -338,7 +338,7 @@ Do not spend the `$7` RunPod balance on another full paper reproduction until:
 1. `implement_baseline` returns a reliable envelope.
 2. Bad `run_experiment` chaining is blocked.
 3. CLI runs are visible in the UI or the backend is launched with a correct
-   `REPROLAB_RUNS_ROOT`.
+   `OPENRESEARCH_RUNS_ROOT`.
 4. A cheap/sanity mode can test RunPod without full RLM/code-writing.
 
 Do not run large GEPA/HALO/SkillOpt comparisons yet. The current bottleneck is
@@ -426,7 +426,7 @@ Applied P0/P1 hardening in the working tree:
 - `--sanity` now runs a deterministic tiny sandbox smoke and skips full RLM and
   the code-writing sub-agent.
 - Final-report calibration recompute is now opt-in via
-  `REPROLAB_UPDATE_CALIBRATION=true`, preventing smoke/pre-flight-only runs from
+  `OPENRESEARCH_UPDATE_CALIBRATION=true`, preventing smoke/pre-flight-only runs from
   overwriting `data/calibration.json`.
 - `propose_improvements` now rejects blank candidate records, and the wrapper
   also filters blank candidate cards before emitting UI events.

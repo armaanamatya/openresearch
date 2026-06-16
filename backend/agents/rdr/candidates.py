@@ -10,7 +10,7 @@ failed leaves, then earliest). Evolve/splice is deferred to v2 (see
 This module is pure (no I/O, no LLM) and is import-inert until ``bes_enabled``.
 
 Smoke-gated SELECT (spec 2026-06-16 §D2, default OFF — gated on
-``REPROLAB_BES_SMOKE_SELECT``): the plain code-only static grade above is blind
+``OPENRESEARCH_BES_SMOKE_SELECT``): the plain code-only static grade above is blind
 to the *runtime* axis (a torch-repin or a VAE device-side-assert) — exactly
 where this repo's failures live. An all-statically-faithful-but-non-runnable
 pool still "selects" a winner, and tiny score spreads (< ~σ_grader) are
@@ -24,13 +24,13 @@ flag-gated and pure (the only I/O is a read-only AST scan of the snapshot):
    even construct/import) cannot outrank a runnable one;
 2. a **deterministic sub-σ tie-break** (import-smoke pass → AST-completeness →
    lowest candidate index) when the top-2 score spread is below
-   ``REPROLAB_BES_SELECT_MIN_SPREAD`` (default 0.05, a σ_grader proxy) — instead
+   ``OPENRESEARCH_BES_SELECT_MIN_SPREAD`` (default 0.05, a σ_grader proxy) — instead
    of banking the luckier grader draw;
 3. a **degenerate-pool** verdict when no candidate is selectable (every one
    failed or smoke-failed) so the caller emits ``degenerate_pool`` and falls
    through to single-shot repair instead of "selecting" a doomed winner.
 
-``REPROLAB_BES_SMOKE_SELECT`` unset/off → :func:`select_best_gated` is a thin
+``OPENRESEARCH_BES_SMOKE_SELECT`` unset/off → :func:`select_best_gated` is a thin
 pass-through to :func:`select_best`, byte-for-byte the prior behaviour.
 """
 from __future__ import annotations
@@ -46,10 +46,10 @@ logger = logging.getLogger(__name__)
 
 # Flag gate for the whole §D2 smoke-gated SELECT layer. Default OFF: when unset
 # (or 0/false/no/off) select_best_gated == select_best, byte-for-byte.
-ENV_SMOKE_SELECT = "REPROLAB_BES_SMOKE_SELECT"
+ENV_SMOKE_SELECT = "OPENRESEARCH_BES_SMOKE_SELECT"
 # Top-2 score spread below this (a σ_grader proxy) is treated as a tie and
 # resolved on a deterministic signal instead of banking grader noise.
-ENV_SELECT_MIN_SPREAD = "REPROLAB_BES_SELECT_MIN_SPREAD"
+ENV_SELECT_MIN_SPREAD = "OPENRESEARCH_BES_SELECT_MIN_SPREAD"
 _DEFAULT_MIN_SPREAD = 0.05
 
 
@@ -212,7 +212,7 @@ def select_best_gated(
     record of HOW the winner was chosen (for the run_warning + the persisted
     pool state). Behaviour:
 
-    * ``REPROLAB_BES_SMOKE_SELECT`` off → ``(select_best(...), {"path": "legacy"})``
+    * ``OPENRESEARCH_BES_SMOKE_SELECT`` off → ``(select_best(...), {"path": "legacy"})``
       — byte-for-byte the prior SELECT (``smokes`` ignored).
     * On: a candidate marked ``runnable=False`` by ``smokes`` is dropped from
       contention (a statically-faithful but non-runnable candidate can't win
@@ -220,7 +220,7 @@ def select_best_gated(
       as **degenerate** — ``(None, {"degenerate": True, ...})`` — so the caller
       falls through to single-shot repair.
     * When ≥2 runnable candidates survive and the **top-2 score spread is below
-      the σ_grader proxy** (``REPROLAB_BES_SELECT_MIN_SPREAD``, default 0.05),
+      the σ_grader proxy** (``OPENRESEARCH_BES_SELECT_MIN_SPREAD``, default 0.05),
       the tie is broken DETERMINISTICALLY — import/construct-smoke pass first,
       then AST-completeness, then lowest candidate index — instead of banking
       the luckier grader draw.

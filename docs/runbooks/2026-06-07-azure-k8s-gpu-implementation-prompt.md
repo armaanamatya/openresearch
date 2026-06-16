@@ -110,7 +110,7 @@ def run_matrix(cells, cell_script, *, output_root,
 
 - `gpus` → **ignored** (K8s scheduler places). `max_parallel` → orchestrator concurrency cap +
   namespace `ResourceQuota`.
-- `per_cell_timeout_s` → Job `activeDeadlineSeconds`. `max_oom_retries` → `REPROLAB_CELL_MAX_OOM_RETRIES`
+- `per_cell_timeout_s` → Job `activeDeadlineSeconds`. `max_oom_retries` → `OPENRESEARCH_CELL_MAX_OOM_RETRIES`
   consumed by the **in-Job wrapper's** shrink ladder (the orchestrator does **not** resubmit on OOM).
 - **Status mapping:** Job Succeeded → `ok`; wrapper exits `oom_shrink_exhausted` → `oom_failed`; Job
   failed/timeout/**stuck-Pending past timeout** → other (`_execute_cell_matrix` already counts `n_err`).

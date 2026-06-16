@@ -1,6 +1,6 @@
 """A6: count-based per-cell digest + measured-value metrics-path rank (2026-06-16).
 
-REPROLAB_GRADER_DIGEST default OFF → byte-slice + truthiness rank (today's
+OPENRESEARCH_GRADER_DIGEST default OFF → byte-slice + truthiness rank (today's
 behavior). On → no cell silently vanishes on a wide grid; a placeholder
 per_model:{m:{}} cannot outrank genuinely-measured older data.
 """
@@ -30,7 +30,7 @@ def _placeholder():
 
 
 def test_rank_prefers_measured_over_newer_placeholder_when_flag_on(monkeypatch, tmp_path):
-    monkeypatch.setenv("REPROLAB_GRADER_DIGEST", "1")
+    monkeypatch.setenv("OPENRESEARCH_GRADER_DIGEST", "1")
     out = tmp_path / "code" / "outputs"
     older = out / "r1" / "metrics.json"
     newer = out / "r2" / "metrics.json"
@@ -43,7 +43,7 @@ def test_rank_prefers_measured_over_newer_placeholder_when_flag_on(monkeypatch, 
 
 
 def test_rank_truthiness_when_flag_off(monkeypatch, tmp_path):
-    monkeypatch.delenv("REPROLAB_GRADER_DIGEST", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_GRADER_DIGEST", raising=False)
     out = tmp_path / "code" / "outputs"
     older = out / "r1" / "metrics.json"
     newer = out / "r2" / "metrics.json"
@@ -56,7 +56,7 @@ def test_rank_truthiness_when_flag_off(monkeypatch, tmp_path):
 
 
 def test_gather_uses_digest_on_overflow_when_flag_on(monkeypatch, tmp_path):
-    monkeypatch.setenv("REPROLAB_GRADER_DIGEST", "1")
+    monkeypatch.setenv("OPENRESEARCH_GRADER_DIGEST", "1")
     monkeypatch.setattr(leaf_scorer, "_MAX_METRICS_BYTES", 50)  # force overflow
     per_model = {f"m{i}": {"e": {"b": {"acc": 0.5 + i / 100}}} for i in range(20)}
     _write(tmp_path / "code" / "metrics.json", {"per_model": per_model})
@@ -69,7 +69,7 @@ def test_gather_uses_digest_on_overflow_when_flag_on(monkeypatch, tmp_path):
 
 
 def test_gather_byteslice_on_overflow_when_flag_off(monkeypatch, tmp_path):
-    monkeypatch.delenv("REPROLAB_GRADER_DIGEST", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_GRADER_DIGEST", raising=False)
     monkeypatch.setattr(leaf_scorer, "_MAX_METRICS_BYTES", 50)
     per_model = {f"m{i}": {"e": {"b": {"acc": 0.5}}} for i in range(20)}
     _write(tmp_path / "code" / "metrics.json", {"per_model": per_model})

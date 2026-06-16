@@ -43,7 +43,7 @@ local sandbox, 8×RTX 4090; **skip Codex review this round** (re-offer before sh
 | # | Decision |
 |---|---|
 | 1 | **Finalize-on-timeout at BOTH** the outer `concurrent.futures.TimeoutError` handler (`primitives.py:4705`) **and** the inner `exec_timeout`/`exec_stalled` return. Load latest on-disk metrics via `_latest_metrics_path`; accept when `_per_model_has_measured_value` ≥ 1 family; tag `partial_timeout` (new, **repairable**) with metrics attached; the forced-iteration ≤60 s wall-clock bypass ships the partial. |
-| 2 | **Generous + unified liveness.** One signal feeds *both* the stall check and the Lane-E watchdog: **OR of {new stdout/stderr line, ckpt/`metrics.json` mtime bump under `project_root`, GPU-util > ~5% on the pinned *physical* ids, CPU-util (process-tree CPU-time delta)}**. A kill needs *all four* quiet for the full window. Stall window **60 min** (`REPROLAB_EXPERIMENT_STALL_S=3600`, `0` disables). `run_experiment` watchdog idle bumped to **≥ stall (4 h)**. The dumb heartbeat daemon no longer the sole signal. All fail-soft. |
+| 2 | **Generous + unified liveness.** One signal feeds *both* the stall check and the Lane-E watchdog: **OR of {new stdout/stderr line, ckpt/`metrics.json` mtime bump under `project_root`, GPU-util > ~5% on the pinned *physical* ids, CPU-util (process-tree CPU-time delta)}**. A kill needs *all four* quiet for the full window. Stall window **60 min** (`OPENRESEARCH_EXPERIMENT_STALL_S=3600`, `0` disables). `run_experiment` watchdog idle bumped to **≥ stall (4 h)**. The dumb heartbeat daemon no longer the sole signal. All fail-soft. |
 | 3 | **GPU-util polls the *physical* device ids** (`sandbox.config.gpu_device_ids`), never the remapped `cuda:0..N` — concurrent batch runs lease disjoint cards, so a remapped index reads a neighbor's idle card → false-kill. `nvidia-smi -i <physical-id>`. |
 | 4 | **CPU-util** = process-tree `utime+stime` delta over the poll interval (stdlib `/proc/<pid>/stat` primary, `psutil.children(recursive=True)` if importable, fail-soft). Covers dataset-download / tokenize / preprocess / CPU-eval phases that sit at 0 % GPU. |
 | 5 | **Inner exec owns the deadline** (local-scoped): `run_experiment` passes the resolved experiment timeout as the per-command exec deadline so the **inner** fires first and `kill()`s the subprocess cleanly (no GPU-burning orphan); the outer pool `.result(timeout=…)` becomes a generous backstop (`resolved + buffer`). **runpod/docker exec paths byte-for-byte untouched** (they keep `_EXEC_TIMEOUT_SECONDS` + `outer == resolved`). |
@@ -149,13 +149,13 @@ keeps everything). `tail -f code/.exec_live.log` answers "is it ongoing."
 Two independent limits inside `exec`:
 - **Hard budget cap** = the `timeout` param → `cause_kind=exec_timeout` (now the resolved experiment
   timeout, decision #5).
-- **Stall window** = `REPROLAB_EXPERIMENT_STALL_S` (**default 3600 s**, `0` disables), read from the
+- **Stall window** = `OPENRESEARCH_EXPERIMENT_STALL_S` (**default 3600 s**, `0` disables), read from the
   merged env. If **no liveness** for the window → kill → `cause_kind=exec_stalled`.
 
 **Liveness = ANY of (decisions #2–#4):** new stdout/stderr line · ckpt/`metrics.json` mtime bump under
 `project_root` (`*.pt`/`*.ckpt`/`metrics.json`) · **GPU-util > ~5 %** on the pinned **physical**
 `gpu_device_ids` (`nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader -i <physical-id>`,
-poll ~30 s, fail-soft, toggle `REPROLAB_EXPERIMENT_GPU_LIVENESS` default on) · **CPU-util** =
+poll ~30 s, fail-soft, toggle `OPENRESEARCH_EXPERIMENT_GPU_LIVENESS` default on) · **CPU-util** =
 process-tree `utime+stime` delta (`/proc` primary, `psutil` if importable, fail-soft). GPU+CPU are
 the load-bearing signals: a real hang sits at ~0 % both; a quiet-but-computing phase (kernel compile,
 big matmul, slow dataloader, CPU preprocess) does not. That is why a *generous* window + util is
@@ -262,14 +262,14 @@ flags via `scripts/batch_reproduce.py --help` + `backend.cli reproduce --help` f
 prefix prevents a stale shell key from shadowing `.env` (§8):
 ```bash
 # Option A — batch scheduler (leases disjoint GPUs, per-run venv + shared HF_HOME):
-env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY REPROLAB_PREFLIGHT_SMOKE=1 \
-  REPROLAB_EXPERIMENT_STALL_S=3600 \
+env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY OPENRESEARCH_PREFLIGHT_SMOKE=1 \
+  OPENRESEARCH_EXPERIMENT_STALL_S=3600 \
   .venv/bin/python scripts/batch_reproduce.py 1412.6980 1412.6806 \
     --gpus-per-run 2 --model claude-oauth --max-wall-clock 50400
 
 # Option B — single CLI per paper:
-env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY REPROLAB_PREFLIGHT_SMOKE=1 \
-  REPROLAB_EXPERIMENT_STALL_S=3600 \
+env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY OPENRESEARCH_PREFLIGHT_SMOKE=1 \
+  OPENRESEARCH_EXPERIMENT_STALL_S=3600 \
   .venv/bin/python -m backend.cli reproduce 1412.6980 \
     --sandbox local --mode rlm --model claude-oauth --max-wall-clock 50400
 ```

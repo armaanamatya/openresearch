@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # seed-fake-run.sh — create a fake run with worker reports for testing.
 # Usage: ./scripts/seed-fake-run.sh [project_id]
-# Respects REPROLAB_RUNS_ROOT (defaults to ./runs).
+# Respects OPENRESEARCH_RUNS_ROOT (defaults to ./runs).
 
 set -euo pipefail
 
 PROJECT_ID="${1:-seed_reports_test}"
-RUNS_ROOT="${REPROLAB_RUNS_ROOT:-./runs}"
+RUNS_ROOT="${OPENRESEARCH_RUNS_ROOT:-./runs}"
 RUN_DIR="${RUNS_ROOT}/${PROJECT_ID}"
 
 mkdir -p "${RUN_DIR}/reports/worker_reports"

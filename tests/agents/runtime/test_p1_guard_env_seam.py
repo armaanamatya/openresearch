@@ -2,7 +2,7 @@
 
 collect_agent_text is the single chokepoint EVERY agent invocation flows through
 (baseline-implementation, rdr, patch-mode, future callers). It seeds the
-RuntimeGuard from REPROLAB_BLOCKED_TERMS_JSON when the caller passes no explicit
+RuntimeGuard from OPENRESEARCH_BLOCKED_TERMS_JSON when the caller passes no explicit
 blocklist, so the guard is uniform + un-forgettable — no per-caller threading.
 """
 
@@ -42,22 +42,22 @@ class _CapturingRuntime:
 # --- blocked_terms_from_env() unit tests ---
 
 def test_env_parser_empty_when_unset(monkeypatch):
-    monkeypatch.delenv("REPROLAB_BLOCKED_TERMS_JSON", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_BLOCKED_TERMS_JSON", raising=False)
     assert blocked_terms_from_env() == ()
 
 
 def test_env_parser_parses_list_and_strips(monkeypatch):
-    monkeypatch.setenv("REPROLAB_BLOCKED_TERMS_JSON", json.dumps([_REPO, "  ", "github.com/x/y"]))
+    monkeypatch.setenv("OPENRESEARCH_BLOCKED_TERMS_JSON", json.dumps([_REPO, "  ", "github.com/x/y"]))
     assert blocked_terms_from_env() == (_REPO, "github.com/x/y")
 
 
 def test_env_parser_malformed_is_empty(monkeypatch):
-    monkeypatch.setenv("REPROLAB_BLOCKED_TERMS_JSON", "{bad json")
+    monkeypatch.setenv("OPENRESEARCH_BLOCKED_TERMS_JSON", "{bad json")
     assert blocked_terms_from_env() == ()
 
 
 def test_env_parser_non_list_is_empty(monkeypatch):
-    monkeypatch.setenv("REPROLAB_BLOCKED_TERMS_JSON", json.dumps({"a": 1}))
+    monkeypatch.setenv("OPENRESEARCH_BLOCKED_TERMS_JSON", json.dumps({"a": 1}))
     assert blocked_terms_from_env() == ()
 
 
@@ -65,7 +65,7 @@ def test_env_parser_non_list_is_empty(monkeypatch):
 
 def test_collect_agent_text_seeds_guard_from_env(monkeypatch, tmp_path: Path):
     """No explicit blocklist + env set ⇒ the agent spec's guard carries the terms."""
-    monkeypatch.setenv("REPROLAB_BLOCKED_TERMS_JSON", json.dumps([_REPO]))
+    monkeypatch.setenv("OPENRESEARCH_BLOCKED_TERMS_JSON", json.dumps([_REPO]))
     runtime = _CapturingRuntime()
     from backend.agents.runtime.invoke import collect_agent_text
 
@@ -76,7 +76,7 @@ def test_collect_agent_text_seeds_guard_from_env(monkeypatch, tmp_path: Path):
 
 
 def test_collect_agent_text_explicit_overrides_env(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("REPROLAB_BLOCKED_TERMS_JSON", json.dumps(["github.com/from/env"]))
+    monkeypatch.setenv("OPENRESEARCH_BLOCKED_TERMS_JSON", json.dumps(["github.com/from/env"]))
     runtime = _CapturingRuntime()
     from backend.agents.runtime.invoke import collect_agent_text
 
@@ -88,7 +88,7 @@ def test_collect_agent_text_explicit_overrides_env(monkeypatch, tmp_path: Path):
 
 
 def test_collect_agent_text_no_env_empty_guard(monkeypatch, tmp_path: Path):
-    monkeypatch.delenv("REPROLAB_BLOCKED_TERMS_JSON", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_BLOCKED_TERMS_JSON", raising=False)
     runtime = _CapturingRuntime()
     from backend.agents.runtime.invoke import collect_agent_text
 
