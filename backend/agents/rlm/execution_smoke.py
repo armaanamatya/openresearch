@@ -47,7 +47,17 @@ SMOKE_STEPS_ENV = "OPENRESEARCH_SMOKE_STEPS"
 
 
 def is_enabled() -> bool:
-    """True when ``OPENRESEARCH_EXECUTION_SMOKE`` is truthy (default OFF — opt-in)."""
+    """True when ``OPENRESEARCH_EXECUTION_SMOKE`` is truthy (default OFF — opt-in).
+
+    Runs the agent's entry for ONE step on tiny data with ``CUDA_LAUNCH_BLOCKING=1``
+    before the full GPU run, so a runtime crash (e.g. the Adam VAE BCELoss device-side
+    assert) surfaces at the real line in seconds. Fail-soft: a script that ignores the
+    step cap is killed by ``timeout`` (exit 124) → SOFT PASS; only a genuine crash
+    blocks. Kept OPT-IN (vs the always-on import smoke) because it changes the cell
+    route for every multi-cell local run (runs a pre-grid smoke) — enable it on the
+    validated GPU launch via ``OPENRESEARCH_EXECUTION_SMOKE=1`` rather than globally
+    (issue #5, 2026-06-15: default-ON had un-validated blast radius across the suite).
+    """
     return os.environ.get("OPENRESEARCH_EXECUTION_SMOKE", "").strip().lower() in (
         "1", "true", "yes", "on",
     )

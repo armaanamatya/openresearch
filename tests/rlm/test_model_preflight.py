@@ -39,16 +39,16 @@ class _StubClient:
 
 class TestDefaultOauthModel:
     def test_defaults_to_sonnet(self, monkeypatch):
-        monkeypatch.delenv("REPROLAB_OAUTH_FALLBACK_MODEL", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_OAUTH_FALLBACK_MODEL", raising=False)
         assert default_oauth_model() == "claude-sonnet-4-6"
 
     def test_env_override(self, monkeypatch):
-        monkeypatch.setenv("REPROLAB_OAUTH_FALLBACK_MODEL", "claude-opus-4-8")
+        monkeypatch.setenv("OPENRESEARCH_OAUTH_FALLBACK_MODEL", "claude-opus-4-8")
         assert default_oauth_model() == "claude-opus-4-8"
 
     def test_client_none_model_becomes_explicit(self, monkeypatch):
         """model=None must NEVER reach the SDK — it would defer to the CLI default."""
-        monkeypatch.delenv("REPROLAB_OAUTH_FALLBACK_MODEL", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_OAUTH_FALLBACK_MODEL", raising=False)
         assert ClaudeLlmClient(model=None)._model == "claude-sonnet-4-6"
 
     def test_client_explicit_model_preserved(self):

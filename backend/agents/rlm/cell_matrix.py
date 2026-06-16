@@ -62,6 +62,7 @@ __all__ = [
     "capacity_gate",
     "dataset_url_preflight",
     "aggregate_cell_metrics",
+    "audit_aggregation_completeness",
     "default_dataset_probe",
     "normalize_cell_axes",
 ]
@@ -201,26 +202,35 @@ def normalize_cell_axes(
 
     * **Never drops a cell** (non-dict entries excepted — they can't run).
     * Input is not mutated; patched cells are shallow copies.
-    * When two cells DERIVE to the same ``(model_key, env, baseline)`` triple,
+    * When two cells RESOLVE to the same ``(model_key, env, baseline)`` triple,
       the later one's ``baseline`` is suffixed with its cell id so no leaf can
-      silently overwrite another.  Explicit duplicate triples are preserved
-      verbatim (existing behavior for agent-authored manifests).
+      silently overwrite another.  This now covers BOTH derived dups (agent
+      omitted axes) AND explicit-identical dups (agent authored the same triple
+      twice).  Pre-2026-06-16 only derived dups were disambiguated, so two cells
+      with identical explicit ``model_key/env/baseline`` collided at
+      ``per_model[mk][env][baseline]`` and the earlier one was silently lost
+      (last-writer-wins).  A disambiguated, present leaf is strictly better than
+      a discarded measured result; the suffix is surfaced in ``notes`` so the
+      agent can emit distinct axes next iteration (C5).
     """
     if not isinstance(cells, list):
         return [], []
     out: list[dict[str, Any]] = []
     seen_triples: set[tuple[str, str, str]] = set()
     n_derived = 0
+    n_dup_disambiguated = 0
     for i, cell in enumerate(cells):
         if not isinstance(cell, dict):
             continue
         model_key, env, baseline, derived = _cell_axes(cell, i)
         if derived:
-            triple = (model_key, env, baseline)
-            if triple in seen_triples:
-                cid = str(cell.get("id") or f"cell_{i}")
-                baseline = f"{baseline}__{cid}"
             n_derived += 1
+        # Disambiguate ANY colliding triple — derived OR explicit — so no leaf
+        # silently overwrites another in aggregate_cell_metrics' per_model tree.
+        if (model_key, env, baseline) in seen_triples:
+            cid = str(cell.get("id") or f"cell_{i}")
+            baseline = f"{baseline}__{cid}"
+            n_dup_disambiguated += 1
         seen_triples.add((model_key, env, baseline))
         if (
             cell.get("model_key") == model_key
@@ -242,6 +252,14 @@ def normalize_cell_axes(
             "model/dataset/variant-style fields (falling back to the cell id). "
             "Metrics are keyed under the derived axes. For precise rubric matching, "
             "emit explicit model_key, env, and baseline for every cell in cells.json."
+        )
+    if n_dup_disambiguated:
+        notes.append(
+            f"cells.json contract: {n_dup_disambiguated}/{len(out)} cell(s) resolved to a "
+            "(model_key, env, baseline) triple already used by an earlier cell; the harness "
+            "suffixed the later baseline with the cell id so neither leaf is silently dropped "
+            "(per_model is keyed by that triple). Emit a DISTINCT model_key/env/baseline per "
+            "cell in cells.json so each result lands under the intended rubric leaf."
         )
     return out, notes
 
@@ -562,6 +580,115 @@ def _build_failed_leaf(
     return leaf
 
 
+# ---------------------------------------------------------------------------
+# Cross-seed aggregation — the "best (mean ± std) over N runs" evidence shape
+# ---------------------------------------------------------------------------
+#
+# When run_experiment replicates a headline model across seeds (seed_policy /
+# leaf_actuator.expand_cells_for_seeds), every replica shares the same
+# (model_key, env, baseline) and differs only by ``seed`` + an ``__seed{N}``
+# id suffix.  aggregate_cell_metrics' per_model tree is keyed by that triple, so
+# the replicas would otherwise collide and the last one would silently overwrite
+# the rest (the same "a ran cell must NEVER vanish" failure mode the axis
+# derivation guards) — and the distribution the paper's "best (mean ± std) over
+# 5 independent runs" leaf demands would be lost.  This folds the replicas into a
+# single leaf carrying that distribution.  It activates ONLY when ≥2 co-located
+# ok cells carry DISTINCT seeds, so a single-seed paper (and the accidental-
+# duplicate manifest, which keeps last-write-wins) is byte-for-byte unchanged.
+
+# Result-metric keys that earn the full mean/std/min/max/values treatment; every
+# other numeric key just reports its cross-seed mean.
+_SEED_STAT_KEYS = (
+    "metric", "test_error_pct", "best_test_error_pct", "test_accuracy",
+    "best_test_accuracy", "test_acc", "accuracy", "error", "top1_error",
+    "top5_error", "elbo", "final_elbo", "test_nll", "final_test_nll", "nll",
+    "reward", "reward_mean", "cumulative_return", "final_train_loss", "loss",
+    "score", "map", "mAP",
+)
+
+
+def _pstd(vals: "list[float]") -> float:
+    """Sample standard deviation (ddof=1) — 0.0 for <2 points. Pure, never raises."""
+    n = len(vals)
+    if n < 2:
+        return 0.0
+    mean = sum(vals) / n
+    return (sum((x - mean) ** 2 for x in vals) / (n - 1)) ** 0.5
+
+
+def _fold_seed_leaves(
+    leaves: "list[dict[str, Any]]", seeds: "list[Any]"
+) -> dict[str, Any]:
+    """Collapse per-seed ok leaves into ONE cross-seed mean±std leaf. Pure.
+
+    Every numeric key reports its cross-seed MEAN (so existing scalar readers —
+    the leaf scorer's ``metric`` lookup, the postflight guards — transparently
+    get the mean, which is exactly "report the mean over N seeds").  The curated
+    result-metric keys additionally gain ``<k>_mean`` / ``<k>_std`` / ``<k>_min``
+    / ``<k>_max`` / ``<k>_values`` so the grader can confirm "best (mean ± std)
+    over N runs" (best = min for an error/loss key, max for an accuracy key —
+    both are present, the grader picks by direction).  Non-numeric keys
+    (``model_key``, ``depth``, …) are inherited from the first replica.  Carries
+    ``seed_count`` + ``seeds``.  Never raises; falls back to the first leaf.
+    """
+    try:
+        ok = [lf for lf in leaves if isinstance(lf, dict)]
+        if not ok:
+            return {"status": "ok", "metric": None, "seed_count": 0, "seeds": []}
+        out: dict[str, Any] = dict(ok[0])  # inherit non-numeric axis/meta keys
+        cols: dict[str, list[float]] = {}
+        for lf in ok:
+            for k, v in lf.items():
+                fv = _coerce_metric(v)
+                if fv is not None:
+                    cols.setdefault(k, []).append(fv)
+        for k, vals in cols.items():
+            if not vals:
+                continue
+            mean = sum(vals) / len(vals)
+            out[k] = mean
+            if k in _SEED_STAT_KEYS:
+                out[f"{k}_mean"] = mean
+                out[f"{k}_std"] = _pstd(vals)
+                out[f"{k}_min"] = min(vals)
+                out[f"{k}_max"] = max(vals)
+                out[f"{k}_values"] = list(vals)
+        out["status"] = "ok"
+        out["metric"] = _coerce_metric(out.get("metric"))
+        out["seed_count"] = len(ok)
+        out["seeds"] = sorted({s for s in seeds if isinstance(s, int)})
+        return out
+    except Exception:  # noqa: BLE001 — folding must never break aggregation
+        return dict(leaves[0]) if leaves and isinstance(leaves[0], dict) else {
+            "status": "ok", "metric": None}
+
+
+def audit_headline_coverage(
+    cells: "list[dict[str, Any]]", headline_models: "list | None"
+) -> list[str]:
+    """Paper-headline model_keys ABSENT from the matrix — honest-gap surfacing. Pure.
+
+    A paper's headline model silently missing from cells.json (the ResNet-1202
+    case: the agent emitted depths 20–110 but never n=200) makes its result leaf
+    unverifiable AND invites the grader to fabricate a ``models_skipped`` entry
+    ("ResNet-1202 is explicitly listed in scope.models_skipped" — it was NOT).
+    Returning the declared-but-absent headline keys lets the caller record an
+    HONEST ``scope.models_skipped`` gap instead. ``[]`` when nothing is declared
+    or all headline models are present. Never raises.
+    """
+    try:
+        want = {str(m) for m in (headline_models or []) if str(m).strip()}
+        if not want:
+            return []
+        present = {
+            str(c.get("model_key", "") or "")
+            for c in cells if isinstance(c, dict)
+        }
+        return sorted(want - present)
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def aggregate_cell_metrics(
     matrix_result: dict[str, dict[str, Any]],
     cells: list[dict[str, Any]],
@@ -630,6 +757,10 @@ def aggregate_cell_metrics(
     models_with_ok: set[str] = set()
     any_ok = False
     any_failed = False
+    # Co-located OK cells per (model_key, env, baseline) slot — used after the
+    # loop to fold a genuine multi-seed sweep into a mean±std leaf instead of the
+    # last-write-wins collapse below (no fold unless ≥2 cells carry distinct seeds).
+    slot_ok: dict[tuple[str, str, str], list[tuple[Any, dict[str, Any]]]] = {}
 
     for idx, cell in enumerate(cells if isinstance(cells, list) else []):
         if not isinstance(cell, dict):
@@ -663,6 +794,11 @@ def aggregate_cell_metrics(
             leaf = _build_ok_leaf(cell_metrics)
             models_with_ok.add(model_key)
             any_ok = True
+            seed_val = cell.get("seed")
+            if not isinstance(seed_val, int):
+                p = cell.get("params")
+                seed_val = p.get("seed") if isinstance(p, dict) else None
+            slot_ok.setdefault((model_key, env, baseline), []).append((seed_val, leaf))
         else:
             # oom_failed / error / timeout / unknown / missing record → failed leaf.
             err = record.get("error") if record else None
@@ -670,6 +806,16 @@ def aggregate_cell_metrics(
             any_failed = True
 
         per_model.setdefault(model_key, {}).setdefault(env, {})[baseline] = leaf
+
+    # Cross-seed fold: a slot with ≥2 ok cells carrying DISTINCT seeds is a real
+    # seed sweep — replace the last-write-wins leaf with the mean±std fold so the
+    # paper's "best (mean ± std) over N runs" evidence survives. Single-seed and
+    # accidental-same-seed slots are left exactly as the loop produced them.
+    for (mk, env, baseline), items in slot_ok.items():
+        distinct_seeds = {s for s, _ in items if isinstance(s, int)}
+        if len(items) >= 2 and len(distinct_seeds) >= 2:
+            folded = _fold_seed_leaves([lf for _, lf in items], [s for s, _ in items])
+            per_model.setdefault(mk, {}).setdefault(env, {})[baseline] = folded
 
     # Top-level status from the ok/failed tallies.
     if any_ok and not any_failed:
@@ -697,3 +843,126 @@ def aggregate_cell_metrics(
         "per_model": per_model,
         "scope": scope,
     }
+
+
+def _leaf_for_axes(
+    per_model: dict[str, Any], model_key: str, env: str, baseline: str
+) -> dict[str, Any] | None:
+    """Find the aggregated leaf for ``(model_key, env, baseline)``.
+
+    Tolerates the dup-disambiguation suffix ``normalize_cell_axes`` appends to a
+    colliding baseline (``baseline__<cell_id>``), so a declared cell still matches
+    the leaf it actually produced. Returns the leaf dict or ``None``.
+    """
+    if not isinstance(per_model, dict):
+        return None
+    envs = per_model.get(model_key)
+    if not isinstance(envs, dict):
+        return None
+    baselines = envs.get(env)
+    if not isinstance(baselines, dict):
+        return None
+    if baseline in baselines and isinstance(baselines[baseline], dict):
+        return baselines[baseline]
+    for b, leaf in baselines.items():
+        if isinstance(b, str) and b.startswith(f"{baseline}__") and isinstance(leaf, dict):
+            return leaf
+    return None
+
+
+def audit_aggregation_completeness(
+    declared_cells: list[dict[str, Any]],
+    aggregated: dict[str, Any],
+) -> dict[str, Any]:
+    """Reconcile the DECLARED cells (``cells.json``) against the aggregate — L6(a).
+
+    ``normalize_cell_axes`` + ``aggregate_cell_metrics`` guarantee a cell that
+    reaches the aggregation loop never vanishes (derive-not-drop, 2026-06-09).
+    This is the verification layer for the gap that guarantee can't cover: a cell
+    the agent DECLARED that never reached the loop at all — dropped by a
+    staged-search budget reduction, a manifest-restore race, or a scheduler skip
+    with no matching gap record. It is a silent-loss DETECTOR, not a fixer.
+
+    For each declared cell, classify it into exactly one bucket by resolving its
+    ``(model_key, env, baseline)`` (same ``_cell_axes`` the aggregate uses) and
+    looking it up in the aggregate:
+
+    * ``ok``          — leaf present with ``status == "ok"``.
+    * ``failed``      — leaf present but ``status != "ok"`` (overlaps L3
+      cell_failure: ran, errored → re-run, don't exclude).
+    * ``gapped``      — ``model_key`` in ``scope.models_skipped`` OR the cell id /
+      model_key appears in ``scope.gaps`` (a KNOWN, accounted drop — capacity /
+      dataset preflight).
+    * ``unaccounted`` — none of the above: declared but silently absent. This is
+      the bucket the existing machinery cannot surface.
+
+    Pure, stdlib-only, never raises. Returns::
+
+        {"ok": [...ids], "failed": [...ids], "gapped": [...ids],
+         "unaccounted": [...ids], "complete": bool, "notes": [str]}
+
+    ``complete`` is ``True`` when nothing is ``unaccounted`` and nothing is
+    ``failed`` (every declared cell either landed ok or was a known, accounted
+    drop). ``notes`` carries one agent-readable sentence per non-empty problem
+    bucket — the actuator persists it and leaf-triage can route it.
+    """
+    out: dict[str, Any] = {
+        "ok": [], "failed": [], "gapped": [], "unaccounted": [], "complete": True, "notes": [],
+    }
+    try:
+        if not isinstance(declared_cells, list) or not declared_cells:
+            return out
+        agg = aggregated if isinstance(aggregated, dict) else {}
+        per_model = agg.get("per_model") if isinstance(agg.get("per_model"), dict) else {}
+        scope = agg.get("scope") if isinstance(agg.get("scope"), dict) else {}
+        skipped = {str(m) for m in (scope.get("models_skipped") or []) if m}
+        # Gap records the scorer reads via item/name/id — index by every label form.
+        gap_labels: set[str] = set()
+        for g in (scope.get("gaps") or []):
+            if isinstance(g, dict):
+                for k in ("item", "name", "id", "model_key"):
+                    v = g.get(k)
+                    if v:
+                        gap_labels.add(str(v))
+            elif g:
+                gap_labels.add(str(g))
+
+        for idx, cell in enumerate(declared_cells):
+            if not isinstance(cell, dict):
+                continue
+            cid = str(cell.get("id") or f"cell_{idx}")
+            model_key = str(cell.get("model_key", "") or "")
+            env = str(cell.get("env", "") or "")
+            baseline = str(cell.get("baseline", "") or "")
+            if not model_key or not env or not baseline:
+                model_key, env, baseline, _ = _cell_axes(cell, idx)
+
+            leaf = _leaf_for_axes(per_model, model_key, env, baseline)
+            if leaf is not None:
+                if str(leaf.get("status", "")) == "ok":
+                    out["ok"].append(cid)
+                else:
+                    out["failed"].append(cid)
+            elif model_key in skipped or cid in gap_labels or model_key in gap_labels:
+                out["gapped"].append(cid)
+            else:
+                out["unaccounted"].append(cid)
+
+        out["complete"] = not out["unaccounted"] and not out["failed"]
+        if out["failed"]:
+            out["notes"].append(
+                f"{len(out['failed'])} declared cell(s) ran but produced no ok result "
+                f"(failed/errored): {', '.join(out['failed'][:8])}. In-scope failures — "
+                "re-run the cell after fixing the error; do NOT exclude (that hides a real miss)."
+            )
+        if out["unaccounted"]:
+            out["notes"].append(
+                f"{len(out['unaccounted'])} declared cell(s) are UNACCOUNTED — present in "
+                f"cells.json but absent from metrics.json, gaps, and models_skipped: "
+                f"{', '.join(out['unaccounted'][:8])}. They were silently lost before "
+                "aggregation (budget reduction / scheduler skip). Re-run them or record an "
+                "explicit gap so the scorer isn't penalising work that simply never ran."
+            )
+    except Exception:  # noqa: BLE001 — the audit is advisory; never break a run.
+        pass  # this module is logging-free by design (stdlib-only, sandbox-copyable)
+    return out

@@ -260,7 +260,7 @@ def invariant_test_guidance_block(arxiv_id: str | None = None) -> str:
     """Implementer-prompt directive: write ``code/test_reproduction.py`` — the
     fidelity certificate's executable evidence.
 
-    Returns ``""`` unless ``REPROLAB_TWO_AXIS_VERDICT`` is on (default behaviour
+    Returns ``""`` unless ``OPENRESEARCH_TWO_AXIS_VERDICT`` is on (default behaviour
     is byte-for-byte unchanged when off). Paper-agnostic: when PAPER_HINTS
     registers invariants for ``arxiv_id`` it names them so the agent asserts the
     exact equations; otherwise it asks for the paper's core invariants

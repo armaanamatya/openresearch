@@ -129,7 +129,7 @@ def run_matrix(cells, cell_script, *, output_root,
 
 - **`gpus`** → ignored (the K8s scheduler places). `max_parallel` → orchestrator-side concurrency cap + namespace `ResourceQuota`.
 - **`per_cell_timeout_s`** → Job `activeDeadlineSeconds`.
-- **`max_oom_retries`** → passed to the Job as `REPROLAB_CELL_MAX_OOM_RETRIES`; the **in-Job wrapper** runs the shrink ladder (decision #9). The orchestrator does **not** resubmit on OOM.
+- **`max_oom_retries`** → passed to the Job as `OPENRESEARCH_CELL_MAX_OOM_RETRIES`; the **in-Job wrapper** runs the shrink ladder (decision #9). The orchestrator does **not** resubmit on OOM.
 - **Status mapping:** Job Succeeded → `"ok"`; wrapper exits `oom_shrink_exhausted` → `"oom_failed"`; Job failed/timeout/**stuck-Pending past timeout** → other (→ `_execute_cell_matrix` already counts `n_err`).
 - Per-cell `metrics.json` is pulled from Blob into `output_root/<cell_id>/metrics.json` so `aggregate_cell_metrics` reads it exactly as in the local path.
 

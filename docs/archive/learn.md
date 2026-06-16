@@ -37,7 +37,7 @@ in **Cross-cutting principles** below.
 
 **Root cause.** The local per-run venv (`runs/<id>/.venv`) is `--system-site-packages` + a `_reprolab_base_inherit.pth` to the repo `.venv`, so it starts with a coherent cu121 torch shared from the base. The agent's `requirements.txt` pinned `torch==2.2.0` ≠ the base's 2.5.1, so `pip install -r requirements.txt` installed 2.2.0 into the per-run venv's OWN site-packages (which shadows the base on `sys.path`), dragging in a mismatched cu12 nvidia wheel stack; `libcupti.so.12` never materialized and `import torch` failed. `env_pin.py` was built to prevent exactly this (`torch_redundancy` class) but had never been wired into the bootstrap.
 
-**Fix.** Five layers, ALL `local`-sandbox-scoped (runpod/docker bytes-for-byte untouched). (A) **Wire env_pin** — `primitives._local_core_bootstrap_commands` installs the harness's cu121 torch/vision/audio FIRST and strips the agent's conflicting core re-pin into `requirements.hardened.txt`. (B) **`LD_LIBRARY_PATH`** — `LocalProcessBackend` prepends the venv's bundled CUDA lib dirs so a system CUDA path can't shadow them, *following the per-run venv's `.pth` to the base `.venv`* where the shared torch physically lives (after A strips the re-pin the per-run venv has NO torch of its own — a naive glob of it finds nothing; the Codex-review Q1 gap). (C) **`cuda_shlib_load`** failure class — was an un-actionable `unknown`; now repairable with a "remove the torch re-pin" hint. (D) ship `cell_scheduler.py` into `code/` + guard `gpu_cell_runner`'s bare import (a latent flat-sandbox `import backend` break). (E) preflight smoke flags an agent `import backend` with the bare-import rewrite hint. Escape hatch for a paper needing a non-cu121/older torch: `REPROLAB_DISABLE_ENV_PIN=1` or empty `REPROLAB_LOCAL_TORCH_INDEX_URL`.
+**Fix.** Five layers, ALL `local`-sandbox-scoped (runpod/docker bytes-for-byte untouched). (A) **Wire env_pin** — `primitives._local_core_bootstrap_commands` installs the harness's cu121 torch/vision/audio FIRST and strips the agent's conflicting core re-pin into `requirements.hardened.txt`. (B) **`LD_LIBRARY_PATH`** — `LocalProcessBackend` prepends the venv's bundled CUDA lib dirs so a system CUDA path can't shadow them, *following the per-run venv's `.pth` to the base `.venv`* where the shared torch physically lives (after A strips the re-pin the per-run venv has NO torch of its own — a naive glob of it finds nothing; the Codex-review Q1 gap). (C) **`cuda_shlib_load`** failure class — was an un-actionable `unknown`; now repairable with a "remove the torch re-pin" hint. (D) ship `cell_scheduler.py` into `code/` + guard `gpu_cell_runner`'s bare import (a latent flat-sandbox `import backend` break). (E) preflight smoke flags an agent `import backend` with the bare-import rewrite hint. Escape hatch for a paper needing a non-cu121/older torch: `OPENRESEARCH_DISABLE_ENV_PIN=1` or empty `OPENRESEARCH_LOCAL_TORCH_INDEX_URL`.
 
 **Lesson.** When a per-run venv SHARES a coherent core stack from a base venv, the agent's `requirements.txt` must never re-pin that core — one `torch==X` line silently downgrades the whole CUDA stack into incoherence, and it surfaces as an opaque `dlopen` error three layers from the cause. The harness must OWN the core pins. Corollary: any code locating a venv's libs must follow `.pth` indirection — `--system-site-packages` + a base-inherit `.pth` puts the libs in the BASE prefix, not the per-run dir.
 
@@ -71,7 +71,7 @@ in **Cross-cutting principles** below.
 
 **Guardrail.** `tests/agents/rlm/test_distributed_launch.py` (accelerate+FSDP rewrite on multi-GPU; version-aware config v1/v2; NCCL-safety prefix; free-port probe; no-op for ≤1 GPU / non-distributed / already-launched / missing-script / disable-toggle).
 
-**Validated 2026-05-30 (fast FSDP smoke on the real Qwen-3B, before committing to a 3h run).** Three distinct blockers surfaced in ~15 min, each of which would have killed the full run — the smoke is the loop-sharpener. (1) `accelerate launch` with `fsdp_version: 2` raises `FSDP2 requires PyTorch >= 2.6.0`; this host is torch 2.5.1 (cu121 wheels, CUDA-12.2 driver), so the harness config defaults to **FSDP1** (`fsdp_version: 1` + FULL_SHARD + use_orig_params), with `REPROLAB_FSDP_VERSION=2` to opt in on torch≥2.6. (2) The 3B (full Adam + the FSDP fp32 upcast) OOMs at `optimizer.step()` across only **2** cards (23.6/23.7 GiB) — it needs **≥4**; 4-way FSDP1 lands at ~15.5 GiB/rank. So `--gpus-per-run 4` is the floor for a 3B on 24 GB cards. (3) The first NCCL collective (a setup BROADCAST) **hangs the full 600 s timeout at >2 GPUs** on this kernel (5.4.0 < torch's recommended 5.5.0); `NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1` fixes it instantly — almost certainly the real cause of the earlier "multi-GPU runs stall" we'd misattributed to the SDK. The harness now prefixes the launch with those NCCL vars (`_nccl_env_prefix`, default-on, overridable for NVLink boxes).
+**Validated 2026-05-30 (fast FSDP smoke on the real Qwen-3B, before committing to a 3h run).** Three distinct blockers surfaced in ~15 min, each of which would have killed the full run — the smoke is the loop-sharpener. (1) `accelerate launch` with `fsdp_version: 2` raises `FSDP2 requires PyTorch >= 2.6.0`; this host is torch 2.5.1 (cu121 wheels, CUDA-12.2 driver), so the harness config defaults to **FSDP1** (`fsdp_version: 1` + FULL_SHARD + use_orig_params), with `OPENRESEARCH_FSDP_VERSION=2` to opt in on torch≥2.6. (2) The 3B (full Adam + the FSDP fp32 upcast) OOMs at `optimizer.step()` across only **2** cards (23.6/23.7 GiB) — it needs **≥4**; 4-way FSDP1 lands at ~15.5 GiB/rank. So `--gpus-per-run 4` is the floor for a 3B on 24 GB cards. (3) The first NCCL collective (a setup BROADCAST) **hangs the full 600 s timeout at >2 GPUs** on this kernel (5.4.0 < torch's recommended 5.5.0); `NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1` fixes it instantly — almost certainly the real cause of the earlier "multi-GPU runs stall" we'd misattributed to the SDK. The harness now prefixes the launch with those NCCL vars (`_nccl_env_prefix`, default-on, overridable for NVLink boxes).
 
 ---
 
@@ -97,7 +97,7 @@ in **Cross-cutting principles** below.
 
 **Root cause.** The agent's `train.py` wrapped `loss.backward()` in `try/except RuntimeError: continue`. Each step's OOM was swallowed (no gradient update), the script exited 0, and `run_experiment` set `success = all(exit_code==0)` → success with all-zero metrics. RubricGuard checks key/artifact *presence* (zeros pass); the failure classifier's `cuda_oom`/`oom_killed` detectors need a propagated error or exit -9/137, neither of which a caught OOM produces.
 
-**Fix.** A postflight `_training_health_violation` in `run_experiment`: if a success-with-metrics result's logs carry a CUDA-OOM marker, flip it to a repairable `silent_oom` failure with a concrete fix hint (reduce memory / shard with torchrun+FSDP / don't catch+skip the backward). Plus an opt-in `insufficient_train_steps` check (`REPROLAB_MIN_TRAIN_STEPS`). New failure classes registered; guidance tells the agent never to try/except+continue a backward OOM.
+**Fix.** A postflight `_training_health_violation` in `run_experiment`: if a success-with-metrics result's logs carry a CUDA-OOM marker, flip it to a repairable `silent_oom` failure with a concrete fix hint (reduce memory / shard with torchrun+FSDP / don't catch+skip the backward). Plus an opt-in `insufficient_train_steps` check (`OPENRESEARCH_MIN_TRAIN_STEPS`). New failure classes registered; guidance tells the agent never to try/except+continue a backward OOM.
 
 **Lesson.** Exit code 0 is not "it worked" for training — a caught OOM is indistinguishable from success unless you inspect the *logs and the metric values*. Swallowed exceptions (here and the `/workspace` env-load below) are the recurring villain: surface them, never accept silence as health.
 
@@ -125,7 +125,7 @@ in **Cross-cutting principles** below.
 
 **Root cause.** The baseline DATASET-SETUP guidance (`baseline_implementation._DATASET_SETUP_BLOCK`) and `config.runpod_volume_mount_path` both hardcode `/workspace` as the data root. `/workspace` is a RunPod *volume* — it does not exist on a local host and is not creatable without root. So the agent's generated `os.makedirs('/workspace/data/alfworld')` raised `PermissionError`; the env loader caught it but recorded only the *status*, discarding the message → an unrecoverable, undiagnosable `env_load_failed`. The guidance was RunPod-specific yet applied to **every** sandbox.
 
-**Fix.** Make the data root sandbox-aware. `run._ensure_local_data_root` repoints `REPROLAB_RUNPOD_VOLUME_MOUNT_PATH` at a writable, **shared** (download-once) cache (`runs/.cache/data`) for local sandboxes, before any primitive reads it; runpod/docker keep the real `/workspace`, and an explicit operator override wins. `_DATASET_SETUP_BLOCK` became `_dataset_setup_block(data_root)` + `_resolve_data_root()`, so the guidance interpolates the active sandbox's writable root (and respects a pre-set `HF_HOME`) instead of hardcoding `/workspace/data/<env>`.
+**Fix.** Make the data root sandbox-aware. `run._ensure_local_data_root` repoints `OPENRESEARCH_RUNPOD_VOLUME_MOUNT_PATH` at a writable, **shared** (download-once) cache (`runs/.cache/data`) for local sandboxes, before any primitive reads it; runpod/docker keep the real `/workspace`, and an explicit operator override wins. `_DATASET_SETUP_BLOCK` became `_dataset_setup_block(data_root)` + `_resolve_data_root()`, so the guidance interpolates the active sandbox's writable root (and respects a pre-set `HF_HOME`) instead of hardcoding `/workspace/data/<env>`.
 
 **Lesson.** Cloud-shaped path conventions (`/workspace`, container WORKDIRs) must never leak into a local sandbox as if writable — resolve the writable root *per sandbox* at one seam and thread it everywhere the agent is told where data lives. And an env loader that swallows the exception text turns a one-line `PermissionError` into a silent death-spiral: **always surface `str(e)` into the failure record**, never just a status enum.
 
@@ -179,7 +179,7 @@ in **Cross-cutting principles** below.
 
 **Symptom.** `test_default_values_match_spec` failed asserting `dynamic_gpu_enabled is True`; and `test_leaderboard_aggregator` failed on a *different* test each run — flaky even with a fixed `PYTHONHASHSEED`.
 
-**Root cause.** (1) The `deepeval` pytest plugin calls `load_dotenv()` at session start, leaking the repo `.env` (`REPROLAB_DYNAMIC_GPU_ENABLED=false`) into `os.environ` — which beats both `.env` and `_env_file=None`, shadowing the code default. (2) `leaderboard_cache._cache` is a process-global keyed by `project_id` with mtime invalidation; the tests reuse project_ids `"a"/"b"` across different `tmp_path`s, and coarse filesystem mtime let a stale cross-test row survive — which test lost depended on timing.
+**Root cause.** (1) The `deepeval` pytest plugin calls `load_dotenv()` at session start, leaking the repo `.env` (`OPENRESEARCH_DYNAMIC_GPU_ENABLED=false`) into `os.environ` — which beats both `.env` and `_env_file=None`, shadowing the code default. (2) `leaderboard_cache._cache` is a process-global keyed by `project_id` with mtime invalidation; the tests reuse project_ids `"a"/"b"` across different `tmp_path`s, and coarse filesystem mtime let a stale cross-test row survive — which test lost depended on timing.
 
 **Fix.** (1) The defaults test clears the asserted vars from `os.environ` *and* passes `_env_file=None`. (2) An autouse fixture calls `leaderboard_cache.clear()` (the cache's own test-isolation hook) before + after each test.
 
@@ -270,7 +270,7 @@ The user's "promoted candidate" success gate was unreachable because outcomes co
 
 **Root cause.** `_timeout_for(ctx, 7200)` was sized for multi-command experiments (1 hr × 2 commands). Paranoid for the common case where a single bad `train.py` spins forever on CPU.
 
-**Fix.** Default cap reduced 7200 → 1800 s (30 min). New env var `REPROLAB_RUN_EXPERIMENT_TIMEOUT_S` for callers who genuinely need longer. Invalid values fall back silently.
+**Fix.** Default cap reduced 7200 → 1800 s (30 min). New env var `OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S` for callers who genuinely need longer. Invalid values fall back silently.
 
 **Lesson.** Per-step timeouts must be sized for the worst common case, not the worst conceivable case. 30 min covers 99% of real reproduction experiments; the 1% that legitimately need longer set the env var. Letting the slow path leak past iteration budget penalizes EVERY paper.
 
@@ -282,7 +282,7 @@ Sub-lesson: when killing a process inside a docker container from the host, the 
 
 ## 2026-05-23 — Ship-readiness audit found state and honesty gaps across RDR, demo gate, and live UI
 
-**Symptom.** Mutating demo routes could bypass `REPROLAB_DEMO_SECRET`; metricless RDR runs could be scored without the degraded cap metadata; long live streams could drop final-report/chat/candidate context; SSE disconnects left the UI stale.
+**Symptom.** Mutating demo routes could bypass `OPENRESEARCH_DEMO_SECRET`; metricless RDR runs could be scored without the degraded cap metadata; long live streams could drop final-report/chat/candidate context; SSE disconnects left the UI stale.
 
 **Root cause.** The hybrid landing changed the main data path, but several peer paths kept old assumptions: RDR called `score_reproduction` before a final report existed, live-run event buffers used a plain tail slice, and some newer routes were added outside the original demo-gate audit.
 
@@ -1233,7 +1233,7 @@ to read.
 - SIGKILL bypasses the CLI's interrupt handler entirely — the pipeline
   dies, any orphaned ephemeral runpod sandbox stays running until
   someone (or `_owned_pod_ids` reconciliation on the next backend
-  restart) kills it. Persistent pods (`REPROLAB_RUNPOD_POD_ID`) are
+  restart) kills it. Persistent pods (`OPENRESEARCH_RUNPOD_POD_ID`) are
   unaffected.
 - Single-worker uvicorn (`--reload`) blocks all other endpoints behind
   one slow SSE stream. The frontend already mitigates this with SSR +
@@ -1293,13 +1293,13 @@ the actual workflow:
   and leaks a pod; SIGTERM lets the trap fire and destroys the pod. Neither
   is what you want if you intend to keep using the pod afterwards.
 - For *persistent pod usage* (the real workflow): set
-  `REPROLAB_RUNPOD_DELETE_ON_DESTROY=false` in `.env`. The dashboard /
+  `OPENRESEARCH_RUNPOD_DELETE_ON_DESTROY=false` in `.env`. The dashboard /
   `--sandbox runpod` flow will then leave pods running after each pipeline
   finishes. Reuse a coworker's pod by adding their public key to your local
-  `REPROLAB_RUNPOD_SSH_PUBLIC_KEY` — RunPod injects it via `PUBLIC_KEY` env
+  `OPENRESEARCH_RUNPOD_SSH_PUBLIC_KEY` — RunPod injects it via `PUBLIC_KEY` env
   var on `runpod/*` images, no custom start command needed.
 - For *single-pod reuse across runs* (skip per-run boot, attach to a fixed
-  worker): set `REPROLAB_RUNPOD_POD_ID=<pod-id>` in `.env`. The backend
+  worker): set `OPENRESEARCH_RUNPOD_POD_ID=<pod-id>` in `.env`. The backend
   fetches the pod, attaches via SSH, and reuses it for every pipeline run.
   The pod is structurally undeletable — never added to `_owned_pod_ids`,
   so `_delete_pod` refuses. If the configured pod is missing or stopped,
@@ -1349,7 +1349,7 @@ May 2026 Runpod REST v1 facts worth remembering so we don't drift:
 - `_delete_pod` belt-and-suspenders: even if a pod ID ended up in the
   allowlist via some future code path, the pod's name must start with
   `reprolab-` or DELETE is refused (`runpod_backend.py:444-449`).
-- `.env` documents `REPROLAB_RUNPOD_DELETE_ON_DESTROY` and recommends
+- `.env` documents `OPENRESEARCH_RUNPOD_DELETE_ON_DESTROY` and recommends
   `false` for shared-pod workflows. The default (`true`) stays as-is so
   one-off runs still clean up.
 - `start.sh` runs the **free** preflight by default; `START_FULL_SMOKE=1`

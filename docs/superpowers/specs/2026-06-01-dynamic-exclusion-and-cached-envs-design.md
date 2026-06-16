@@ -120,7 +120,7 @@ on-disk SDAR `metrics.json` sample where practical.
 **B1. `backend/services/runtime/env_cache.py` — `EnvCacheManager`.** Idempotent,
 file-locked, crash-safe (mirror `local_gpu_allocator`'s `fcntl` discipline):
 - ALFWorld: run `alfworld-download` **once** into a shared cache dir
-  (`REPROLAB_ENV_CACHE_DIR`, default under `runs/.cache/envs`); subsequent runs
+  (`OPENRESEARCH_ENV_CACHE_DIR`, default under `runs/.cache/envs`); subsequent runs
   reuse it. Expose the data path to cells via env var.
 - WebShop: start **one** shared WebShop server (indexed product data) per host,
   ref-counted; hand cells its base URL; tear down when the last lease drops.
@@ -132,7 +132,7 @@ file-locked, crash-safe (mirror `local_gpu_allocator`'s `fcntl` discipline):
 server through `EnvCacheManager` before launching cells; pass cache locations
 into the per-run env; release on exit (SIGINT-safe, like the GPU leases).
 
-**B3. SDAR guidance.** Extend `REPROLAB_BASELINE_EXTRA_GUIDANCE` (and/or the SDAR
+**B3. SDAR guidance.** Extend `OPENRESEARCH_BASELINE_EXTRA_GUIDANCE` (and/or the SDAR
 guidance constant) so the agent writes `ALFWorldEnv` / `WebShopEnv` subclassing
 `sdar_env_base.BaseEnv` (implementing `build_student_prompt` /
 `build_teacher_prompt`) **and** adds their cells to `cells.json` (model × env ×
@@ -237,7 +237,7 @@ output and was cancelled; built directly instead.
   `env_setup_failed` `Exclusion` (never raises). `provision_scope(env_names, mgr)`
   provisions a whole scope → `(env_vars, exclusions, release)`. Downloader / server
   launcher / health probe / clock are all INJECTED → fully unit-testable.
-- `scripts/batch_reproduce.py` — opt-in hook (`REPROLAB_PROVISION_ENVS=ALFWorld,WebShop`)
+- `scripts/batch_reproduce.py` — opt-in hook (`OPENRESEARCH_PROVISION_ENVS=ALFWorld,WebShop`)
   that provisions via `provision_scope`, injects `ALFWORLD_DATA`/`WEBSHOP_URL` into
   the child env, and releases WebShop leases in the `finally`. **Dormant by default**
   → the smallest-two run and the live run are unaffected.

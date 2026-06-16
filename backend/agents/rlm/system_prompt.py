@@ -515,6 +515,20 @@ exploration.
 
 _OPTIONAL_HINTS_SECTION = _TRIAGE_INSTRUCTION + _DECISION_ADVISOR_SECTION
 
+# E1 (CONTEXT_MAP): appended only when OPENRESEARCH_CONTEXT_MAP is on (the
+# read_context_map tool is likewise advertised only when on). Off → omitted, so
+# the prompt is byte-for-byte today.
+_CONTEXT_MAP_SECTION = """\
+═══════════════════════════════════════════════════════════════
+  ORIENTATION CACHE (read_context_map)
+═══════════════════════════════════════════════════════════════
+
+A free, deterministic orientation cache accumulates the structured outputs of
+your understand_section / extract_hyperparameters / detect_environment calls
+(datasets, metrics, hyperparameters, environment clues). Before re-deriving a
+slice you have already analysed, call read_context_map() and reuse what is there.
+It is a navigation aid ONLY — never cite it as evidence in the final report."""
+
 
 # ---------------------------------------------------------------------------
 # Public entry point
@@ -591,6 +605,15 @@ def build_system_prompt(
 
     if include_hints:
         parts.append(_OPTIONAL_HINTS_SECTION)
+
+    # E1: nudge the root to consult the orientation cache only when the flag is on
+    # (single source of truth = context_map._enabled). Off → section omitted.
+    try:
+        from backend.agents.rlm.context_map import _enabled as _context_map_enabled
+        if _context_map_enabled():
+            parts.append(_CONTEXT_MAP_SECTION)
+    except Exception:  # noqa: BLE001 — prompt assembly must never fail on a flag probe
+        pass
 
     if root_model.prompt_addendum:
         parts.append(

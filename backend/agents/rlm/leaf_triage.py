@@ -62,7 +62,13 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("render_artifact", re.compile(
         r"no figure|missing figure|figure[- ]?\d+[- ]?style artifact|not "
         r"rendered|no .{0,30}(plot|curve|figure|chart)|fig[_ ]?\d.{0,40}"
-        r"(missing|absent|no evidence)|(missing|absent|lacks).{0,40}fig",
+        r"(missing|absent|no evidence)|(missing|absent|lacks).{0,40}fig|"
+        # "shows zero image or figure artifacts" (Adam fe5e79, 2026-06-16) — the
+        # grader's "zero/no <visual>" phrasing the alternations above all missed,
+        # so a figure that just needs rendering from on-disk data fell to "review".
+        r"(zero|no|without|lacks?)\s+(image|figure|plot|curve|chart|visuali[sz])|"
+        r"(image|figure|plot|chart)s?\s+artifacts?.{0,40}"
+        r"(absent|missing|none|zero|not (found|present|rendered))",
         re.IGNORECASE)),
     # Per-cell/per-family results that never reached the canonical aggregate.
     ("aggregation_gap", re.compile(
@@ -80,6 +86,20 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("protocol_gap", re.compile(
         r"whitening|dropout|augment|normali[sz]ation|preprocess|weight.?decay|"
         r"learning.?rate schedule|warm.?up",
+        re.IGNORECASE)),
+    # A cell/family that was ATTEMPTED (provenance/config/cells.json records it) but
+    # produced no result — it errored/crashed. Distinct from data-unavailable (a
+    # dataset never in scope → excluded) and from aggregation_gap (results exist,
+    # just not folded in): here the in-scope cell FAILED, so the honest repair is to
+    # fix the cell error and re-run THAT cell — never to exclude it (that would hide
+    # a real miss). Checked LAST so it only catches leaves that would else be
+    # "review" (Adam ac4006: imdb_logreg cells in provenance, no per_model entry).
+    ("cell_failure", re.compile(
+        r"(provenance|config|cells\.json).{0,80}(lists?|records?|declares?|includes?)"
+        r".{0,80}(cell|run|experiment)s?.{0,60}(but|yet|however).{0,60}"
+        r"(no|not|fail|error|crash|absent|missing|did not)|"
+        r"per[_ ]?model.{0,30}(has no|no|missing|lacks|without).{0,30}(entry|result|key)|"
+        r"cells?.{0,40}(failed|errored|crashed|did not (run|complete|produce|finish))",
         re.IGNORECASE)),
 )
 
@@ -114,6 +134,13 @@ _DIRECTIVES: dict[str, str] = {
         "re-run that cell. If a FAIR sweep still inverts, that is an honest "
         "faithful-negative — never fabricate agreement."
     ),
+    "cell_failure": (
+        "RE-RUN the failed cell(s), don't exclude: provenance/config shows these "
+        "cells were ATTEMPTED but produced no metrics.json result — they errored. "
+        "Read the cell log (code/.exec_live.log / the cell's stderr), fix the CODE "
+        "error, and re-run ONLY those cells so their results reach per_model. This "
+        "is an in-scope dataset that failed — excluding it would hide a real miss."
+    ),
     "review": (
         "Needs judgment — read the justification; no deterministic repair "
         "template applies."
@@ -126,6 +153,7 @@ _COST: dict[str, str] = {
     "aggregation_gap": "none",
     "protocol_gap": "targeted_rerun",
     "result_quality": "targeted_rerun",
+    "cell_failure": "targeted_rerun",
     "review": "review",
 }
 
@@ -141,6 +169,7 @@ def _disk_facts(project_dir: Path) -> dict[str, Any]:
         "has_history": False,
         "has_curves": False,
         "has_sweep": False,
+        "has_results": False,
         "has_provenance": False,
     }
     try:
@@ -152,6 +181,7 @@ def _disk_facts(project_dir: Path) -> dict[str, Any]:
             any((code / "outputs").glob("*/*/training_curves.json"))
             if (code / "outputs").is_dir() else False
         ) or (code / "training_curves.json").is_file()
+        facts["has_results"] = facts["outputs_metrics"] > 0
         facts["has_provenance"] = any(code.glob("**/provenance.json"))
         mpath = code / "metrics.json"
         if mpath.is_file():
@@ -161,6 +191,12 @@ def _disk_facts(project_dir: Path) -> dict[str, Any]:
                 facts["has_sweep"] = any(
                     isinstance(k, str) and "sweep" in k.lower() for k in m
                 )
+                # Measured per_model results → a COMPARISON figure (final metric by
+                # condition) is renderable even without per-step curves; that keeps
+                # render_artifact (vs demoting to protocol_gap) so the L2b backstop
+                # + the agent's render directive both fire. (Adam fe5e7900: scalars,
+                # no training_curves.json — was wrongly demoted, leaving it at 0.0.)
+                facts["has_results"] = facts["has_results"] or bool(m.get("per_model"))
     except Exception:  # noqa: BLE001 — facts are advisory grounding
         logger.debug("leaf_triage: disk facts failed", exc_info=True)
     return facts
@@ -176,9 +212,10 @@ def _classify(text: str) -> str:
 def _ground(klass: str, facts: dict[str, Any]) -> str:
     """Downgrade a no-cost class when the disk can't actually support it."""
     if klass == "render_artifact" and not (
-        facts.get("has_history") or facts.get("has_curves") or facts.get("has_sweep")
+        facts.get("has_history") or facts.get("has_curves")
+        or facts.get("has_sweep") or facts.get("has_results")
     ):
-        return "protocol_gap"  # data may genuinely not exist → produce it, scoped
+        return "protocol_gap"  # no data at all → produce it first, scoped
     if klass == "aggregation_gap" and not facts.get("outputs_metrics"):
         return "review"
     return klass
@@ -190,6 +227,7 @@ def _evidence_note(klass: str, facts: dict[str, Any]) -> str:
             ("history block", "has_history"),
             ("training_curves", "has_curves"),
             ("sweep data", "has_sweep"),
+            ("measured per-condition results", "has_results"),
         ) if facts.get(k)]
         return ", ".join(bits) or "metrics on disk"
     if klass == "aggregation_gap":

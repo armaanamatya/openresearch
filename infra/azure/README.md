@@ -205,11 +205,11 @@ Retrieve with `az stack group show --name openresearch-infra --resource-group <R
 | `nodeResourceGroup` | Quota / capacity checks |
 | `kubeletIdentityClientId` | AcrPull + Files role confirmation |
 | `workloadIdentityClientId` | Helm SA annotation (critical) |
-| `acrLoginServer` | `REPROLAB_AZURE_ACR_LOGIN_SERVER` |
-| `storageAccountNameOut` | `REPROLAB_AZURE_STORAGE_ACCOUNT` (Blob artifact bus) |
-| `blobContainerNameOut` | `REPROLAB_AZURE_BLOB_CONTAINER` |
-| `filesShareNameOut` | `REPROLAB_AZURE_FILES_SHARE` |
+| `acrLoginServer` | `OPENRESEARCH_AZURE_ACR_LOGIN_SERVER` |
+| `storageAccountNameOut` | `OPENRESEARCH_AZURE_STORAGE_ACCOUNT` (Blob artifact bus) |
+| `blobContainerNameOut` | `OPENRESEARCH_AZURE_BLOB_CONTAINER` |
+| `filesShareNameOut` | `OPENRESEARCH_AZURE_FILES_SHARE` |
 | `filesStorageAccountName` | Helm `storage.filesAccountName` — the account hosting the active Files share. Same as `storageAccountNameOut` when `filesPremium=false`; the dedicated Premium FileStorage account when `filesPremium=true`. Always pass this (not `storageAccountNameOut`) to the StorageClass. |
-| `gpuNodepoolName` | `REPROLAB_AZURE_NODE_POOL_NAME` (deprecated; prefer `gpuPools[0].name`) |
+| `gpuNodepoolName` | `OPENRESEARCH_AZURE_NODE_POOL_NAME` (deprecated; prefer `gpuPools[0].name`) |
 | `gpuPools` | Array of `{name, skuLabel}` parallel to `gpuSkus` input |
 | `logAnalyticsWorkspaceId` | Log Analytics workspace (monitoring baseline) |

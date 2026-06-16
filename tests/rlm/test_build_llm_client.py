@@ -276,7 +276,7 @@ class TestPrimitiveLlmModelPin:
     def test_pin_unset_falls_back_to_safe_default(self, monkeypatch):
         """Unset pin → an EXPLICIT Sonnet model, never None (the wedge fix)."""
         monkeypatch.delenv("OPENRESEARCH_PRIMITIVE_LLM_MODEL", raising=False)
-        monkeypatch.delenv("REPROLAB_OAUTH_FALLBACK_MODEL", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_OAUTH_FALLBACK_MODEL", raising=False)
         root = _make_root_model("anthropic-oauth", key="claude-oauth")
         client, label = _build_llm_client(None, root)
         assert client._model == "claude-sonnet-4-6"
@@ -301,7 +301,7 @@ class TestPrimitiveLlmModelPin:
 
     def test_blank_pin_is_treated_as_unset(self, monkeypatch):
         monkeypatch.setenv("OPENRESEARCH_PRIMITIVE_LLM_MODEL", "   ")
-        monkeypatch.delenv("REPROLAB_OAUTH_FALLBACK_MODEL", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_OAUTH_FALLBACK_MODEL", raising=False)
         root = _make_root_model("anthropic-oauth", key="claude-oauth")
         client, label = _build_llm_client(None, root)
         # Blank pin → safe Sonnet default, NOT None (no CLI-default deferral).
@@ -309,10 +309,10 @@ class TestPrimitiveLlmModelPin:
         assert label == "claude-oauth"
 
     def test_oauth_fallback_model_env_override(self, monkeypatch):
-        """REPROLAB_OAUTH_FALLBACK_MODEL repoints the safe default (e.g. if
+        """OPENRESEARCH_OAUTH_FALLBACK_MODEL repoints the safe default (e.g. if
         Sonnet itself is ever unavailable)."""
-        monkeypatch.delenv("REPROLAB_PRIMITIVE_LLM_MODEL", raising=False)
-        monkeypatch.setenv("REPROLAB_OAUTH_FALLBACK_MODEL", "claude-opus-4-8")
+        monkeypatch.delenv("OPENRESEARCH_PRIMITIVE_LLM_MODEL", raising=False)
+        monkeypatch.setenv("OPENRESEARCH_OAUTH_FALLBACK_MODEL", "claude-opus-4-8")
         root = _make_root_model("anthropic-oauth", key="claude-oauth")
         client, _ = _build_llm_client(None, root)
         assert client._model == "claude-opus-4-8"

@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import signal
 import socket
 import threading
@@ -621,6 +622,43 @@ def _assert_paper_text_precondition(project_dir: Path, *, allow_lossy: bool) -> 
         "paper text degraded — proceeding with lossy workspace fallback "
         f"(parsed_full_text.txt missing or <1KB at {parsed_path})"
     )
+
+
+def _assert_disk_headroom(runs_root: Path, *, min_gb: float) -> str | None:
+    """Fail-fast gate for low disk on the runs root (2026-06-15).
+
+    A run that starts on a near-full disk cannot write checkpoints / metrics → its
+    GPU cells HANG and ORPHAN (the 2026-06-15 incident: ``/home`` hit 100%, SDAR's
+    training subprocesses hung holding 17 GB of VRAM each, the run died with NO final
+    report). Aborting at run start — before any GPU work — is far cheaper than an
+    orphaned 14h run. Raises ``RuntimeError`` when critically low; returns a warning
+    reason when headroom is thin-but-OK; ``min_gb <= 0`` disables the gate. Paper-
+    agnostic: every run gets the same protection.
+    """
+    if min_gb <= 0:
+        return None
+    try:
+        # f_bavail (blocks available to NON-root), NOT shutil.disk_usage().free /
+        # f_bfree, which counts root-reserved space a non-root run cannot write to —
+        # on a near-full disk that gap is the difference between "passes the gate" and
+        # "actually has room to write checkpoints".
+        st = os.statvfs(runs_root)
+        free_gb = st.f_bavail * st.f_frsize / (1024 ** 3)
+    except OSError:
+        return None  # cannot stat the mount → never block on a bookkeeping failure
+    if free_gb < min_gb:
+        raise RuntimeError(
+            f"Only {free_gb:.1f} GB free on the runs root ({runs_root}) — below the "
+            f"{min_gb:.0f} GB floor. A run on a near-full disk hangs/orphans on "
+            f"checkpoint writes. Free space, point --runs-root at a disk with room "
+            f"(e.g. --runs-root /scratch/runs), or set OPENRESEARCH_MIN_DISK_GB=0 to override."
+        )
+    if free_gb < min_gb * 2:
+        return (
+            f"low disk headroom: {free_gb:.1f} GB free on the runs root ({runs_root}); "
+            f"floor is {min_gb:.0f} GB — a long run may exhaust it."
+        )
+    return None
 
 
 # Exact-name denylist for the run_config.json env snapshot: knobs whose VALUES
@@ -1523,6 +1561,17 @@ async def run_pipeline_rlm(
     _allow_lossy = getattr(_settings_for_gate, "allow_lossy_paper_text", True)
     _paper_degraded_reason = _assert_paper_text_precondition(project_dir, allow_lossy=_allow_lossy)
 
+    # Disk-headroom preflight (2026-06-15): abort before any GPU work when the runs
+    # root is near-full, so a run can't hang/orphan on checkpoint writes (the SDAR
+    # disk-100% incident). Paper-agnostic; OPENRESEARCH_MIN_DISK_GB=0 disables it.
+    try:
+        _min_disk_gb = float(os.environ.get("OPENRESEARCH_MIN_DISK_GB", "10") or "10")
+    except ValueError:
+        _min_disk_gb = 10.0
+    _disk_warn_reason = _assert_disk_headroom(runs_root, min_gb=_min_disk_gb)
+    if _disk_warn_reason:
+        logger.warning("%s", _disk_warn_reason)
+
     # Archive prior-attempt artifacts before touching anything else.
     # Fires only when final_report.json exists (a completed prior run);
     # first-ever runs and incomplete-but-failed runs are handled gracefully.
@@ -1751,6 +1800,17 @@ async def run_pipeline_rlm(
             bool(getattr(execution_profile, "minimize_compute", False))
             if execution_profile is not None
             else False
+        ),
+        # Execution mode (C1): thread ExecutionProfile.mode so
+        # resolve_experiment_timeout_s honors --execution-mode max instead of
+        # silently capping long papers at the 2h default. mode is an enum
+        # (.value = "efficient"/"max", matching EXPERIMENT_TIMEOUT_BY_MODE);
+        # tolerate a plain-string mode too.
+        execution_mode=(
+            getattr(execution_profile.mode, "value", execution_profile.mode)
+            if execution_profile is not None
+            and getattr(execution_profile, "mode", None) is not None
+            else None
         ),
         gpu_device_ids=_parse_gpu_device_ids(),
         gpu_parallelism=_parse_gpu_parallelism(),
@@ -2124,7 +2184,7 @@ async def run_pipeline_rlm(
         # this is the backstop for the rarer case where the PINNED model is itself
         # down. Fail-soft on ambiguous/transient probe errors (a network blip never
         # aborts a good run); abort ONLY on the definitive 'unavailable' block.
-        if _os.environ.get("REPROLAB_MODEL_PREFLIGHT", "1").strip() not in ("0", "false", ""):
+        if _os.environ.get("OPENRESEARCH_MODEL_PREFLIGHT", "1").strip() not in ("0", "false", ""):
             from backend.services.context.workspace.tools.rlm_query import (
                 preflight_model_available,
             )
@@ -2139,8 +2199,8 @@ async def run_pipeline_rlm(
                         ),
                         "failure_class": "model_unavailable",
                         "suggested_fix": (
-                            "Set REPROLAB_OAUTH_FALLBACK_MODEL to an available Claude "
-                            "model id, or REPROLAB_MODEL_PREFLIGHT=0 to bypass."
+                            "Set OPENRESEARCH_OAUTH_FALLBACK_MODEL to an available Claude "
+                            "model id, or OPENRESEARCH_MODEL_PREFLIGHT=0 to bypass."
                         ),
                     },
                 )
@@ -2317,14 +2377,32 @@ def _finalize(
     # Lifts started_at from demo_status.json (written at run start); stamps
     # completed_at at write time; records per-role models for leaderboard ranking.
     report.mode = "rlm"
-    # verifier == grader: both are the rubric-scoring client (ctx.llm_client), whose model
-    # is llm_model. Under the default accelerator scope="navigation" this stays the strong
-    # root model (Sonnet) even when a small accelerator serves rlm_query/llm_query nav.
+    # verifier == the rubric-scoring client (ctx.llm_client → llm_model). Under the
+    # default accelerator scope="navigation" this stays the strong root model
+    # (Sonnet) even when a small accelerator serves rlm_query/llm_query nav.
+    # F5: the GRADER (leaf scorer) rides the same client by default, but A5's
+    # decoupled transport (OPENRESEARCH_GRADER_BACKEND/_MODEL) can move it onto an
+    # independent sampler-capable model — and ACCELERATOR_SCOPE=all routes it onto
+    # the accelerator. Stamp what ACTUALLY graded so the leaderboard is honest;
+    # default (no override) → llm_model, byte-for-byte today.
+    _grader_stamp = (
+        os.environ.get("OPENRESEARCH_GRADER_MODEL", "").strip()
+        or os.environ.get("OPENRESEARCH_GRADER_BACKEND", "").strip()
+        or (
+            os.environ.get("OPENRESEARCH_ACCELERATOR_MODEL", "").strip()
+            if (
+                os.environ.get("OPENRESEARCH_ACCELERATOR_SCOPE", "").strip().lower() == "all"
+                and os.environ.get("OPENRESEARCH_ACCELERATOR", "").strip().lower() == "endpoint"
+            )
+            else ""
+        )
+        or llm_model
+    )
     report.models = {
         "planner": llm_model,
         "executor": getattr(ctx, "agent_model", None),
         "verifier": llm_model,
-        "grader": llm_model,
+        "grader": _grader_stamp,
     }
     started_at: str | None = None
     demo_status_path = project_dir / "demo_status.json"
@@ -2395,6 +2473,16 @@ def _finalize(
             )
     except Exception:  # noqa: BLE001 — producers are best-effort; never block finalize
         logger.warning("_finalize: two-axis producers failed (non-fatal)", exc_info=True)
+
+    # E1 (NEGATIVE_LESSONS): mine agent-correctable failure_class rows from this
+    # run's experiment_runs.jsonl into runs/_lessons/<arxiv_id>.json so the NEXT
+    # run of the same paper injects them into implementer guidance. Flag-gated
+    # (OPENRESEARCH_NEGATIVE_LESSONS) + fail-soft; off / no arxiv_id → no-op (today).
+    try:
+        from backend.agents.rlm import lesson_distiller as _ld
+        _ld.mine_lessons(project_dir, project_dir.parent, getattr(ctx, "arxiv_id", None))
+    except Exception:  # noqa: BLE001 — lesson mining must never block finalize
+        logger.warning("_finalize: negative-lessons mining failed (non-fatal)", exc_info=True)
 
     # Finalize-time freshness re-grade (2026-06-13): if the complete on-disk
     # grid landed AFTER the last verify_against_rubric and the recorded grade is

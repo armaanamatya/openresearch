@@ -54,7 +54,7 @@ makes this bug class **structurally impossible** and 10-50× faster rollouts.
   `backend/services/runtime/local_gpu_allocator.py::free_devices(...)`. Your
   smoke test must run on **one** free GPU (or CPU) — never grab the box.
 - **Do not disturb the FSDP default.** The scaffold path is opt-in
-  (`REPROLAB_RL_SCAFFOLD=1` or a per-run flag). With it off, behavior is
+  (`OPENRESEARCH_RL_SCAFFOLD=1` or a per-run flag). With it off, behavior is
   byte-identical to today. All existing tests must stay green.
 - **Coexist with the distributed-launch rewriter.** See §5 — the separate-server
   topology conflicts with `_resolve_distributed_launch`; you must add a clean
@@ -169,7 +169,7 @@ the PR):**
   add a **single guard** in `_resolve_distributed_launch` that **skips rewriting
   when a scaffold sentinel is present** (e.g. a `# reprolab:rl-scaffold-owns-launch`
   marker in the command or a `code/.reprolab_rl_scaffold` file, or
-  `REPROLAB_RL_SCAFFOLD=1`). Add a focused test for the skip.
+  `OPENRESEARCH_RL_SCAFFOLD=1`). Add a focused test for the skip.
 - Keep the NCCL env prefix applied to the trainer launch (reuse
   `_nccl_env_prefix()`).
 

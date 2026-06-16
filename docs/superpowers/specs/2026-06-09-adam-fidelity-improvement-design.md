@@ -145,7 +145,7 @@ wired in + paper-specific bits in the hint surface. Every component flag-gated, 
 ## 5. Build order (highest leverage first), no live-run disturbance
 
 1. **Module A** (convergence_evidence + schema guard) — ~70% of the lift; also the exact fix for
-   the live run's iter-1 regression. TDD, flag `REPROLAB_CONVERGENCE_EVIDENCE`.
+   the live run's iter-1 regression. TDD, flag `OPENRESEARCH_CONVERGENCE_EVIDENCE`.
 2. **Engine D wiring** (claim↔observed table, U12 graded credit) — Result-match binding.
 3. **Module C** (extend D2 provenance manifest) — cheap, closes the provenance area.
 4. **Module B** (fair_comparison init snapshot) — de-noises orderings.

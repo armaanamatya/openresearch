@@ -109,10 +109,10 @@ def default_oauth_model() -> str:
     mutable default, which can resolve to an unavailable model and wedge the
     whole run (the 2026-06-14 Fable-5 outage). The default is the OAuth
     root/grader model (Sonnet — ROOT_MODELS['claude-oauth'] backend + the
-    CLAUDE.md quality-critical-grader rule). REPROLAB_OAUTH_FALLBACK_MODEL
+    CLAUDE.md quality-critical-grader rule). OPENRESEARCH_OAUTH_FALLBACK_MODEL
     repoints it if Sonnet itself ever becomes unavailable.
     """
-    return os.environ.get("REPROLAB_OAUTH_FALLBACK_MODEL", "").strip() or _DEFAULT_OAUTH_MODEL
+    return os.environ.get("OPENRESEARCH_OAUTH_FALLBACK_MODEL", "").strip() or _DEFAULT_OAUTH_MODEL
 
 
 class ModelUnavailableError(RuntimeError):
@@ -664,12 +664,35 @@ class ClaudeLlmClient:
                 logger.warning(
                     "rlm_query: model %r returned the CLI 'model unavailable' block "
                     "instead of content — this turn is effectively empty. Set "
-                    "REPROLAB_OAUTH_FALLBACK_MODEL to an available model. Head: %s",
+                    "OPENRESEARCH_OAUTH_FALLBACK_MODEL to an available model. Head: %s",
                     self._model, (text or "")[:120],
                 )
             return text
         finally:
             ex.shutdown(wait=False)
+
+    def complete_samples(
+        self,
+        *,
+        system: str,
+        user: str,
+        n: int = 1,
+        temperature: float | None = None,
+        seed: int | None = None,
+    ) -> list[str]:
+        """Return ``n`` completions by calling ``complete`` ``n`` times.
+
+        Optional grader-fidelity sampling path (spec 2026-06-16 §A5). The
+        bundled claude-agent-sdk OAuth transport exposes NO sampler control
+        (no temperature, no seed, no native ``n``), so this is genuinely
+        sequential and ``temperature``/``seed`` are accepted-and-IGNORED
+        (documented). The grader's per-leaf median-of-N is the denoiser on this
+        path — distinct draws come from the SDK's own default sampling, not
+        from a tunable temperature. Each call carries the existing
+        ``with_429_backoff`` + SDK-isolation hardening of ``complete``;
+        ``_last_usage`` reflects the LAST call.
+        """
+        return [self.complete(system=system, user=user) for _ in range(n)]
 
     async def _async_complete(self, *, system: str, user: str) -> tuple[str, dict[str, int]]:
         """Return (result_text, usage_dict) from the SDK stream.

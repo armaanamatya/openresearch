@@ -77,15 +77,51 @@ def test_derived_duplicate_triples_are_disambiguated():
     assert len(triples) == 2  # second cell suffixed, no silent leaf overwrite
 
 
-def test_explicit_duplicate_triples_preserved_verbatim():
-    # Agent-authored duplicates keep existing (last-write-wins) semantics.
+def test_explicit_duplicate_triples_are_disambiguated_and_warned():
+    # C5 (2026-06-16): two cells with IDENTICAL explicit model_key/env/baseline
+    # used to be preserved verbatim — both kept the same triple, so the later
+    # leaf silently overwrote the earlier one in aggregate's per_model tree
+    # (last-writer-wins). Now the later baseline is id-suffixed so BOTH survive,
+    # AND a contract_warning rides back so the agent emits distinct axes.
     cells = [
         {"id": "s0", "model_key": "m", "env": "e", "baseline": "b"},
         {"id": "s1", "model_key": "m", "env": "e", "baseline": "b"},
     ]
     out, notes = normalize_cell_axes(cells)
-    assert [c["baseline"] for c in out] == ["b", "b"]
-    assert notes == []
+    # Both cells survive (never dropped).
+    assert len(out) == 2
+    # The two leaves now occupy DISTINCT triples — no silent overwrite.
+    triples = {(c["model_key"], c["env"], c["baseline"]) for c in out}
+    assert len(triples) == 2
+    # First cell keeps its explicit triple verbatim; the second is suffixed.
+    assert out[0]["baseline"] == "b"
+    assert out[1]["baseline"] == "b__s1"
+    # model_key/env are untouched by the disambiguation (only baseline is suffixed).
+    assert out[1]["model_key"] == "m" and out[1]["env"] == "e"
+    # A single contract warning names the disambiguation (mirror of the
+    # derived-dup / cell_axes_derived note); no "derived" note since axes were explicit.
+    assert len(notes) == 1
+    assert "already used by an earlier cell" in notes[0]
+    assert "derived" not in notes[0]
+
+
+def test_explicit_dup_leaf_survives_aggregate_not_overwritten():
+    # End-to-end: normalize → aggregate must keep BOTH explicit-dup leaves, with
+    # distinct metrics, instead of last-writer-wins collapsing them to one.
+    cells = [
+        {"id": "s0", "model_key": "m", "env": "e", "baseline": "b"},
+        {"id": "s1", "model_key": "m", "env": "e", "baseline": "b"},
+    ]
+    norm, _ = normalize_cell_axes(cells)
+    result = {
+        "s0": {"status": "ok", "metrics": {"metric": 0.10}},
+        "s1": {"status": "ok", "metrics": {"metric": 0.20}},
+    }
+    agg = aggregate_cell_metrics(result, norm)
+    baselines = agg["per_model"]["m"]["e"]
+    assert set(baselines) == {"b", "b__s1"}          # two distinct leaves
+    assert baselines["b"]["metric"] == 0.10           # earlier cell NOT lost
+    assert baselines["b__s1"]["metric"] == 0.20
 
 
 def test_non_list_and_non_dict_entries():

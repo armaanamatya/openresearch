@@ -75,7 +75,7 @@ Unique-commit counts and diffstats are **vs `5.30.26_sdar`** (HEAD `8928b4d`).
 - **Real multi-turn agentic envs**: ALFWorld, WebShop, Search-QA (replacing closed-book/faked
   surrogates that floored the rubric at ~0.36).
 - **Dense E5 retrieval** at wiki-18 scale (mmap'd faiss index shared across cells) with BM25/lexical fallback.
-- **Multi-GPU cells**: `REPROLAB_GPUS_PER_CELL` device_map-shards one model across N GPUs per cell.
+- **Multi-GPU cells**: `OPENRESEARCH_GPUS_PER_CELL` device_map-shards one model across N GPUs per cell.
 - **Never-die-without-a-report**: always-on watchdog hard-ceiling (14h default) + bounded matrix
   timeout + SIGTERM finalizer → wedged/killed runs still ship a partial report.
 - **Verified operator-scope**: `ScopeSpec.skip_datasets` + `--scope-spec`; env-setup failures
@@ -84,10 +84,10 @@ Unique-commit counts and diffstats are **vs `5.30.26_sdar`** (HEAD `8928b4d`).
 - New files: `agentic_rollout.py`, `alfworld_env.py`, `webshop_env.py`, `search_qa_env.py`,
   `exclusion.py`, `cell_fingerprint.py`, `services/runtime/env_cache.py`, `scripts/batch_reproduce.py`,
   13 test files, 3 runbooks.
-- New env vars: `REPROLAB_GPUS_PER_CELL`, `REPROLAB_WATCHDOG_HARD_CEILING_S`,
-  `REPROLAB_RESUME_CELLS`, `REPROLAB_RESUME_FORCE_CELLS`, `REPROLAB_PROVISION_ENVS`,
-  `REPROLAB_ENV_CACHE_DIR`, `REPROLAB_SEARCH_QA_{DENSE,ENCODER,INDEX_DIR,INDEX_REPO,...}`,
-  `REPROLAB_ALFWORLD_*`, `REPROLAB_WEBSHOP_*`.
+- New env vars: `OPENRESEARCH_GPUS_PER_CELL`, `OPENRESEARCH_WATCHDOG_HARD_CEILING_S`,
+  `OPENRESEARCH_RESUME_CELLS`, `OPENRESEARCH_RESUME_FORCE_CELLS`, `OPENRESEARCH_PROVISION_ENVS`,
+  `OPENRESEARCH_ENV_CACHE_DIR`, `OPENRESEARCH_SEARCH_QA_{DENSE,ENCODER,INDEX_DIR,INDEX_REPO,...}`,
+  `OPENRESEARCH_ALFWORLD_*`, `OPENRESEARCH_WEBSHOP_*`.
 
 ### B. `c606748` — backend hardening + recent-runs UI + F-04/05/11 (48 commits)
 - **Harden / root-harness P0–P3 + audit Phase A/B** (11 findings): F-27 `<math>` alttext rescue,

@@ -69,6 +69,22 @@ def test_pin_install_specs():
 
 def test_base_tag_for():
     assert env_pin.base_tag_for("local", None) == "cu121"
-    assert env_pin.base_tag_for("docker", "ubuntu:22.04") == "cu121"
+    # C4 (2026-06-16): docker must NOT claim cu121. The .pth-following
+    # LD_LIBRARY_PATH prepend that makes the cu121 pin dlopen-able lives only in
+    # LocalProcessBackend; docker exec runs inside a container and never sees the
+    # host venv. Claiming cu121 here would strip + re-pin torch WITHOUT the
+    # lib-fix, so strip and lib-fix would disagree on scope. Fall back to "".
+    assert env_pin.base_tag_for("docker", "ubuntu:22.04") == ""
     assert env_pin.base_tag_for("runpod", "runpod/pytorch:2.1.0-cuda11.8.0-runtime") == "runpod"
     assert env_pin.base_tag_for("azure", "some/image") == ""
+
+
+def test_docker_tag_makes_strip_and_pin_both_noop():
+    # The consequence of C4: under docker the harness owns NO core package, so
+    # neither half of the cu121 mechanism fires — harden_requirements keeps the
+    # agent's torch verbatim AND pin_install_specs installs nothing. Scope agrees.
+    tag = env_pin.base_tag_for("docker", "ubuntu:22.04")
+    reqs = ["torch==2.2.0", "numpy==1.24.0", "transformers>=4.40"]
+    kept, dropped = env_pin.harden_requirements(reqs, base_tag=tag)
+    assert kept == reqs and dropped == []          # nothing stripped
+    assert env_pin.pin_install_specs(tag) == []    # nothing pinned

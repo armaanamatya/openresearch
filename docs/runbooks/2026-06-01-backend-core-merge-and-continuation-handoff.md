@@ -217,7 +217,7 @@ touching it** (line anchors will have drifted post-merge — match on unique con
   method files to the front + **head+tail** slice so end-of-file gate logic reaches the grader. Plan
   (designed, not yet built): add `_evidence_priority(rel)` + `_truncate_head_tail(data,cap)`, sort
   candidates, give priority files a larger cap. **Score-moving + LLM-mediated → gate behind a
-  `REPROLAB_GRADER_*` env (default-on) or make it strictly-additive (always keep the head, *add* the
+  `OPENRESEARCH_GRADER_*` env (default-on) or make it strictly-additive (always keep the head, *add* the
   tail of method files).** Test `_gather_evidence` deterministically (no LLM).
 - **F-04** `l/l/small` — escalation loop misses watchdog-killed OOM. **Designed approach (use it):**
   the `_WatchdogKilled` return dict (`primitives.py` ~L2963) has no `exit_code`/infra flag, so the
@@ -239,7 +239,7 @@ touching it** (line anchors will have drifted post-merge — match on unique con
   no-amend path. **Do this against MERGED report.py.**
 - **F-35** `l/m/medium` (observe-first, KNOWN-pending) — §5c programmatic citation-clamp + B2 spec-gate
   short-circuit in `leaf_scorer.py`. Wire `_citation_validates(justification, evidence)` + clamp→0 under
-  `REPROLAB_RUBRIC_REQUIRE_CITATION` (emit would-clamp delta when enforce-off); early-return the
+  `OPENRESEARCH_RUBRIC_REQUIRE_CITATION` (emit would-clamp delta when enforce-off); early-return the
   hard-capped result before building grader batches when an invariant tripped. **Observe-first: enforce
   only after a real SDAR run confirms no spurious loss. Do LAST in Phase B.**
 

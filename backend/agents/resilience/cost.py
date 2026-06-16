@@ -40,6 +40,10 @@ class CostLedgerEntry:
     # success-compatible by the evidence gate so old artifacts never
     # over-downgrade.
     outcome: str = ""
+    # F1 (2026-06-16): root-loop iteration this spend occurred in, so cost can be
+    # attributed per-iteration. Additive metadata (default 0); never affects cost
+    # math, and old ledgers without the field read back as 0 (from_json default).
+    iteration: int = 0
 
     def to_json(self) -> dict[str, Any]:
         data = asdict(self)
@@ -73,6 +77,7 @@ class CostLedgerEntry:
         usage: dict[str, Any],
         timestamp: datetime | None = None,
         outcome: str = "",
+        iteration: int = 0,
     ) -> "CostLedgerEntry":
         normalized = {
             "input_tokens": _int(usage.get("input_tokens")),
@@ -91,6 +96,7 @@ class CostLedgerEntry:
             model=model,
             estimated_usd=estimate_cost_usd(model, normalized),
             outcome=outcome,
+            iteration=iteration,
             **normalized,
         )
 

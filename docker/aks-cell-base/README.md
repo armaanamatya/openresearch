@@ -12,12 +12,12 @@ this image.  The entrypoint (`aks_cell_entrypoint.py`) handles:
    Azure Files PVC (`/mnt/reprolab-cache`) so weights are shared across cells.
 3. `pip install`-ing project requirements through the cached mount (fast after
    the first run).
-4. Executing `train_cell.py` **unchanged** with all `REPROLAB_CELL_*` env vars
+4. Executing `train_cell.py` **unchanged** with all `OPENRESEARCH_CELL_*` env vars
    injected by the orchestrator.
 5. On CUDA OOM: self-retrying with the shrink ladder:
    - Attempt 0: original params
-   - Attempt 1: `REPROLAB_CELL_BATCH_SCALE=0.5` + `REPROLAB_CELL_GRAD_CHECKPOINT=1`
-   - Attempt 2+: `REPROLAB_CELL_BATCH_SCALE=0.25` + `REPROLAB_CELL_GRAD_CHECKPOINT=1`
+   - Attempt 1: `OPENRESEARCH_CELL_BATCH_SCALE=0.5` + `OPENRESEARCH_CELL_GRAD_CHECKPOINT=1`
+   - Attempt 2+: `OPENRESEARCH_CELL_BATCH_SCALE=0.25` + `OPENRESEARCH_CELL_GRAD_CHECKPOINT=1`
 6. Uploading `metrics.json`, per-attempt logs, and `status.json` to Blob.
 
 ## Build and push — BLOCKED
@@ -38,7 +38,7 @@ az acr login --name <your-acr-name>
 docker push ${ACR_SERVER}/reprolab/aks-cell-base:latest
 ```
 
-Set `REPROLAB_AZURE_BASE_IMAGE` (or `settings.azure_base_image`) to the
+Set `OPENRESEARCH_AZURE_BASE_IMAGE` (or `settings.azure_base_image`) to the
 resulting fully-qualified image reference.
 
 ## Environment variable contract
@@ -47,17 +47,17 @@ All variables are injected by `k8s_job_cell_runner.py` into the K8s Job spec.
 
 | Variable | Required | Description |
 |---|---|---|
-| `REPROLAB_CELL_ID` | Yes | Unique cell identifier (e.g. `qwen3_1b-sdar-alfworld-42`) |
-| `REPROLAB_CELL_PARAMS` | Yes | JSON-encoded cell params passed to `train_cell.py` |
-| `REPROLAB_CELL_OUTPUT_DIR` | Auto | Set by wrapper to internal scratch dir |
-| `REPROLAB_CELL_BATCH_SCALE` | Auto | Injected per-attempt by OOM ladder |
-| `REPROLAB_CELL_GRAD_CHECKPOINT` | Auto | Injected per-attempt by OOM ladder |
-| `REPROLAB_CELL_MAX_OOM_RETRIES` | No | Default 2; number of OOM retries after original attempt |
-| `REPROLAB_AZURE_STORAGE_ACCOUNT` | Yes | Azure storage account name |
-| `REPROLAB_AZURE_BLOB_CONTAINER` | Yes | Blob container name (artifact bus) |
-| `REPROLAB_BLOB_CODE_PREFIX` | Yes | Blob prefix for uploaded project code |
-| `REPROLAB_BLOB_OUTPUT_PREFIX` | Yes | Blob prefix for cell output artifacts |
-| `REPROLAB_CACHE_MOUNT` | No | Azure Files mount root; default `/mnt/reprolab-cache` |
+| `OPENRESEARCH_CELL_ID` | Yes | Unique cell identifier (e.g. `qwen3_1b-sdar-alfworld-42`) |
+| `OPENRESEARCH_CELL_PARAMS` | Yes | JSON-encoded cell params passed to `train_cell.py` |
+| `OPENRESEARCH_CELL_OUTPUT_DIR` | Auto | Set by wrapper to internal scratch dir |
+| `OPENRESEARCH_CELL_BATCH_SCALE` | Auto | Injected per-attempt by OOM ladder |
+| `OPENRESEARCH_CELL_GRAD_CHECKPOINT` | Auto | Injected per-attempt by OOM ladder |
+| `OPENRESEARCH_CELL_MAX_OOM_RETRIES` | No | Default 2; number of OOM retries after original attempt |
+| `OPENRESEARCH_AZURE_STORAGE_ACCOUNT` | Yes | Azure storage account name |
+| `OPENRESEARCH_AZURE_BLOB_CONTAINER` | Yes | Blob container name (artifact bus) |
+| `OPENRESEARCH_BLOB_CODE_PREFIX` | Yes | Blob prefix for uploaded project code |
+| `OPENRESEARCH_BLOB_OUTPUT_PREFIX` | Yes | Blob prefix for cell output artifacts |
+| `OPENRESEARCH_CACHE_MOUNT` | No | Azure Files mount root; default `/mnt/reprolab-cache` |
 
 `DefaultAzureCredential` (workload identity) is used for all Blob I/O — no
 static storage keys are ever present in the container.

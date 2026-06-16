@@ -12,6 +12,17 @@ from backend.agents.rlm.context import RunContext
 from backend.agents.rlm.sse_bridge import make_emit
 
 
+@pytest.fixture(autouse=True)
+def _allow_lossy_stub_papers(monkeypatch):
+    """RLM pipeline/mechanics tests run on STUB paper text (they never ingest a real
+    paper). Allow the degraded-paper fallback here so the 2026-06-15 abort-by-default
+    (``config.allow_lossy_paper_text=False`` — which stops a real run on near-empty
+    context, the SDAR 469-char incident) doesn't block them. The abort behavior itself
+    is covered by tests/services/ingestion/parser/test_precondition.py.
+    """
+    monkeypatch.setenv("OPENRESEARCH_ALLOW_LOSSY_PAPER_TEXT", "true")
+
+
 class FakeLlmClient:
     """Counting fake LlmClient. Returns scripted responses in order (last repeats)."""
 

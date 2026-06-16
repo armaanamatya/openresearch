@@ -1,4 +1,5 @@
 """PEEK-lite intra-run context map (FLAG-1, OPENRESEARCH_CONTEXT_MAP)."""
+import json
 
 import pytest
 

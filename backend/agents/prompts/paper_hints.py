@@ -190,7 +190,10 @@ PAPER_HINTS: dict[str, PaperHint] = {
             "STRUCTURE: emit cells.json with ONE cell per (model, variant, "
             "dataset) and EXPLICIT model_key/env/baseline axes per cell (e.g. "
             "model_key='c_allcnn', env='cifar10_noaug', baseline='allcnn') "
-            "plus that cell's chosen lr; train_cell.py writes a FLAT per-cell "
+            "plus that cell's chosen lr, weight_decay (0.001), and dropout_p "
+            "([0.2,0.5]) IN THE CELL — the harness writes a provenance.json from "
+            "the cell params, and the eval-protocol leaves credit recorded values, "
+            "not narrative prose; train_cell.py writes a FLAT per-cell "
             "metrics.json with test_error_pct. Aggregate per_model entries "
             "ATOMICALLY as cells finish so a timeout truncates the tail, not "
             "finished work. CIFAR-100 (All-CNN, with aug) comes only AFTER all "
@@ -223,6 +226,20 @@ PAPER_HINTS: dict[str, PaperHint] = {
             ],
             seeds=[1],
         ),
+        # Issue #1 (2026-06-15): harness-synthesized per-model LR search. The paper
+        # selects γ PER MODEL from {0.25,0.1,0.05,0.01}; the prior runs shipped one
+        # fixed lr=0.05 (base-A 15.61% vs paper 12.5%, All-CNN-C inverted). With this
+        # declared, the harness AUTO-SYNTHESIZES the cells.json `search` block from
+        # the agent's emitted cells × this grid even if the agent emits a single lr —
+        # one short 8-epoch probe per (model,variant), winner promoted to the full run.
+        lr_search={
+            "grid": [0.25, 0.1, 0.05, 0.01],
+            "param_key": "lr",
+            "epochs_key": "epochs",
+            "probe_epochs": 8,
+            "select_metric": "final_train_loss",
+            "select_objective": "min",
+        },
     ),
     "1512.03385": PaperHint(
         guidance=(
@@ -282,6 +299,14 @@ PAPER_HINTS: dict[str, PaperHint] = {
             "FOUR CHEAP families (1-4) FIRST and write their per_model[...] entries (with real "
             "accuracy/NLL scalars) BEFORE touching any VAE work; write metrics.json ATOMICALLY "
             "as each family completes so a timeout truncates the tail, not finished work.\n"
+            "VARIANT COVERAGE (issue #4 — cheap Result-match + Eval-protocol leaves the prior "
+            "runs left empty): the paper's Figures 2-3 contrast regularizers, so the MNIST/CIFAR "
+            "families each need BOTH variants, one extra cell apiece (NOT a new family): "
+            "(3) MNIST MLP — a dropout variant AND an L2-weight-decay variant (Fig 2a vs 2b), "
+            "as per_model['mnist_mlp_dropout'] + per_model['mnist_mlp_l2']; "
+            "(4) CIFAR-10 CNN — WITH and WITHOUT dropout (Fig 3 shows both), as "
+            "per_model['cifar10_cnn_dropout'] + per_model['cifar10_cnn_nodropout']. The "
+            "2026-06-14 run scored these protocol leaves 0.4-0.7 purely for the missing variant.\n"
             "The VAE LR sweep (6) is the LONG POLE — do it LAST and CAP it to a "
             "smallest-config-first subset (NOT the full ~21-config grid); structure the VAE "
             "sweep as `cells.json` cells (one per config), never a monolithic loop. The "

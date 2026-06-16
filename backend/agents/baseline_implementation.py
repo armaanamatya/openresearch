@@ -1268,8 +1268,14 @@ _CELL_CONTRACT_BLOCK = (
     "the cell sees only cuda:0) and runs min(free_gpus, num_cells) cells in parallel.\n"
     "\n"
     "train_cell.py MUST:\n"
-    "  - read its cell from env OPENRESEARCH_CELL_PARAMS (JSON of ONE cells.json entry) and\n"
-    "    OPENRESEARCH_CELL_OUTPUT_DIR, plus argv --cell-id / --output-dir;\n"
+    "  - ACCEPT the cell runner's exact invocation. The runner sets env OPENRESEARCH_CELL_PARAMS\n"
+    "    (JSON of ONE cells.json entry) + OPENRESEARCH_CELL_OUTPUT_DIR AND runs\n"
+    "    `python train_cell.py --cell-id=<id> --output-dir=<dir>`. Your argparse MUST DEFINE\n"
+    "    `--cell-id` and `--output-dir` (e.g. parser.add_argument('--cell-id')) so it does NOT\n"
+    "    error on them. Do NOT invent other names like `--cell-params` — argparse then rejects\n"
+    "    `--cell-id` and EVERY cell dies with 'unrecognized arguments: --cell-id'. Read the\n"
+    "    cell config from OPENRESEARCH_CELL_PARAMS; resolve the output dir from --output-dir or\n"
+    "    OPENRESEARCH_CELL_OUTPUT_DIR;\n"
     "  - train on cuda:0 only — NO torchrun, NO DDP/FSDP, NO device loop, NO 'cuda:1';\n"
     "  - honor OPENRESEARCH_CELL_BATCH_SCALE / OPENRESEARCH_CELL_GRAD_CHECKPOINT (see memory discipline);\n"
     "  - write metrics.json into the output dir as a FLAT leaf dict for THIS cell:\n"
@@ -2434,8 +2440,20 @@ def _compute_constraint_guidance(
         except Exception:  # noqa: BLE001 — advisory, never fatal
             logger.debug("leaf_triage guidance block skipped", exc_info=True)
 
+    # 6.7b Leaf actuation (L4/L5/L6, 2026-06-16, default-OFF OPENRESEARCH_LEAF_ACTUATE):
+    # the harness-staged repairs from the last verify — a synthesized per-condition
+    # lr search (auto-consumed by the staged-search route), a budget-gated seed
+    # directive, and a declared-vs-aggregated completeness audit. Empty string when
+    # the flag is off, so default behaviour is byte-for-byte unchanged.
+    if project_dir is not None:
+        try:
+            from backend.agents.rlm.leaf_actuator import guidance_block as _la_block
+            guidance += _la_block(project_dir)
+        except Exception:  # noqa: BLE001 — advisory, never fatal
+            logger.debug("leaf_actuator guidance block skipped", exc_info=True)
+
     # 6.8 Fidelity-certificate invariant tests (2026-06-14, gated on
-    # REPROLAB_TWO_AXIS_VERDICT): ask the agent to write code/test_reproduction.py
+    # OPENRESEARCH_TWO_AXIS_VERDICT): ask the agent to write code/test_reproduction.py
     # so the certificate can go green and the two-axis verdict can reach
     # faithful/contradicted instead of always 'inconclusive'. No-op (empty string)
     # when the flag is off, so default behaviour is byte-for-byte unchanged.
@@ -2447,8 +2465,7 @@ def _compute_constraint_guidance(
     except Exception:  # noqa: BLE001 — advisory, never fatal
         logger.debug("fidelity_certificate guidance block skipped", exc_info=True)
 
-    # 7. Per-run extra guidance (REPROLAB_/OPENRESEARCH_BASELINE_EXTRA_GUIDANCE —
-    # the read below accepts both prefixes).
+    # 7. Per-run extra guidance from OPENRESEARCH_BASELINE_EXTRA_GUIDANCE env var.
     # Generic paper-agnostic hook so an operator can scope a specific run
     # without modifying source. Common uses:
     #   - "reproduce only the smallest 2 model variants the paper tests"
@@ -2457,14 +2474,7 @@ def _compute_constraint_guidance(
     # The guidance is appended verbatim, so the operator is responsible for
     # phrasing it so it doesn't contradict the NO STUB block above.
     import os as _os
-    # Both spellings: the alias bridge mirrors REPROLAB_<->OPENRESEARCH_ at
-    # IMPORT time only, but bes_rlm._angle_guidance mutates the env at RUNTIME
-    # (per-candidate prompt angles) under the REPROLAB_ name — read both so
-    # the candidate pool diversifies regardless of which prefix won the merge.
-    extra = (
-        _os.environ.get("OPENRESEARCH_BASELINE_EXTRA_GUIDANCE", "").strip()
-        or _os.environ.get("OPENRESEARCH_BASELINE_EXTRA_GUIDANCE", "").strip()
-    )
+    extra = _os.environ.get("OPENRESEARCH_BASELINE_EXTRA_GUIDANCE", "").strip()
     if extra:
         guidance += (
             "\n\nOPERATOR GUIDANCE — per-run scope override:\n"
@@ -2474,6 +2484,19 @@ def _compute_constraint_guidance(
             "real (paper's actual model + data), fail honestly via "
             "metrics.json={\"error\":\"scope_conflict\",\"detail\":\"...\"}.\n"
         )
+
+    # 7.5. E1 (NEGATIVE_LESSONS): inject this paper's active cross-run failure
+    # lessons (mined by lesson_distiller from prior runs' experiment_runs.jsonl).
+    # Flag-gated (OPENRESEARCH_NEGATIVE_LESSONS) + advisory; returns "" when off / no
+    # arxiv_id / no promoted lessons → byte-for-byte today. Fail-soft.
+    if project_dir is not None and arxiv_id:
+        try:
+            from backend.agents.rlm.lesson_distiller import negative_lessons_block
+            _neg = negative_lessons_block(Path(project_dir).parent, arxiv_id)
+            if _neg:
+                guidance += "\n\n" + _neg
+        except Exception:  # noqa: BLE001 — advisory lessons must never break the build
+            pass
 
     # 8. Policy overlays — explicit gpu_mode=off forces CPU entrypoint;
     #    gpu_mode=max forces GPU entrypoint.

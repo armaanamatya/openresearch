@@ -80,11 +80,22 @@ def _req_name(line: str) -> str | None:
 
 def base_tag_for(sandbox_mode: str | None, base_image: str | None) -> str:
     """Map a sandbox/base-image to a COMPAT_MATRIX tag. Unknown → "" (fail-soft: the
-    caller falls back to today's behavior — the agent's own torch)."""
+    caller falls back to today's behavior — the agent's own torch).
+
+    ``cu121`` is claimed ONLY for the ``local`` sandbox. The cu121 pin is two
+    coupled halves that must agree on scope: the requirements-path STRIP/PIN
+    (backend-agnostic) AND the ``.pth``-following ``LD_LIBRARY_PATH`` prepend that
+    makes the pinned build loadable at runtime. That prepend lives ONLY in
+    ``LocalProcessBackend`` — docker exec runs INSIDE a container and cannot see
+    the host's per-run venv (nor its bundled CUDA libs), so claiming cu121 for
+    docker installs the harness pin (strip + re-pin) WITHOUT the lib-fix that makes
+    it dlopen-able — the two halves would disagree on scope. For docker we
+    therefore return "" and fall back to the agent's own torch, exactly like the
+    non-runpod-image case (C4, 2026-06-16)."""
     img = (base_image or "").lower()
     if "runpod/pytorch" in img:
         return "runpod"
-    if (sandbox_mode or "").lower() in ("local", "docker"):
+    if (sandbox_mode or "").lower() == "local":
         return "cu121"
     return ""
 

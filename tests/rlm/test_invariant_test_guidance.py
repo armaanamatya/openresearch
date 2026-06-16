@@ -2,7 +2,7 @@
 
 Without code/test_reproduction.py the certificate can never go green, so the
 two-axis verdict is stuck at 'inconclusive'. This directive (gated on
-REPROLAB_TWO_AXIS_VERDICT) asks the agent to write it — paper-agnostic, naming
+OPENRESEARCH_TWO_AXIS_VERDICT) asks the agent to write it — paper-agnostic, naming
 registered invariants when PAPER_HINTS has them, degrading gracefully otherwise.
 """
 

@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re
+import statistics
 import tempfile
 from pathlib import Path
 from typing import Any, Protocol
@@ -76,7 +77,7 @@ def roll_up(
     node: dict[str, Any],
     leaf_scores: dict[str, float],
     skip_set: frozenset[str] = frozenset(),
-) -> float:
+) -> float | None:
     """Recursive weighted roll-up.
 
     Leaf: return leaf_scores.get(node["id"], 0.0), or skip entirely when the
@@ -86,6 +87,14 @@ def roll_up(
 
     ``skip_set`` defaults to an empty frozenset so existing callers that pass
     only ``node`` and ``leaf_scores`` are unaffected (backward compat).
+
+    F3 (2026-06-16): returns ``None`` when this node's ENTIRE subtree is skipped
+    (a skipped leaf, or a non-leaf all of whose children rolled up to ``None``) —
+    the sentinel that tells the parent level to exclude this node from both the
+    weight sum and the weighted sum. Callers MUST coerce ``None`` (every in-repo
+    caller does: ``x if x is not None else 0.0`` / an explicit ``is None`` guard).
+    With the default empty ``skip_set`` ``None`` never arises (no leaf is skipped).
+    The return type now states this honestly (was ``-> float`` + ``# type: ignore``).
     """
     children: list[dict[str, Any]] = [
         c for c in (node.get("sub_tasks") or []) if isinstance(c, dict)
@@ -96,7 +105,7 @@ def roll_up(
             # Signal to the parent that this leaf is ineligible.
             # Callers must filter children by skip_set before computing the
             # weighted average — see the non-leaf branch below.
-            return None  # type: ignore[return-value]
+            return None
         return leaf_scores.get(lid, 0.0)
 
     # Non-leaf: build (child, subtree_score) pairs; drop children whose entire subtree
@@ -111,7 +120,7 @@ def roll_up(
         scored_children.append((child, child_score))
 
     if not scored_children:
-        return None  # type: ignore[return-value]  # entire subtree skipped
+        return None  # entire subtree skipped
 
     total_weight = sum(float(c.get("weight", 0.0) or 0.0) for c, _ in scored_children)
     if total_weight == 0.0:
@@ -252,6 +261,38 @@ def _code_file_priority(path: Path) -> tuple[int, int, str]:
     return (bearing, size, str(path))
 
 
+def _grader_digest_enabled() -> bool:
+    """A6 (2026-06-16): count-based per-cell grader digest on metrics overflow +
+    measured-value ranking of the metrics path. OPENRESEARCH_GRADER_DIGEST, default
+    OFF — opt-in until the calibration gate promotes it. Off → byte-slice +
+    truthiness rank (today's behavior, byte-for-byte)."""
+    return os.environ.get("OPENRESEARCH_GRADER_DIGEST", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _deterministic_leaves_enabled() -> bool:
+    """A2 (2026-06-16): route mechanically-checkable leaves to the pure-Python
+    deterministic_leaf_checker instead of the noisy LLM. OPENRESEARCH_DETERMINISTIC_LEAVES,
+    default OFF — every eligible leaf goes to the LLM exactly as today until the
+    calibration gate + a reliable provenance.json producer are in place."""
+    return os.environ.get("OPENRESEARCH_DETERMINISTIC_LEAVES", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _evidence_gate_enabled() -> bool:
+    """A7 (2026-06-16): the honest backstop. OPENRESEARCH_EVIDENCE_GATE, default OFF.
+    When ON, veto to 0.0 any result-claiming leaf the grader credited (>0) whose
+    cited per_model cell has no successful on-disk evidence (the MLR-Bench
+    fabrication failure mode). Off → no veto, scoring byte-for-byte as today. The
+    veto decision lives in the pure backend/agents/rlm/evidence_gate.py (imported
+    only when ON), which composes with this module's subject/alias matching."""
+    return os.environ.get("OPENRESEARCH_EVIDENCE_GATE", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 def _latest_metrics_path(run_dir: Path) -> Path | None:
     """Return the NEWEST-by-mtime metrics.json — the canonical latest experiment.
 
@@ -284,7 +325,18 @@ def _latest_metrics_path(run_dir: Path) -> Path | None:
         has_results = False
         try:
             d = json.loads(p.read_text(encoding="utf-8"))
-            has_results = bool(d.get("per_model")) or bool(d.get("comparison"))
+            if _grader_digest_enabled():
+                # A6: rank on MEASURED values, not truthiness — a placeholder
+                # per_model:{m:{}} must not outrank genuinely-measured older data.
+                try:
+                    from backend.evals.paperbench.grader_digest import (
+                        per_model_has_measured_value,
+                    )
+                    has_results = per_model_has_measured_value(d) or bool(d.get("comparison"))
+                except Exception:
+                    has_results = bool(d.get("per_model")) or bool(d.get("comparison"))
+            else:
+                has_results = bool(d.get("per_model")) or bool(d.get("comparison"))
         except Exception:
             has_results = False
         try:
@@ -405,8 +457,26 @@ def _gather_evidence(run_dir: Path) -> str:
                 body = json.dumps(compact, indent=2)
                 label = "measured run results; long curves -> {len,first,last,min,max}"
                 if len(body) > _MAX_METRICS_BYTES:
-                    body = body[:_MAX_METRICS_BYTES]
-                    label += "; truncated"
+                    if _grader_digest_enabled():
+                        # A6: a wide grid overflows the budget even after series
+                        # compaction; a raw byte slice silently drops the TRAILING
+                        # (often headline) cells. Emit a count-based per-cell digest
+                        # so EVERY cell survives (status / headline metric / n_epochs).
+                        try:
+                            from backend.evals.paperbench.grader_digest import (
+                                build_grader_digest,
+                            )
+                            body = json.dumps(build_grader_digest(metrics), indent=2)
+                            label = (
+                                "measured run results; per-cell DIGEST — grid too wide "
+                                "for full metrics; every cell: status/headline/n_epochs"
+                            )
+                        except Exception:
+                            body = body[:_MAX_METRICS_BYTES]
+                            label += "; truncated"
+                    else:
+                        body = body[:_MAX_METRICS_BYTES]
+                        label += "; truncated"
             except Exception:
                 body = json.dumps(metrics, indent=2)[:_MAX_FILE_BYTES]
                 label = "measured run results; raw, truncated"
@@ -505,6 +575,187 @@ def _leaf_mentions_dataset(leaf: dict[str, Any], dataset_tokens: frozenset[str])
     ]).lower()
     text_tokens = frozenset(t for t in re.split(r"[^a-z0-9]+", text) if t)
     return dataset_tokens.issubset(text_tokens)
+
+
+# ---------------------------------------------------------------------------
+# Issue #2 (2026-06-15): data-unavailable detection missed a downstream leaf.
+# The ImageNet load failure is logged as "ImageNet" but the eval-protocol leaf
+# says "ILSVRC-2012" — {imagenet} ⊄ leaf tokens (ZERO overlap) — so the leaf was
+# scored 0.0 instead of excluded (~0.05 on All-CNN). Two complementary, SAFE
+# loosenings, both gated by an evidence guard (never exclude a leaf that has a
+# successful on-disk metric — it ran, score it):
+#   (a) a curated true-synonym alias map (the only thing that bridges a
+#       zero-overlap synonym like imagenet↔ilsvrc), and
+#   (b) a tight token-OVERLAP tier (all-but-one distinctive token) for multi-token
+#       names where the leaf uses a subset of the dataset name.
+# Applied ONLY to the new tiers — the existing superset pass is untouched (0-regress).
+_DATASET_ALIASES: dict[frozenset[str], tuple[frozenset[str], ...]] = {
+    frozenset({"imagenet"}): (frozenset({"ilsvrc"}), frozenset({"ilsvrc2012"})),
+    frozenset({"ilsvrc"}): (frozenset({"imagenet"}),),
+}
+
+# Generic tokens that carry no dataset identity on their own. NOTE: digit tokens
+# like "10"/"100" are deliberately NOT generic — they distinguish cifar10/cifar100.
+_GENERIC_DATASET_TOKENS: frozenset[str] = frozenset({
+    "dataset", "data", "set", "train", "training", "val", "validation", "test",
+    "eval", "evaluation", "split", "image", "images", "the", "of", "on", "for",
+})
+
+
+def _alias_token_sets(failed_token_sets: list[frozenset[str]]) -> list[frozenset[str]]:
+    """Expand failed-dataset token sets with their curated true synonyms.
+
+    Only hand-verified zero-overlap synonyms (imagenet↔ilsvrc) are added, so the
+    extra match surface is tiny and never a broad category.
+    """
+    extra: list[frozenset[str]] = []
+    for ts in failed_token_sets:
+        for key, aliases in _DATASET_ALIASES.items():
+            if key.issubset(ts):
+                extra.extend(aliases)
+    return extra
+
+
+def _distinctive(tokens: frozenset[str]) -> frozenset[str]:
+    """Identity-bearing tokens of a name (drop generic filler + 1-char noise)."""
+    return frozenset(t for t in tokens if t not in _GENERIC_DATASET_TOKENS and len(t) > 1)
+
+
+def _successful_metric_subjects(metrics_data: dict[str, Any]) -> list[frozenset[str]]:
+    """Distinctive token sets of every subject with a SUCCESSFUL on-disk metric.
+
+    The evidence GUARD for the loosened (alias / overlap) matching: a leaf that
+    demonstrably names a subject which RAN is never excluded — it must be scored on
+    its real result, not skipped. Subject identity = model_key/env/dataset/baseline/
+    variant/letter of each ok per_model cell.
+    """
+    subjects: list[frozenset[str]] = []
+    per_model = metrics_data.get("per_model")
+    if not isinstance(per_model, dict):
+        return subjects
+    for mkey, envs in per_model.items():
+        if not isinstance(envs, dict):
+            continue
+        for env, baselines in envs.items():
+            if not isinstance(baselines, dict):
+                continue
+            for bname, cell in baselines.items():
+                if not isinstance(cell, dict):
+                    continue
+                if str(cell.get("status", "")).lower() not in {"ok", "success", "succeeded", "completed"}:
+                    continue
+                toks: set[str] = set()
+                for part in (mkey, env, bname, cell.get("dataset"), cell.get("letter"), cell.get("variant")):
+                    if isinstance(part, str):
+                        toks |= {t for t in re.split(r"[^a-z0-9]+", part.lower()) if t}
+                d = _distinctive(frozenset(toks))
+                if d:
+                    subjects.append(d)
+    return subjects
+
+
+def _leaf_has_disk_evidence(leaf_tokens: frozenset[str], subjects: list[frozenset[str]]) -> bool:
+    """True iff some successful metric subject is fully named within the leaf text."""
+    return any(subj and subj.issubset(leaf_tokens) for subj in subjects)
+
+
+# Aggregate/coverage/trend markers: a result-leaf carrying one of these is a claim
+# ACROSS the cells that ran ("all 12 configurations", "Strided underperforms base
+# across A/B/C"), not about one (model, dataset) cell — the grader judges the trend
+# over real data, so the gate must not veto it for "no single matching cell".
+# Deliberately EXCLUDES "all" (collides with "All-CNN" model names). Surfaced by the
+# 2026-06-16 All-CNN live run, where the strict single-cell rule false-vetoed these.
+_AGGREGATE_MARKERS: frozenset[str] = frozenset({
+    "across", "consistently", "configurations", "variants", "table",
+    "each", "every", "respectively",
+})
+
+
+def _expand_alnum(tokens: frozenset[str]) -> frozenset[str]:
+    """Add the alpha/digit split of mixed tokens so a cell key like ``cifar100``
+    also matches leaf text that wrote ``CIFAR-100`` (which tokenises to
+    ``{cifar, 100}`` on the hyphen). Cell keys carry no separator, leaf prose does,
+    so without this they never meet — the second cause of the 2026-06-16 false
+    vetoes (the CIFAR-100 hparam leaf)."""
+    out = set(tokens)
+    for t in tokens:
+        m = re.fullmatch(r"([a-z]+)(\d+)", t)
+        if m:
+            out.add(m.group(1))
+            out.add(m.group(2))
+    return frozenset(out)
+
+
+def _result_leaf_substantiated(
+    leaf_tokens: frozenset[str], metrics_data: dict[str, Any]
+) -> bool:
+    """A7 EVIDENCE_GATE: is a result-claiming leaf substantiated by on-disk metrics?
+
+    Substantiated (NOT vetoed) when ANY of:
+      1. some SUCCESSFUL ``per_model`` cell matches the leaf on BOTH its model and
+         env/dataset tokens (the single-result case) — alias-expanded (imagenet↔
+         ilsvrc) and alnum-split (``cifar100``↔``CIFAR-100``) so true-synonym /
+         separator-style leaves are never false-vetoed; OR
+      2. the leaf is an AGGREGATE/coverage claim (``_AGGREGATE_MARKERS``) AND at
+         least one cell ran — a trend over real data, judged by the grader.
+
+    Vetoed (returns False) only when the cited result is genuinely unsupported:
+    ``per_model`` empty / no successful cell (nothing ran — the MLR-Bench
+    fabrication shape), OR a SPECIFIC (model, dataset) result with no matching
+    successful cell and no aggregate framing (e.g. "ResNet on ImageNet" credited
+    when only CIFAR ran).
+
+    Used ONLY by the evidence gate (OPENRESEARCH_EVIDENCE_GATE, default-OFF); never
+    in the default scoring path. The single-cell rule alone over-vetoed legitimate
+    aggregate + separator-style result leaves on the 2026-06-16 All-CNN live run
+    (0.528→0.615 once corrected) — paths 2 + the alnum-split close that gap without
+    weakening the genuine-fabrication veto.
+    """
+    per_model = metrics_data.get("per_model")
+    if not isinstance(per_model, dict):
+        return False
+    leaf_distinct = _distinctive(leaf_tokens)
+    if not leaf_distinct:
+        return False
+    _ok_status = {"ok", "success", "succeeded", "completed"}
+    any_ok = False
+    for mkey, envs in per_model.items():
+        if not isinstance(envs, dict):
+            continue
+        model_toks = _expand_alnum(_distinctive(_normalise_dataset_name(str(mkey))))
+        for env, baselines in envs.items():
+            if not isinstance(baselines, dict):
+                continue
+            ok_cells = [
+                c for c in baselines.values()
+                if isinstance(c, dict) and str(c.get("status", "")).lower() in _ok_status
+            ]
+            if not ok_cells:
+                continue
+            any_ok = True
+            env_toks: set[str] = set(_normalise_dataset_name(str(env)))
+            for c in ok_cells:
+                for key in ("dataset", "letter", "variant"):
+                    v = c.get(key)
+                    if isinstance(v, str):
+                        env_toks |= set(_normalise_dataset_name(v))
+            env_distinct = _expand_alnum(_distinctive(frozenset(env_toks)))
+            # alias-expand the dataset half (curated true synonyms only)
+            env_variants = [env_distinct] + _alias_token_sets([env_distinct])
+            model_match = (not model_toks) or bool(model_toks & leaf_distinct)
+            env_match = any(
+                (not ev) or bool(ev & leaf_distinct) for ev in env_variants
+            )
+            if model_match and env_match:
+                return True
+    # No single-cell match. Nothing ran at all → genuine fabrication shape → veto.
+    if not any_ok:
+        return False
+    # Some cell ran: an aggregate/coverage/trend leaf is a claim over those cells,
+    # not a single absent result — substantiate it (the grader judges the trend).
+    if leaf_tokens & _AGGREGATE_MARKERS:
+        return True
+    return False
 
 
 def _normalise_model_name(name: str) -> str:
@@ -892,6 +1143,32 @@ def _detect_data_unavailable_leaves(
             if ds_tokens and _leaf_mentions_dataset(leaf, ds_tokens):
                 unavailable_ids.add(lid)
                 break
+
+    # --- Issue #2 (2026-06-15): curated-synonym (alias) tier ---
+    # Bridges the one failure mode the token-superset pass structurally cannot:
+    # a leaf that names an unavailable dataset by a true SYNONYM with ZERO token
+    # overlap (imagenet↔ilsvrc — the All-CNN ILSVRC-2012 eval-protocol leaf, scored
+    # 0.0 instead of excluded). Matched as a SUPERSET of the curated alias set, so
+    # {ilsvrc} fires ONLY on a leaf that literally says "ilsvrc" — never on an
+    # All-CNN-C / CIFAR leaf. (A broad token-OVERLAP tier was prototyped and
+    # REJECTED: gap prose like "ImageNet All-CNN-B" mixes the dataset with the model
+    # name, so overlap on {all,cnn} wrongly excluded the central All-CNN-C fidelity
+    # leaf — i.e. it GAMED the score. The deterministic re-grade caught it.)
+    # The evidence guard remains as defense-in-depth: never exclude a leaf that
+    # names a subject with a successful on-disk metric.
+    alias_sets = _alias_token_sets(all_unavailable_token_sets)
+    if alias_sets:
+        subjects = _successful_metric_subjects(metrics_data)
+        for leaf in leaves:
+            lid = str(leaf.get("id", ""))
+            if lid in metrics_shape_covered or lid in unavailable_ids:
+                continue
+            text = " ".join([str(leaf.get("id", "")), str(leaf.get("requirements", ""))]).lower()
+            leaf_tokens = frozenset(t for t in re.split(r"[^a-z0-9]+", text) if t)
+            if _leaf_has_disk_evidence(leaf_tokens, subjects):
+                continue  # GUARD: it ran — score it, never skip.
+            if any(a and a.issubset(leaf_tokens) for a in alias_sets):
+                unavailable_ids.add(lid)
 
     return unavailable_ids
 
@@ -1380,8 +1657,17 @@ def score_reproduction(
     invariants: list[Any] | None = None,
     operator_skip_models: list[str] | None = None,
     operator_skip_environments: list[str] | None = None,
+    operator_dataset_inclusion: list[str] | None = None,
 ) -> dict[str, Any]:
     """Grade a reproduction run against a PaperBench rubric tree.
+
+    ``operator_dataset_inclusion`` (Layer 4, 2026-06-16): the operator's INCLUSION
+    scope (paper-hint ``default_scope`` / ``--scope-spec`` datasets). Leaves about
+    datasets OUTSIDE it are excluded from grading AND the roll-up — identical to
+    :func:`finalize_rescore`, so the in-loop grade and the shipped report agree
+    instead of the agent being shown un-fixable out-of-scope leaves as "weak".
+    No-op unless ``OPENRESEARCH_SCOPE_INCLUSION_EXCLUDE`` is on and a list is given
+    (default-OFF / omitted == today's behaviour, byte-for-byte).
 
     Returns a dict with overall_score, leaf_count, graded, rubric_source,
     leaf_scores, degraded, coverage_pct, eligible_count, unavailable_count,
@@ -1512,12 +1798,67 @@ def score_reproduction(
     # Same skip_set treatment as data-unavailable; no-op unless the flag is on.
     theory_ids: set[str] = _detect_theory_only_leaves(leaves)
     unavailable_ids |= theory_ids
+    # Layer 4 (2026-06-16): leaves about datasets OUTSIDE the operator's inclusion
+    # scope. Mirrors finalize_rescore so the IN-LOOP grade excludes the same
+    # out-of-scope leaves the finalize re-roll-up does. Without this the agent is
+    # shown un-fixable out-of-scope leaves as "weak" and rubric_evaluation.json
+    # disagrees with the shipped report (ResNet: 0.368 in-loop vs 0.620 final — the
+    # 10 ImageNet/COCO leaves on a CIFAR-10-scoped run). Excluded leaves also skip
+    # LLM grading below, so no grader call is spent on a dataset the run was never
+    # scoped to. No-op unless OPENRESEARCH_SCOPE_INCLUSION_EXCLUDE is on AND a list is
+    # provided (default-OFF == today). Operator-sourced + in-detector guards keep
+    # it safe (a leaf that names an in-scope dataset is never excluded).
+    unavailable_ids |= _detect_out_of_inclusion_scope_leaves(
+        leaves, operator_dataset_inclusion
+    )
     skip_set: frozenset[str] = frozenset(unavailable_ids)
 
     eligible_count = len(leaves) - len(unavailable_ids)
 
     # Grade only the eligible leaves.
     eligible_leaves = [lf for lf in leaves if str(lf.get("id", "")) not in unavailable_ids]
+
+    # A5/A1 (2026-06-16): the grader runs on a DECOUPLED, sampler-capable
+    # transport so a root/CLI wedge can't take grading down with it (the OmniZip
+    # failure mode), and so it can take median-of-N at temperature 0.
+    # build_grader_client returns the passed client UNCHANGED when
+    # OPENRESEARCH_GRADER_BACKEND is unset (default == today's behavior, grader rides
+    # the root client). _resolve_grader_samples is 1 by default (one call per
+    # batch == today). Fail-soft: any transport-build error falls back to llm_client.
+    try:
+        from backend.agents.rlm.grader_transport import build_grader_client
+        _grader_client, _ = build_grader_client(llm_client)
+    except Exception:  # noqa: BLE001 — grader-transport build must never break scoring
+        _grader_client = llm_client
+    _grader_samples = _resolve_grader_samples()
+
+    # A2 (2026-06-16): route mechanically-checkable leaves (those carrying a
+    # structured check_kind + assertion attached at rubric-gen) to the pure-Python
+    # deterministic checker — hyperparameters vs provenance.json, artifact
+    # existence vs filesystem, numeric trend vs metrics.json — so they never hit
+    # the noisy LLM. A leaf with no recognized annotation returns None and falls
+    # through to the LLM (additive — never breaks an un-annotated rubric).
+    # OPENRESEARCH_DETERMINISTIC_LEAVES default OFF → every eligible leaf goes to the
+    # LLM exactly as today. Fail-soft: any checker error routes that leaf to LLM.
+    _deterministic_records: list[dict[str, Any]] = []
+    if _deterministic_leaves_enabled():
+        try:
+            from backend.evals.paperbench.deterministic_leaf_checker import (
+                check_leaf as _check_leaf,
+            )
+            _llm_leaves: list[dict[str, Any]] = []
+            for _leaf in eligible_leaves:
+                try:
+                    _rec = _check_leaf(_leaf, run_dir)
+                except Exception:  # noqa: BLE001 — a checker error must not lose the leaf
+                    _rec = None
+                if _rec is not None:
+                    _deterministic_records.append(_rec)
+                else:
+                    _llm_leaves.append(_leaf)
+            eligible_leaves = _llm_leaves  # only un-annotated / judgment leaves → LLM
+        except Exception:  # noqa: BLE001 — checker import/route failure → all-LLM (today)
+            _deterministic_records = []
 
     # Build the list of batches first (no LLM calls yet).
     batches: list[tuple[int, list[dict[str, Any]]]] = []
@@ -1550,11 +1891,17 @@ def score_reproduction(
             batch_num=batch_num,
         )
         try:
-            raw = llm_client.complete(system=_SYSTEM_PROMPT, user=user_msg)
-            return _parse_batch_response(raw, batch)
+            from backend.agents.rlm.grader_transport import sample_completions
+            raws = sample_completions(
+                _grader_client,
+                system=_SYSTEM_PROMPT,
+                user=user_msg,
+                n=_grader_samples,
+                temperature=0,
+            )
         except Exception as exc:
             logger.warning(
-                "Batch %d LLM call failed (%s); defaulting all %d leaves to 0.0",
+                "Batch %d grader call failed (%s); defaulting all %d leaves to 0.0",
                 batch_num,
                 exc,
                 len(batch),
@@ -1568,6 +1915,23 @@ def score_reproduction(
                 }
                 for leaf in batch
             ]
+        # A1: parse every sample (parse never raises — unparseable leaves come
+        # back 0.0/_graded:False) and take the per-leaf MEDIAN. N=1 returns the
+        # single parse unchanged (byte-for-byte today's behavior).
+        parsed_runs = [_parse_batch_response(raw, batch) for raw in (raws or [])]
+        if not parsed_runs:
+            return [
+                {
+                    "id": str(leaf.get("id", "")),
+                    "score": 0.0,
+                    "justification": "batch_error",
+                    "_graded": False,
+                }
+                for leaf in batch
+            ]
+        if len(parsed_runs) == 1:
+            return parsed_runs[0]
+        return _median_merge(batch, parsed_runs)
 
     # Submit all batches concurrently; width ≤8 avoids rate-limit bursts.
     # I12: explicit shutdown(wait=False) so a wedged batch cannot block cleanup.
@@ -1589,13 +1953,89 @@ def score_reproduction(
                 if degraded and score > DEGRADED_LEAF_CEILING:
                     score = DEGRADED_LEAF_CEILING
                 leaf_scores[lid] = score
-                leaf_score_records.append(
-                    {"id": lid, "score": score, "justification": rec["justification"]}
-                )
+                _rec_out = {"id": lid, "score": score, "justification": rec["justification"]}
+                # F7: carry the median-of-N spread through to the leaf record when
+                # present (only under N>1 — additive, byte-for-byte today otherwise).
+                if "score_spread" in rec:
+                    _rec_out["score_spread"] = rec["score_spread"]
+                leaf_score_records.append(_rec_out)
                 if rec.get("_graded", True):
                     graded_count += 1
     finally:
         executor.shutdown(wait=False)
+
+    # A2: fold the deterministic-leaf results into the score maps before roll-up,
+    # applying the same degraded ceiling the LLM path uses so the rolled-up score
+    # and coverage_pct are consistent across both grader routes.
+    for _rec in _deterministic_records:
+        _lid = _rec["id"]
+        _dscore = _rec["score"]
+        if degraded and _dscore > DEGRADED_LEAF_CEILING:
+            _dscore = DEGRADED_LEAF_CEILING
+        leaf_scores[_lid] = _dscore
+        leaf_score_records.append(
+            {"id": _lid, "score": _dscore, "justification": _rec.get("justification", "")}
+        )
+        if _rec.get("_graded", True):
+            graded_count += 1
+
+    # A7 EVIDENCE_GATE (2026-06-16): the honest backstop. The grader is an LLM and
+    # can credit a measured result that was never computed (MLR-Bench ~80%
+    # fabrication; RewardHacking env-hardening −87.7% exploits). When
+    # OPENRESEARCH_EVIDENCE_GATE is ON, veto to 0.0 any RESULT-CLAIMING leaf the grader
+    # credited (>0) whose cited per_model cell has NO successful on-disk evidence.
+    # Composes with this module's subject matching + the same alias loosening the
+    # data-unavailable detector uses (so a synonym leaf is never false-vetoed).
+    # A2-deterministic leaves are EXEMPT (the checker already verified disk).
+    # Default-OFF → the whole block is skipped and scoring is byte-for-byte today.
+    if _evidence_gate_enabled():
+        try:
+            from backend.agents.rlm.evidence_gate import (
+                gate_decision as _eg_decide,
+                leaf_claims_measured_result as _eg_claims,
+            )
+            _eg_metrics: dict[str, Any] = {}
+            _eg_mpath = _latest_metrics_path(run_dir)
+            if _eg_mpath is not None:
+                try:
+                    _eg_metrics = json.loads(_eg_mpath.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError, ValueError):
+                    _eg_metrics = {}
+            _eg_det_ids = {str(r.get("id", "")) for r in _deterministic_records}
+            _eg_leaf_by_id = {str(l.get("id", "")): l for l in leaves}
+            for _eg_rec in leaf_score_records:
+                _eg_lid = str(_eg_rec.get("id", ""))
+                # Skip the data-unavailable records (score=None, appended below) and
+                # the A2-deterministic leaves (disk already checked by the checker).
+                if _eg_lid not in leaf_scores or _eg_lid in _eg_det_ids:
+                    continue
+                _eg_leaf = _eg_leaf_by_id.get(_eg_lid)
+                if _eg_leaf is None:
+                    continue
+                _eg_text = " ".join([_eg_lid, str(_eg_leaf.get("requirements", ""))]).lower()
+                _eg_toks = frozenset(t for t in re.split(r"[^a-z0-9]+", _eg_text) if t)
+                # Substantiated iff a successful cell matches the leaf on BOTH model
+                # and dataset/env (catches cross-dataset fabrication; spares a cell
+                # that truly ran). See _result_leaf_substantiated.
+                _eg_has_disk = _result_leaf_substantiated(_eg_toks, _eg_metrics)
+                _eg_new, _eg_vetoed = _eg_decide(
+                    score=_eg_rec.get("score"),
+                    claims_result=_eg_claims(_eg_leaf),
+                    has_disk_evidence=_eg_has_disk,
+                )
+                if _eg_vetoed:
+                    _eg_orig = _eg_rec.get("score")
+                    leaf_scores[_eg_lid] = 0.0
+                    _eg_rec["score"] = 0.0
+                    _eg_rec["evidence_gate_vetoed"] = True
+                    _eg_rec["original_score"] = _eg_orig
+                    _eg_rec["justification"] = (
+                        "evidence_gate: result claim with no successful on-disk "
+                        f"per_model evidence (was {_eg_orig}); "
+                        + str(_eg_rec.get("justification", ""))
+                    )[:500]
+        except Exception:  # noqa: BLE001 — the gate must NEVER break scoring
+            pass
 
     # PR-κ: append skipped-data-unavailable records.
     # score=None signals "unscored" (not 0) so downstream consumers can
@@ -1643,7 +2083,7 @@ def score_reproduction(
             sum(1 for r in invariant_results if r.get("soft_gate_tripped")),
         )
 
-    return {
+    result = {
         "overall_score": gated_overall,
         "leaf_count": len(leaves),
         "graded": graded_count,
@@ -1657,6 +2097,20 @@ def score_reproduction(
         "invariant_results": invariant_results,
         "invariant_gate_applied": inv_gate_applied,
     }
+    # F7: when median-of-N denoising is active (A1, N>1), surface the grader
+    # provenance + worst per-leaf noise spread so the report/UI can show the
+    # denoising headroom. Only added under N>1 → the result dict is byte-for-byte
+    # today (N=1 default). grader_temperature is 0 (the A1 sampling temperature).
+    if _grader_samples > 1:
+        _spreads = [
+            float(r["score_spread"]["max"]) - float(r["score_spread"]["min"])
+            for r in leaf_score_records
+            if isinstance(r.get("score_spread"), dict)
+        ]
+        result["grader_samples"] = _grader_samples
+        result["grader_temperature"] = 0.0
+        result["grader_max_spread"] = round(max(_spreads), 4) if _spreads else 0.0
+    return result
 
 
 def _parse_batch_response(
@@ -1706,6 +2160,78 @@ def _parse_batch_response(
             out.append(results[lid])
         else:
             out.append({"id": lid, "score": 0.0, "justification": "ungraded", "_graded": False})
+    return out
+
+
+def _resolve_grader_samples() -> int:
+    """Number of grader samples per batch for median-of-N denoising (A1, 2026-06-16).
+
+    OPENRESEARCH_GRADER_SAMPLES — **default 1**. The calibration σ-gate (2026-06-16)
+    re-graded prj_4627097f8362928c K=3 through the production OAuth Sonnet grader
+    at temperature=0 and measured overall **σ=0.0067 at samples=1** — already
+    within the ≤0.02 promotion band, so the default is validated-sufficient and
+    stays 1 (0-regression; no forced 3× grader cost). samples=**3** drives σ to
+    **0.0000** (it fully absorbs the one observed bistable leaf, 0.4↔0.7) and is
+    the RECOMMENDED opt-in for fidelity-critical / borderline-verdict papers —
+    median-of-N is a pure denoiser (median of N draws of the SAME grader can only
+    reduce variance, never bias the score). Clamped to >= 1; odd values give a
+    clean median. Data: data/grader_calibration.json; decision rationale: memory
+    grader-fidelity-implementation.
+    """
+    raw = os.environ.get("OPENRESEARCH_GRADER_SAMPLES", "").strip()
+    if not raw:
+        return 1
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _median_merge(
+    batch: list[dict[str, Any]], parsed_runs: list[list[dict[str, Any]]]
+) -> list[dict[str, Any]]:
+    """Per-leaf median over N parsed grader samples (A1, 2026-06-16).
+
+    Each entry of ``parsed_runs`` is a full per-leaf record list (same ids — every
+    batch id is always present out of :func:`_parse_batch_response`). For each
+    leaf we take the MEDIAN of its N scores — deliberately median, not mean, so a
+    single transient all-0.0 sample (a failed/unparseable draw) is shrugged off
+    rather than dragging the estimate down. The justification is taken from the
+    sample whose score is closest to the median (a representative real rationale);
+    ``_graded`` is True iff ANY sample graded the leaf.
+    """
+    by_id: dict[str, list[dict[str, Any]]] = {}
+    for run in parsed_runs:
+        for rec in run:
+            by_id.setdefault(str(rec.get("id", "")), []).append(rec)
+    out: list[dict[str, Any]] = []
+    for leaf in batch:
+        lid = str(leaf.get("id", ""))
+        recs = by_id.get(lid) or []
+        if not recs:
+            out.append({"id": lid, "score": 0.0, "justification": "ungraded", "_graded": False})
+            continue
+        scores = [float(r.get("score", 0.0) or 0.0) for r in recs]
+        med = float(statistics.median(scores))
+        rep = min(recs, key=lambda r: abs(float(r.get("score", 0.0) or 0.0) - med))
+        out.append(
+            {
+                "id": lid,
+                "score": med,
+                "justification": rep.get("justification", ""),
+                "deductions": rep.get("deductions", []),
+                "_graded": any(bool(r.get("_graded", False)) for r in recs),
+                # F7: per-leaf grader-noise spread across the N samples — lets the
+                # report/UI show the denoising headroom. Only present under
+                # median-of-N (this function runs only when N>1; N=1 returns the
+                # single parse upstream → byte-for-byte today).
+                "score_spread": {
+                    "n": len(scores),
+                    "min": round(min(scores), 4),
+                    "max": round(max(scores), 4),
+                },
+            }
+        )
     return out
 
 
