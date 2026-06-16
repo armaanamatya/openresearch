@@ -696,6 +696,199 @@ class TestRunPipelineHybrid:
         assert result is rlm_result
 
 
+class TestBestOfPhaseGuard:
+    """Workstream B1 — the hybrid keeps the BETTER of Phase 1 / Phase 2.
+
+    A *worse-but-non-None* Phase 2 must restore Phase 1's scored report and
+    return Phase 1's (better) score; a better-or-equal Phase 2 is kept; a
+    None-scored Phase 2 still restores Phase 1 (the pre-existing behavior).
+    """
+
+    @pytest.fixture
+    def claim_map(self) -> dict:
+        return {
+            "project_id": "hybrid_bestof",
+            "paperbench": {"paper_id": "sequential-neural-score-estimation"},
+            "entries": [],
+        }
+
+    @staticmethod
+    def _phase2_overwriting_rlm(report_path: Path, score, status: str = "completed"):
+        """Build a fake Phase 2 runner that overwrites the report on disk (as a
+        real RLM repair pass would) and returns a result carrying *score*."""
+
+        async def _rlm(pid, root, wcm, **kw):  # noqa: ANN001
+            report_path.write_text(
+                json.dumps({"rubric": {"overall_score": score}, "mode": "rlm"}),
+                encoding="utf-8",
+            )
+            report_path.with_suffix(".md").write_text(
+                "# Phase 2 report\n", encoding="utf-8"
+            )
+            return RLMRunResult(
+                project_id=pid,
+                status=status,
+                iterations=4,
+                rubric_score=score,
+                cost_usd=0.05,
+                final_report_path=str(report_path),
+            )
+
+        return _rlm
+
+    @pytest.mark.asyncio
+    async def test_phase2_worse_restores_phase1(
+        self, tmp_path: Path, claim_map: dict
+    ) -> None:
+        """Phase 2 scored lower than Phase 1 → Phase 1's report is restored on
+        disk and Phase 1's (higher) score is returned."""
+        project_id = "hybrid_phase2_worse"
+        report_path = tmp_path / project_id / "final_report.json"
+        # Weak leaf (0.2 < 0.6) triggers Phase 2; Phase 1 overall = 0.75.
+        _write_report(report_path, [
+            {"id": "l1", "score": 0.2, "justification": "needs repair"},
+            {"id": "l2", "score": 0.9},
+        ])
+        phase1_json = report_path.read_text(encoding="utf-8")
+        report_path.with_suffix(".md").write_text("# Phase 1 report\n", encoding="utf-8")
+
+        rdr_result = _make_rdr_result(
+            project_id,
+            rubric_score=0.75,
+            final_report_path=str(report_path),
+            clusters_total=2,
+            clusters_failed=0,
+            status="completed",
+        )
+
+        result = await run_pipeline_hybrid(
+            project_id, tmp_path, claim_map,
+            repair_target=0.6,
+            _rdr_runner=AsyncMock(return_value=rdr_result),
+            # Phase 2 regresses to 0.40 and overwrites the report.
+            _rlm_runner=self._phase2_overwriting_rlm(report_path, 0.40),
+        )
+
+        # Phase 1 (the better arm) wins: its score is returned and its status
+        # (a real success, not "failed") is preserved.
+        assert result.rubric_score == pytest.approx(0.75)
+        assert result.status == "completed"
+        assert result.project_id == project_id
+        # The on-disk report is the restored Phase 1 evidence, not Phase 2's.
+        assert report_path.read_text(encoding="utf-8") == phase1_json
+        assert report_path.with_suffix(".md").read_text(encoding="utf-8") == "# Phase 1 report\n"
+
+    @pytest.mark.asyncio
+    async def test_phase2_better_is_kept(
+        self, tmp_path: Path, claim_map: dict
+    ) -> None:
+        """Phase 2 scored higher than Phase 1 → Phase 2 is kept (report NOT
+        restored), and Phase 2's result is returned verbatim."""
+        project_id = "hybrid_phase2_better"
+        report_path = tmp_path / project_id / "final_report.json"
+        _write_report(report_path, [
+            {"id": "l1", "score": 0.2, "justification": "needs repair"},
+            {"id": "l2", "score": 0.9},
+        ])
+        report_path.with_suffix(".md").write_text("# Phase 1 report\n", encoding="utf-8")
+
+        rdr_result = _make_rdr_result(
+            project_id,
+            rubric_score=0.55,
+            final_report_path=str(report_path),
+            clusters_total=2,
+            clusters_failed=0,
+            status="partial",
+        )
+
+        result = await run_pipeline_hybrid(
+            project_id, tmp_path, claim_map,
+            repair_target=0.6,
+            _rdr_runner=AsyncMock(return_value=rdr_result),
+            # Phase 2 improves to 0.88 and overwrites the report.
+            _rlm_runner=self._phase2_overwriting_rlm(report_path, 0.88),
+        )
+
+        # Phase 2 (the better arm) wins verbatim.
+        assert result.rubric_score == pytest.approx(0.88)
+        assert result.status == "completed"
+        assert result.iterations == 4
+        # Phase 2's report stays on disk (not restored to Phase 1).
+        assert report_path.with_suffix(".md").read_text(encoding="utf-8") == "# Phase 2 report\n"
+
+    @pytest.mark.asyncio
+    async def test_phase2_equal_keeps_phase2(
+        self, tmp_path: Path, claim_map: dict
+    ) -> None:
+        """A tie (Phase 2 == Phase 1) keeps Phase 2 — it is the later, more-
+        repaired evidence at equal quality. Only a STRICTLY worse Phase 2 is
+        clobbered."""
+        project_id = "hybrid_phase2_tie"
+        report_path = tmp_path / project_id / "final_report.json"
+        _write_report(report_path, [
+            {"id": "l1", "score": 0.2, "justification": "needs repair"},
+            {"id": "l2", "score": 0.9},
+        ])
+        report_path.with_suffix(".md").write_text("# Phase 1 report\n", encoding="utf-8")
+
+        rdr_result = _make_rdr_result(
+            project_id,
+            rubric_score=0.50,
+            final_report_path=str(report_path),
+            clusters_total=2,
+            clusters_failed=0,
+            status="partial",
+        )
+
+        result = await run_pipeline_hybrid(
+            project_id, tmp_path, claim_map,
+            repair_target=0.6,
+            _rdr_runner=AsyncMock(return_value=rdr_result),
+            _rlm_runner=self._phase2_overwriting_rlm(report_path, 0.50),
+        )
+
+        assert result.rubric_score == pytest.approx(0.50)
+        assert result.iterations == 4  # Phase 2's result, not Phase 1's
+        assert report_path.with_suffix(".md").read_text(encoding="utf-8") == "# Phase 2 report\n"
+
+    @pytest.mark.asyncio
+    async def test_phase2_none_restores_phase1_existing_behavior(
+        self, tmp_path: Path, claim_map: dict
+    ) -> None:
+        """Regression guard: a None-scored Phase 2 still restores Phase 1 and
+        returns status='failed' — the pre-B1 behavior is unchanged."""
+        project_id = "hybrid_phase2_none"
+        report_path = tmp_path / project_id / "final_report.json"
+        _write_report(report_path, [
+            {"id": "l1", "score": 0.2, "justification": "needs repair"},
+            {"id": "l2", "score": 0.9},
+        ])
+        phase1_json = report_path.read_text(encoding="utf-8")
+        report_path.with_suffix(".md").write_text("# Phase 1 report\n", encoding="utf-8")
+
+        rdr_result = _make_rdr_result(
+            project_id,
+            rubric_score=0.55,
+            final_report_path=str(report_path),
+            clusters_total=2,
+            clusters_failed=0,
+            status="partial",
+        )
+
+        result = await run_pipeline_hybrid(
+            project_id, tmp_path, claim_map,
+            repair_target=0.6,
+            _rdr_runner=AsyncMock(return_value=rdr_result),
+            _rlm_runner=self._phase2_overwriting_rlm(report_path, None, status="failed"),
+        )
+
+        # Existing behavior: restore Phase 1, status is "failed", score is Phase 1's.
+        assert result.status == "failed"
+        assert result.rubric_score == pytest.approx(0.55)
+        assert report_path.read_text(encoding="utf-8") == phase1_json
+        assert report_path.with_suffix(".md").read_text(encoding="utf-8") == "# Phase 1 report\n"
+
+
 # ---------------------------------------------------------------------------
 # Module-level: run_pipeline_rlm accepts hybrid kwargs (E1 signature check)
 # ---------------------------------------------------------------------------
