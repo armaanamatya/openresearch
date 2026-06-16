@@ -2276,6 +2276,16 @@ def _finalize(
     except Exception:  # noqa: BLE001 — producers are best-effort; never block finalize
         logger.warning("_finalize: two-axis producers failed (non-fatal)", exc_info=True)
 
+    # E1 (NEGATIVE_LESSONS): mine agent-correctable failure_class rows from this
+    # run's experiment_runs.jsonl into runs/_lessons/<arxiv_id>.json so the NEXT
+    # run of the same paper injects them into implementer guidance. Flag-gated
+    # (REPROLAB_NEGATIVE_LESSONS) + fail-soft; off / no arxiv_id → no-op (today).
+    try:
+        from backend.agents.rlm import lesson_distiller as _ld
+        _ld.mine_lessons(project_dir, project_dir.parent, getattr(ctx, "arxiv_id", None))
+    except Exception:  # noqa: BLE001 — lesson mining must never block finalize
+        logger.warning("_finalize: negative-lessons mining failed (non-fatal)", exc_info=True)
+
     # Finalize-time freshness re-grade (2026-06-13): if the complete on-disk
     # grid landed AFTER the last verify_against_rubric and the recorded grade is
     # below target, re-grade the full evidence and adopt it only if higher

@@ -2462,6 +2462,19 @@ def _compute_constraint_guidance(
             "metrics.json={\"error\":\"scope_conflict\",\"detail\":\"...\"}.\n"
         )
 
+    # 7.5. E1 (NEGATIVE_LESSONS): inject this paper's active cross-run failure
+    # lessons (mined by lesson_distiller from prior runs' experiment_runs.jsonl).
+    # Flag-gated (REPROLAB_NEGATIVE_LESSONS) + advisory; returns "" when off / no
+    # arxiv_id / no promoted lessons → byte-for-byte today. Fail-soft.
+    if project_dir is not None and arxiv_id:
+        try:
+            from backend.agents.rlm.lesson_distiller import negative_lessons_block
+            _neg = negative_lessons_block(Path(project_dir).parent, arxiv_id)
+            if _neg:
+                guidance += "\n\n" + _neg
+        except Exception:  # noqa: BLE001 — advisory lessons must never break the build
+            pass
+
     # 8. Policy overlays — explicit gpu_mode=off forces CPU entrypoint;
     #    gpu_mode=max forces GPU entrypoint.
     if gpu_str in {"off", "none"}:

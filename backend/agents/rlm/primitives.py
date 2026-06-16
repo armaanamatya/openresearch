@@ -7343,6 +7343,24 @@ def heartbeat(note: str = "", *, ctx: "RunContext") -> dict:
     return _with_outcome({"alive": True, "counter": counter, "note": note}, PrimitiveOutcome.ok)
 
 
+def read_context_map(*, ctx: "RunContext") -> dict:
+    """Return the intra-run orientation cache (PEEK-lite context map).
+
+    Pure file I/O delegating to :func:`context_map.read_context_map` — the
+    union-per-field structured cache of this run's ``understand_section`` /
+    ``extract_hyperparameters`` / ``detect_environment`` outputs. Lets the root
+    consult what it has already derived before re-deriving a slice. Returns ``{}``
+    when ``REPROLAB_CONTEXT_MAP`` is off or no map exists. Never raises (fail-soft):
+    a read error returns ``{}``. This primitive is only ADVERTISED to the root when
+    the flag is on (see ``build_custom_tools``); off-state byte-for-byte today.
+    """
+    try:
+        from backend.agents.rlm.context_map import read_context_map as _read
+        return _read(ctx.project_dir)
+    except Exception:  # noqa: BLE001 — an orientation aid must never break the run
+        return {}
+
+
 PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "understand_section": understand_section,
     "extract_hyperparameters": extract_hyperparameters,
@@ -7360,9 +7378,15 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "recommend_next_tool": recommend_next_tool,
     "resolve_gpu_requirements": resolve_gpu_requirements,
     "codex_repair": codex_repair,
+    "read_context_map": read_context_map,
 }
 
 PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
+    "read_context_map": "read_context_map() -> dict — the intra-run orientation "
+        "cache: the union of your prior understand_section / extract_hyperparameters "
+        "/ detect_environment outputs (datasets, metrics, hyperparameters, env "
+        "clues). Consult it before re-deriving a slice. Navigation aid only — never "
+        "a report source. Empty {} when the context-map flag is off.",
     "understand_section": "understand_section(text_slice) -> dict — datasets, "
         "metrics, training recipe, hardware clues, ambiguities from a text slice. "
         "A PARTIAL PaperClaimMap (no core_contribution/claims/architecture).",

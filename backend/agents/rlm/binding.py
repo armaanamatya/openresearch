@@ -584,6 +584,16 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
             else:
                 # --- Phase 6 (Task 13): post-success supplemental event emission ---
                 _emit_supplemental(name, result, ctx, _emit_extra)
+                # E1 (CONTEXT_MAP): union this primitive's structured output into
+                # rlm_state/context_map.json. Self-filtering — no-ops unless
+                # REPROLAB_CONTEXT_MAP is on AND name is an orientation primitive
+                # (understand_section/extract_hyperparameters/detect_environment);
+                # off → byte-for-byte today. Fail-soft (orientation aid, never fatal).
+                try:
+                    from backend.agents.rlm.context_map import update_context_map
+                    update_context_map(ctx.project_dir, name, result)
+                except Exception:  # noqa: BLE001 — orientation cache must never break the run
+                    pass
             result = _inject_operator_messages(name, result, ctx)
             return result
         finally:
@@ -920,8 +930,17 @@ def build_custom_tools(
         from backend.agents.rlm import primitives as _p
         registry = registry if registry is not None else _p.PRIMITIVE_REGISTRY
         descriptions = descriptions if descriptions is not None else _p.PRIMITIVE_DESCRIPTIONS
+    # E1: read_context_map lives in the registry unconditionally (so it's importable
+    # + testable) but is only ADVERTISED to the root when REPROLAB_CONTEXT_MAP is on.
+    # Off → it is filtered out here, so the off-state tool list is byte-for-byte today.
+    try:
+        from backend.agents.rlm.context_map import _enabled as _context_map_enabled
+        _ctx_map_on = _context_map_enabled()
+    except Exception:  # noqa: BLE001 — flag probe must never break tool assembly
+        _ctx_map_on = False
     return {
         name: {"tool": wrap_primitive(name, fn, ctx),
                "description": descriptions.get(name, name)}
         for name, fn in registry.items()
+        if name != "read_context_map" or _ctx_map_on
     }
