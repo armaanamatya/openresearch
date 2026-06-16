@@ -281,6 +281,18 @@ def _deterministic_leaves_enabled() -> bool:
     )
 
 
+def _evidence_gate_enabled() -> bool:
+    """A7 (2026-06-16): the honest backstop. REPROLAB_EVIDENCE_GATE, default OFF.
+    When ON, veto to 0.0 any result-claiming leaf the grader credited (>0) whose
+    cited per_model cell has no successful on-disk evidence (the MLR-Bench
+    fabrication failure mode). Off → no veto, scoring byte-for-byte as today. The
+    veto decision lives in the pure backend/agents/rlm/evidence_gate.py (imported
+    only when ON), which composes with this module's subject/alias matching."""
+    return os.environ.get("REPROLAB_EVIDENCE_GATE", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 def _latest_metrics_path(run_dir: Path) -> Path | None:
     """Return the NEWEST-by-mtime metrics.json — the canonical latest experiment.
 
@@ -645,6 +657,62 @@ def _successful_metric_subjects(metrics_data: dict[str, Any]) -> list[frozenset[
 def _leaf_has_disk_evidence(leaf_tokens: frozenset[str], subjects: list[frozenset[str]]) -> bool:
     """True iff some successful metric subject is fully named within the leaf text."""
     return any(subj and subj.issubset(leaf_tokens) for subj in subjects)
+
+
+def _result_leaf_substantiated(
+    leaf_tokens: frozenset[str], metrics_data: dict[str, Any]
+) -> bool:
+    """A7 EVIDENCE_GATE: is a result-claiming leaf substantiated by on-disk metrics?
+
+    True iff some ``per_model`` cell with a SUCCESSFUL status matches the leaf on
+    BOTH halves of its identity: the model tokens AND the env/dataset tokens both
+    overlap the leaf text. Requiring both halves is what distinguishes "this cell
+    ran" from "a different cell on the same model ran" — it catches cross-dataset
+    fabrication ("ResNet on ImageNet" credited when only "ResNet on CIFAR10" ran:
+    model overlaps, dataset does not → NOT substantiated → veto) while sparing a
+    leaf that names a cell that truly ran. The dataset half is alias-expanded
+    (imagenet↔ilsvrc) so a true-synonym leaf is never false-vetoed.
+
+    Used ONLY by the evidence gate (REPROLAB_EVIDENCE_GATE, default-OFF); never in
+    the default scoring path. An empty/absent ``per_model`` returns False, so a run
+    that credited results while computing nothing has every result leaf vetoed.
+    """
+    per_model = metrics_data.get("per_model")
+    if not isinstance(per_model, dict):
+        return False
+    leaf_distinct = _distinctive(leaf_tokens)
+    if not leaf_distinct:
+        return False
+    _ok_status = {"ok", "success", "succeeded", "completed"}
+    for mkey, envs in per_model.items():
+        if not isinstance(envs, dict):
+            continue
+        model_toks = _distinctive(_normalise_dataset_name(str(mkey)))
+        for env, baselines in envs.items():
+            if not isinstance(baselines, dict):
+                continue
+            ok_cells = [
+                c for c in baselines.values()
+                if isinstance(c, dict) and str(c.get("status", "")).lower() in _ok_status
+            ]
+            if not ok_cells:
+                continue
+            env_toks: set[str] = set(_normalise_dataset_name(str(env)))
+            for c in ok_cells:
+                for key in ("dataset", "letter", "variant"):
+                    v = c.get(key)
+                    if isinstance(v, str):
+                        env_toks |= set(_normalise_dataset_name(v))
+            env_distinct = _distinctive(frozenset(env_toks))
+            # alias-expand the dataset half (curated true synonyms only)
+            env_variants = [env_distinct] + _alias_token_sets([env_distinct])
+            model_match = (not model_toks) or bool(model_toks & leaf_distinct)
+            env_match = any(
+                (not ev) or bool(ev & leaf_distinct) for ev in env_variants
+            )
+            if model_match and env_match:
+                return True
+    return False
 
 
 def _normalise_model_name(name: str) -> str:
@@ -1864,6 +1932,64 @@ def score_reproduction(
         )
         if _rec.get("_graded", True):
             graded_count += 1
+
+    # A7 EVIDENCE_GATE (2026-06-16): the honest backstop. The grader is an LLM and
+    # can credit a measured result that was never computed (MLR-Bench ~80%
+    # fabrication; RewardHacking env-hardening −87.7% exploits). When
+    # REPROLAB_EVIDENCE_GATE is ON, veto to 0.0 any RESULT-CLAIMING leaf the grader
+    # credited (>0) whose cited per_model cell has NO successful on-disk evidence.
+    # Composes with this module's subject matching + the same alias loosening the
+    # data-unavailable detector uses (so a synonym leaf is never false-vetoed).
+    # A2-deterministic leaves are EXEMPT (the checker already verified disk).
+    # Default-OFF → the whole block is skipped and scoring is byte-for-byte today.
+    if _evidence_gate_enabled():
+        try:
+            from backend.agents.rlm.evidence_gate import (
+                gate_decision as _eg_decide,
+                leaf_claims_measured_result as _eg_claims,
+            )
+            _eg_metrics: dict[str, Any] = {}
+            _eg_mpath = _latest_metrics_path(run_dir)
+            if _eg_mpath is not None:
+                try:
+                    _eg_metrics = json.loads(_eg_mpath.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError, ValueError):
+                    _eg_metrics = {}
+            _eg_det_ids = {str(r.get("id", "")) for r in _deterministic_records}
+            _eg_leaf_by_id = {str(l.get("id", "")): l for l in leaves}
+            for _eg_rec in leaf_score_records:
+                _eg_lid = str(_eg_rec.get("id", ""))
+                # Skip the data-unavailable records (score=None, appended below) and
+                # the A2-deterministic leaves (disk already checked by the checker).
+                if _eg_lid not in leaf_scores or _eg_lid in _eg_det_ids:
+                    continue
+                _eg_leaf = _eg_leaf_by_id.get(_eg_lid)
+                if _eg_leaf is None:
+                    continue
+                _eg_text = " ".join([_eg_lid, str(_eg_leaf.get("requirements", ""))]).lower()
+                _eg_toks = frozenset(t for t in re.split(r"[^a-z0-9]+", _eg_text) if t)
+                # Substantiated iff a successful cell matches the leaf on BOTH model
+                # and dataset/env (catches cross-dataset fabrication; spares a cell
+                # that truly ran). See _result_leaf_substantiated.
+                _eg_has_disk = _result_leaf_substantiated(_eg_toks, _eg_metrics)
+                _eg_new, _eg_vetoed = _eg_decide(
+                    score=_eg_rec.get("score"),
+                    claims_result=_eg_claims(_eg_leaf),
+                    has_disk_evidence=_eg_has_disk,
+                )
+                if _eg_vetoed:
+                    _eg_orig = _eg_rec.get("score")
+                    leaf_scores[_eg_lid] = 0.0
+                    _eg_rec["score"] = 0.0
+                    _eg_rec["evidence_gate_vetoed"] = True
+                    _eg_rec["original_score"] = _eg_orig
+                    _eg_rec["justification"] = (
+                        "evidence_gate: result claim with no successful on-disk "
+                        f"per_model evidence (was {_eg_orig}); "
+                        + str(_eg_rec.get("justification", ""))
+                    )[:500]
+        except Exception:  # noqa: BLE001 — the gate must NEVER break scoring
+            pass
 
     # PR-κ: append skipped-data-unavailable records.
     # score=None signals "unscored" (not 0) so downstream consumers can
