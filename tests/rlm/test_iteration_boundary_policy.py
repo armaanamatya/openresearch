@@ -107,3 +107,84 @@ def test_logger_resets_two_experiment_tracker_at_real_turn_boundary():
     )
     # And ctx.current_iteration was still advanced (the seam didn't break logging).
     assert ctx.current_iteration == 2
+
+
+def _iter_obj():
+    from rlm.core.types import RLMIteration
+
+    return RLMIteration(
+        prompt={"role": "user", "content": "reproduce the paper"},
+        response="reasoning",
+        code_blocks=[],
+        final_answer=None,
+        iteration_time=1.0,
+    )
+
+
+def test_logger_resets_stack_top_policy_when_ctx_attr_unset():
+    """F6 (2026-06-16): the turn-boundary reset must act on the SAME policy the
+    FINAL_VAR interceptor reads — the thread-local stack top
+    (forced_iteration._current_policy()) — not ctx._forced_iteration_policy.
+
+    Here the interceptor's policy lives ONLY on the thread-local stack and
+    ctx._forced_iteration_policy is unset. Pre-fix the reset keyed off the ctx
+    attr alone, so it never fired and a single failing run_experiment per turn
+    accumulated across turns → false two-in-one-turn refusal of a legit FINAL_VAR.
+    """
+    from backend.agents.rlm.forced_iteration import forced_iteration_policy
+    from backend.agents.rlm.sse_bridge import OpenResearchRLMLogger
+
+    p = _policy()
+
+    class _Ctx:
+        current_iteration = 0
+        # NOTE: no _forced_iteration_policy attribute at all (the divergence).
+
+    ctx = _Ctx()
+    logger = OpenResearchRLMLogger(emit=lambda _e: None, checkpointer=MagicMock(), ctx=ctx)
+
+    # The policy is on the thread-local stack (what the interceptor consults),
+    # NOT on ctx. Each turn has exactly one failing run_experiment.
+    with forced_iteration_policy(p):
+        p.record_run_experiment(outcome="repairable")
+        logger.log(_iter_obj())  # turn 1 boundary → must reset the STACK-TOP policy
+        p.record_run_experiment(outcome="repairable")
+        logger.log(_iter_obj())  # turn 2 boundary → reset again
+        p.record_run_experiment(outcome="repairable")  # turn 3, one experiment so far
+
+        decision = p.should_refuse_final_var(current_score=0.9, iteration_count=3)
+
+    assert decision.refuse is False, (
+        "stack-top policy must be reset at each turn boundary even when "
+        "ctx._forced_iteration_policy is unset (F6 divergence)"
+    )
+    assert ctx.current_iteration == 2  # the ctx counter seam still advanced
+
+
+def test_logger_resets_stack_top_not_a_stale_ctx_policy():
+    """When ctx carries a DIFFERENT (stale) policy than the stack top, the reset
+    must hit the stack-top one (what the interceptor reads), leaving the stale
+    ctx policy untouched."""
+    from backend.agents.rlm.forced_iteration import forced_iteration_policy
+    from backend.agents.rlm.sse_bridge import OpenResearchRLMLogger
+
+    interceptor_policy = _policy()   # the one on the thread-local stack
+    stale_ctx_policy = _policy()     # a different object hanging off ctx
+
+    class _Ctx:
+        current_iteration = 0
+
+    ctx = _Ctx()
+    ctx._forced_iteration_policy = stale_ctx_policy
+    logger = OpenResearchRLMLogger(emit=lambda _e: None, checkpointer=MagicMock(), ctx=ctx)
+
+    with forced_iteration_policy(interceptor_policy):
+        # Both policies record one failing experiment this "turn".
+        interceptor_policy.record_run_experiment(outcome="repairable")
+        stale_ctx_policy.record_run_experiment(outcome="repairable")
+        logger.log(_iter_obj())  # boundary → resets the STACK-TOP policy only
+
+        # The interceptor's policy was reset (its per-turn tracker is empty).
+        assert interceptor_policy._experiments_in_iteration == []
+        # The stale ctx policy was NOT advanced by this reset.
+        assert stale_ctx_policy._experiments_in_iteration == ["repairable"]

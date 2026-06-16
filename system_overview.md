@@ -24,13 +24,17 @@ OpenResearch is built on the **Recursive Language Model** paradigm (arXiv 2512.2
 Zhang/Kraska/Khattab, MIT CSAIL). The `rlms` library (`pip install rlms`) is the
 engine; our code is the domain layer. The RLM root model never receives the paper
 text — it is offloaded as a REPL `context` variable and the model accesses it
-programmatically via slices and recursive sub-calls. Twelve domain primitives
+programmatically via slices and recursive sub-calls. Twelve core domain primitives
 (`understand_section`, `extract_hyperparameters`, `detect_environment`,
 `build_environment`, `plan_reproduction`, `implement_baseline`, `run_experiment`,
 `verify_against_rubric`, `propose_improvements`, `record_candidate_outcome`,
-`check_user_messages`, `respond_to_user`) are exposed as REPL callables in
-`backend/agents/rlm/primitives.py`. The root decides what to call and in what
-order by writing Python — there is no fixed stage order and no gate control-flow.
+`check_user_messages`, `respond_to_user`) — plus the orchestration/aux primitives
+`heartbeat`, `recommend_next_tool`, `resolve_gpu_requirements`, `codex_repair`, and
+`read_context_map` (the intra-run orientation cache, advertised only under
+`OPENRESEARCH_CONTEXT_MAP`), for **17** registered in total — are exposed as REPL
+callables in `backend/agents/rlm/primitives.py`. The root decides what to call and
+in what order by writing Python — there is no fixed stage order and no gate
+control-flow.
 The last two primitives are the **chat-steering surface** (see below) and are
 pure file I/O, so they work identically under API-key and OAuth auth.
 

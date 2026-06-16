@@ -1080,6 +1080,10 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
     from backend.routes.replay import router as replay_router
     app.include_router(replay_router)
 
+    # Papers route — GET /papers (bundled, selectable reproduction targets).
+    from backend.routes.papers import router as papers_router
+    app.include_router(papers_router)
+
     # Codex I3 fix: audit freshness was defined but never invoked. Run at
     # startup so the operator sees a stale-pricing WARNING in logs the
     # moment the process boots. Non-blocking on failure.

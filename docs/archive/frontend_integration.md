@@ -85,7 +85,7 @@ summaries and shapes — full values are not, and will not be, on the wire.
 
 `GET /leaderboard` returns ranked rows aggregated at request time from
 `runs/*/final_report.json` (no SQLite projection at this scale). Read-only;
-not gated by `REPROLAB_DEMO_SECRET`. Mounted by `backend/routes/leaderboard.py`.
+not gated by `OPENRESEARCH_DEMO_SECRET`. Mounted by `backend/routes/leaderboard.py`.
 
 Query params:
 

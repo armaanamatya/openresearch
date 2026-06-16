@@ -1466,6 +1466,27 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     # Identity-preserving for non-path inputs (arXiv IDs, URLs, DOIs).
     from backend.services.paths import normalize_path_input
     args.source = normalize_path_input(args.source)
+    # Bundled-paper registry (2026-06-15): a registered id / alias / arXiv-id
+    # resolves to the in-repo ``papers/*.pdf`` so the top reproduction targets work
+    # offline on a fresh clone (SDAR's future-dated arXiv id does NOT fetch → was a
+    # degraded 469-char run). Also auto-applies the paper's --paper-hint when unset,
+    # so ``reproduce sdar`` is fully self-configuring. Fail-soft: unregistered
+    # sources and a missing registry fall straight through to the normal path.
+    try:
+        from backend.services.ingestion import paper_registry as _paper_registry
+        _reg_entry = _paper_registry.resolve(args.source)
+        if _reg_entry is not None:
+            _reg_pdf = _paper_registry.resolve_pdf_path(args.source)
+            if _reg_pdf is not None:
+                print(f"[paper-registry] {args.source!r} → bundled '{_reg_entry.id}' ({_reg_pdf})",
+                      file=sys.stderr)
+                args.source = str(_reg_pdf)
+                if not getattr(args, "paper_hint", None) and _reg_entry.hint:
+                    args.paper_hint = _reg_entry.hint
+                    print(f"[paper-registry] auto-applied --paper-hint {_reg_entry.hint}",
+                          file=sys.stderr)
+    except Exception:  # noqa: BLE001 — registry must never break a normal reproduce.
+        pass
     # Tier 2a — wire pipeline.log/jsonl on the root logger before any agent
     # module gets a chance to emit. This is the *subprocess* hot path
     # (live_runs.py spawns `python -c "from backend.cli import cmd_reproduce; ..."`),

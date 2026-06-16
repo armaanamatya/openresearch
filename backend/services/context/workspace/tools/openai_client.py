@@ -102,5 +102,65 @@ class OpenAILlmClient:
         self._last_usage = _usage_from_response(getattr(resp, "usage", None))
         return resp.choices[0].message.content or ""
 
+    @with_429_backoff
+    def complete_samples(
+        self,
+        *,
+        system: str,
+        user: str,
+        n: int = 1,
+        temperature: float | None = None,
+        seed: int | None = None,
+    ) -> list[str]:
+        """Return ``n`` completions in ONE round-trip (Chat Completions ``n``).
+
+        Optional grader-fidelity sampling path (spec 2026-06-16 §A5). Pins
+        ``temperature=0`` by default (deterministic) but honours an explicit
+        ``temperature``; passes ``seed`` for near-determinism on backends that
+        support it. If the SDK rejects ``n``/``seed`` (older SDK, or a provider
+        that doesn't accept them), falls back to ``n`` SEQUENTIAL
+        single-completion calls so the caller always gets ``n`` strings.
+
+        ``_last_usage`` mirrors the API usage: on the native ``n`` path it is
+        the single multi-choice response's usage (it covers all ``n`` choices),
+        and on the fallback path it is the LAST call's usage (mirrors
+        ``complete``).
+        """
+        eff_temp = 0 if temperature is None else temperature
+        try:
+            resp = self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=eff_temp,
+                max_tokens=self._max_tokens,
+                n=n,
+                seed=seed,
+            )
+        except TypeError:
+            # SDK signature rejected n/seed — fall back to N sequential calls.
+            return [
+                self._complete_once(system=system, user=user, temperature=eff_temp)
+                for _ in range(n)
+            ]
+        self._last_usage = _usage_from_response(getattr(resp, "usage", None))
+        return [(c.message.content or "") for c in resp.choices]
+
+    def _complete_once(self, *, system: str, user: str, temperature: float) -> str:
+        """One single-choice completion at an explicit temperature (fallback path)."""
+        resp = self._client.chat.completions.create(
+            model=self._model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=temperature,
+            max_tokens=self._max_tokens,
+        )
+        self._last_usage = _usage_from_response(getattr(resp, "usage", None))
+        return resp.choices[0].message.content or ""
+
 
 __all__ = ["OpenAILlmClient", "_usage_from_response", "_zero_usage"]

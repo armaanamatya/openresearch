@@ -370,7 +370,15 @@ async def run_pipeline_hybrid(
         phase2_result.rubric_score,
         phase2_result.iterations,
     )
-    if phase2_result.rubric_score is None:
+    # Best-of-Phase guard (Workstream B1): Phase 2 is meant to *improve* on
+    # Phase 1, but an adaptive repair pass can regress — and when it does it has
+    # already overwritten Phase 1's report on disk. Restore + return Phase 1
+    # when Phase 2 produced no score at all OR scored strictly worse than the
+    # Phase 1 baseline, so a better Phase 1 is never silently clobbered by a
+    # worse-but-non-None Phase 2. A tie (or any improvement) keeps Phase 2 — it
+    # is the later, more-repaired evidence at equal quality.
+    phase2_score = phase2_result.rubric_score
+    if phase2_score is None:
         logger.warning(
             "hybrid/controller[%s]: Phase 2 produced no rubric score — restoring "
             "Phase 1 scored report",
@@ -380,6 +388,21 @@ async def run_pipeline_hybrid(
         return RLMRunResult(
             project_id=phase1_result.project_id,
             status="failed",
+            iterations=phase1_result.clusters_total,
+            rubric_score=rubric_score,
+            cost_usd=(phase1_result.cost_usd or 0.0) + (phase2_result.cost_usd or 0.0),
+            final_report_path=final_report_path,
+        )
+    if rubric_score > phase2_score:
+        logger.warning(
+            "hybrid/controller[%s]: Phase 2 regressed (%.3f < Phase 1 %.3f) — "
+            "restoring the better Phase 1 scored report",
+            project_id, phase2_score, rubric_score,
+        )
+        _restore_report(final_report_path, phase1_report_json, phase1_report_md)
+        return RLMRunResult(
+            project_id=phase1_result.project_id,
+            status=phase1_result.status,
             iterations=phase1_result.clusters_total,
             rubric_score=rubric_score,
             cost_usd=(phase1_result.cost_usd or 0.0) + (phase2_result.cost_usd or 0.0),

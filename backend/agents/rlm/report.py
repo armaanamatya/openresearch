@@ -669,6 +669,114 @@ def _best_recorded_rubric_score(project_dir: "Path") -> "float | None":
     return best
 
 
+# E3 (loud-fail-soft sweep): run_warning codes that represent a SILENT LESSER PATH
+# (a degrade the report should own), vs purely-advisory warnings or IMPROVEMENTS
+# (finalize_regrade_adopted) which are deliberately excluded from the "what
+# degraded" ledger. Extend this set as new degrade warnings are added.
+_DEGRADATION_WARNING_CODES: frozenset[str] = frozenset({
+    "cells_manifest_restored", "cells_manifest_dropped", "per_model_derived",
+    "cell_axes_derived", "metrics_incomplete", "metrics_shape_item_invalid",
+    "primitive_timeout", "search_synthesized", "plan_reproduction_failed_envelope",
+    "paper_grounding_failed", "disk_headroom_thin", "degenerate_pool",
+    "compute_scope_invalid", "sdk_pre_emit_stall", "knowledge_channel_strict_violation",
+    "forced_iteration", "finalize_regrade_skipped",
+})
+
+
+def _collect_degradations(project_dir: "Path") -> "list[dict[str, Any]]":
+    """E3: aggregate this run's coded degradation ``run_warning`` events into a
+    compact ledger ``[{code, count, last_message}]`` (newest message wins).
+
+    Reads ``dashboard_events.jsonl`` — the channel degradations ALREADY emit on —
+    so no individual fail-soft site needs instrumenting (the cells_manifest_restored
+    pattern, made universal at the read side). Returns ``[]`` when the run took no
+    degraded path, so the caller omits the field and a clean run's report is
+    byte-for-byte today. Fail-soft: any read/parse error returns ``[]``.
+    """
+    events = Path(project_dir) / "dashboard_events.jsonl"
+    if not events.exists():
+        return []
+    agg: dict[str, dict[str, Any]] = {}
+    try:
+        for line in events.read_text(encoding="utf-8").splitlines():
+            if "run_warning" not in line:
+                continue
+            try:
+                d = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            payload = d.get("payload") if isinstance(d.get("payload"), dict) else d
+            code = payload.get("code")
+            if not isinstance(code, str) or code not in _DEGRADATION_WARNING_CODES:
+                continue
+            rec = agg.setdefault(code, {"code": code, "count": 0, "last_message": ""})
+            rec["count"] += 1
+            msg = payload.get("message")
+            if isinstance(msg, str) and msg:
+                rec["last_message"] = msg[:300]
+    except OSError:
+        return []
+    return [agg[k] for k in sorted(agg)]
+
+
+def _evidence_fingerprint_enabled() -> bool:
+    """A3 (2026-06-16): median-within-evidence-state aggregation instead of the
+    global-MAX best-of-run floor. OPENRESEARCH_EVIDENCE_FINGERPRINT, default OFF →
+    legacy global-max floor (byte-for-byte today)."""
+    import os as _os
+    return _os.environ.get("OPENRESEARCH_EVIDENCE_FINGERPRINT", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _evidence_aware_best_score(project_dir: "Path") -> "float | None":
+    """A3: the run's robust score at its FINAL evidence state — the MEDIAN of the
+    rubric_score events sharing the LATEST evidence_key — NOT the global max.
+
+    The global max over every verify event is upward-biased: it banks the luckiest
+    draw across both same-evidence grader noise AND different evidence states.
+    Grouping by evidence_key (hash of canonical metrics+scope, stamped on each
+    event by binding when the fingerprint flag is on) and taking the median of the
+    latest state strips that bias. Events with no evidence_key (older runs, or the
+    flag was off at emit) each form a singleton group, so a keyless run degrades to
+    'latest score' — still never a global max. None when no score was recorded.
+    """
+    import statistics as _stats
+    events = Path(project_dir) / "dashboard_events.jsonl"
+    if not events.exists():
+        return None
+    seq: list[tuple[str, float]] = []  # (evidence_key, score) in arrival order
+    _nokey = 0
+    try:
+        for line in events.read_text(encoding="utf-8").splitlines():
+            if "rubric_score" not in line:
+                continue
+            try:
+                d = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            payload = d.get("payload") if isinstance(d.get("payload"), dict) else d
+            s = payload.get("overall_score")
+            if s is None:
+                s = payload.get("score")
+            try:
+                val = float(s)
+            except (TypeError, ValueError):
+                continue
+            key = payload.get("evidence_key")
+            if not key:
+                _nokey += 1
+                key = f"__nokey__{_nokey}"  # singleton → degrades to latest-score
+            seq.append((str(key), val))
+    except OSError:
+        return None
+    if not seq:
+        return None
+    latest_key = seq[-1][0]
+    latest_scores = [v for k, v in seq if k == latest_key]
+    return float(_stats.median(latest_scores))
+
+
 def _apply_best_of_run_floor(rubric: dict, project_dir: "Path") -> dict:
     """Return ``rubric`` with ``overall_score`` floored to the run's best recorded
     rubric score (best-of-run; 2026-05-30, reordered for F-11).
@@ -678,8 +786,16 @@ def _apply_best_of_run_floor(rubric: dict, project_dir: "Path") -> dict:
     reflects the floored score, not the degraded self-reported one — F-11: the floor
     used to run only AFTER reconciliation, leaving verdict and score inconsistent on
     the no-amend path. No-op when no better score was recorded.
+
+    A3 (2026-06-16): with OPENRESEARCH_EVIDENCE_FINGERPRINT on, ``best`` is the MEDIAN
+    of the latest evidence state (no global max — that banked the luckiest draw);
+    off, it is the legacy global-max high-water mark (byte-for-byte today).
     """
-    best = _best_recorded_rubric_score(project_dir)
+    best = (
+        _evidence_aware_best_score(project_dir)
+        if _evidence_fingerprint_enabled()
+        else _best_recorded_rubric_score(project_dir)
+    )
     if best is None:
         return rubric
     floored = dict(rubric or {})
@@ -692,6 +808,55 @@ def _apply_best_of_run_floor(rubric: dict, project_dir: "Path") -> dict:
         floored["overall_score"] = best
         floored["best_of_run"] = True
     return floored
+
+
+def _champion_artifact_enabled() -> bool:
+    """A4 (2026-06-16): restore the best-graded CODE snapshot at finalize.
+    OPENRESEARCH_CHAMPION_ARTIFACT, default OFF."""
+    import os as _os
+    return _os.environ.get("OPENRESEARCH_CHAMPION_ARTIFACT", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _apply_champion_artifact(rubric: dict, project_dir: "Path") -> dict:
+    """A4: restore the highest-median-graded code snapshot and ship THAT grade, so
+    ``score ≡ the best artifact the run actually produced``.
+
+    The retired MAX floor papered over a repair that REGRESSED the code while the
+    grader (noisily) banked a better earlier score — shipping a *score* detached
+    from the *artifact*. binding snapshots ``code/`` per verify (content-addressed
+    by ``evidence_key``) with its median-of-N grade; at finalize we restore the
+    snapshot whose median is highest. No-op when the flag is off, no champions were
+    recorded, or the best champion is not strictly better than the current score
+    (never downgrade a better latest state). Fail-soft — never fatal.
+    """
+    if not _champion_artifact_enabled():
+        return rubric
+    try:
+        from backend.agents.rlm.champion_artifact import best_champion, restore_snapshot
+        champ = best_champion(Path(project_dir) / "rlm_state" / "champions.json")
+        if not champ:
+            return rubric
+        out = dict(rubric or {})
+        cur = out.get("overall_score")
+        try:
+            cur_f = float(cur) if cur is not None else None
+        except (TypeError, ValueError):
+            cur_f = None
+        try:
+            champ_score = float(champ.get("median_score"))
+        except (TypeError, ValueError):
+            return rubric
+        snap = champ.get("snapshot_dir")
+        if snap and (cur_f is None or champ_score >= cur_f):
+            restore_snapshot(Path(snap), Path(project_dir) / "code")
+            out["overall_score"] = champ_score
+            out["champion_restored"] = True
+        return out
+    except Exception:  # noqa: BLE001 — champion-artifact restore is best-effort, never fatal
+        logger.exception("report: champion-artifact restore failed (non-fatal)")
+        return rubric
 
 
 def _terminal_stop_reason_from_disk(project_dir: Path) -> dict | None:
@@ -819,6 +984,10 @@ def build_final_report(
     # below what the run actually achieved. (The floor used to run only after this,
     # leaving verdict and the displayed score inconsistent on the no-amend path.)
     rubric_floored = _apply_best_of_run_floor(parsed.get("rubric") or {}, ctx.project_dir)
+    # A4: restore the best-graded code snapshot and ship its grade (score ≡ best
+    # artifact). No-op unless OPENRESEARCH_CHAMPION_ARTIFACT is on and a better
+    # snapshot than the current state was recorded.
+    rubric_floored = _apply_champion_artifact(rubric_floored, ctx.project_dir)
 
     # NEW: evidence-based verdict reconciliation (T6 / P0-I9).
     verdict, downgrade_reason = _reconcile_verdict_against_evidence(
@@ -1004,6 +1173,20 @@ def build_final_report(
     # path. Keep them in lock-step with kwargs["rubric"].
     _final_rubric = kwargs.get("rubric")
     if isinstance(_final_rubric, dict):
+        # A7 (2026-06-16): recompute meets_target from the FINAL authoritative
+        # overall_score (after rescore + any floor), in ONE place, so it cannot go
+        # stale relative to a score that changed downstream — both All-CNN arms
+        # shipped meets_target=True while the score sat below target. None target
+        # → None verdict, never a fabricated bool.
+        _fo = _final_rubric.get("overall_score")
+        _ft = _final_rubric.get("target_score")
+        try:
+            if _ft is None:
+                _final_rubric["meets_target"] = None
+            elif _fo is not None:
+                _final_rubric["meets_target"] = bool(float(_fo) >= float(_ft))
+        except (TypeError, ValueError):
+            pass
         kwargs["overall_score"] = _final_rubric.get("overall_score")
         kwargs["meets_target"] = _final_rubric.get("meets_target")
 
@@ -1531,6 +1714,41 @@ def write_final_report_rlm(
     except Exception:  # noqa: BLE001 — merge is best-effort, never crashes the write
         logger.exception("report: rubric_evaluation.json merge failed (non-fatal)")
 
+    # --- Best-of-run floor at the write chokepoint (2026-06-13 OmniZip) -----
+    # build_final_report applies _apply_best_of_run_floor, but the root-assembled
+    # clean-completion path calls write_final_report_rlm DIRECTLY and bypassed it:
+    # OmniZip attempt 6 peaked at 0.7498 (a real verify) then a buggy iteration-4
+    # per-domain step re-verified with stale results at 0.6919, and the report
+    # shipped the regression instead of the peak. Flooring HERE — the single
+    # chokepoint every report write passes through — closes that gap. Clean
+    # completions only (stop_reason None, not degraded): hard-stops already get
+    # their floor + verdict cap via _salvage_partial_report and must not be
+    # floored up to "reproduced" here. Idempotent: a no-op when the report
+    # already carries the run's best recorded score.
+    try:
+        if report.stop_reason is None and not report.degraded:
+            _floored = _apply_best_of_run_floor(dict(report.rubric or {}), project_dir)
+            if _floored.get("best_of_run"):
+                _o, _t = _floored.get("overall_score"), _floored.get("target_score")
+                try:
+                    if _o is not None and _t is not None:
+                        _floored["meets_target"] = bool(float(_o) >= float(_t))
+                except (TypeError, ValueError):
+                    pass
+                report.rubric = _floored
+                logger.info(
+                    "report: best-of-run floor raised overall_score to %.4f at the "
+                    "write chokepoint (clean completion shipped below its peak)",
+                    float(_o) if _o is not None else -1.0,
+                )
+                if (
+                    _floored.get("meets_target") is True
+                    and report.verdict == "partial"
+                ):
+                    report.verdict = "reproduced"
+    except Exception:  # noqa: BLE001 — floor is best-effort, never crashes the write
+        logger.exception("report: best-of-run write-chokepoint floor failed (non-fatal)")
+
     # --- JSON (canonical) ---
     # Two-axis reproducibility verdict (live finalize path, U11): when enabled and the
     # producer artifacts exist, attach implementation/replication verdicts + schema=2 and
@@ -1596,6 +1814,22 @@ def write_final_report_rlm(
             json_content = json.dumps(_d, indent=2)
     except Exception:  # noqa: BLE001 — stamp is best-effort
         logger.warning("report: experiment-arm stamp failed (non-fatal)", exc_info=True)
+
+    # --- E3: degradations_taken ledger (loud-fail-soft sweep) --------------
+    # Surface the run's coded degradation warnings so the report honestly lists
+    # every lesser path the harness took (the cells_manifest_restored pattern made
+    # universal). Same serialized-dict pattern as the stamps above — RLMFinalReport
+    # needs no field. Omitted when empty → a clean run's report is byte-for-byte
+    # today. Fail-soft — never blocks the write.
+    try:
+        _degr = _collect_degradations(project_dir)
+        if _degr:
+            _d = json.loads(json_content)
+            _d["degradations_taken"] = _degr
+            json_content = json.dumps(_d, indent=2)
+    except Exception:  # noqa: BLE001 — degradation ledger is best-effort
+        logger.warning("report: degradations_taken ledger failed (non-fatal)", exc_info=True)
+
     _atomic_write(json_path, json_content)
 
     # --- Markdown (human-readable) ---

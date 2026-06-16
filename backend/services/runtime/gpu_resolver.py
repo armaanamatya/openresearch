@@ -34,6 +34,11 @@ _AZURE_CLOUD_TYPES: tuple[str, ...] = ("ONDEMAND",)
 # Azure fallback short_name: cheapest azure SKU (A10 24GB).
 _AZURE_FALLBACK_SHORT_NAME: str = "azure_a10_24"
 
+# GCP (GKE) — same provisioned-node-pool shape as Azure. Fallback is the
+# cheapest A100 (a2-highgpu-1g, 40GB) since A2 is GCP's smallest A100 machine.
+_GCP_CLOUD_TYPES: tuple[str, ...] = ("ONDEMAND",)
+_GCP_FALLBACK_SHORT_NAME: str = "gcp_a100_40"
+
 
 class GpuResolutionError(RuntimeError):
     """Raised when no SKU can satisfy (VRAM + $/hr cap + cloud_type) constraints."""
@@ -85,9 +90,12 @@ def resolve(
         SKU, or required SKU exceeds the per-GPU $/hr cap). The error message names the
         cheapest SKU that would have satisfied VRAM if the cap were lifted.
     """
-    if provider == "azure":
-        return _resolve_azure(
+    if provider in ("azure", "gcp"):
+        _fallback = _AZURE_FALLBACK_SHORT_NAME if provider == "azure" else _GCP_FALLBACK_SHORT_NAME
+        return _resolve_provisioned_cloud(
             requirements=requirements,
+            provider=provider,
+            fallback_short_name=_fallback,
             dynamic_gpu_enabled=dynamic_gpu_enabled,
             force_single_gpu=force_single_gpu,
             max_gpu_usd_per_hour=max_gpu_usd_per_hour,
@@ -195,53 +203,60 @@ def _resolve_runpod(
                        requirements=requirements, ladder=remaining, now_iso=now_iso)
 
 
-def _resolve_azure(
+def _resolve_provisioned_cloud(
     requirements: GpuRequirements,
     *,
+    provider: str,
+    fallback_short_name: str,
     dynamic_gpu_enabled: bool,
     force_single_gpu: bool,
     max_gpu_usd_per_hour: float | None,
     headroom_multiplier: float,
     provisioned_skus: tuple[str, ...] | None = None,
 ) -> GpuPlan:
-    """Azure resolution path.
+    """Resolution path for a PROVISIONED-node-pool cloud (Azure AKS, GCP GKE).
 
-    Selects from Azure ONDEMAND rows by *effective* capacity (vram_gb * gpu_count)
-    so multi-GPU VM sizes (NC48/NC96) are eligible when a paper needs >80 GB total.
+    Both clouds present the same shape: a fixed set of multi-GPU machine SKUs
+    (Azure VM sizes / GCP A2 machine types) attached to K8s node pools, selected
+    by *effective* capacity (vram_gb * gpu_count) so multi-GPU machines
+    (NC48/NC96, a2-highgpu-4g/8g) are eligible when a paper needs >1-GPU total.
+    ``provider`` ("azure"|"gcp") + ``fallback_short_name`` (the cheapest single-GPU
+    SKU for that cloud) are the only differences.
 
     force_single_gpu: when True, only single-GPU SKUs (gpu_count == 1) are
     considered — same semantic as the RunPod path.
 
     provisioned_skus: when not None, restricts BOTH primary selection and
-    ``ladder_remaining`` to SKUs whose ``short_name`` ∈ provisioned_skus.  This
-    prevents the resolver from proposing a SKU that is not in the AKS node pool,
-    which would cause the resulting Kubernetes Job to hang Pending until timeout.
-    Pass ``settings.azure_gpu_skus`` from the caller (do NOT import settings here —
-    the resolver is pure).  None = no restriction (default; existing callers are
-    byte-identical).
+    ``ladder_remaining`` to SKUs whose ``short_name`` ∈ provisioned_skus — prevents
+    proposing a SKU absent from the cluster's node pool (the resulting K8s Job
+    would hang Pending until timeout). Pass ``settings.{azure,gcp}_gpu_skus`` from
+    the caller (do NOT import settings here — the resolver is pure). None = no
+    restriction (default; existing callers are byte-identical).
 
-    The returned GpuPlan.runpod_id carries the Azure VM size string (e.g.
-    "Standard_NC24ads_A100_v4") — the opaque provider identifier in both providers.
-    GpuPlan.gpu_count reflects the physical gpu_count of the chosen SKU (1, 2, or 4).
+    The returned GpuPlan.runpod_id carries the provider machine id (e.g.
+    "Standard_NC24ads_A100_v4" / "a2-highgpu-8g") — the opaque provider identifier.
+    GpuPlan.gpu_count reflects the physical gpu_count of the chosen SKU.
     """
     now_iso = datetime.now(timezone.utc).isoformat()
+    label = provider.upper()
 
-    # Dynamic disabled → informational from cheapest azure SKU.
+    # Dynamic disabled → informational from cheapest SKU.
     if not dynamic_gpu_enabled:
-        sku = _by_short_name(_AZURE_FALLBACK_SHORT_NAME, provider="azure")
+        sku = _by_short_name(fallback_short_name, provider=provider)
         return _build_plan(sku, gpu_count=sku.gpu_count, source="informational",
                            requirements=requirements, ladder=(), now_iso=now_iso)
 
     estimate = requirements.estimated_vram_gb
     confidence = requirements.confidence
 
-    # Fallback path: no estimate OR confidence too low → cheapest azure SKU.
+    # Fallback path: no estimate OR confidence too low → cheapest SKU.
     if estimate is None or confidence < _CONFIDENCE_FLOOR:
-        sku = _by_short_name(_AZURE_FALLBACK_SHORT_NAME, provider="azure")
-        full_ladder = _azure_ladder(min_effective_vram=sku.vram_gb * sku.gpu_count,
-                                    max_per_gpu_usd=None,
-                                    force_single_gpu=force_single_gpu,
-                                    provisioned_skus=provisioned_skus)
+        sku = _by_short_name(fallback_short_name, provider=provider)
+        full_ladder = _provisioned_ladder(provider=provider,
+                                          min_effective_vram=sku.vram_gb * sku.gpu_count,
+                                          max_per_gpu_usd=None,
+                                          force_single_gpu=force_single_gpu,
+                                          provisioned_skus=provisioned_skus)
         remaining = tuple(s.short_name for s in full_ladder
                           if s.short_name != sku.short_name)
         return _build_plan(sku, gpu_count=sku.gpu_count, source="fallback",
@@ -250,36 +265,38 @@ def _resolve_azure(
     # Apply headroom multiplier (against per-GPU estimate; same logic as RunPod).
     needed_vram = math.ceil(estimate * max(headroom_multiplier, 1.0))
 
-    # Build the azure ladder filtered by effective capacity and optionally single-GPU.
-    ladder = _azure_ladder(min_effective_vram=needed_vram,
-                           max_per_gpu_usd=max_gpu_usd_per_hour,
-                           force_single_gpu=force_single_gpu,
-                           provisioned_skus=provisioned_skus)
+    # Build the ladder filtered by effective capacity and optionally single-GPU.
+    ladder = _provisioned_ladder(provider=provider,
+                                 min_effective_vram=needed_vram,
+                                 max_per_gpu_usd=max_gpu_usd_per_hour,
+                                 force_single_gpu=force_single_gpu,
+                                 provisioned_skus=provisioned_skus)
 
     if not ladder:
         # Diagnose: would lifting the cap help?
-        unconstrained = _azure_ladder(min_effective_vram=needed_vram,
-                                      max_per_gpu_usd=None,
-                                      force_single_gpu=force_single_gpu,
-                                      provisioned_skus=provisioned_skus)
+        unconstrained = _provisioned_ladder(provider=provider,
+                                            min_effective_vram=needed_vram,
+                                            max_per_gpu_usd=None,
+                                            force_single_gpu=force_single_gpu,
+                                            provisioned_skus=provisioned_skus)
         if unconstrained:
             cheapest = unconstrained[0]
             raise GpuResolutionError(
                 f"Paper requires >= {needed_vram} GB effective VRAM (after {headroom_multiplier}x headroom on "
-                f"estimate={estimate}). Cheapest Azure SKU is {cheapest.short_name} at "
-                f"${cheapest.approx_usd_per_hr:.2f}/hr/GPU, but `max_gpu_usd_per_hour` cap is "
+                f"estimate={estimate}). Cheapest {label} SKU is {cheapest.short_name} at "
+                f"${cheapest.approx_usd_per_hr:.2f}/hr, but `max_gpu_usd_per_hour` cap is "
                 f"${max_gpu_usd_per_hour}. Raise the cap or set --vram-gb to a lower override."
             )
         raise GpuResolutionError(
             f"Paper requires >= {needed_vram} GB effective VRAM (estimate={estimate}, "
-            f"multiplier={headroom_multiplier}x) but no Azure catalog SKU has that much. "
-            f"Largest available Azure effective VRAM is {_largest_azure_vram(force_single_gpu)} GB. "
+            f"multiplier={headroom_multiplier}x) but no {label} catalog SKU has that much. "
+            f"Largest available {label} effective VRAM is {_largest_provisioned_vram(provider, force_single_gpu)} GB. "
             f"Consider scoping down the experiment."
         )
 
     pick = ladder[0]
-    # For azure, gpu_count comes from the SKU itself (not paper_gpu_count / cap math),
-    # because the VM size already determines how many physical GPUs are attached.
+    # gpu_count comes from the SKU itself (the machine size determines how many
+    # physical GPUs are attached), not paper_gpu_count / cap math.
     gpu_count = 1 if force_single_gpu else pick.gpu_count
 
     remaining = tuple(s.short_name for s in ladder[1:])
@@ -303,28 +320,29 @@ def _largest_vram(cloud_types: tuple[str, ...]) -> int:
     return max(candidates) if candidates else 0
 
 
-def _azure_ladder(
+def _provisioned_ladder(
     *,
+    provider: str,
     min_effective_vram: int,
     max_per_gpu_usd: float | None,
     force_single_gpu: bool,
     provisioned_skus: tuple[str, ...] | None = None,
 ) -> list[GpuSku]:
-    """Return Azure SKUs sorted by (effective_vram_gb ASC, approx_usd_per_hr ASC).
+    """Return ONDEMAND SKUs for ``provider`` sorted by (effective_vram_gb, $/hr) ASC.
 
     Filters:
-        - provider == "azure"
+        - sku.provider == provider ("azure"|"gcp")
         - cloud_type == "ONDEMAND"
         - effective_vram_gb(sku) >= min_effective_vram
         - if force_single_gpu: only gpu_count == 1 rows
-        - if max_per_gpu_usd: per-GPU rate <= cap
+        - if max_per_gpu_usd: rate <= cap
         - if provisioned_skus is not None: only SKUs whose short_name ∈ provisioned_skus
     """
     from backend.services.runtime.gpu_catalog import CATALOG
     cap = max_per_gpu_usd if max_per_gpu_usd and max_per_gpu_usd > 0 else None
     filtered = [
         sku for sku in CATALOG
-        if sku.provider == "azure"
+        if sku.provider == provider
         and sku.cloud_type == "ONDEMAND"
         and effective_vram_gb(sku) >= min_effective_vram
         and (not force_single_gpu or sku.gpu_count == 1)
@@ -334,12 +352,12 @@ def _azure_ladder(
     return sorted(filtered, key=lambda s: (effective_vram_gb(s), s.approx_usd_per_hr))
 
 
-def _largest_azure_vram(force_single_gpu: bool) -> int:
-    """Largest effective VRAM among azure SKUs, optionally restricted to single-GPU."""
+def _largest_provisioned_vram(provider: str, force_single_gpu: bool) -> int:
+    """Largest effective VRAM among ``provider`` SKUs, optionally restricted to single-GPU."""
     from backend.services.runtime.gpu_catalog import CATALOG
     candidates = [
         effective_vram_gb(s) for s in CATALOG
-        if s.provider == "azure"
+        if s.provider == provider
         and (not force_single_gpu or s.gpu_count == 1)
     ]
     return max(candidates) if candidates else 0

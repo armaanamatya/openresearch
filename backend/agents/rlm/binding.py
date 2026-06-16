@@ -399,6 +399,9 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
             model=ctx.model,
             usage=usage,
             outcome=outcome,
+            # F1: tag the spend with the root-loop iteration for per-iteration
+            # cost attribution (additive metadata; default 0 when unknown).
+            iteration=int(getattr(ctx, "current_iteration", 0) or 0),
         ))
 
     def _emit_extra(event: dict) -> None:
@@ -510,6 +513,22 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                             "primitive %s timed out after %ss — marking retryable",
                             name, _timeout_s,
                         )
+                        # C2: the abandoned worker thread may still hold an
+                        # experiment subprocess group (GPU/VRAM). SIGKILL the
+                        # registered groups so the retry this timeout authorises
+                        # isn't starved. No-op unless OPENRESEARCH_ORPHAN_GUARD is on →
+                        # byte-for-byte today.
+                        _killed = 0
+                        try:
+                            from backend.agents.rlm.orphan_guard import kill_orphans
+                            _killed = kill_orphans()
+                            if _killed:
+                                logger.warning(
+                                    "primitive %s timeout: SIGKILLed %d orphaned "
+                                    "experiment process group(s)", name, _killed,
+                                )
+                        except Exception:  # noqa: BLE001 — orphan-kill MUST NOT break the run
+                            pass
                         # Emit a run_warning SSE event so the UI and cost-ledger
                         # reflect the hung primitive.
                         try:
@@ -520,6 +539,7 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                                 "code": "primitive_timeout",
                                 "primitive": name,
                                 "wall_clock_s": _timeout_s,
+                                "orphan_groups_killed": _killed,
                                 "message": (
                                     f"primitive `{name}` exceeded its wall-clock "
                                     f"cap of {_timeout_s}s and was interrupted. "
@@ -533,6 +553,7 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                             "error": "primitive_hung",
                             "primitive": name,
                             "wall_clock_s": _timeout_s,
+                            "orphan_groups_killed": _killed,
                         }
             except Exception as exc:
                 # Value-free event: an exception MESSAGE can carry raw LLM output,
@@ -601,13 +622,16 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
             else:
                 # --- Phase 6 (Task 13): post-success supplemental event emission ---
                 _emit_supplemental(name, result, ctx, _emit_extra)
-                # PEEK-lite (OPENRESEARCH_CONTEXT_MAP): union orientation-primitive
-                # outputs into rlm_state/context_map.json. Flag-gated + fail-soft
-                # inside update_context_map; no-op for non-orientation primitives.
+                # E1 (CONTEXT_MAP / PEEK-lite, OPENRESEARCH_CONTEXT_MAP): union this
+                # orientation primitive's structured output into
+                # rlm_state/context_map.json. Self-filtering — no-ops unless the flag
+                # is on AND name is an orientation primitive (understand_section/
+                # extract_hyperparameters/detect_environment); off → byte-for-byte
+                # today. Fail-soft (orientation aid, never fatal).
                 try:
                     from backend.agents.rlm.context_map import update_context_map
                     update_context_map(ctx.project_dir, name, result)
-                except Exception:  # noqa: BLE001 — orientation cache must never break a call
+                except Exception:  # noqa: BLE001 — orientation cache must never break the run
                     pass
             # Steering (main 2026-06-09): surface unread operator messages inside
             # primitive results so the root sees them without polling.
@@ -770,6 +794,66 @@ def _emit_supplemental(
                 # Malformed score — leave policy state untouched; the
                 # interceptor treats None-score as "no rubric, accept".
                 pass
+            # A3/A4 (2026-06-16): fingerprint the evidence state this grade was
+            # computed against (hash of canonical metrics + scope). A3 stamps it on
+            # the event so the report aggregator takes the MEDIAN of the latest
+            # state (not the upward-biased global max); A4 snapshots the CODE that
+            # earned the grade, keyed by the same fingerprint, so finalize can
+            # restore the best-graded ARTIFACT (score ≡ code). Flag-gated + fail-soft.
+            _evidence_key: str | None = None
+            import os as _os_a3
+            _fp_on_a3 = _os_a3.environ.get("OPENRESEARCH_EVIDENCE_FINGERPRINT", "").strip().lower() in (
+                "1", "true", "yes", "on",
+            )
+            _champ_on_a3 = _os_a3.environ.get("OPENRESEARCH_CHAMPION_ARTIFACT", "").strip().lower() in (
+                "1", "true", "yes", "on",
+            )
+            if _fp_on_a3 or _champ_on_a3:
+                try:
+                    import json as _json_a3
+                    from backend.evals.paperbench.leaf_scorer import _latest_metrics_path as _lmp_a3
+                    from backend.agents.rlm.evidence_key import evidence_key as _ekey_a3
+                    _mp_a3 = _lmp_a3(ctx.project_dir)
+                    _metrics_a3 = (
+                        _json_a3.loads(_mp_a3.read_text(encoding="utf-8")) if _mp_a3 else {}
+                    )
+                    _ss_a3 = getattr(ctx, "scope_spec", None)
+                    _scope_a3 = None
+                    if _ss_a3 is not None:
+                        _scope_a3 = {
+                            "models": list(getattr(_ss_a3, "models", None) or []),
+                            "datasets": [
+                                getattr(d, "name", None) or str(d)
+                                for d in (getattr(_ss_a3, "datasets", None) or [])
+                            ],
+                            "seeds": list(getattr(_ss_a3, "seeds", None) or []),
+                        }
+                    _evidence_key = _ekey_a3(_metrics_a3, _scope_a3)
+                except Exception:  # noqa: BLE001 — fingerprint is advisory, never block emit
+                    _evidence_key = None
+            # A4: snapshot the code/ that earned THIS grade (content-addressed by
+            # evidence_key) and record it with the median-of-N score, so finalize
+            # restores the highest-graded snapshot — score ≡ best artifact produced.
+            if _champ_on_a3 and _evidence_key:
+                try:
+                    from backend.agents.rlm.champion_artifact import (
+                        record_champion as _rec_champ_a4,
+                        snapshot_code as _snap_champ_a4,
+                    )
+                    _cdir_a4 = ctx.project_dir / "code"
+                    if _cdir_a4.is_dir():
+                        _snap_a4 = _snap_champ_a4(
+                            _cdir_a4,
+                            ctx.project_dir / "rlm_state" / "champions" / _evidence_key[:16] / "code",
+                        )
+                        _rec_champ_a4(
+                            ctx.project_dir / "rlm_state" / "champions.json",
+                            evidence_key=_evidence_key,
+                            snapshot_dir=_snap_a4,
+                            median_score=float(score),
+                        )
+                except Exception:  # noqa: BLE001 — champion snapshot is advisory, never block emit
+                    pass
             # Pass through the per-area `leaves` detail (id/label/score/status/why)
             # that `_rubric_areas` attached, plus the cross-area weak_leaves and
             # the last few failed-experiment rows, so the lab UI can show
@@ -790,7 +874,7 @@ def _emit_supplemental(
                 _recent_errors = _recent_experiment_errors(ctx.project_dir)
             except Exception:  # noqa: BLE001 — observability must never block emit
                 _recent_errors = []
-            emit_extra(build_rubric_score_event(
+            _rubric_evt = build_rubric_score_event(
                 iteration=ctx.current_iteration,
                 score=float(score),
                 target=float(target) if target is not None else 0.0,
@@ -802,7 +886,15 @@ def _emit_supplemental(
                 ],
                 weak_leaves=_weak_leaves,
                 recent_errors=_recent_errors,
-            ))
+            )
+            if _evidence_key:  # A3 — stamp alongside the score the aggregator reads
+                _evt_payload = (
+                    _rubric_evt.get("payload")
+                    if isinstance(_rubric_evt.get("payload"), dict)
+                    else _rubric_evt
+                )
+                _evt_payload["evidence_key"] = _evidence_key
+            emit_extra(_rubric_evt)
 
             # 2026-05-26: persist the full verify_against_rubric payload so
             # write_final_report_rlm can merge per-leaf justifications into
@@ -816,6 +908,7 @@ def _emit_supplemental(
                 tmp = eval_path.with_suffix(".json.tmp")
                 payload = {
                     "iteration": ctx.current_iteration,
+                    "evidence_key": _evidence_key,  # A3 — None when fingerprint flag off
                     "overall_score": float(score),
                     "target_score": float(target) if target is not None else None,
                     "meets_target": result.get("meets_target"),
@@ -878,6 +971,9 @@ def build_custom_tools(
         from backend.agents.rlm import primitives as _p
         registry = registry if registry is not None else _p.PRIMITIVE_REGISTRY
         descriptions = descriptions if descriptions is not None else _p.PRIMITIVE_DESCRIPTIONS
+    # read_context_map is advertised to the root unconditionally (main's contract):
+    # the primitive is harmless when OPENRESEARCH_CONTEXT_MAP is off (it returns {}),
+    # so the root tool list stays stable regardless of the flag.
     return {
         name: {"tool": wrap_primitive(name, fn, ctx),
                "description": descriptions.get(name, name)}

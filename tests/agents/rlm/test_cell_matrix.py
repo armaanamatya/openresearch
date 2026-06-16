@@ -16,12 +16,17 @@ suite verifies:
 from __future__ import annotations
 
 import json
+
+import pytest
 from pathlib import Path
 
 
 from backend.agents.rlm.cell_matrix import (
     DEFAULT_HEADROOM,
+    _fold_seed_leaves,
     aggregate_cell_metrics,
+    audit_aggregation_completeness,
+    audit_headline_coverage,
     capacity_gate,
     dataset_url_preflight,
     default_dataset_probe,
@@ -669,3 +674,200 @@ class TestRealSampleShape:
         assert isinstance(out["scope"]["models_skipped"], list)
         assert isinstance(out["scope"]["environments_skipped"], list)
         assert isinstance(out["scope"]["gaps"], list)
+
+
+# ---------------------------------------------------------------------------
+# audit_aggregation_completeness (L6, 2026-06-16) — declared-vs-aggregated
+# reconciliation: catches cells lost BEFORE the aggregate loop (the gap the
+# derive-not-drop guarantee can't cover).
+# ---------------------------------------------------------------------------
+
+
+def _acell(cid, mk="m", env="e", base="b", **extra):
+    return {"id": cid, "model_key": mk, "env": env, "baseline": base, **extra}
+
+
+class TestAuditAggregationCompleteness:
+    def test_all_ok_is_complete(self):
+        cells = [_acell("c1", base="adam"), _acell("c2", base="sgd")]
+        agg = aggregate_cell_metrics(
+            {"c1": {"status": "ok", "metrics": {"metric": 0.9}},
+             "c2": {"status": "ok", "metrics": {"metric": 0.8}}},
+            cells,
+        )
+        out = audit_aggregation_completeness(cells, agg)
+        assert out["complete"] is True
+        assert set(out["ok"]) == {"c1", "c2"}
+        assert out["failed"] == [] and out["unaccounted"] == []
+
+    def test_failed_cell_surfaced(self):
+        cells = [_acell("c1", base="adam"), _acell("c2", base="sgd")]
+        agg = aggregate_cell_metrics(
+            {"c1": {"status": "ok", "metrics": {"metric": 0.9}},
+             "c2": {"status": "error", "error": "boom"}},
+            cells,
+        )
+        out = audit_aggregation_completeness(cells, agg)
+        assert out["failed"] == ["c2"]
+        assert out["complete"] is False
+        assert any("re-run" in n.lower() for n in out["notes"])
+
+    def test_unaccounted_cell_is_the_silent_loss_case(self):
+        # c2 is declared but NEVER reached aggregation (no matrix record, no gap,
+        # not skipped) — the bucket derive-not-drop cannot surface.
+        declared = [_acell("c1", base="adam"), _acell("c2", base="sgd")]
+        agg = aggregate_cell_metrics({"c1": {"status": "ok", "metrics": {"metric": 0.9}}},
+                                     [declared[0]])  # only c1 reached the loop
+        out = audit_aggregation_completeness(declared, agg)
+        assert out["unaccounted"] == ["c2"]
+        assert out["complete"] is False
+        assert any("unaccounted" in n.lower() for n in out["notes"])
+
+    def test_known_gap_is_accounted_not_unaccounted(self):
+        declared = [_acell("c1", base="adam"), _acell("big7b", mk="qwen7b", base="sgd")]
+        agg = aggregate_cell_metrics(
+            {"c1": {"status": "ok", "metrics": {"metric": 0.9}}},
+            [declared[0]],
+            models_skipped=["qwen7b"],  # capacity gate dropped it → KNOWN
+        )
+        out = audit_aggregation_completeness(declared, agg)
+        assert out["gapped"] == ["big7b"]
+        assert out["unaccounted"] == []  # a known drop is not silent loss
+
+    def test_tolerates_dup_disambiguation_suffix(self):
+        # Two cells resolve to the same triple → normalize_cell_axes suffixes the
+        # later baseline with its id; the audit must still match it as ok.
+        from backend.agents.rlm.cell_matrix import normalize_cell_axes
+        raw = [_acell("c1", base="b"), _acell("c2", base="b")]  # identical triple
+        cells, _ = normalize_cell_axes(raw)
+        agg = aggregate_cell_metrics(
+            {"c1": {"status": "ok", "metrics": {"metric": 0.9}},
+             "c2": {"status": "ok", "metrics": {"metric": 0.8}}},
+            cells,
+        )
+        out = audit_aggregation_completeness(raw, agg)  # audit the RAW declared cells
+        assert set(out["ok"]) == {"c1", "c2"}
+        assert out["complete"] is True
+
+    def test_never_raises_on_garbage(self):
+        # Returns a well-formed dict, never raises. (An empty-dict cell with no
+        # matching aggregate is legitimately "unaccounted" → complete False; the
+        # contract under test is "no exception", not a particular verdict.)
+        for decl, agg in ((None, None), ("x", {"per_model": 5}), ([{}, None, "s"], {})):
+            out = audit_aggregation_completeness(decl, agg)
+            assert isinstance(out, dict) and "complete" in out and isinstance(out["notes"], list)
+
+
+# ---------------------------------------------------------------------------
+# Cross-seed aggregation — "best (mean ± std) over N runs" evidence shape
+# (2026-06-16: the ResNet ceiling — scope seeds set but every cell s42, the
+#  variance leaves stuck at 0.4 because nothing folded the replicas).
+# ---------------------------------------------------------------------------
+
+
+class TestCrossSeedFold:
+    def test_fold_computes_mean_std_min_max_values(self):
+        leaves = [
+            {"status": "ok", "metric": 93.18, "test_error_pct": 6.82, "model_key": "resnet_110"},
+            {"status": "ok", "metric": 93.55, "test_error_pct": 6.45, "model_key": "resnet_110"},
+            {"status": "ok", "metric": 93.40, "test_error_pct": 6.60, "model_key": "resnet_110"},
+        ]
+        out = _fold_seed_leaves(leaves, [42, 43, 44])
+        assert out["seed_count"] == 3
+        assert out["seeds"] == [42, 43, 44]
+        # every numeric key reports the cross-seed mean
+        assert out["test_error_pct"] == pytest.approx(6.6233, abs=1e-3)
+        assert out["test_error_pct_mean"] == pytest.approx(6.6233, abs=1e-3)
+        assert out["test_error_pct_min"] == 6.45  # "best of N" for an error metric
+        assert out["test_error_pct_max"] == 6.82
+        assert out["test_error_pct_std"] == pytest.approx(0.1861, abs=1e-3)
+        assert out["test_error_pct_values"] == [6.82, 6.45, 6.60]
+        # non-numeric axis key inherited from the first replica
+        assert out["model_key"] == "resnet_110"
+        assert out["status"] == "ok"
+
+    def test_fold_single_value_has_zero_std(self):
+        out = _fold_seed_leaves([{"status": "ok", "metric": 5.0}], [0])
+        assert out["seed_count"] == 1
+        assert out["metric_std"] == 0.0 and out["metric_min"] == out["metric_max"] == 5.0
+
+    def test_fold_never_raises_on_garbage(self):
+        for bad in ([], [None, "x"], [{"a": "nan-ish"}]):
+            out = _fold_seed_leaves(bad, [])
+            assert isinstance(out, dict) and "status" in out
+
+    def test_aggregate_folds_distinct_seed_replicas(self):
+        # Three resnet_110 seed replicas share (model_key, env, baseline) and
+        # differ only by seed → must fold to ONE mean±std leaf, not last-wins.
+        cells = [
+            _acell("r110__s42", mk="resnet_110", env="cifar10", base="resnet", seed=42),
+            _acell("r110__s43", mk="resnet_110", env="cifar10", base="resnet", seed=43),
+            _acell("r110__s44", mk="resnet_110", env="cifar10", base="resnet", seed=44),
+        ]
+        mr = {
+            "r110__s42": {"status": "ok", "metrics": {"metric": 6.82}},
+            "r110__s43": {"status": "ok", "metrics": {"metric": 6.45}},
+            "r110__s44": {"status": "ok", "metrics": {"metric": 6.60}},
+        }
+        agg = aggregate_cell_metrics(mr, cells)
+        leaf = agg["per_model"]["resnet_110"]["cifar10"]["resnet"]
+        assert leaf["seed_count"] == 3
+        assert leaf["metric"] == pytest.approx(6.6233, abs=1e-3)
+        assert leaf["metric_min"] == 6.45 and leaf["metric_values"] == [6.82, 6.45, 6.60]
+        assert agg["status"] == "complete"
+
+    def test_aggregate_single_seed_is_byte_for_byte(self):
+        # One cell per slot → NO fold, NO seed_count key (existing behavior).
+        cells = [_acell("c1", mk="resnet_20", env="cifar10", base="resnet", seed=42)]
+        agg = aggregate_cell_metrics(
+            {"c1": {"status": "ok", "metrics": {"metric": 8.14}}}, cells)
+        leaf = agg["per_model"]["resnet_20"]["cifar10"]["resnet"]
+        assert "seed_count" not in leaf
+        assert leaf["metric"] == 8.14
+
+    def test_aggregate_same_seed_duplicate_not_folded(self):
+        # Two cells at the same slot with the SAME seed = accidental duplicate, not
+        # a sweep → keep last-write-wins (byte-for-byte), no spurious mean.
+        cells = [
+            _acell("d1", mk="m", env="e", base="b", seed=0),
+            _acell("d2", mk="m", env="e", base="b", seed=0),
+        ]
+        agg = aggregate_cell_metrics(
+            {"d1": {"status": "ok", "metrics": {"metric": 1.0}},
+             "d2": {"status": "ok", "metrics": {"metric": 2.0}}}, cells)
+        leaf = agg["per_model"]["m"]["e"]["b"]
+        assert "seed_count" not in leaf and leaf["metric"] == 2.0
+
+    def test_aggregate_folds_only_successful_seeds(self):
+        # A 3-seed slot where one seed failed → fold the 2 ok seeds, seed_count=2.
+        cells = [
+            _acell("s0", mk="m", env="e", base="b", seed=0),
+            _acell("s1", mk="m", env="e", base="b", seed=1),
+            _acell("s2", mk="m", env="e", base="b", seed=2),
+        ]
+        mr = {
+            "s0": {"status": "ok", "metrics": {"metric": 10.0}},
+            "s1": {"status": "error", "error": "boom"},
+            "s2": {"status": "ok", "metrics": {"metric": 12.0}},
+        }
+        agg = aggregate_cell_metrics(mr, cells)
+        leaf = agg["per_model"]["m"]["e"]["b"]
+        assert leaf["seed_count"] == 2 and leaf["metric"] == pytest.approx(11.0)
+
+
+class TestHeadlineCoverage:
+    def test_missing_headline_surfaced(self):
+        cells = [_acell("c", mk="resnet_110")]
+        assert audit_headline_coverage(cells, ["resnet_110", "resnet_1202"]) == ["resnet_1202"]
+
+    def test_all_present_is_empty(self):
+        cells = [_acell("a", mk="resnet_110"), _acell("b", mk="resnet_1202")]
+        assert audit_headline_coverage(cells, ["resnet_110", "resnet_1202"]) == []
+
+    def test_no_declaration_is_empty(self):
+        assert audit_headline_coverage([_acell("a", mk="x")], []) == []
+        assert audit_headline_coverage([_acell("a", mk="x")], None) == []
+
+    def test_never_raises(self):
+        assert audit_headline_coverage(None, ["x"]) == ["x"] or True  # no raise
+        assert isinstance(audit_headline_coverage("bad", "bad"), list)

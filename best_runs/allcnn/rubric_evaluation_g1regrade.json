@@ -1,0 +1,127 @@
+{
+  "overall_score": 0.7617378048780488,
+  "leaf_count": 22,
+  "graded": 20,
+  "rubric_source": "generated",
+  "leaf_scores": [
+    {
+      "id": "985ca8baab0441a69c93f17eeb61d80c",
+      "score": 0.4,
+      "justification": "metrics.json confirms c_strided=16.45% error > c_base=12.18% (ordering correct), but c_allcnn=14.81% error > c_base=12.18% (All-CNN-C worse than base, contradicting claim 2), and c_convpool=11.31% error vs c_allcnn=14.81% (3.5pp gap, not on par, contradicting claim 3)."
+    },
+    {
+      "id": "d442e584dfd249018d62f1648846c183",
+      "score": 0.0,
+      "justification": "metrics.json shows c_allcnn test_error_pct=14.81 (no aug) and c_allcnn_aug test_error_pct=15.84, both higher than c_base test_error_pct=12.18; the paper's central claim that All-CNN-C is best is contradicted in both augmented and non-augmented conditions."
+    },
+    {
+      "id": "e592b0de9ab74695a5bdd0c3b73882a4",
+      "score": 1.0,
+      "justification": "code/models.py implements all 12 variants (A/B/C \u00d7 base/strided/convpool/allcnn) with dropout 0.2 input and 0.5 after each stage; metrics.json confirms all 12 ran successfully at 350 epochs; reproduction_summary states momentum=0.9, weight_decay=0.001, lr schedule S=[200,250,300]."
+    },
+    {
+      "id": "ad46e5ab07ad4fe9a66ff4c35cea005b",
+      "score": 1.0,
+      "justification": "outputs/ directory contains per-cell .log files and training_curves.json for every variant; metrics.json records final test_error_pct, best_lr=0.05, epochs_run=350 per cell_id; c_allcnn_cifar100 entry records CIFAR-100 test_error_pct=50.38, all traceable to specific cell configs."
+    },
+    {
+      "id": "85042ac08ac94165bddb5a6e8fd606a4",
+      "score": 0.7,
+      "justification": "code/ listing shows code/guided_backprop.py and outputs/prj_0a3202fc187bb692-16797244/c_allcnn_cifar10_noaug/fig_relu_masking.png plus guided_backprop.json confirming visualization artifacts were generated, but which specific layers are visualized cannot be determined from the file listing alone."
+    },
+    {
+      "id": "cc539821da374e24a331345d725c1199",
+      "score": 1.0,
+      "justification": "code/models.py `_cifar_stage` for letter='C', variant='allcnn' inserts `nn.Conv2d(out_c, out_c, 3, padding=1, stride=2)` (same-channel stride-2 3\u00d73 conv) in place of MaxPool (MaxPool only added for 'base'/'convpool'), and `CIFARNet.forward` applies `x.mean(dim=[2,3])` (GAP) after the final 1\u00d71 conv producing `num_classes` outputs, with no FC layers."
+    },
+    {
+      "id": "a560888e3d6f479ea4e4458844c75cb5",
+      "score": 1.0,
+      "justification": "code/models.py `_cifar_stage` implements letter='A' (single 5\u00d75 per stage), letter='B' (5\u00d75 + 1\u00d71 NiN), and letter='C' (stacked 3\u00d73+3\u00d73) for variant='base' with MaxPool, all confirmed by metrics.json showing all 12 variants (a_base, b_base, c_base, etc.) with status=ok and 350 epochs run."
+    },
+    {
+      "id": "28ac78f7a60a41a8a3a1565ba439c201",
+      "score": 1.0,
+      "justification": "code/models.py `_cifar_stage` for letter='C', variant='strided' applies `nn.Conv2d(out_c, out_c, 3, padding=1, stride=2)` as the second 3\u00d73 (immediately preceding where MaxPool would be) and omits MaxPool entirely (only added for 'base'/'convpool'), confirmed by metrics.json c_strided results at 350 epochs."
+    },
+    {
+      "id": "d1ee8f2c3c854f75bcb9f97808fd97a9",
+      "score": 1.0,
+      "justification": "code/models.py `_cifar_stage` for letter='C', variant='convpool' adds an extra `nn.Conv2d(out_c, out_c, 3, padding=1)` before `nn.MaxPool2d(3, stride=2, padding=1)`, matching the 'dense conv before pooling' control; metrics.json shows c_convpool ran 350 epochs successfully."
+    },
+    {
+      "id": "b67a800a42674694a56ce6b310f6c95d",
+      "score": 0.7,
+      "justification": "code/guided_backprop.py is listed in the code/ directory; outputs/prj_0a3202fc187bb692-16797244/c_allcnn_cifar10_noaug/ contains guided_backprop.json and fig_relu_masking.png confirming the implementation ran, but the specific dual-mask implementation detail is not verifiable from the provided file contents."
+    },
+    {
+      "id": "0b8f95eba884448288a86968e2b86509",
+      "score": 1.0,
+      "justification": "code/data.py implements `_gcn` (per-sample mean subtraction + std division, scale=55) and `ZCAPreprocessor.compute_zca_matrix` with epsilon=0.1 matching Goodfellow et al. 2013; ZCA cache files exist at data/zca_cache/zca_cifar10_eps0.1.npz and zca_cifar100_eps0.1.npz."
+    },
+    {
+      "id": "a7cced3657bd4330b6531d7af16c64bd",
+      "score": 1.0,
+      "justification": "code/data.py materializes h-flipped copies of ALL images offline in raw pixel space (step 1: concat `train_data[:,:,:,::-1]` \u2192 2N samples), fits ZCA on original N, then applies online-only \u00b15px random translations (`translate_only=True`, `_augment_translate_only`) during training; metrics.json shows c_allcnn_aug (augment=true) ran 350 epochs."
+    },
+    {
+      "id": "b4bce7796dce45a8ac53c148111cc2a7",
+      "score": 1.0,
+      "justification": "metrics.json for c_allcnn_cifar100 shows letter='C', variant='allcnn', dataset='cifar100', lr=0.05, best_lr=0.05, epochs_total=350, epochs_run=350 \u2014 identical model and hyperparameters to the CIFAR-10 c_allcnn cell with no per-dataset retuning evident."
+    },
+    {
+      "id": "a6bed761850b4856b11f85adf490daca",
+      "score": 1.0,
+      "justification": "metrics.json lr history series for c_allcnn shows first=0.05, last=5e-5 over len=350 epochs, consistent with three \u00d70.1 decays at S=[200,250,300] (0.05\u21920.005\u21920.0005\u21925e-5); all 14 cells show epochs_total=350 and epochs_run=350."
+    },
+    {
+      "id": "0265a0892c004ef2947ef665aa922adf",
+      "score": 0.4,
+      "justification": "metrics.json shows every model variant with lr=0.05 and best_lr=0.05, but no artifacts (per-lr cell outputs or cells.json search sections) confirm that the required search over {0.25, 0.1, 0.05, 0.01} was actually executed; results appear to come from a single lr=0.05 run."
+    },
+    {
+      "id": "931320a60c694dc6951ca08a67a6365d",
+      "score": 0.7,
+      "justification": "code/models.py CIFARNet confirms `nn.Dropout(0.2)` on input and `nn.Dropout(0.5)` after each stage (lines in `__init__`); weight decay 0.001 is stated in the reproduction_summary narrative but not verifiable from the provided code snippets."
+    },
+    {
+      "id": "aabce69c0b4b4abd9f33ec7a4ab66713",
+      "score": 1.0,
+      "justification": "metrics.json reports test_error_pct for all 12 CIFAR-10 no-augmentation variants (a_base through c_allcnn) plus c_allcnn_aug (augmentation=true) and c_allcnn_cifar100 (augmentation=true), covering both no-aug and aug conditions on CIFAR-10 and CIFAR-100 as required."
+    },
+    {
+      "id": "43e02332314446719d8b8a3066bffac0",
+      "score": 0.0,
+      "justification": "The reproduction_summary states ImageNet is unobtainable due to licensing; only an unrun `_ImageNetAllCNNB` class stub exists in code/models.py; no ImageNet metrics or evaluation artifacts are present in the evidence."
+    },
+    {
+      "id": "d55317608d0e4b91927b3bc490c6b498",
+      "score": 1.0,
+      "justification": "code/models.py CIFARNet.forward applies `x = self.features(x)` (producing shape (B, num_classes, H, W)) then `x = x.mean(dim=[2, 3])` (GAP), with the final layer being `nn.Conv2d(192, num_classes, 1)` \u2014 no FC layers anywhere in the architecture."
+    },
+    {
+      "id": "b7325d4fe66147368e9b5d63d05a60f5",
+      "score": 0.7,
+      "justification": "metrics.json a_base shows test_error_pct=15.61% (test_accuracy=0.8439, 350 epochs run, status=ok); the model trains and converges (direction not inverted) but falls 3.1 percentage points short of the paper's 12.5%, well outside the \u00b11% tolerance specified in the leaf, likely reflecting the absence of a full LR search."
+    },
+    {
+      "id": "2fb0fff0618746be84f5b7ff621f0542",
+      "score": null,
+      "justification": "data_unavailable: dataset declared in data_load_failures or scope.gaps",
+      "state": "skipped_data_unavailable"
+    },
+    {
+      "id": "95d26e196ac34873a7adcca08df84e46",
+      "score": null,
+      "justification": "data_unavailable: dataset declared in data_load_failures or scope.gaps",
+      "state": "skipped_data_unavailable"
+    }
+  ],
+  "degraded": false,
+  "coverage_pct": 1.0,
+  "eligible_count": 20,
+  "unavailable_count": 2,
+  "target_score": null,
+  "invariant_results": [],
+  "invariant_gate_applied": false
+}

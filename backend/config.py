@@ -423,17 +423,18 @@ class Settings(BaseSettings):
     )
 
     # --- PR-π Module E — parsed paper precondition gate (spec 2026-05-26) ---
-    # When True (default), the RLM loop proceeds even when parsed_full_text.txt
-    # is missing or smaller than 1 KB, logging a warning. When False, the run
-    # fails fast with a descriptive RuntimeError before the RLM loop starts.
-    # Default is True for backwards compatibility; flip to False in PR-ρ after
-    # observing production for a week.
+    # When False (default since 2026-06-15), a degraded ingestion (parsed_full_text.txt
+    # missing or <1 KB) FAILS FAST with an actionable RuntimeError before the RLM loop —
+    # so a paper that didn't fetch (e.g. a future-dated arXiv id) never silently wastes a
+    # 14h run on near-empty context (the SDAR 469-char incident). Set
+    # OPENRESEARCH_ALLOW_LOSSY_PAPER_TEXT=true to override and proceed degraded. The actionable
+    # path is: provide a local PDF (`reproduce path/to.pdf`) or bundle it in papers/registry.json.
     allow_lossy_paper_text: bool = Field(
-        default=True,
+        default=False,
         description=(
             "Allow the RLM loop to proceed when parsed_full_text.txt is missing "
-            "or <1 KB (lossy workspace fallback). When False, missing/small "
-            "parsed_full_text.txt raises RuntimeError before the loop starts."
+            "or <1 KB (lossy workspace fallback). Default False: degraded ingestion "
+            "raises RuntimeError before the loop starts (set True to override)."
         ),
     )
 

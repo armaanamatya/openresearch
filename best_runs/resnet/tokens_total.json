@@ -1,0 +1,98 @@
+{
+  "by_model": {
+    "claude-oauth": {
+      "input_tokens": 8,
+      "output_tokens": 21624
+    },
+    "claude-sonnet-4-6": {
+      "input_tokens": 55,
+      "output_tokens": 62127
+    }
+  },
+  "by_primitive": {
+    "baseline-implementation": {
+      "calls": 3,
+      "input_tokens": 43,
+      "output_tokens": 53900
+    },
+    "build_environment": {
+      "calls": 1,
+      "input_tokens": 0,
+      "output_tokens": 0
+    },
+    "check_user_messages": {
+      "calls": 3,
+      "input_tokens": 0,
+      "output_tokens": 0
+    },
+    "detect_environment": {
+      "calls": 1,
+      "input_tokens": 0,
+      "output_tokens": 0
+    },
+    "extract_hyperparameters": {
+      "calls": 1,
+      "input_tokens": 0,
+      "output_tokens": 0
+    },
+    "heartbeat": {
+      "calls": 10,
+      "input_tokens": 0,
+      "output_tokens": 0
+    },
+    "implement_baseline": {
+      "calls": 3,
+      "input_tokens": 0,
+      "output_tokens": 0
+    },
+    "plan_reproduction": {
+      "calls": 1,
+      "input_tokens": 3,
+      "output_tokens": 9319
+    },
+    "propose_improvements": {
+      "calls": 1,
+      "input_tokens": 3,
+      "output_tokens": 2460
+    },
+    "record_candidate_outcome": {
+      "calls": 4,
+      "input_tokens": 0,
+      "output_tokens": 0
+    },
+    "resolve_gpu_requirements": {
+      "calls": 1,
+      "input_tokens": 0,
+      "output_tokens": 0
+    },
+    "rlm_root": {
+      "calls": 1,
+      "input_tokens": 12,
+      "output_tokens": 8227
+    },
+    "run_experiment": {
+      "calls": 3,
+      "input_tokens": 0,
+      "output_tokens": 0
+    },
+    "understand_section": {
+      "calls": 3,
+      "input_tokens": 0,
+      "output_tokens": 0
+    },
+    "verify_against_rubric": {
+      "calls": 3,
+      "input_tokens": 2,
+      "output_tokens": 9845
+    }
+  },
+  "computed_at_utc": "2026-06-14T14:29:52.283395+00:00",
+  "grand_total": {
+    "cache_creation_input_tokens": 467313,
+    "cache_read_input_tokens": 2710658,
+    "calls": 39,
+    "input_tokens": 63,
+    "output_tokens": 83751
+  },
+  "schema_version": 1
+}

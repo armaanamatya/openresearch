@@ -8,6 +8,7 @@ import logging
 import os
 import stat
 import subprocess
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -37,6 +38,48 @@ DEFAULT_RUNPOD_IMAGE = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04
 # RunPod pod states from which recovery is impossible — raise immediately
 # rather than spinning the full boot_timeout_seconds (A3-5).
 _TERMINAL_POD_STATES: frozenset[str] = frozenset({"EXITED", "FAILED", "DEAD"})
+
+# C6 (2026-06-16): one-time process guard for the stall-coverage warning.
+_STALL_WARN_LOCK = threading.Lock()
+_STALL_WARN_EMITTED = False
+
+
+def _warn_no_remote_stall_detection_once() -> None:
+    """Emit a single loud WARNING that runpod exec has NO stall detection.
+
+    The 2026-06-08 execution-reliability redesign (streaming + liveness-based
+    stall kill + finalize-on-timeout) is ``local``-scoped: it lives in
+    ``LocalProcessBackend``/``run_experiment``'s local branch. The runpod exec
+    path here has only the hard ``timeout`` (``exec_timeout``) — it tees output
+    to ``exec.log`` and kills the SSH process when the wall-clock cap fires, but
+    it does NOT detect a *genuine hang* (no new output / no checkpoint mtime
+    bump / GPU idle) earlier than that cap. A wedged remote process therefore
+    burns the full per-command timeout before it is reaped. A true remote
+    heartbeat (polling remote ``nvidia-smi`` + ckpt mtime over a second SSH
+    channel) is a larger change and is intentionally deferred; this warning
+    documents the gap loudly and exactly once per process so an operator
+    watching a stuck pod knows the early-kill they get on ``local`` is absent.
+    Fired once because it is invariant for the whole run; suppress with
+    ``OPENRESEARCH_RUNPOD_STALL_WARN=0``.
+    """
+    global _STALL_WARN_EMITTED
+    if os.environ.get("OPENRESEARCH_RUNPOD_STALL_WARN", "1").strip().lower() not in (
+        "1", "true", "yes", "on"
+    ):
+        return
+    with _STALL_WARN_LOCK:
+        if _STALL_WARN_EMITTED:
+            return
+        _STALL_WARN_EMITTED = True
+    _log.warning(
+        "RUNPOD_NO_STALL_DETECTION — runpod exec has no liveness-based stall "
+        "detection (the 2026-06-08 reliability redesign is local-only). A wedged "
+        "remote process (NCCL deadlock, stuck dataset download, idle GPU) will "
+        "burn the full per-command timeout before it is reaped; only the hard "
+        "wall-clock cap (exec_timeout) applies, not an early stall kill. Output "
+        "is still teed to <artifact_root>/exec.log for live `tail -f` diagnosis. "
+        "Set OPENRESEARCH_RUNPOD_STALL_WARN=0 to silence this notice."
+    )
 
 
 @dataclass(frozen=True)
@@ -344,6 +387,10 @@ class RunpodBackend(RuntimeBackend):
                         )
                 raise
         started_at = datetime.now(timezone.utc)
+
+        # C6 (2026-06-16): runpod exec has NO liveness-based stall detection
+        # (local-only redesign) — warn loudly, once per process.
+        _warn_no_remote_stall_detection_once()
 
         # Mirror LocalDockerBackend.exec: tee stdout/stderr to
         # <artifact_root>/exec.log line-by-line so a wedged remote process

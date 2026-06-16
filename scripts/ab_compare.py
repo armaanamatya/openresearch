@@ -13,11 +13,20 @@ Usage:
     python scripts/ab_compare.py --paper 1412.6806
     python scripts/ab_compare.py --pair-id allcnn-ab-20260611
     python scripts/ab_compare.py --paper 1412.6980 --select best
+    python scripts/ab_compare.py --pair-id allcnn-ab-20260611 --require-stamped
+
+Validator mode (``--require-stamped`` / ``OPENRESEARCH_REQUIRE_STAMPED_AB=1``,
+default OFF = reporter behaviour, byte-for-byte): refuses to emit a Δ unless
+BOTH arms carry an ``experiment_arm`` stamp, their ``rubric_tree.json`` sha256
+match, and their recorded ``scope`` match — so a reported Δ can never be
+apples-to-oranges. See spec D1 (``…2026-06-16-grader-fidelity-…``).
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +35,11 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+
+def _flag_on(name: str) -> bool:
+    """Env-flag truthiness (matches the repo-wide pattern)."""
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _load_candidates(runs_root: Path) -> list[tuple[Path, dict]]:
@@ -70,6 +84,78 @@ def _arm_of(report: dict) -> str:
     if isinstance(arm, dict) and arm.get("arm"):
         return str(arm["arm"])
     return "unstamped"
+
+
+def _is_stamped(report: dict) -> bool:
+    """True iff the report carries a real ``experiment_arm`` stamp.
+
+    A stamp is the ``{arm, ab_pair_id, ...}`` block written by
+    ``report.write_final_report_rlm`` (via ``bes_rlm.experiment_arm_stamp``).
+    A report without it is labelled ``unstamped`` by ``_arm_of`` and is NOT a
+    valid arm in validator mode.
+    """
+    arm = report.get("experiment_arm")
+    return isinstance(arm, dict) and bool(arm.get("arm")) and str(arm.get("arm")) != "unstamped"
+
+
+def _rubric_tree_sha256(run_dir: Path) -> str | None:
+    """sha256 of ``<run_dir>/rubric_tree.json`` bytes, or None if absent."""
+    p = run_dir / "rubric_tree.json"
+    try:
+        return hashlib.sha256(p.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _scope_key(scope: Any) -> str:
+    """Canonical, order-stable JSON of the recorded ``scope`` for equality.
+
+    ``scope`` is whatever the report records (today a free-text
+    ``{requested, ran, gaps}`` block — see report.py). ``sort_keys`` makes
+    dict-key order irrelevant; lists stay order-sensitive (a different ``ran``
+    list IS a different scope — exactly the apples-to-oranges case to catch).
+    """
+    return json.dumps(scope, sort_keys=True, ensure_ascii=True, default=str)
+
+
+def validate_stamped_pair(control: dict, bes: dict) -> str | None:
+    """Refuse-reason for a pair under ``--require-stamped``, or None if valid.
+
+    Enforced contract (the "stamped arm" contract):
+      1. BOTH arms carry an ``experiment_arm`` stamp (no ``unstamped`` control);
+      2. each arm's ``rubric_tree.json`` exists and their sha256 are identical;
+      3. the two arms' recorded ``scope`` are equal.
+    """
+    if not control.get("_stamped"):
+        return (
+            "control arm is unstamped (no experiment_arm.arm) — re-run the control "
+            "with OPENRESEARCH_AB_ARM=control so the pair is explicitly labelled"
+        )
+    if not bes.get("_stamped"):
+        return (
+            "bes arm is unstamped (no experiment_arm.arm) — re-run the bes arm "
+            "with OPENRESEARCH_AB_ARM=bes so the pair is explicitly labelled"
+        )
+
+    c_sha = _rubric_tree_sha256(control["_run_dir"])
+    b_sha = _rubric_tree_sha256(bes["_run_dir"])
+    if c_sha is None:
+        return f"control arm {control['project_id']} has no rubric_tree.json — cannot verify rubric equality"
+    if b_sha is None:
+        return f"bes arm {bes['project_id']} has no rubric_tree.json — cannot verify rubric equality"
+    if c_sha != b_sha:
+        return (
+            "rubric_tree.json differs between arms "
+            f"(control {c_sha[:12]} != bes {b_sha[:12]}) — the arms were graded "
+            "against different rubrics; pin one with OPENRESEARCH_REUSE_RUBRIC=1"
+        )
+
+    if _scope_key(control["_scope"]) != _scope_key(bes["_scope"]):
+        return (
+            "scope differs between arms (models/datasets/seeds the report records "
+            "as scope) — the arms did not run the same experiment matrix"
+        )
+    return None
 
 
 def _paper_id(report: dict) -> str | None:
@@ -152,6 +238,12 @@ def _summarise(run_dir: Path, report: dict) -> dict[str, Any]:
     rubric = report.get("rubric") if isinstance(report.get("rubric"), dict) else {}
     return {
         "project_id": run_dir.name,
+        # _run_dir / _scope / leaf_scores are validator/working-only fields,
+        # stripped from the slim JSON artifact (see main()) so reporter-mode
+        # output stays byte-for-byte identical when --require-stamped is off.
+        "_run_dir": run_dir,
+        "_scope": report.get("scope"),
+        "_stamped": _is_stamped(report),
         "arm": _arm_of(report),
         "ab_pair_id": (arm_stamp or {}).get("ab_pair_id"),
         "overall_score": overall,
@@ -188,9 +280,18 @@ def build_comparison(
     *,
     paper: str | None = None,
     pair_id: str | None = None,
-    select: str = "latest",
+    select: str = "best",
+    require_stamped: bool = False,
 ) -> dict[str, Any]:
-    """The full comparison payload (also the JSON artifact)."""
+    """The full comparison payload (also the JSON artifact).
+
+    ``require_stamped`` (validator mode, default OFF): when True, an unstamped
+    run is NEVER admitted as control and ``validate_stamped_pair`` must pass
+    (matching ``rubric_tree.json`` sha + scope) before any Δ / leaf-move is
+    emitted; on failure the payload carries ``validation_error`` and empty
+    ``deltas``/``top_leaf_moves``. When False, behaviour is byte-for-byte the
+    prior reporter.
+    """
     rows: list[dict] = []
     for run_dir, report in _load_candidates(runs_root):
         # Matching: with BOTH selectors, a run matches on EITHER — the
@@ -218,8 +319,10 @@ def build_comparison(
     # Unstamped runs may stand in as control when pairing involves a paper
     # selector (pre-stamp reports are the historical controls). Only a PURE
     # pair-id pairing excludes them — there an unstamped run can't be tied to
-    # the pair at all.
-    allow_unstamped = not pair_id or bool(paper)
+    # the pair at all. Validator mode (require_stamped) NEVER admits an
+    # unstamped run as control: an apples-to-oranges Δ is the whole thing it
+    # exists to refuse.
+    allow_unstamped = (not require_stamped) and (not pair_id or bool(paper))
     control = _pick(
         by_arm.get("control", [])
         + (by_arm.get("unstamped", []) if allow_unstamped else []),
@@ -227,14 +330,38 @@ def build_comparison(
     )
     bes = _pick(by_arm.get("bes", []), select)
 
+    # Validator gate: when both arms resolve, assert the stamped contract
+    # (stamp present + matching rubric_tree.json sha + matching scope) BEFORE
+    # any Δ is computed. A refusal blanks deltas/leaf_moves and carries the
+    # reason. Reporter mode (require_stamped=False) skips this entirely.
+    validation_error: str | None = None
+    if require_stamped:
+        if not (control and bes):
+            found = ", ".join(f"{a}×{len(items)}" for a, items in sorted(by_arm.items())) or "none"
+            # In validator mode unstamped runs are NOT admitted as control, so
+            # name them explicitly when their exclusion is why an arm is empty
+            # — the refusal stays actionable (re-run the arm with OPENRESEARCH_AB_ARM).
+            unstamped_note = (
+                " (unstamped runs are not admissible as control in validator mode — "
+                "re-run the control with OPENRESEARCH_AB_ARM=control)"
+                if by_arm.get("unstamped") and not control
+                else ""
+            )
+            validation_error = (
+                "validator mode requires both a stamped control and a stamped bes arm; "
+                f"found arms: {found}{unstamped_note}"
+            )
+        else:
+            validation_error = validate_stamped_pair(control, bes)
+
     deltas: dict[str, float | None] = {}
-    if control and bes:
+    if control and bes and not validation_error:
         for key in ("overall_score", "compute_adjusted_score", "wall_clock_s", "cost_usd"):
             a, b = control.get(key), bes.get(key)
             deltas[key] = (b - a) if (a is not None and b is not None) else None
 
     leaf_moves: list[dict] = []
-    if control and bes:
+    if control and bes and not validation_error:
         all_ids = set(control["leaf_scores"]) | set(bes["leaf_scores"])
         for lid in all_ids:
             c = control["leaf_scores"].get(lid)
@@ -245,7 +372,7 @@ def build_comparison(
         leaf_moves.sort(key=lambda m: -abs(m["delta"]))
         leaf_moves = leaf_moves[:8]
 
-    return {
+    payload: dict[str, Any] = {
         "key": pair_id or paper or "all",
         "paper": paper,
         "pair_id": pair_id,
@@ -257,6 +384,12 @@ def build_comparison(
         "deltas": deltas,
         "top_leaf_moves": leaf_moves,
     }
+    # Validator-only keys: omitted entirely in reporter mode so the existing
+    # artifact stays byte-for-byte identical when --require-stamped is off.
+    if require_stamped:
+        payload["require_stamped"] = True
+        payload["validation_error"] = validation_error
+    return payload
 
 
 def render_markdown(cmp: dict[str, Any]) -> str:
@@ -266,6 +399,13 @@ def render_markdown(cmp: dict[str, Any]) -> str:
     lines.append(f"Generated {cmp['generated_at']} · select={cmp['select']} · arms found: "
                  + ", ".join(f"{a}×{n}" for a, n in cmp["arms_found"].items()))
     lines.append("")
+    # Validator refusal banner (validator mode only — the key is absent in
+    # reporter mode, so this block never renders there).
+    if cmp.get("validation_error"):
+        lines.append(f"> **REFUSED (validator mode):** {cmp['validation_error']}")
+        lines.append(">")
+        lines.append("> No Δ emitted — the pair is not a like-for-like comparison.")
+        lines.append("")
     lines.append("| arm | project | score | adj | verdict | meets target | iters | wall | cost |")
     lines.append("|---|---|---|---|---|---|---|---|---|")
     for label in ("control", "bes"):
@@ -315,21 +455,39 @@ def render_markdown(cmp: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+# Working-only summary keys (a Path + raw scope) — never JSON-serialized and
+# never present in the prior artifact; stripped from the slim JSON in BOTH
+# modes so reporter output stays byte-for-byte identical.
+_SLIM_DROP = ("leaf_scores", "_run_dir", "_scope", "_stamped")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--paper", default=None, help="Paper id to pair (final_report.json paper.id).")
     ap.add_argument("--pair-id", default=None, help="Explicit OPENRESEARCH_AB_PAIR_ID to pair on.")
     ap.add_argument("--runs-root", default="runs", help="Runs root directory.")
     ap.add_argument("--out", default=None, help="Output dir (default <runs-root>/_ab/<key>/).")
-    ap.add_argument("--select", choices=["latest", "best"], default="latest",
-                    help="Which run to take per arm when several match.")
+    ap.add_argument("--select", choices=["latest", "best"], default="best",
+                    help="Which run to take per arm when several match (default: best).")
+    ap.add_argument("--require-stamped", action="store_true", default=False,
+                    help="Validator mode: refuse a Δ unless both arms are stamped and "
+                         "their rubric_tree.json sha + scope match "
+                         "(also via OPENRESEARCH_REQUIRE_STAMPED_AB=1).")
     args = ap.parse_args()
 
     if not args.paper and not args.pair_id:
         ap.error("one of --paper / --pair-id is required")
 
+    require_stamped = args.require_stamped or _flag_on("OPENRESEARCH_REQUIRE_STAMPED_AB")
+
     runs_root = Path(args.runs_root)
-    cmp = build_comparison(runs_root, paper=args.paper, pair_id=args.pair_id, select=args.select)
+    cmp = build_comparison(
+        runs_root,
+        paper=args.paper,
+        pair_id=args.pair_id,
+        select=args.select,
+        require_stamped=require_stamped,
+    )
 
     out_dir = Path(args.out) if args.out else runs_root / "_ab" / str(cmp["key"]).replace("/", "_")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -338,12 +496,15 @@ def main() -> int:
     slim = {k: v for k, v in cmp.items()}
     for label in ("control", "bes"):
         if slim.get(label):
-            slim[label] = {k: v for k, v in slim[label].items() if k != "leaf_scores"}
+            slim[label] = {k: v for k, v in slim[label].items() if k not in _SLIM_DROP}
     json_path.write_text(json.dumps(slim, indent=2), encoding="utf-8")
     md = render_markdown(cmp)
     md_path.write_text(md, encoding="utf-8")
     print(md)
     print(f"[ab_compare] wrote {md_path} and {json_path}")
+    if cmp.get("validation_error"):
+        print(f"[ab_compare] REFUSED (validator mode): {cmp['validation_error']}", file=sys.stderr)
+        return 3
     if not cmp.get("control") or not cmp.get("bes"):
         print("[ab_compare] WARNING: missing an arm — comparison incomplete", file=sys.stderr)
         return 2

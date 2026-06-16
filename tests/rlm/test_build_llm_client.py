@@ -267,14 +267,22 @@ class TestPrimitiveLlmModelPin:
 
     Scope is ONLY the ClaudeLlmClient branches (claude-oauth / anthropic /
     fallback); navigation sub-calls and the root loop are configured elsewhere
-    and must remain unaffected. Unset or blank = legacy behavior (CLI default).
+    and must remain unaffected. Unset or blank → ClaudeLlmClient falls back to
+    default_oauth_model() (Sonnet) — NEVER the bundled CLI's mutable default
+    (the 2026-06-14 Fable-5 wedge: model=None deferred to an unavailable CLI
+    default and wedged the whole run).
     """
 
-    def test_pin_unset_leaves_model_none(self, monkeypatch):
+    def test_pin_unset_falls_back_to_safe_default(self, monkeypatch):
+        """Unset pin → an EXPLICIT Sonnet model, never None (the wedge fix)."""
         monkeypatch.delenv("OPENRESEARCH_PRIMITIVE_LLM_MODEL", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_OAUTH_FALLBACK_MODEL", raising=False)
         root = _make_root_model("anthropic-oauth", key="claude-oauth")
         client, label = _build_llm_client(None, root)
-        assert client._model is None
+        assert client._model == "claude-sonnet-4-6"
+        assert client._model is not None  # the contract that prevents the wedge
+        # The run-level label is still "claude-oauth" — _pinned_model stays None
+        # at the dispatch layer; the safe fallback happens inside ClaudeLlmClient.
         assert label == "claude-oauth"
 
     def test_pin_routes_oauth_client_to_pinned_model(self, monkeypatch):
@@ -293,10 +301,21 @@ class TestPrimitiveLlmModelPin:
 
     def test_blank_pin_is_treated_as_unset(self, monkeypatch):
         monkeypatch.setenv("OPENRESEARCH_PRIMITIVE_LLM_MODEL", "   ")
+        monkeypatch.delenv("OPENRESEARCH_OAUTH_FALLBACK_MODEL", raising=False)
         root = _make_root_model("anthropic-oauth", key="claude-oauth")
         client, label = _build_llm_client(None, root)
-        assert client._model is None
+        # Blank pin → safe Sonnet default, NOT None (no CLI-default deferral).
+        assert client._model == "claude-sonnet-4-6"
         assert label == "claude-oauth"
+
+    def test_oauth_fallback_model_env_override(self, monkeypatch):
+        """OPENRESEARCH_OAUTH_FALLBACK_MODEL repoints the safe default (e.g. if
+        Sonnet itself is ever unavailable)."""
+        monkeypatch.delenv("OPENRESEARCH_PRIMITIVE_LLM_MODEL", raising=False)
+        monkeypatch.setenv("OPENRESEARCH_OAUTH_FALLBACK_MODEL", "claude-opus-4-8")
+        root = _make_root_model("anthropic-oauth", key="claude-oauth")
+        client, _ = _build_llm_client(None, root)
+        assert client._model == "claude-opus-4-8"
 
     def test_pin_does_not_touch_openai_branch(self, monkeypatch):
         from backend.services.context.workspace.tools.openai_client import OpenAILlmClient

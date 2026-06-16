@@ -12,7 +12,7 @@
 opsd_enabled = baseline in ("sdar", "grpo_opsd")
 gate_type    = "sigmoid" if baseline == "sdar" else "ones"
 ```
-`BASELINES` is an agent-side list (`train.py:1174`); `train_one_run(baseline=...)` (`train.py:465`) dispatches. So **adding baselines is NOT a backend change** — it is (a) adding cells with the new `baseline` string to `cells.json`, and (b) extending the agent's `train.py` dispatch. The lever is the existing **`REPROLAB_BASELINE_EXTRA_GUIDANCE`** env var (instructs the RLM root to emit them), not a code patch.
+`BASELINES` is an agent-side list (`train.py:1174`); `train_one_run(baseline=...)` (`train.py:465`) dispatches. So **adding baselines is NOT a backend change** — it is (a) adding cells with the new `baseline` string to `cells.json`, and (b) extending the agent's `train.py` dispatch. The lever is the existing **`OPENRESEARCH_BASELINE_EXTRA_GUIDANCE`** env var (instructs the RLM root to emit them), not a code patch.
 
 ## 2. Component A — the three missing baselines
 
@@ -24,7 +24,7 @@ Paper has 5 (GRPO, OPSD, Skill-SD, GRPO+OPSD, RLSD); the run produced 3 (GRPO, G
 | **Skill-SD** | Self-distillation *with* a populated `skill_context` prompt slot | Med — slot exists but is always empty; needs a SkillBank feed | `build_prompt(question, skill_context)` `train.py:241-249` |
 | **RLSD** | RL + self-distillation variant — another `(opsd_enabled, gate_type, schedule)` combination | Med | `train_one_run` dispatch `train.py:487` |
 
-**Approach:** drive via `REPROLAB_BASELINE_EXTRA_GUIDANCE` with the exact loss recipes; start with **standalone OPSD** (the flag flip) to validate the cell→leaf plumbing before the Skill-SD SkillBank work. Note: the SkillBank/skill-retrieval subsystem (leaf `d2c1a0a8`, the 4 strategies UCB/KM/Full/Random) is **not** shipped by `full-scope-envs` and is a separate, higher-effort build — defer it.
+**Approach:** drive via `OPENRESEARCH_BASELINE_EXTRA_GUIDANCE` with the exact loss recipes; start with **standalone OPSD** (the flag flip) to validate the cell→leaf plumbing before the Skill-SD SkillBank work. Note: the SkillBank/skill-retrieval subsystem (leaf `d2c1a0a8`, the 4 strategies UCB/KM/Full/Random) is **not** shipped by `full-scope-envs` and is a separate, higher-effort build — defer it.
 
 ## 3. Component B — real eval templates (rides the Phase 0 merge)
 
@@ -54,7 +54,7 @@ Effective weight = area_weight × within-area leaf weight.
 
 ## 6. Testing
 
-- Cell-emission test: with `REPROLAB_BASELINE_EXTRA_GUIDANCE` set for the 3 baselines, the generated `cells.json` contains `baseline ∈ {opsd, skill_sd, rlsd}` cells and `aggregate_cell_metrics` nests them at `per_model[m][env][baseline]`.
+- Cell-emission test: with `OPENRESEARCH_BASELINE_EXTRA_GUIDANCE` set for the 3 baselines, the generated `cells.json` contains `baseline ∈ {opsd, skill_sd, rlsd}` cells and `aggregate_cell_metrics` nests them at `per_model[m][env][baseline]`.
 - Leaf-attribution test: a run with all 5 baselines lifts leaf `39e798b7` above the repair threshold.
 - Provenance/curves: assert `curves.json` written and the report carries the repo link.
 

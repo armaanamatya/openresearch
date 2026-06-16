@@ -155,6 +155,23 @@ class TestBuildFinalReportParsing:
 
         assert report.verdict == "partial"
 
+    def test_meets_target_recomputed_from_final_score(self, make_context, tmp_path):
+        """A7: meets_target is recomputed from the FINAL overall_score, so a stale
+        True (score below target) is corrected — not shipped as a false pass."""
+        ctx = _record_run_experiment(make_context(tmp_path))
+        d = dict(_BASE_REPORT_DICT)
+        d["rubric"] = {"overall_score": 0.5, "target_score": 0.7, "meets_target": True, "areas": []}
+        report = build_final_report(_make_result(json.dumps(d)), ctx=ctx)
+        assert report.rubric["meets_target"] is False  # 0.5 < 0.7 → stale True corrected
+
+    def test_meets_target_none_when_no_target(self, make_context, tmp_path):
+        """No target_score → meets_target is None, never a fabricated bool."""
+        ctx = _record_run_experiment(make_context(tmp_path))
+        d = dict(_BASE_REPORT_DICT)
+        d["rubric"] = {"overall_score": 0.88, "meets_target": True, "areas": []}
+        report = build_final_report(_make_result(json.dumps(d)), ctx=ctx)
+        assert report.rubric["meets_target"] is None
+
     def test_empty_baseline_metrics_tolerated(self, make_context, tmp_path):
         """Empty baseline_metrics in the response does not raise."""
         ctx = make_context(tmp_path)
@@ -944,3 +961,61 @@ class TestAuthoritativeRubricOverride:
         assert data["rubric"]["overall_score"] == pytest.approx(0.65632)
         assert data["rubric"]["target_score"] == 0.6
         assert data["rubric"]["meets_target"] is True
+
+
+# --- best-of-run floor at the write chokepoint (2026-06-13 OmniZip 0.7498→0.6919) ---
+
+def _events_with_peak(project_dir: Path, peak: float, last: float) -> None:
+    project_dir.mkdir(parents=True, exist_ok=True)
+    lines = [
+        json.dumps({"event": "rubric_score", "score": peak}),
+        json.dumps({"event": "rubric_score", "score": last}),
+    ]
+    (project_dir / "dashboard_events.jsonl").write_text("\n".join(lines) + "\n")
+
+
+class TestBestOfRunFloorAtWriteChokepoint:
+    def test_clean_completion_floored_to_peak(self, tmp_path, monkeypatch):
+        # Isolate the floor mechanism from the (default-ON) evidence gate, which
+        # would otherwise downgrade this evidence-less fixture's verdict.
+        monkeypatch.setenv("OPENRESEARCH_EVIDENCE_GATE", "0")
+        project_dir = tmp_path / "proj"
+        _events_with_peak(project_dir, peak=0.7498, last=0.6919)
+        base = dict(_BASE_REPORT_DICT)
+        base["verdict"] = "partial"
+        base["rubric"] = {"overall_score": 0.6919, "target_score": 0.6638,
+                          "meets_target": True, "areas": []}
+        report = RLMFinalReport(**base)
+        json_path, _ = write_final_report_rlm(report, project_dir)
+        data = json.loads(json_path.read_text())
+        assert data["rubric"]["overall_score"] == pytest.approx(0.7498)
+        assert data["rubric"].get("best_of_run") is True
+        assert data["verdict"] == "reproduced"
+
+    def test_hard_stop_not_floored_up_here(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENRESEARCH_EVIDENCE_GATE", "0")
+        project_dir = tmp_path / "proj"
+        _events_with_peak(project_dir, peak=0.7498, last=0.6919)
+        base = dict(_BASE_REPORT_DICT)
+        base["verdict"] = "partial"
+        base["rubric"] = {"overall_score": 0.6919, "target_score": 0.6638,
+                          "meets_target": True, "areas": []}
+        report = RLMFinalReport(**base)
+        report.stop_reason = {"kind": "wall_clock_watchdog", "detail": "x"}
+        json_path, _ = write_final_report_rlm(report, project_dir)
+        data = json.loads(json_path.read_text())
+        # write chokepoint floor is clean-completion only; hard-stop unchanged here
+        assert data["rubric"]["overall_score"] == pytest.approx(0.6919)
+        assert data["verdict"] == "partial"
+
+    def test_no_floor_when_report_already_at_peak(self, tmp_path):
+        project_dir = tmp_path / "proj"
+        _events_with_peak(project_dir, peak=0.70, last=0.70)
+        base = dict(_BASE_REPORT_DICT)
+        base["rubric"] = {"overall_score": 0.70, "target_score": 0.6,
+                          "meets_target": True, "areas": []}
+        report = RLMFinalReport(**base)
+        json_path, _ = write_final_report_rlm(report, project_dir)
+        data = json.loads(json_path.read_text())
+        assert data["rubric"]["overall_score"] == pytest.approx(0.70)
+        assert data["rubric"].get("best_of_run") is not True

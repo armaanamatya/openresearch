@@ -109,6 +109,14 @@ class RunContext:
     latest_rubric_target: float | None = None
     latest_rubric_iteration: int = 0  # the iteration in which the score above was recorded
 
+    # Execution mode (C1, 2026-06-16): "efficient" | "max", threaded from
+    # ExecutionProfile.mode by run.py. resolve_experiment_timeout_s
+    # (primitives.py) reads ctx.execution_mode FIRST, falling back to the
+    # OPENRESEARCH_EXECUTION_MODE env var only when this is None — fixing the
+    # silently-dropped --execution-mode max (the 6h cap previously applied
+    # only when that env var happened to be exported). None → resolver default.
+    execution_mode: str | None = None
+
     def __post_init__(self) -> None:
         """Auto-load env-var-backed run config when not already set by the caller.
 
@@ -142,6 +150,15 @@ class RunContext:
         if not self.blocked_terms:
             from backend.agents.runtime.base import blocked_terms_from_env
             self.blocked_terms = blocked_terms_from_env()
+
+        # execution_mode ← OPENRESEARCH_EXECUTION_MODE (C1) when the caller did not
+        # thread it (run.py passes ExecutionProfile.mode.value). Keeps ctx the
+        # single authoritative source for resolve_experiment_timeout_s across all
+        # construction sites; an unset env var leaves it None (resolver default).
+        if self.execution_mode is None:
+            _em = _os.environ.get("OPENRESEARCH_EXECUTION_MODE", "").strip()
+            if _em:
+                self.execution_mode = _em
 
     def remaining_s(self) -> float | None:
         """Seconds until `deadline_utc`, clamped ≥ 0; None if no deadline set.

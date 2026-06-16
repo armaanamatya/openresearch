@@ -1398,14 +1398,28 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
             "skipped": True,
             "note": "azure sandbox: image is pre-baked in ACR; build_environment is a no-op",
         }, PrimitiveOutcome.ok)
-
-    # RunPod sandbox: the pod pulls its base image from Docker Hub directly —
-    # a locally-built image is never pushed to a registry, so local Docker is
-    # unnecessary.  Short-circuit with the configured RunPod image so
-    # run_experiment can pass it to the RunPod backend (which uses
-    # self.image_name with higher priority anyway).  Dependencies from
-    # requirements.txt are installed on the pod via SSH bootstrap.
-    if _sb_key == "runpod":
+    # C6 (2026-06-16): under runpod the locally-built image is NEVER used — the
+    # pod boots OPENRESEARCH_RUNPOD_IMAGE and runs over SSH in a per-run venv
+    # (runpod_backend.py). The local `docker build` below is therefore wasted
+    # work that STILL hard-requires a local daemon, so a runpod run on a
+    # daemon-less host dies in SandboxRuntimeError(backend_unavailable) for an
+    # image it will never touch. Short-circuit to a no-op (mirroring local/azure)
+    # BEFORE any docker client is reached. Flag-gated so the prior
+    # daemon-requiring behaviour is restorable byte-for-byte:
+    # OPENRESEARCH_RUNPOD_SKIP_BUILD=0 keeps the local build.
+    # RunPod sandbox: the pod boots OPENRESEARCH_RUNPOD_IMAGE over SSH and pulls
+    # its base image from Docker Hub directly — a locally-built image is never
+    # pushed to a registry, so a local `docker build` is wasted work that STILL
+    # hard-requires a local daemon (a daemon-less host would die in
+    # SandboxRuntimeError for an image it never touches). Short-circuit with the
+    # configured RunPod image (so run_experiment can hand it to the RunPod
+    # backend, which uses self.image_name with higher priority anyway); deps from
+    # requirements.txt install on the pod via SSH bootstrap. Flag-gated so the
+    # prior daemon-requiring behaviour is restorable byte-for-byte:
+    # OPENRESEARCH_RUNPOD_SKIP_BUILD=0 falls through to the local build.
+    if _sb_key == "runpod" and os.environ.get(
+        "OPENRESEARCH_RUNPOD_SKIP_BUILD", "1"
+    ).strip().lower() in ("1", "true", "yes", "on"):
         from backend.config import get_settings as _get_settings
         _runpod_image = _get_settings().runpod_image
         return _with_outcome({
@@ -1413,7 +1427,11 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
             "image_tag": _runpod_image,
             "attempts": 0,
             "skipped": True,
-            "note": f"runpod sandbox: pod pulls {_runpod_image} from Docker Hub; no local build needed",
+            "note": (
+                f"runpod sandbox: pod boots {_runpod_image} over SSH; the local "
+                "image is never used, so build_environment is a no-op "
+                "(set OPENRESEARCH_RUNPOD_SKIP_BUILD=0 to force the local build)"
+            ),
         }, PrimitiveOutcome.ok)
 
     import asyncio
@@ -4529,6 +4547,71 @@ def _rubric_plateaued(history: list[float], window: int, epsilon: float) -> bool
     return (max(recent) - min(recent)) <= epsilon
 
 
+def _rubric_declining(history: list[float], window: int, epsilon: float) -> bool:
+    """True when recent iterations have made the rubric score WORSE.
+
+    Distinct from :func:`_rubric_plateaued` (flatline). Looks at the last
+    ``window`` recorded ``overall_score`` values and returns True when the
+    most-recent score sits more than ``epsilon`` BELOW the best score seen in
+    that window — i.e. a recent change regressed the result off its peak. This
+    is the overthinking / inverse-scaling signal (arXiv:2604.10739,
+    arXiv:2507.14417): once a run is past its peak, more iterations degrade
+    quality, so the honest move is to restore the best config and stop or change
+    approach rather than keep iterating the same direction. A flat or rising run
+    is never flagged (a flatline is ``_rubric_plateaued``'s job; a rising run is
+    real progress). Requires at least ``window`` samples so a single early dip
+    while still climbing is not mistaken for a regression. Mutually exclusive
+    with ``_rubric_plateaued`` by construction: a decline of more than epsilon
+    implies a spread of more than epsilon, so the score did not flatline.
+
+    Two conditions, both required, so a *recovering* run (dipped then climbed
+    back, e.g. ``[0.62, 0.40, 0.61]``) is NOT nagged: the latest score is
+    (a) more than epsilon BELOW the window peak (off its recent best) AND
+    (b) more than epsilon below the immediately preceding score (the last step
+    itself regressed).
+    """
+    if window <= 1 or epsilon < 0 or len(history) < window:
+        return False
+    recent = history[-window:]
+    off_peak = (max(recent) - recent[-1]) > epsilon
+    last_step_down = (recent[-2] - recent[-1]) > epsilon
+    return off_peak and last_step_down
+
+
+def _decline_advisory_note(
+    history: list[float],
+    window: int,
+    epsilon: float,
+    *,
+    meets_target: bool,
+    current_iteration: int,
+    min_iterations: int,
+    overall_score: float,
+    target: float,
+) -> str | None:
+    """Build the regression ``convergence_note``, or None when it should not fire.
+
+    Fires only when the run is below target, past the iteration floor, and
+    :func:`_rubric_declining` (the score peaked and recent changes made it
+    worse). Pure + deterministic — no env reads, no I/O — so the full firing
+    decision is unit-testable without the LLM grader. The
+    ``OPENRESEARCH_RUBRIC_DECLINE_ADVISORY`` flag gate stays at the call site; the
+    advisory is a tool-result observation the root reads, never a forced stop.
+    """
+    if meets_target or current_iteration < min_iterations:
+        return None
+    if not _rubric_declining(history, window, epsilon):
+        return None
+    best = max(history[-window:])
+    return (
+        f"REGRESSING: rubric overall_score has DECLINED to ~{overall_score:.3f} from a recent "
+        f"high of ~{best:.3f} over the last {window} verifications (< target {target:.3f}). Your "
+        "recent changes are net-negative — more iterations past the peak degrade the result. "
+        "RESTORE your best-scoring configuration and either call FINAL_VAR with it or change the "
+        "APPROACH (a materially different hypothesis); do NOT keep iterating the same direction."
+    )
+
+
 # Top-level metrics keys that are run metadata / sidecar blocks, never an
 # experiment family — excluded from per_model derivation.
 _PER_MODEL_RESERVED_KEYS: frozenset[str] = frozenset({
@@ -5076,6 +5159,128 @@ def _merge_hybrid_results(grid_result: dict, cmd_result: dict, code_path: str) -
         return cmd_result
 
 
+def _resolve_hint_lr_search(arxiv_id: str | None) -> dict | None:
+    """Return the active paper hint's ``lr_search`` dict (Issue #1), or None.
+
+    Fail-soft: any lookup error → None (the cell route runs whatever ``search`` the
+    agent emitted, or the legacy path). Version suffix ("v2") is stripped to match
+    the bare PAPER_HINTS keys.
+    """
+    if not arxiv_id:
+        return None
+    try:
+        import re as _re
+        from backend.agents.prompts.paper_hints import PAPER_HINTS
+        raw = str(arxiv_id).strip()
+        hint = PAPER_HINTS.get(_re.sub(r"v\d+$", "", raw)) or PAPER_HINTS.get(raw)
+        ls = getattr(hint, "lr_search", None) if hint is not None else None
+        return ls if isinstance(ls, dict) and ls else None
+    except Exception:  # noqa: BLE001 — hint resolution must never break the run
+        return None
+
+
+def _resolve_hint_seed_policy(arxiv_id: str | None) -> "tuple[list, list]":
+    """``(default_scope.seeds, headline_models)`` from the active paper hint.
+
+    The paper-side seed protocol + which model(s) the paper headlines (so the
+    harness replicates only the headline net, not the whole grid). Fail-soft:
+    any lookup error / missing field → ``([], [])``.
+    """
+    if not arxiv_id:
+        return [], []
+    try:
+        import re as _re
+        from backend.agents.prompts.paper_hints import PAPER_HINTS
+        raw = str(arxiv_id).strip()
+        hint = PAPER_HINTS.get(_re.sub(r"v\d+$", "", raw)) or PAPER_HINTS.get(raw)
+        if hint is None:
+            return [], []
+        ds = getattr(hint, "default_scope", None)
+        seeds = list(getattr(ds, "seeds", []) or []) if ds is not None else []
+        headline = list(getattr(hint, "headline_models", []) or [])
+        return seeds, headline
+    except Exception:  # noqa: BLE001 — hint resolution must never break the run
+        return [], []
+
+
+def _seed_replication_enabled() -> bool:
+    """OPENRESEARCH_SEED_REPLICATION — deterministic harness multi-seed (default OFF)."""
+    return os.environ.get("OPENRESEARCH_SEED_REPLICATION", "").strip().lower() in (
+        "1", "true", "on", "yes")
+
+
+def _read_prior_weak_leaves(project_dir) -> list[dict]:
+    """The last verify's weak leaves (for the reactive multi-seed trigger). Fail-soft."""
+    try:
+        doc = json.loads(
+            (Path(project_dir) / "rubric_evaluation.json").read_text(encoding="utf-8"))
+        wl = doc.get("weak_leaves")
+        return [l for l in wl if isinstance(l, dict)] if isinstance(wl, list) else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _maybe_replicate_seeds(ctx, cells: list, manifest, emit) -> list:
+    """Replicate the headline model across the demanded seeds — deterministic L5.
+
+    Closes the loop the reactive ``leaf_actuator`` only *staged*: when the
+    operator (``scope_spec.seeds``) or paper hint declares a multi-seed protocol,
+    the harness itself expands the headline cell(s) across those seeds so the
+    paper's "best (mean ± std) over N runs" leaf is satisfiable without relying on
+    the agent to write a seed loop. ``cell_matrix.aggregate_cell_metrics`` folds
+    the replicas into the mean±std leaf. Shape-gated (skips an already-multi-seed
+    manifest and a ``search`` run — staged-search owns that) + cost-bounded
+    (headline-only unless ``OPENRESEARCH_SEED_ALL_MODELS``) + fail-soft. Pure on
+    inputs; the caller flag-guards on ``_seed_replication_enabled()``.
+    """
+    from backend.agents.rlm import leaf_actuator as la
+
+    if isinstance(manifest, dict) and manifest.get("search"):
+        return cells  # a staged-search run; replicating it would multiply the grid
+    scope_seeds = list(getattr(getattr(ctx, "scope_spec", None), "seeds", []) or [])
+    hint_seeds, hint_headline = _resolve_hint_seed_policy(getattr(ctx, "arxiv_id", None))
+    weak = _read_prior_weak_leaves(getattr(ctx, "project_dir", None))
+    n_seeds, source = la.resolve_seed_demand(
+        scope_seeds=scope_seeds, hint_seeds=hint_seeds, weak_leaves=weak)
+    n_seeds = min(int(n_seeds), la.seed_max())
+    if n_seeds <= 1:
+        return cells
+    # shape-gate: a manifest the agent already multi-seeded (or a resumed
+    # replication) carries >1 distinct seed — don't double-expand it.
+    distinct: set[int] = set()
+    for c in cells:
+        if isinstance(c, dict):
+            s = c.get("seed")
+            if not isinstance(s, int):
+                p = c.get("params")
+                s = p.get("seed") if isinstance(p, dict) else None
+            if isinstance(s, int):
+                distinct.add(s)
+    if len(distinct) > 1:
+        return cells
+    all_models = os.environ.get("OPENRESEARCH_SEED_ALL_MODELS", "").strip().lower() in (
+        "1", "true", "on", "yes")
+    try:
+        max_models = max(1, int(float(os.environ.get("OPENRESEARCH_SEED_MODELS_MAX", "1") or 1)))
+    except (TypeError, ValueError):
+        max_models = 1
+    headline = None if all_models else la.select_headline_models(
+        cells, explicit=hint_headline, max_models=max_models)
+    if headline is not None and not headline:
+        return cells
+    expanded = la.expand_cells_for_seeds(cells, n_seeds, model_keys=headline)
+    if len(expanded) > len(cells):
+        tgt = "all models" if all_models else ", ".join(sorted(headline or []))
+        try:
+            emit("seed_replication",
+                 f"harness replicated {tgt} across {n_seeds} seeds (source: {source}) — "
+                 f"{len(cells)}→{len(expanded)} cells; cross-seed mean±std aggregated",
+                 source=source, n_seeds=n_seeds)
+        except Exception:  # noqa: BLE001 — emit is best-effort
+            pass
+    return expanded
+
+
 def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: float | None, run_id: str) -> dict:
     """Run the training matrix one-GPU-per-cell via ``gpu_cell_runner`` (comp 4).
 
@@ -5109,6 +5314,17 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
             (code / "metrics.json").write_text(blob, encoding="utf-8")
         except OSError as exc:  # noqa: BLE001 — persistence failure must not crash the run
             logger.warning("cell-matrix: failed to persist aggregated metrics.json: %s", exc)
+        # Issue #3 (2026-06-15): harness-owned provenance manifest from cells.json +
+        # the aggregated metrics — so the eval-protocol leaves can confirm the recipe
+        # (per-cell lr/epochs/seed/batch + the searched lr grid) EVEN WHEN the agent
+        # never called emit_provenance. Only for real aggregated metrics (per_model
+        # present), never the pre-grid smoke block. Fail-soft; merges an agent file.
+        if isinstance(m, dict) and m.get("per_model"):
+            try:
+                from backend.agents.rlm import provenance as _prov
+                _prov.build_cell_provenance(code, run_id=run_id)
+            except Exception:  # noqa: BLE001 — provenance must never break the run
+                logger.debug("cell-matrix: provenance build failed (non-fatal)", exc_info=True)
 
     try:
         manifest = json.loads((code / "cells.json").read_text(encoding="utf-8"))
@@ -5139,6 +5355,23 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         except Exception:  # noqa: BLE001 — diagnostics must never break the run
             logger.debug("run_experiment: cell_axes_derived warning emit failed")
 
+    # Deterministic multi-seed replication (2026-06-16): when the operator/hint
+    # declares a multi-seed protocol the harness replicates the HEADLINE model
+    # across those seeds here — BEFORE the capacity gate, so the replicas are
+    # budget-checked like any cell and cross-seed mean±std is aggregated by
+    # cell_matrix. Flag-gated (default OFF) + shape-gated → unset/no-seeds ==
+    # byte-for-byte today. Fixes the ResNet "only 1 seed, variance leaves 0.4"
+    # ceiling where scope seeds were set but every cell stayed s42.
+    if _seed_replication_enabled():
+        try:
+            all_cells = _maybe_replicate_seeds(
+                ctx, all_cells, manifest,
+                lambda _c, _m, **_x: _emit_dashboard_event(
+                    ctx, event_type="run_warning",
+                    payload={"code": _c, "message": _m, **_x}))
+        except Exception:  # noqa: BLE001 — replication must never break the run
+            logger.debug("run_experiment: seed replication failed (non-fatal)", exc_info=True)
+
     # Multi-GPU cells: a slot of `gpus_per_cell` cards device_map-shards ONE (large)
     # model, so the capacity-gate VRAM budget is the slot's COMBINED VRAM, not one card.
     _gpus_per_cell = max(1, int(os.environ.get("OPENRESEARCH_GPUS_PER_CELL", "1") or "1"))
@@ -5147,6 +5380,24 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     kept, cap_gaps, models_skipped = cell_matrix.capacity_gate(
         all_cells, caps.per_gpu_vram_gb * _gpus_per_cell, headroom=headroom)
     kept, ds_gaps, envs_skipped = cell_matrix.dataset_url_preflight(kept)
+
+    # Headline-coverage honesty (2026-06-16): a paper-headline model the agent
+    # never declared (the ResNet-1202 case) must surface as an HONEST
+    # scope.models_skipped gap — not vanish silently and invite the grader to
+    # fabricate one. Only fires when a paper hint declares headline_models;
+    # fail-soft + dedup-safe → unset/no-hint == byte-for-byte today.
+    try:
+        _, _hint_headline = _resolve_hint_seed_policy(getattr(ctx, "arxiv_id", None))
+        _missing_headline = cell_matrix.audit_headline_coverage(all_cells, _hint_headline)
+        _missing_headline = [m for m in _missing_headline if m not in (models_skipped or [])]
+        if _missing_headline:
+            models_skipped = list(models_skipped or []) + _missing_headline
+            _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                "code": "headline_coverage_gap",
+                "message": ("paper headline model(s) absent from cells.json — recorded "
+                            f"as an honest scope gap: {', '.join(_missing_headline)}")})
+    except Exception:  # noqa: BLE001 — coverage audit is advisory; never blocks the run
+        logger.debug("run_experiment: headline coverage audit failed", exc_info=True)
 
     gpus = [str(g) for g in (tuple(getattr(ctx, "gpu_device_ids", ()) or ()) or caps.free_gpu_ids)]
 
@@ -5261,7 +5512,84 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     except Exception:  # noqa: BLE001 — the smoke gate must never block a legit run
         logger.debug("run_experiment: cell pre-grid smoke gate raised (non-blocking)", exc_info=True)
 
-    if _sb_key_ecm == "azure":
+    # Staged-search (tune-then-run, 2026-06-14 Codex review): if cells.json declares
+    # a `search` section, the HARNESS runs the bounded candidate phase, selects each
+    # group's winner by the declared metric, budget-preflights against the remaining
+    # wall-clock, and runs ONE full cell per group at the tuned params — so the LLM
+    # can never blow the grid into a wall-clock-killing cross-product (the exact Adam
+    # failure). Shape-gated + local/docker only; no `search` key → the legacy
+    # single-phase dispatch below runs byte-for-byte unchanged.
+    matrix_result = None
+    if _sb_key_ecm != "azure":
+        _staged_groups = []
+        try:
+            from backend.agents.rlm import staged_search as _ss
+            _cells_doc = json.loads((code / "cells.json").read_text(encoding="utf-8"))
+            # Issue #1 (2026-06-15): harness auto-synthesis. If the agent emitted no
+            # `search` block BUT the active paper hint declares an lr_search grid,
+            # synthesize the staged search from the emitted cells × the grid — so a
+            # per-model LR search fires even when the agent ships one fixed lr (the
+            # observed All-CNN failure: every model at lr=0.05, base-A 15.61% vs 12.5%).
+            if isinstance(_cells_doc, dict) and not _cells_doc.get("search"):
+                _hint_ls = _resolve_hint_lr_search(getattr(ctx, "arxiv_id", None))
+                if _hint_ls:
+                    _synth = _ss.synthesize_search_from_hint(_cells_doc.get("cells") or [], _hint_ls)
+                    if _synth:
+                        _cells_doc["search"] = _synth
+                        try:
+                            _emit_dashboard_event(
+                                ctx, event_type="run_warning",
+                                payload={"code": "search_synthesized",
+                                         "message": (f"harness synthesized {len(_synth)} lr-search "
+                                                     "group(s) from the paper hint (agent emitted no "
+                                                     "search block)")})
+                        except Exception:  # noqa: BLE001 — emit is best-effort
+                            pass
+                # L4 (2026-06-16): second fallback — a per-condition search synthesized
+                # from the LAST verify's result_quality leaf (leaf_actuator), used only
+                # when neither the agent nor a paper hint supplied a search block. Reader
+                # self-guards on OPENRESEARCH_LEAF_ACTUATE (default-OFF == today byte-for-byte).
+                if not _cells_doc.get("search"):
+                    try:
+                        from backend.agents.rlm import leaf_actuator as _la
+                        _leaf_search = _la.staged_search_override(ctx.project_dir)
+                        if _leaf_search:
+                            _cells_doc["search"] = _leaf_search
+                            try:
+                                _emit_dashboard_event(
+                                    ctx, event_type="run_warning",
+                                    payload={"code": "search_synthesized_from_leaf",
+                                             "message": (f"harness synthesized {len(_leaf_search)} "
+                                                         "lr-search group(s) from the last verify's "
+                                                         "result_quality leaf (no agent/hint search)")})
+                            except Exception:  # noqa: BLE001 — emit is best-effort
+                                pass
+                    except Exception:  # noqa: BLE001 — override is advisory
+                        pass
+            _staged_groups = _ss.parse_search_spec(_cells_doc)
+        except Exception:  # noqa: BLE001 — a malformed/absent manifest → legacy path
+            _staged_groups = []
+        if _staged_groups:
+            def _ss_emit(_c: str, _m: str, **_x) -> None:
+                try:
+                    _emit_dashboard_event(
+                        ctx, event_type="run_warning",
+                        payload={"code": _c, "message": _m, **_x})
+                except Exception:  # noqa: BLE001 — emit is best-effort
+                    pass
+            _reserve_ss = float(
+                os.environ.get("OPENRESEARCH_MATRIX_FINALIZE_RESERVE_S", "2700") or 2700)
+            _staged_out = _ss.run_staged_search(
+                _staged_groups, str(code / "train_cell.py"),
+                output_root=str(artifact_root), gpus=gpus or None,
+                remaining_s=_matrix_overall_s, reserve_s=_reserve_ss,
+                per_cell_timeout_s=timeout_s, gpus_per_cell=_gpus_per_cell,
+                now_iso=datetime.now(timezone.utc).isoformat(), emit=_ss_emit,
+            )
+            matrix_result = _staged_out.get("results") or {}
+            kept = _staged_out.get("kept_cells") or []
+
+    if matrix_result is None and _sb_key_ecm == "azure":
         with k8s_job_cell_runner.bind_run_context(
             run_budget=_run_budget_ecm, event_sink=_event_sink_ecm, gpu_plan=_ecm_gpu_plan
         ):
@@ -5276,7 +5604,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
                 force_cells=_force_cells or None,
                 now_iso=datetime.now(timezone.utc).isoformat(),
             )
-    else:
+    elif matrix_result is None:
         matrix_result = gpu_cell_runner.run_matrix(
             kept, str(code / "train_cell.py"),
             output_root=str(artifact_root),
@@ -5672,8 +6000,23 @@ def run_experiment(
     try:
         from backend.services.runtime.gpu_capacity import describe_capacity
         _caps = describe_capacity(ctx)
+        # C6 (2026-06-16): the cell-matrix route gate historically allowed only
+        # ("local","docker") — which made the azure K8s branch in
+        # _execute_cell_matrix (the `_sb_key_ecm == "azure"` arm that dispatches
+        # k8s_job_cell_runner.run_matrix) unreachable, since azure capacity is
+        # detected first by describe_capacity and then excluded here. AksJobBackend
+        # is the intended azure path (exported from runtime/__init__, instantiated
+        # by _backend_for_azure, plan-aware), so the branch is unreachable-by-gate,
+        # NOT dead-by-design — admit "azure" to the gate. Flag-gated so local/docker
+        # (and runpod, which uses the SSH exec path, never this route) are
+        # byte-for-byte unchanged when OPENRESEARCH_AZURE_CELL_ROUTE=0.
+        _cell_route_kinds = ["local", "docker"]
+        if os.environ.get("OPENRESEARCH_AZURE_CELL_ROUTE", "1").strip().lower() in (
+            "1", "true", "yes", "on"
+        ):
+            _cell_route_kinds.append("azure")
         if (
-            _caps.backend_kind in ("local", "docker")
+            _caps.backend_kind in _cell_route_kinds
             and not _caps.is_empty
             and (Path(code_path) / "cells.json").is_file()
             and (Path(code_path) / "train_cell.py").is_file()
@@ -6275,7 +6618,11 @@ def _rubric_areas(rubric: dict, leaf_scores_list: list[dict]) -> list[dict]:
         name = str(task.get("requirements") or "")[:120]
         if not name:
             name = f"Area {i + 1}"
-        score = _clamp01(roll_up(task, leaf_score_map))
+        # F3: roll_up is float | None (None when a whole subtree is skipped). The
+        # default empty skip_set here never yields None, but coerce defensively so
+        # the contract is explicit and _clamp01 never sees None.
+        _ru = roll_up(task, leaf_score_map)
+        score = _clamp01(_ru if _ru is not None else 0.0)
         weight = task.get("weight")
         areas.append({
             "area": name,
@@ -6602,6 +6949,16 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             operator_skip_environments=list(
                 getattr(getattr(ctx, "scope_spec", None), "skip_datasets", None) or []
             ),
+            # Layer 4 (2026-06-16): the operator's INCLUSION scope (paper-hint
+            # default_scope / --scope-spec datasets) so the in-loop grade excludes
+            # leaves about datasets the run was never scoped to — identical to the
+            # finalize re-roll-up (report.py). No-op unless OPENRESEARCH_SCOPE_INCLUSION
+            # _EXCLUDE is on. Mirrors report.py's finalize plumbing exactly.
+            operator_dataset_inclusion=[
+                (getattr(d, "name", None) or str(d))
+                for d in (getattr(getattr(ctx, "scope_spec", None), "datasets", None) or [])
+                if d
+            ],
         )
         # Phase 0B: persist the rubric tree so the deterministic finalize re-roll-up
         # (report → leaf_scorer.finalize_rescore) can recompute the score under a
@@ -6632,6 +6989,28 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
         overall_score = _clamp01(scored["overall_score"])
         target = _clamp01(rubric.get("target_score", 0.6))
         meets_target = overall_score >= target
+
+        # B2 (2026-06-16): record the score on ctx the MOMENT a real overall_score
+        # exists, independent of any advisory warning/error key the wrapper may
+        # attach downstream. Previously ONLY binding._emit_supplemental set this,
+        # and only on a verify the wrapper classified "successful" — so a
+        # graded-but-warned verify (a real score carrying a truthy `error`) left
+        # ctx.latest_rubric_score untouched, the forced-iteration guard read "never
+        # verified", and a premature partial could ship. Apply the same
+        # best-prior-attempt target floor binding uses so policy state is identical
+        # on both paths (fail-soft — the floor must never break verify).
+        try:
+            _b2_target = target
+            try:
+                from backend.agents.rlm.best_attempt import floored_target as _floored_target
+                _b2_target = _floored_target(ctx.project_dir, target)
+            except Exception:  # noqa: BLE001 — the floor must never break verify handling
+                _b2_target = target
+            ctx.latest_rubric_score = float(overall_score)
+            ctx.latest_rubric_target = float(_b2_target) if _b2_target is not None else 0.0
+            ctx.latest_rubric_iteration = int(getattr(ctx, "current_iteration", 0) or 0)
+        except (TypeError, ValueError):
+            pass
 
         leaf_scores = scored.get("leaf_scores", [])
         # Up to 8 lowest-scoring leaves (conservative grader — 0.0 means no evidence).
@@ -6698,6 +7077,27 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
                     _lt.persist(ctx.project_dir, _triage)
         except Exception:  # noqa: BLE001 — triage is advisory, never blocks verify
             logger.debug("verify_against_rubric: leaf triage failed", exc_info=True)
+        # Leaf-repair control loop (L4/L5/L6, 2026-06-16): the optional actuator
+        # that closes the loop leaf_triage only diagnoses — STAGE a synthesized
+        # per-condition lr search (L4), a budget-gated seed plan (L5), and a
+        # declared-vs-aggregated completeness audit (L6) the existing routes pick
+        # up next iteration. Default-OFF (OPENRESEARCH_LEAF_ACTUATE unset == today);
+        # fail-soft. Spec: 2026-06-16-leaf-frontier-out-of-scope-remediation.
+        try:
+            from backend.agents.rlm import leaf_actuator as _la
+
+            if _la.is_enabled():
+                _act = _la.actuate(
+                    result.get("leaf_repair_plan") or [],
+                    ctx.project_dir,
+                    weak_leaves=result.get("weak_leaves"),
+                    remaining_s=(ctx.remaining_s() if hasattr(ctx, "remaining_s") else None),
+                )
+                if _act.get("actuated"):
+                    result["leaf_actuation"] = _act["artifact"]
+                    result["leaf_actuation_summary"] = _act.get("summary", "")
+        except Exception:  # noqa: BLE001 — actuation is advisory, never blocks verify
+            logger.debug("verify_against_rubric: leaf actuation failed", exc_info=True)
         # Lane P phase B (codex review 2026-05-25): when metrics.json carries
         # an `experiments` dict with per-experiment {status, reason_class},
         # compute the scope-adjusted rubric and attach it alongside the raw
@@ -6823,6 +7223,35 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
                     "attached convergence_note.",
                     getattr(ctx, "run_id", getattr(ctx, "project_id", "?")), overall_score, _win,
                 )
+            # §3.5 (2026-06-16 grader-noise companion): a DECLINING trajectory is
+            # the overthinking / inverse-scaling signal the flatline check above
+            # misses — the score peaked and recent changes made it WORSE, yet the
+            # run keeps looping to the cap, degrading further. When enabled, advise
+            # the root to RESTORE its best config rather than repeat the
+            # net-negative change. Flag-gated default-OFF so the existing plateau
+            # behaviour is byte-identical when unset; purely advisory (a note in
+            # the verify result, never a forced stop — the hard rails are the
+            # iteration cap + wall-clock watchdog). The note is a tool-result
+            # observation, not the root's own prose — the framing the
+            # self-correction literature (arXiv:2606.05976) says maximises uptake.
+            elif _os.environ.get("OPENRESEARCH_RUBRIC_DECLINE_ADVISORY", "").strip() in (
+                "1", "true", "yes",
+            ):
+                _decline_note = _decline_advisory_note(
+                    _hist, _win, _eps,
+                    meets_target=meets_target,
+                    current_iteration=_cur_iter,
+                    min_iterations=_floor,
+                    overall_score=overall_score,
+                    target=target,
+                )
+                if _decline_note:
+                    result["convergence_note"] = _decline_note
+                    logger.info(
+                        "verify_against_rubric[%s]: rubric declining over %d iters — "
+                        "attached regression convergence_note.",
+                        getattr(ctx, "run_id", getattr(ctx, "project_id", "?")), _win,
+                    )
         except Exception:  # noqa: BLE001 — convergence hint is augmenting, never fatal
             logger.exception("verify_against_rubric: plateau detection failed")
 
@@ -7222,16 +7651,23 @@ def heartbeat(note: str = "", *, ctx: "RunContext") -> dict:
 
 
 def read_context_map(*, ctx: "RunContext") -> dict:
-    """Return the PEEK-lite intra-run context map (OPENRESEARCH_CONTEXT_MAP).
+    """Return the intra-run orientation cache (PEEK-lite context map).
 
-    A free, deterministic orientation cache unioning the structured outputs of
-    understand_section / extract_hyperparameters / detect_environment into
-    rlm_state/context_map.json. Returns ``{}`` when the flag is off or nothing
-    has been recorded yet. NAVIGATION AID ONLY — never cite it as report
-    evidence (the evidence gate remains the backstop).
+    Pure file I/O delegating to :func:`context_map.read_context_map` — the
+    union-per-field structured cache of this run's ``understand_section`` /
+    ``extract_hyperparameters`` / ``detect_environment`` outputs (NAVIGATION AID
+    ONLY — never cite it as report evidence; the evidence gate remains the
+    backstop). Lets the root consult what it has already derived before
+    re-deriving a slice. Returns ``{}`` when ``OPENRESEARCH_CONTEXT_MAP`` is off
+    or no map exists. Never raises (fail-soft): a read error returns ``{}``. Only
+    ADVERTISED to the root when the flag is on (see ``build_custom_tools``);
+    off-state byte-for-byte today.
     """
-    from backend.agents.rlm.context_map import read_context_map as _read
-    return _read(ctx.project_dir)
+    try:
+        from backend.agents.rlm.context_map import read_context_map as _read
+        return _read(ctx.project_dir)
+    except Exception:  # noqa: BLE001 — an orientation aid must never break the run
+        return {}
 
 
 PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
@@ -7255,6 +7691,11 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
 }
 
 PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
+    "read_context_map": "read_context_map() -> dict — the intra-run orientation "
+        "cache: the union of your prior understand_section / extract_hyperparameters "
+        "/ detect_environment outputs (datasets, metrics, hyperparameters, env "
+        "clues). Consult it before re-deriving a slice. Navigation aid only — never "
+        "a report source. Empty {} when the context-map flag is off.",
     "understand_section": "understand_section(text_slice) -> dict — datasets, "
         "metrics, training recipe, hardware clues, ambiguities from a text slice. "
         "A PARTIAL PaperClaimMap (no core_contribution/claims/architecture).",

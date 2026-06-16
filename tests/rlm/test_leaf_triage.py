@@ -54,11 +54,28 @@ def test_render_artifact_when_data_exists(tmp_path):
 
 
 def test_render_downgrades_to_protocol_without_data(tmp_path):
-    p = _project(tmp_path)  # no history/curves/sweep on disk
+    p = _project(tmp_path)  # no history/curves/sweep/results on disk
     out = leaf_triage.triage_weak_leaves(
         [_leaf(0.0, "No figure showing the training curves is present")], p)
     assert out["plan"][0]["repair_class"] == "protocol_gap"
     assert out["plan"][0]["cost"] == "targeted_rerun"
+
+
+def test_render_kept_when_measured_results_exist(tmp_path):
+    # Adam fe5e7900 (2026-06-16): scalar per_model finals, NO training_curves.json.
+    # A COMPARISON figure (final metric by condition) is renderable from those
+    # scalars, so render_artifact must be KEPT (not demoted to protocol_gap) — the
+    # demotion left it at 0.0 and the L2b sidecar backstop never fired.
+    p = tmp_path
+    code = p / "code"
+    code.mkdir()
+    (code / "metrics.json").write_text(json.dumps(
+        {"status": "completed",
+         "per_model": {"mnist_logreg": {"e": {"adam": {"metric": 37.06}}}}}))
+    out = leaf_triage.triage_weak_leaves([_leaf(
+        0.0, "the listing shows zero image or figure artifacts")], p)
+    d = out["plan"][0]
+    assert d["repair_class"] == "render_artifact" and d["cost"] == "none"
 
 
 def test_provenance_gap(tmp_path):
@@ -91,7 +108,11 @@ def test_result_quality(tmp_path):
         [_leaf(0.0, "Adam ranked last among the five optimizers, directly contradicting the paper")], p)
     d = out["plan"][0]
     assert d["repair_class"] == "result_quality"
-    assert "champion" in d["directive"].lower()
+    # Recourse names the general fixable cause (per-condition HP tuning) AND the
+    # honest-negative path (recourse-first + two-axis), not truncated.
+    assert "per-condition" in d["directive"]
+    assert "faithful-negative" in d["directive"]
+    assert len(d["directive"]) <= leaf_triage._MAX_DIRECTIVE_CHARS
 
 
 def test_protocol_gap(tmp_path):
@@ -102,6 +123,50 @@ def test_protocol_gap(tmp_path):
     # carry a concrete directive — but whitening/dropout should win protocol.
     assert out["plan"][0]["repair_class"] in ("protocol_gap", "provenance_gap")
     assert out["plan"][0]["directive"]
+
+
+def test_render_artifact_zero_figure_phrasing(tmp_path):
+    # Adam fe5e79 (2026-06-16): the grader said "shows ZERO image or figure
+    # artifacts" — a phrasing the old render regex missed, so a figure that just
+    # needed rendering from on-disk data fell to "review". Data on disk → render.
+    p = _project(tmp_path, history=True, sweep=True)
+    out = leaf_triage.triage_weak_leaves([_leaf(
+        0.0,
+        "outputs/.../metrics.json and .log files are present but the listing "
+        "shows zero image or figure artifacts; train.py has a fail-soft mpl guard",
+    )], p)
+    d = out["plan"][0]
+    assert d["repair_class"] == "render_artifact"
+    assert d["cost"] == "none" and "RENDER" in d["directive"]
+
+
+def test_cell_failure_attempted_but_no_result(tmp_path):
+    # Adam ac4006 (2026-06-16): in-scope imdb_logreg cells were ATTEMPTED
+    # (provenance lists them) but produced no per_model entry — they errored.
+    # Honest repair = re-run the failed cell, NOT exclude (that hides a real miss).
+    p = _project(tmp_path)
+    out = leaf_triage.triage_weak_leaves([_leaf(
+        0.0,
+        "metrics.json per_model has no 'imdb_logreg' entry and scope.models_run "
+        "does not include it; provenance.json lists imdb_logreg cells but they "
+        "failed to produce output",
+    )], p)
+    d = out["plan"][0]
+    assert d["repair_class"] == "cell_failure"
+    assert d["cost"] == "targeted_rerun"
+    assert "RE-RUN" in d["directive"] and "exclud" in d["directive"]
+
+
+def test_cell_failure_does_not_steal_result_quality(tmp_path):
+    # A contradiction wins result_quality even when the same justification also
+    # mentions a failed cell — cell_failure is checked LAST, only catching leaves
+    # that would otherwise be bare "review".
+    p = _project(tmp_path)
+    out = leaf_triage.triage_weak_leaves([_leaf(
+        0.0,
+        "Adam ranked last, contradicting the paper; one cell also failed to run",
+    )], p)
+    assert out["plan"][0]["repair_class"] == "result_quality"
 
 
 def test_review_fallback(tmp_path):

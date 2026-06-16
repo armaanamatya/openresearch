@@ -59,16 +59,16 @@ honestly,"** not "discover the algorithm." That insight drove the sequencing bel
 
 | Flag | Default | Gate |
 |---|:---:|---|
-| `REPROLAB_BES_ENABLED` | `False` | **Master** gate for BES-on-RDR; off ⇒ today's RDR path, inert children |
-| `REPROLAB_BES_CANDIDATES_PER_CLUSTER` | `1` | N competing candidates per cluster (`1` = parity) |
-| `REPROLAB_BES_SELECT_METRIC` | `cluster_score` | Candidate SELECT metric (`cluster_score` \| `failed_leaves`) |
-| `REPROLAB_BES_SPLICE_ENABLED` | `False` | Evolve/splice (v2) — no-op in v1 |
-| `REPROLAB_RDR_PREFLIGHT_GATE` | `False` | `scan_code_dir` before `run_experiment` on the RDR path |
-| `REPROLAB_PREFLIGHT_SMOKE` | `False` | Import-smoke probe of generated code (opt-in) |
+| `OPENRESEARCH_BES_ENABLED` | `False` | **Master** gate for BES-on-RDR; off ⇒ today's RDR path, inert children |
+| `OPENRESEARCH_BES_CANDIDATES_PER_CLUSTER` | `1` | N competing candidates per cluster (`1` = parity) |
+| `OPENRESEARCH_BES_SELECT_METRIC` | `cluster_score` | Candidate SELECT metric (`cluster_score` \| `failed_leaves`) |
+| `OPENRESEARCH_BES_SPLICE_ENABLED` | `False` | Evolve/splice (v2) — no-op in v1 |
+| `OPENRESEARCH_RDR_PREFLIGHT_GATE` | `False` | `scan_code_dir` before `run_experiment` on the RDR path |
+| `OPENRESEARCH_PREFLIGHT_SMOKE` | `False` | Import-smoke probe of generated code (opt-in) |
 
 **Turn on the BES delta:**
 ```bash
-REPROLAB_BES_ENABLED=true REPROLAB_BES_CANDIDATES_PER_CLUSTER=3 \
+OPENRESEARCH_BES_ENABLED=true OPENRESEARCH_BES_CANDIDATES_PER_CLUSTER=3 \
   python -m backend.cli reproduce 2605.15155 --mode rdr --sandbox local
 ```
 

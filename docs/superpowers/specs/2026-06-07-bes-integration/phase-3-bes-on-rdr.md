@@ -1,9 +1,9 @@
 # Phase 3 — BES on RDR (2026-06-07)
 
-**Status:** 🟡 PROPOSED. The actual BES work. **Extends the RDR controller behind `REPROLAB_BES_*` flags, default OFF** (decision D1). Flag-off ⇒ RDR behaves bit-for-bit as today.
+**Status:** 🟡 PROPOSED. The actual BES work. **Extends the RDR controller behind `OPENRESEARCH_BES_*` flags, default OFF** (decision D1). Flag-off ⇒ RDR behaves bit-for-bit as today.
 **Goal:** Add the BES-unique deltas to RDR so the env × baseline matrix is covered by *competing candidates in parallel* and (v2) assembled *honestly*.
 
-> **Codex review (2026-06-07) — applied.** (1) **v1 ships competing candidates only; evolve/splice is deferred to v2** — surviving-cell splice is *not free*: discarded candidates have no executed cells (cells exist only after `run_experiment`, which runs once), so splice needs per-candidate GPU execution or a cell-granular redesign; and the `aggregate_cell_metrics` signature/manifest requirement was wrong (§4). (2) **The pre-run gate is mode-agnostic** (`REPROLAB_RDR_PREFLIGHT_GATE`), moved to Phase 2 — not a BES delta. (3) Seam corrected to insert **before** `:920` (the `:914-935` range *contains* the experiment); `scan_code_dir` is **top-level glob, not recursive**; `done[cid].files` **cannot** attribute a file to a cluster (§2). (4) Parity needs a real **`bes_enabled` master gate** over every child flag (§5).
+> **Codex review (2026-06-07) — applied.** (1) **v1 ships competing candidates only; evolve/splice is deferred to v2** — surviving-cell splice is *not free*: discarded candidates have no executed cells (cells exist only after `run_experiment`, which runs once), so splice needs per-candidate GPU execution or a cell-granular redesign; and the `aggregate_cell_metrics` signature/manifest requirement was wrong (§4). (2) **The pre-run gate is mode-agnostic** (`OPENRESEARCH_RDR_PREFLIGHT_GATE`), moved to Phase 2 — not a BES delta. (3) Seam corrected to insert **before** `:920` (the `:914-935` range *contains* the experiment); `scan_code_dir` is **top-level glob, not recursive**; `done[cid].files` **cannot** attribute a file to a cluster (§2). (4) Parity needs a real **`bes_enabled` master gate** over every child flag (§5).
 
 ---
 
@@ -18,7 +18,7 @@ So there is **no** candidate pool, no select-best-of-N. RDR's parallelism is *ac
 
 ## 2. Pre-run gate wiring (mode-agnostic — owned by Phase 2; ship FIRST)
 
-*Renamed from "Delta 3": the gate is mode-agnostic (flag `REPROLAB_RDR_PREFLIGHT_GATE`, not `bes_*`) and belongs to Phase 2. The RDR-specific wiring is here.*
+*Renamed from "Delta 3": the gate is mode-agnostic (flag `OPENRESEARCH_RDR_PREFLIGHT_GATE`, not `bes_*`) and belongs to Phase 2. The RDR-specific wiring is here.*
 
 **Seam (Codex-corrected):** insert the gate **after `:911` (env build) and before the `run_experiment` call at `:920`** — the `:914-935` range *contains* the experiment call, so insert above it, not "into" it. Today: assemble `commands.json` (`:843`) → detect/build env (`:853-911`) → `run_experiment` (`:920`).
 
@@ -74,7 +74,7 @@ bes_candidates_per_cluster: int = Field(default=1, ge=1, le=8) # 1 = today's pat
 bes_select_metric: str = Field(default="cluster_score")        # cluster_score | failed_leaves
 bes_splice_enabled: bool = Field(default=False)                # v2 (deferred — §4)
 # pre-run gate is mode-agnostic (Phase 2), NOT a bes_* flag:
-# rdr_preflight_gate: bool = Field(default=False)              # REPROLAB_RDR_PREFLIGHT_GATE
+# rdr_preflight_gate: bool = Field(default=False)              # OPENRESEARCH_RDR_PREFLIGHT_GATE
 ```
 
 **Parity (bit-for-bit):** make it *structural*, not behavioral-by-luck —
@@ -104,7 +104,7 @@ The serial `write→error→restart` pain lives in the RLM half: `implement_base
 
 ## 8. Definition of done
 
-- [ ] `REPROLAB_BES_*` flags added with a **`bes_enabled` master gate**; **flags-off parity proven by the golden test** AND the master-override test.
+- [ ] `OPENRESEARCH_BES_*` flags added with a **`bes_enabled` master gate**; **flags-off parity proven by the golden test** AND the master-override test.
 - [ ] Mode-agnostic pre-run gate (Phase 2) lands first; **Delta 1 (competing candidates, isolated scratch dirs, static SELECT) is BES v1**.
 - [ ] **Delta 2 (evolve/splice) deferred to v2** with the GPU-cost / full-manifest honesty caveats (§4); 2a (cluster-file splice) explicitly not shipped (no leaf→file provenance).
 - [ ] Per-candidate scoring is static (no extra GPU in v1); `total_agent_dispatches` reflects the N× token cost in the trace.

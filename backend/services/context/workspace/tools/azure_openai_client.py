@@ -83,5 +83,59 @@ class AzureOpenAILlmClient:
         self._last_usage = _usage_from_response(getattr(resp, "usage", None))
         return resp.choices[0].message.content or ""
 
+    @with_429_backoff
+    def complete_samples(
+        self,
+        *,
+        system: str,
+        user: str,
+        n: int = 1,
+        temperature: float | None = None,
+        seed: int | None = None,
+    ) -> list[str]:
+        """Return ``n`` completions, in one round-trip when the deployment allows.
+
+        Optional grader-fidelity sampling path (spec 2026-06-16 §A5). Mirrors
+        ``OpenAILlmClient.complete_samples``: tries native ``n``/``seed`` at
+        ``temperature=0`` (default), and on a ``TypeError`` (an Azure deployment
+        / api-version that doesn't accept ``n`` or ``seed``) degrades to ``n``
+        SEQUENTIAL single-completion calls so the caller always gets ``n``
+        strings. ``_last_usage`` follows the same rule as the OpenAI client.
+        """
+        eff_temp = 0 if temperature is None else temperature
+        try:
+            resp = self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=eff_temp,
+                max_tokens=self._max_tokens,
+                n=n,
+                seed=seed,
+            )
+        except TypeError:
+            return [
+                self._complete_once(system=system, user=user, temperature=eff_temp)
+                for _ in range(n)
+            ]
+        self._last_usage = _usage_from_response(getattr(resp, "usage", None))
+        return [(c.message.content or "") for c in resp.choices]
+
+    def _complete_once(self, *, system: str, user: str, temperature: float) -> str:
+        """One single-choice completion at an explicit temperature (fallback path)."""
+        resp = self._client.chat.completions.create(
+            model=self._model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=temperature,
+            max_tokens=self._max_tokens,
+        )
+        self._last_usage = _usage_from_response(getattr(resp, "usage", None))
+        return resp.choices[0].message.content or ""
+
 
 __all__ = ["AzureOpenAILlmClient"]

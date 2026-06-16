@@ -86,18 +86,24 @@ def test_pairs_control_and_bes_with_deltas(tmp_path: Path):
     assert "rlm_impl#1 ← selected" in md
 
 
-def test_latest_run_wins_per_arm(tmp_path: Path):
+def test_select_latest_vs_best_per_arm(tmp_path: Path):
+    # select=best is now the DEFAULT (spec D1); pin select explicitly so this
+    # test discriminates the two selectors regardless of the default.
     _write_report(tmp_path, "prj_old_bes", arm="bes", score=0.5,
                   completed_at="2026-06-10T00:00:00+00:00")
     _write_report(tmp_path, "prj_new_bes", arm="bes", score=0.4,
                   completed_at="2026-06-11T00:00:00+00:00")
     _write_report(tmp_path, "prj_ctl", arm="control", score=0.3)
 
-    cmp = ab_compare.build_comparison(tmp_path, paper="1412.6806")
-    assert cmp["bes"]["project_id"] == "prj_new_bes"  # latest, not best
+    cmp_latest = ab_compare.build_comparison(tmp_path, paper="1412.6806", select="latest")
+    assert cmp_latest["bes"]["project_id"] == "prj_new_bes"  # latest, not best
 
     cmp_best = ab_compare.build_comparison(tmp_path, paper="1412.6806", select="best")
-    assert cmp_best["bes"]["project_id"] == "prj_old_bes"
+    assert cmp_best["bes"]["project_id"] == "prj_old_bes"  # best, not latest
+
+    # Default (no select arg) is now best.
+    cmp_default = ab_compare.build_comparison(tmp_path, paper="1412.6806")
+    assert cmp_default["bes"]["project_id"] == "prj_old_bes"
 
 
 def test_unstamped_reports_can_serve_as_control(tmp_path: Path):

@@ -1,0 +1,355 @@
+{
+  "iteration": 2,
+  "overall_score": 0.36846153846153845,
+  "target_score": 0.6,
+  "meets_target": false,
+  "leaf_count": 20,
+  "graded": 20,
+  "rubric_source": "paperbench_bundle",
+  "degraded": false,
+  "compute_adjusted_score": 0.36846153846153845,
+  "compute_scope": null,
+  "coverage_pct": 1.0,
+  "areas": [
+    {
+      "area": "Method and code fidelity to the paper",
+      "score": 0.63,
+      "weight": 0.34188034188034194,
+      "leaves": [
+        {
+          "id": "3f4574786b374b8b803db0727eaeb1bc",
+          "label": "The code implements the residual building block y = F(x, {W_i}) + x (Equation 1) with parameter-free identity shortcuts for same-dimension c",
+          "score": 1.0,
+          "status": "pass",
+          "why": "train_cell.py BasicBlock.forward() implements `out = out + self.shortcut(x); out = F.relu(out)` (Eq. 2); same-dimension shortcuts use `nn.Sequential()` (parameter-free identity); dimension-changing uses option-B `nn.Conv2d(in_ch, out_ch, 1, stride=stride, bias=False)` + BN, fully"
+        },
+        {
+          "id": "c57a133793424261abcdac8928c40fca",
+          "label": "The bottleneck building block for ResNet-50, ResNet-101, and ResNet-152 is implemented as a stack of three layers (1\u00d71 conv, 3\u00d73 conv, 1\u00d71 c",
+          "score": 0.0,
+          "status": "fail",
+          "why": "train_cell.py and train.py define only BasicBlock and PlainBlock (both 2-layer); no 3-layer bottleneck is present, and no ResNet-50/101/152 network class exists in any code file."
+        },
+        {
+          "id": "bbf595cc32914f6b83681df37ed94522",
+          "label": "Batch normalization (BN) is applied right after each convolution and before activation throughout all plain and residual network models, wit",
+          "score": 1.0,
+          "status": "pass",
+          "why": "train_cell.py BasicBlock and PlainBlock both apply BN immediately after each conv and before ReLU (`F.relu(self.bn1(self.conv1(x)))`); CIFARNet uses `nn.init.kaiming_normal_` (He init); no Dropout layer appears anywhere in the architecture."
+        },
+        {
+          "id": "c4d6f7f9bb084fcf8f236bd3ee4af7db",
+          "label": "Shortcut option A (zero-padding for increasing dimensions, zero extra parameters) and option B (1\u00d71 projection convolutions with stride 2 fo",
+          "score": 0.4,
+          "status": "partial",
+          "why": "train_cell.py correctly implements option A (zero-padding LambdaLayer, no parameters) and option B (1\u00d71 Conv2d with stride), and PlainBlock uses 3\u00d73 filters with stride-2 downsampling and global avg pool, but the FC head is 10-way only (`nn.Linear(64, 10)`) and no 1000-way ImageN"
+        },
+        {
+          "id": "eedaa801badd4d729e51650313425a6f",
+          "label": "The CIFAR-10 architecture follows the 6n+2 stacked weighted layer formula with 3\u00d73 convolutions on feature maps of sizes {32\u00d732, 16\u00d716, 8\u00d78}",
+          "score": 1.0,
+          "status": "pass",
+          "why": "train_cell.py CIFARNet implements 3 stages with {16,32,64} filters and {stride=1,2,2}, 3\u00d73 convs, n blocks per stage (2n layers), `AdaptiveAvgPool2d(1)`, and `nn.Linear(64,10)`; metrics.json confirms depths 20/32/44/56/110 matching 6n+2 with n=3/5/7/9/18; all shortcuts default to"
+        }
+      ],
+      "compute_adjusted_score": 0.63
+    },
+    {
+      "area": "Data and preprocessing fidelity",
+      "score": 0.35,
+      "weight": 0.12820512820512822,
+      "leaves": [
+        {
+          "id": "6f5150fbc6b54f61be774e2f7211339b",
+          "label": "ImageNet training preprocessing applies scale augmentation by randomly sampling the shorter side in [256, 480], takes a 224\u00d7224 random crop ",
+          "score": 0.0,
+          "status": "fail",
+          "why": "train_cell.py get_dataloaders() only implements CIFAR-10 preprocessing (4-pixel padding + random 32\u00d732 crop + horizontal flip + normalize); no ImageNet data pipeline exists in any code file."
+        },
+        {
+          "id": "d8388776b33f49dead51bf662308174a",
+          "label": "CIFAR-10 training augmentation pads 4 pixels on each side of each 32\u00d732 image and randomly samples a 32\u00d732 crop from the padded image or its",
+          "score": 1.0,
+          "status": "pass",
+          "why": "train_cell.py get_dataloaders() applies `transforms.Pad(4, fill=0)` then `transforms.RandomCrop(32)` then `transforms.RandomHorizontalFlip()` for training; test_transform contains only `ToTensor()` + `Normalize()` \u2014 single view, no augmentation."
+        },
+        {
+          "id": "9bb8cbea1b2d4f55b5b0dbb540c4ba3b",
+          "label": "ImageNet comparison-study evaluation uses standard 10-crop testing; best-result evaluation uses the fully-convolutional form with scores ave",
+          "score": 0.0,
+          "status": "fail",
+          "why": "The entire codebase covers only CIFAR-10 experiments; no ImageNet validation set, no 10-crop testing, no multi-scale inference at {224,256,384,480,640} is present in train.py, train_cell.py, or any other file."
+        }
+      ],
+      "compute_adjusted_score": 0.35
+    },
+    {
+      "area": "Experiment execution and reproducibility",
+      "score": 0.345,
+      "weight": 0.15384615384615385,
+      "leaves": [
+        {
+          "id": "8333b3fcbaed4344a55b8657f7dc8160",
+          "label": "ImageNet training uses SGD with mini-batch size 256, initial learning rate 0.1 divided by 10 when the error plateaus, training for up to 60\u00d7",
+          "score": 0.0,
+          "status": "fail",
+          "why": "train_cell.py exclusively trains on CIFAR-10 with batch=128 and 64k iterations; no ImageNet training loop, no 256 mini-batch, no 60e4 iteration schedule exists in any code file."
+        },
+        {
+          "id": "3eae937aaaee47fd90ed2a8defd0da62",
+          "label": "CIFAR-10 training uses mini-batch size 128 on two GPUs, initial learning rate 0.1 divided by 10 at 32k and 48k iterations, training terminat",
+          "score": 0.7,
+          "status": "partial",
+          "why": "train_cell.py sets batch_size=128, MILESTONES=(32000,48000), TOTAL_ITERS=64000, weight_decay=1e-4, momentum=0.9, He init, BN, no dropout \u2014 all matching the paper; but get_dataloaders() uses the full 50k training set, not the specified 45k/5k split."
+        },
+        {
+          "id": "578ef601459e496bbc30c741c7aa8d39",
+          "label": "ResNet-110 (n=18) training uses a warm-up phase with learning rate 0.01 until training error falls below 80% (approximately 400 iterations),",
+          "score": 0.4,
+          "status": "partial",
+          "why": "train_cell.py correctly implements warmup: starts at lr=0.01 when warmup_needed=True and switches to 0.1 once train_err_est<0.80; however metrics.json scope field confirms only 1 seed was run for resnet_110, not the required 5 runs."
+        }
+      ],
+      "compute_adjusted_score": 0.345
+    },
+    {
+      "area": "Evaluation protocol and metric correctness",
+      "score": 0.12,
+      "weight": 0.12820512820512822,
+      "leaves": [
+        {
+          "id": "f36dcb7490bd46a2836a111242310edd",
+          "label": "ImageNet evaluation reports both top-1 and top-5 error rates (%) using 10-crop testing on the 50k ImageNet 2012 validation set (1000-class, ",
+          "score": 0.0,
+          "status": "fail",
+          "why": "metrics.json contains only CIFAR-10 results (test_error_pct for plain/resnet models); no ImageNet top-1/top-5 metrics exist in any output file or code path."
+        },
+        {
+          "id": "78800a349d10436c82b568a29709b5f8",
+          "label": "CIFAR-10 evaluation reports classification error (%) on the 10k test images using a single view of the original 32\u00d732 image; for ResNet-110 ",
+          "score": 0.4,
+          "status": "partial",
+          "why": "train_cell.py evaluates test error as `1.0 - accuracy` on the 10k test set with a single view (no augmentation in test_transform), satisfying the first part; but metrics.json scope states 'ran 1 seed, paper reports mean\u00b1std over 5' \u2014 the 5-run reporting requirement for ResNet-110"
+        },
+        {
+          "id": "2e209dc20a1a4c8b9fb06fd1b1b38ee8",
+          "label": "MS COCO detection evaluation reports both the PASCAL VOC metric (mAP@IoU=0.5) and the standard COCO metric (mAP@IoU=[.5:.05:.95]) on the 40k",
+          "score": 0.0,
+          "status": "fail",
+          "why": "The entire codebase is restricted to CIFAR-10 image classification; no object detection code, no COCO dataset loading, no mAP computation exists in any file."
+        }
+      ],
+      "compute_adjusted_score": 0.12
+    },
+    {
+      "area": "Result match versus the paper's reported targets",
+      "score": 0.1,
+      "weight": 0.18803418803418806,
+      "leaves": [
+        {
+          "id": "aa8453d00aee431fa8de81c23177ee25",
+          "label": "On the ImageNet 2012 validation set with 10-crop testing (Table 2), the 34-layer ResNet reduces top-1 error by 3.5% compared to the plain-34",
+          "score": 0.0,
+          "status": "fail",
+          "why": "metrics.json contains only CIFAR-10 per_model results (plain_20/32/44/56, resnet_20/32/44/56/110); no ImageNet training was performed, so the 34-layer plain vs ResNet comparison and 18 vs 34 ResNet comparison cannot be assessed from any measured metric."
+        },
+        {
+          "id": "90ec66ebff364f9da843094ae92ad04f",
+          "label": "ResNet-152 achieves a single-model top-5 validation error of 4.49% on ImageNet; an ensemble of 6 ResNet models (including two 152-layer mode",
+          "score": 0.0,
+          "status": "fail",
+          "why": "metrics.json contains only per_model entries for plain/resnet at depths 20\u2013110 on CIFAR-10; ImageNet results are entirely absent, and train.py (scope section) explicitly skips all ImageNet variants."
+        },
+        {
+          "id": "f49ff1e3335244218e63235bf82349a3",
+          "label": "On the CIFAR-10 test set (Table 6), ResNet-110 (n=18, 6\u00d718+2=110 layers) achieves a best test error of 6.43%, and ResNet-1202 (n=200) achiev",
+          "score": 0.4,
+          "status": "partial",
+          "why": "metrics.json per_model.resnet_110 shows best_test_error_pct=6.68% (paper claims 6.43%), and resnet_1202 is absent from per_model entirely, listed only in scope.models_skipped."
+        },
+        {
+          "id": "e32a57ef1cd04b3cbf65e46f5dea3358",
+          "label": "On MS COCO validation (Table 8), replacing VGG-16 with ResNet-101 in Faster R-CNN yields a 6.0% absolute increase in mAP@[.5:.05:.95], const",
+          "score": 0.0,
+          "status": "fail",
+          "why": "Neither metrics.json nor any code file (train.py, train_cell.py, listed outputs) contains any reference to MS COCO, Faster R-CNN, or mAP; the reproduction is exclusively CIFAR-10."
+        }
+      ],
+      "compute_adjusted_score": 0.1
+    },
+    {
+      "area": "Artifact completeness and provenance",
+      "score": 0.35,
+      "weight": 0.05982905982905984,
+      "leaves": [
+        {
+          "id": "c219649dd3234a9483faf60b2fb528a4",
+          "label": "The repository contains source code implementing all six ImageNet ResNet variants (ResNet-18, ResNet-34, ResNet-50, ResNet-101, ResNet-152) ",
+          "score": 0.0,
+          "status": "fail",
+          "why": "train.py and train_cell.py implement only CIFARNet (the 6n+2 CIFAR-10 architecture); the code listing contains no ImageNet-specific model files, no bottleneck block implementation, and no Table 1 architecture."
+        },
+        {
+          "id": "d0b66674be524e5f940259b627494b9d",
+          "label": "The repository contains CIFAR-10 experiment code for all reported depth configurations n\u2208{3, 5, 7, 9, 18, 200} yielding ResNet-20/32/44/56/1",
+          "score": 0.7,
+          "status": "partial",
+          "why": "metrics.json per_model contains measured test errors for resnet_20/32/44/56/110 (all with checkpoint_best_*.pt, checkpoint_final_*.pt, and .log files confirmed in outputs/), and train_cell.py implements a parameterized CIFARNet supporting arbitrary n; the sole named gap is ResNet"
+        }
+      ],
+      "compute_adjusted_score": 0.35
+    }
+  ],
+  "leaf_scores": [
+    {
+      "id": "90ec66ebff364f9da843094ae92ad04f",
+      "score": 0.0,
+      "justification": "metrics.json contains only per_model entries for plain/resnet at depths 20\u2013110 on CIFAR-10; ImageNet results are entirely absent, and train.py (scope section) explicitly skips all ImageNet variants."
+    },
+    {
+      "id": "f49ff1e3335244218e63235bf82349a3",
+      "score": 0.4,
+      "justification": "metrics.json per_model.resnet_110 shows best_test_error_pct=6.68% (paper claims 6.43%), and resnet_1202 is absent from per_model entirely, listed only in scope.models_skipped."
+    },
+    {
+      "id": "e32a57ef1cd04b3cbf65e46f5dea3358",
+      "score": 0.0,
+      "justification": "Neither metrics.json nor any code file (train.py, train_cell.py, listed outputs) contains any reference to MS COCO, Faster R-CNN, or mAP; the reproduction is exclusively CIFAR-10."
+    },
+    {
+      "id": "c219649dd3234a9483faf60b2fb528a4",
+      "score": 0.0,
+      "justification": "train.py and train_cell.py implement only CIFARNet (the 6n+2 CIFAR-10 architecture); the code listing contains no ImageNet-specific model files, no bottleneck block implementation, and no Table 1 architecture."
+    },
+    {
+      "id": "d0b66674be524e5f940259b627494b9d",
+      "score": 0.7,
+      "justification": "metrics.json per_model contains measured test errors for resnet_20/32/44/56/110 (all with checkpoint_best_*.pt, checkpoint_final_*.pt, and .log files confirmed in outputs/), and train_cell.py implements a parameterized CIFARNet supporting arbitrary n; the sole named gap is ResNet-1202 (n=200), which is in scope.models_skipped."
+    },
+    {
+      "id": "3f4574786b374b8b803db0727eaeb1bc",
+      "score": 1.0,
+      "justification": "train_cell.py BasicBlock.forward() implements `out = out + self.shortcut(x); out = F.relu(out)` (Eq. 2); same-dimension shortcuts use `nn.Sequential()` (parameter-free identity); dimension-changing uses option-B `nn.Conv2d(in_ch, out_ch, 1, stride=stride, bias=False)` + BN, fully satisfying both equations."
+    },
+    {
+      "id": "c57a133793424261abcdac8928c40fca",
+      "score": 0.0,
+      "justification": "train_cell.py and train.py define only BasicBlock and PlainBlock (both 2-layer); no 3-layer bottleneck is present, and no ResNet-50/101/152 network class exists in any code file."
+    },
+    {
+      "id": "bbf595cc32914f6b83681df37ed94522",
+      "score": 1.0,
+      "justification": "train_cell.py BasicBlock and PlainBlock both apply BN immediately after each conv and before ReLU (`F.relu(self.bn1(self.conv1(x)))`); CIFARNet uses `nn.init.kaiming_normal_` (He init); no Dropout layer appears anywhere in the architecture."
+    },
+    {
+      "id": "c4d6f7f9bb084fcf8f236bd3ee4af7db",
+      "score": 0.4,
+      "justification": "train_cell.py correctly implements option A (zero-padding LambdaLayer, no parameters) and option B (1\u00d71 Conv2d with stride), and PlainBlock uses 3\u00d73 filters with stride-2 downsampling and global avg pool, but the FC head is 10-way only (`nn.Linear(64, 10)`) and no 1000-way ImageNet plain network is implemented."
+    },
+    {
+      "id": "eedaa801badd4d729e51650313425a6f",
+      "score": 1.0,
+      "justification": "train_cell.py CIFARNet implements 3 stages with {16,32,64} filters and {stride=1,2,2}, 3\u00d73 convs, n blocks per stage (2n layers), `AdaptiveAvgPool2d(1)`, and `nn.Linear(64,10)`; metrics.json confirms depths 20/32/44/56/110 matching 6n+2 with n=3/5/7/9/18; all shortcuts default to option A."
+    },
+    {
+      "id": "6f5150fbc6b54f61be774e2f7211339b",
+      "score": 0.0,
+      "justification": "train_cell.py get_dataloaders() only implements CIFAR-10 preprocessing (4-pixel padding + random 32\u00d732 crop + horizontal flip + normalize); no ImageNet data pipeline exists in any code file."
+    },
+    {
+      "id": "d8388776b33f49dead51bf662308174a",
+      "score": 1.0,
+      "justification": "train_cell.py get_dataloaders() applies `transforms.Pad(4, fill=0)` then `transforms.RandomCrop(32)` then `transforms.RandomHorizontalFlip()` for training; test_transform contains only `ToTensor()` + `Normalize()` \u2014 single view, no augmentation."
+    },
+    {
+      "id": "9bb8cbea1b2d4f55b5b0dbb540c4ba3b",
+      "score": 0.0,
+      "justification": "The entire codebase covers only CIFAR-10 experiments; no ImageNet validation set, no 10-crop testing, no multi-scale inference at {224,256,384,480,640} is present in train.py, train_cell.py, or any other file."
+    },
+    {
+      "id": "8333b3fcbaed4344a55b8657f7dc8160",
+      "score": 0.0,
+      "justification": "train_cell.py exclusively trains on CIFAR-10 with batch=128 and 64k iterations; no ImageNet training loop, no 256 mini-batch, no 60e4 iteration schedule exists in any code file."
+    },
+    {
+      "id": "3eae937aaaee47fd90ed2a8defd0da62",
+      "score": 0.7,
+      "justification": "train_cell.py sets batch_size=128, MILESTONES=(32000,48000), TOTAL_ITERS=64000, weight_decay=1e-4, momentum=0.9, He init, BN, no dropout \u2014 all matching the paper; but get_dataloaders() uses the full 50k training set, not the specified 45k/5k split."
+    },
+    {
+      "id": "578ef601459e496bbc30c741c7aa8d39",
+      "score": 0.4,
+      "justification": "train_cell.py correctly implements warmup: starts at lr=0.01 when warmup_needed=True and switches to 0.1 once train_err_est<0.80; however metrics.json scope field confirms only 1 seed was run for resnet_110, not the required 5 runs."
+    },
+    {
+      "id": "f36dcb7490bd46a2836a111242310edd",
+      "score": 0.0,
+      "justification": "metrics.json contains only CIFAR-10 results (test_error_pct for plain/resnet models); no ImageNet top-1/top-5 metrics exist in any output file or code path."
+    },
+    {
+      "id": "78800a349d10436c82b568a29709b5f8",
+      "score": 0.4,
+      "justification": "train_cell.py evaluates test error as `1.0 - accuracy` on the 10k test set with a single view (no augmentation in test_transform), satisfying the first part; but metrics.json scope states 'ran 1 seed, paper reports mean\u00b1std over 5' \u2014 the 5-run reporting requirement for ResNet-110 is unmet."
+    },
+    {
+      "id": "2e209dc20a1a4c8b9fb06fd1b1b38ee8",
+      "score": 0.0,
+      "justification": "The entire codebase is restricted to CIFAR-10 image classification; no object detection code, no COCO dataset loading, no mAP computation exists in any file."
+    },
+    {
+      "id": "aa8453d00aee431fa8de81c23177ee25",
+      "score": 0.0,
+      "justification": "metrics.json contains only CIFAR-10 per_model results (plain_20/32/44/56, resnet_20/32/44/56/110); no ImageNet training was performed, so the 34-layer plain vs ResNet comparison and 18 vs 34 ResNet comparison cannot be assessed from any measured metric."
+    }
+  ],
+  "weak_leaves": [
+    {
+      "id": "90ec66ebff364f9da843094ae92ad04f",
+      "score": 0.0,
+      "justification": "metrics.json contains only per_model entries for plain/resnet at depths 20\u2013110 on CIFAR-10; ImageNet results are entirely absent, and train.py (scope section) explicitly skips all ImageNet variants.",
+      "area": "Result match versus the paper's reported targets"
+    },
+    {
+      "id": "e32a57ef1cd04b3cbf65e46f5dea3358",
+      "score": 0.0,
+      "justification": "Neither metrics.json nor any code file (train.py, train_cell.py, listed outputs) contains any reference to MS COCO, Faster R-CNN, or mAP; the reproduction is exclusively CIFAR-10.",
+      "area": "Result match versus the paper's reported targets"
+    },
+    {
+      "id": "c219649dd3234a9483faf60b2fb528a4",
+      "score": 0.0,
+      "justification": "train.py and train_cell.py implement only CIFARNet (the 6n+2 CIFAR-10 architecture); the code listing contains no ImageNet-specific model files, no bottleneck block implementation, and no Table 1 architecture.",
+      "area": "Artifact completeness and provenance"
+    },
+    {
+      "id": "c57a133793424261abcdac8928c40fca",
+      "score": 0.0,
+      "justification": "train_cell.py and train.py define only BasicBlock and PlainBlock (both 2-layer); no 3-layer bottleneck is present, and no ResNet-50/101/152 network class exists in any code file.",
+      "area": "Method and code fidelity to the paper"
+    },
+    {
+      "id": "6f5150fbc6b54f61be774e2f7211339b",
+      "score": 0.0,
+      "justification": "train_cell.py get_dataloaders() only implements CIFAR-10 preprocessing (4-pixel padding + random 32\u00d732 crop + horizontal flip + normalize); no ImageNet data pipeline exists in any code file.",
+      "area": "Data and preprocessing fidelity"
+    },
+    {
+      "id": "9bb8cbea1b2d4f55b5b0dbb540c4ba3b",
+      "score": 0.0,
+      "justification": "The entire codebase covers only CIFAR-10 experiments; no ImageNet validation set, no 10-crop testing, no multi-scale inference at {224,256,384,480,640} is present in train.py, train_cell.py, or any other file.",
+      "area": "Data and preprocessing fidelity"
+    },
+    {
+      "id": "8333b3fcbaed4344a55b8657f7dc8160",
+      "score": 0.0,
+      "justification": "train_cell.py exclusively trains on CIFAR-10 with batch=128 and 64k iterations; no ImageNet training loop, no 256 mini-batch, no 60e4 iteration schedule exists in any code file.",
+      "area": "Experiment execution and reproducibility"
+    },
+    {
+      "id": "f36dcb7490bd46a2836a111242310edd",
+      "score": 0.0,
+      "justification": "metrics.json contains only CIFAR-10 results (test_error_pct for plain/resnet models); no ImageNet top-1/top-5 metrics exist in any output file or code path.",
+      "area": "Evaluation protocol and metric correctness"
+    }
+  ]
+}
