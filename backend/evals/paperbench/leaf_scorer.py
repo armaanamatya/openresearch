@@ -261,6 +261,16 @@ def _code_file_priority(path: Path) -> tuple[int, int, str]:
     return (bearing, size, str(path))
 
 
+def _grader_digest_enabled() -> bool:
+    """A6 (2026-06-16): count-based per-cell grader digest on metrics overflow +
+    measured-value ranking of the metrics path. REPROLAB_GRADER_DIGEST, default
+    OFF — opt-in until the calibration gate promotes it. Off → byte-slice +
+    truthiness rank (today's behavior, byte-for-byte)."""
+    return os.environ.get("REPROLAB_GRADER_DIGEST", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 def _latest_metrics_path(run_dir: Path) -> Path | None:
     """Return the NEWEST-by-mtime metrics.json — the canonical latest experiment.
 
@@ -293,7 +303,18 @@ def _latest_metrics_path(run_dir: Path) -> Path | None:
         has_results = False
         try:
             d = json.loads(p.read_text(encoding="utf-8"))
-            has_results = bool(d.get("per_model")) or bool(d.get("comparison"))
+            if _grader_digest_enabled():
+                # A6: rank on MEASURED values, not truthiness — a placeholder
+                # per_model:{m:{}} must not outrank genuinely-measured older data.
+                try:
+                    from backend.evals.paperbench.grader_digest import (
+                        per_model_has_measured_value,
+                    )
+                    has_results = per_model_has_measured_value(d) or bool(d.get("comparison"))
+                except Exception:
+                    has_results = bool(d.get("per_model")) or bool(d.get("comparison"))
+            else:
+                has_results = bool(d.get("per_model")) or bool(d.get("comparison"))
         except Exception:
             has_results = False
         try:
@@ -414,8 +435,26 @@ def _gather_evidence(run_dir: Path) -> str:
                 body = json.dumps(compact, indent=2)
                 label = "measured run results; long curves -> {len,first,last,min,max}"
                 if len(body) > _MAX_METRICS_BYTES:
-                    body = body[:_MAX_METRICS_BYTES]
-                    label += "; truncated"
+                    if _grader_digest_enabled():
+                        # A6: a wide grid overflows the budget even after series
+                        # compaction; a raw byte slice silently drops the TRAILING
+                        # (often headline) cells. Emit a count-based per-cell digest
+                        # so EVERY cell survives (status / headline metric / n_epochs).
+                        try:
+                            from backend.evals.paperbench.grader_digest import (
+                                build_grader_digest,
+                            )
+                            body = json.dumps(build_grader_digest(metrics), indent=2)
+                            label = (
+                                "measured run results; per-cell DIGEST — grid too wide "
+                                "for full metrics; every cell: status/headline/n_epochs"
+                            )
+                        except Exception:
+                            body = body[:_MAX_METRICS_BYTES]
+                            label += "; truncated"
+                    else:
+                        body = body[:_MAX_METRICS_BYTES]
+                        label += "; truncated"
             except Exception:
                 body = json.dumps(metrics, indent=2)[:_MAX_FILE_BYTES]
                 label = "measured run results; raw, truncated"
