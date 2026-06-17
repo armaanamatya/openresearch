@@ -31,8 +31,8 @@ param prefix string
 @description('Short suffix appended to <prefix> to form the AKS node pool name (≤12 lowercase-alnum chars total).')
 param poolSuffix string
 
-@description('Azure VM SKU for this GPU node pool (e.g. "Standard_NC24ads_A100_v4").')
-param vmSize string = 'Standard_NC24ads_A100_v4'
+@description('Azure VM SKU for this GPU node pool. Default Standard_ND96asr_v4 = 8×A100-40GB. Sized so the 7B 8-GPU SDAR cell fits one node; scale-to-zero ⇒ idle=$0; override the param for a different size (e.g. Standard_NC24ads_A100_v4 for 1×A100-80GB).')
+param vmSize string = 'Standard_ND96asr_v4'
 
 @description('Number of GPUs per node. Written to the "nvidia.com/gpu" node label.')
 param gpuCount int
@@ -54,6 +54,39 @@ param osDiskSizeGb int = 256
 #disable-next-line no-unused-params
 param tags object = {}
 
+@description('''
+Enable Azure Spot VMSS for this GPU node pool (default false = Regular/on-demand).
+
+When true:  scaleSetPriority = Spot, spotMaxPrice = -1 (pay market rate, never
+            exceeds on-demand), evictionPolicy = Delete (node disk discarded on
+            eviction; run state lives in Blob/Files).
+When false: scaleSetPriority = Regular — rendered exactly as before this param
+            was added; no spotMaxPrice or evictionPolicy properties emitted.
+
+Pair with the RUNTIME spot flag (config azure_use_spot / env
+OPENRESEARCH_AZURE_USE_SPOT=1): it adds the spot toleration to cell Pods and a
+>0 backoffLimit so a preempted cell reschedules onto a fresh node. The cell
+entrypoint already flushes its checkpoint + partial metrics to Blob on the
+preemption SIGTERM (grace window OPENRESEARCH_CELL_PREEMPT_GRACE_S).
+''')
+param useSpot bool = false
+
+// ─── Spot-only properties (conditionally merged into pool properties) ─────────
+// useSpot = false (default): spotProps is empty → the union below is a no-op →
+//   the rendered ARM template is byte-identical to the pre-useSpot output.
+// useSpot = true: spotProps carries the two Spot-only fields that the ARM API
+//   requires for Spot VMSS pools; they MUST NOT be present on Regular pools.
+//   spotMaxPrice = -1 means "pay the current Spot price up to the on-demand cap."
+//   evictionPolicy = Delete discards the node OS disk on eviction; ephemeral run
+//   state must already be in Blob/Azure Files (the reprolab default).
+var spotProps = useSpot ? {
+  scaleSetPriority: 'Spot'
+  spotMaxPrice:     json('-1')
+  evictionPolicy:   'Delete'
+} : {
+  scaleSetPriority: 'Regular'
+}
+
 // ─── GPU node pool ────────────────────────────────────────────────────────────
 // Matches: azurerm_kubernetes_cluster_node_pool.gpu
 //   name = "${var.prefix}${var.pool_suffix}"
@@ -67,7 +100,7 @@ resource gpuNodePool 'Microsoft.ContainerService/managedClusters/agentPools@2024
   // clusterId is a full resource ID; extract just the cluster resource name via split.
   // The parent reference uses the symbolic resource name approach with existing.
   name: '${split(clusterId, '/')[8]}/${prefix}${poolSuffix}'
-  properties: {
+  properties: union({
     vmSize:            vmSize
     vnetSubnetID:      subnetId
     mode:              'User'
@@ -75,9 +108,6 @@ resource gpuNodePool 'Microsoft.ContainerService/managedClusters/agentPools@2024
     enableAutoScaling: true
     minCount:          0
     maxCount:          gpuMaxNodes
-    // On-demand only (priority = "Regular"). Spot is deferred to Phase 2.
-    // eviction_policy is only applicable for Spot pools; omitted for Regular.
-    scaleSetPriority:  'Regular'
     osDiskSizeGB:      osDiskSizeGb
     type:              'VirtualMachineScaleSets'
     // GPU taint — shared across ALL GPU pools.
@@ -94,7 +124,7 @@ resource gpuNodePool 'Microsoft.ContainerService/managedClusters/agentPools@2024
       'reprolab/node-type': 'gpu'
       'nvidia.com/gpu':     string(gpuCount)
     }
-  }
+  }, spotProps)
 }
 
 // ─── Outputs ──────────────────────────────────────────────────────────────────

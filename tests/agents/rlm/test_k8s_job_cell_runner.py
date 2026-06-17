@@ -645,6 +645,108 @@ class TestResume:
 
 
 # ---------------------------------------------------------------------------
+# 8b. Cross-pod Blob resume (spec 2026-06-17 Stream C4)
+#
+# Distinct from TestResume (local-manifest fast path): a FRESH orchestrator pod
+# after a preemption has NO local manifest, so the runner must consult the durable
+# Blob status.json the entrypoint wrote and skip a prior-ok cell.
+# ---------------------------------------------------------------------------
+
+class TestBlobResume:
+    @staticmethod
+    def _blob_with_status(*, outcome: str = "ok", exit_code: int = 0,
+                          metric: float = 0.81) -> dict[str, Any]:
+        """Fake blob whose status.json reports a prior outcome (no local manifest)."""
+
+        def fake_download_bytes(blob_name: str, *, account_name: str,
+                                container_name: str, client: Any = None) -> bytes:
+            if "status.json" in blob_name:
+                return json.dumps({
+                    "version": "1", "cell_id": "b0",
+                    "outcome": outcome, "exit_code": exit_code,
+                }).encode()
+            if "metrics.json" in blob_name:
+                return json.dumps({"metric": metric}).encode()
+            raise FileNotFoundError(blob_name)
+
+        def fake_upload_prefix(local_root: Any, *, blob_prefix: str, account_name: str,
+                               container_name: str, client: Any = None) -> list[str]:
+            return ["f.py"]
+
+        def fake_download_artifact(blob_name: str, destination: Any, *, account_name: str,
+                                   container_name: str, client: Any = None) -> Path:
+            return Path(destination)
+
+        return {"upload_prefix": fake_upload_prefix, "download_bytes": fake_download_bytes,
+                "download_artifact": fake_download_artifact}
+
+    def _patch(self, monkeypatch: pytest.MonkeyPatch, fake: dict[str, Any]) -> None:
+        monkeypatch.setattr(kjcr, "_blob_upload_prefix", fake["upload_prefix"])
+        monkeypatch.setattr(kjcr, "_blob_download_bytes", fake["download_bytes"])
+        monkeypatch.setattr(kjcr, "_blob_download_artifact", fake["download_artifact"])
+
+    def test_blob_status_ok_skips_without_local_manifest(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # No local manifest seeded (fresh pod). Blob status.json says outcome ok.
+        k8s = _make_k8s(job_sequence=_succeeded_job())
+        kjcr._k8s_clients_override = k8s
+        self._patch(monkeypatch, self._blob_with_status(outcome="ok", exit_code=0, metric=0.81))
+        monkeypatch.setenv("OPENRESEARCH_RESUME_CELLS", "1")
+        results = run_matrix([{"id": "b0"}], tmp_path / "train_cell.py",
+                             output_root=tmp_path / "outputs")
+        assert results["b0"]["status"] == "skipped"
+        assert results["b0"]["metrics"] == {"metric": 0.81}
+        assert len(k8s.batch.created_jobs) == 0  # never submitted
+
+    def test_blob_status_not_ok_runs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        # status.json present but a failed outcome / nonzero exit → must NOT skip.
+        self._patch(monkeypatch, self._blob_with_status(outcome="error", exit_code=41))
+        monkeypatch.setenv("OPENRESEARCH_RESUME_CELLS", "1")
+        results = run_matrix([{"id": "b0"}], tmp_path / "train_cell.py",
+                             output_root=tmp_path / "outputs")
+        assert results["b0"]["status"] != "skipped"
+        assert len(k8s.batch.created_jobs) == 1
+
+    def test_blob_resume_inert_when_unarmed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        self._patch(monkeypatch, self._blob_with_status(outcome="ok", exit_code=0))
+        monkeypatch.delenv("OPENRESEARCH_RESUME_CELLS", raising=False)
+        results = run_matrix([{"id": "b0"}], tmp_path / "train_cell.py",
+                             output_root=tmp_path / "outputs")
+        # Unarmed → blob resume never consulted → cell runs.
+        assert results["b0"]["status"] != "skipped"
+        assert len(k8s.batch.created_jobs) == 1
+
+
+# ---------------------------------------------------------------------------
+# 8c. Budget exhaustion is a TERMINAL stop (spec 2026-06-17 Stream D1)
+# ---------------------------------------------------------------------------
+
+class TestBudgetTerminal:
+    def test_check_budget_emits_terminal_prefix(self):
+        from backend.agents.resilience.budget import RunBudget
+        budget = RunBudget(max_run_gpu_usd=0.001)
+        err = kjcr._check_budget(
+            run_budget=budget, reserved_gpu_seconds=3600.0,
+            gpu_usd_per_hour=3.67, cell_id="z0",
+        )
+        # The prefix is the contract _execute_cell_matrix promotes on.
+        assert err is not None and err.startswith("budget_exhausted:")
+
+    def test_budget_exhausted_is_a_terminal_failure_class(self):
+        from backend.agents.rlm import forced_iteration
+        assert "budget_exhausted" in forced_iteration._TERMINAL_FAILURE_CLASSES
+
+
+# ---------------------------------------------------------------------------
 # 9. Completeness — every input cell present in result
 # ---------------------------------------------------------------------------
 

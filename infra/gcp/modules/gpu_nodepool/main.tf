@@ -51,10 +51,17 @@ resource "google_container_node_pool" "gpu" {
     service_account = var.service_account
     oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
 
-    # ── On-demand only ────────────────────────────────────────────────────────
-    # Spot/preemptible nodes reduce cost but can be reclaimed mid-training;
-    # deferred to a later phase with in-Job checkpoint/resume support.
-    spot        = false
+    # ── Spot / on-demand ──────────────────────────────────────────────────────
+    # var.use_spot = false (default) → on-demand, byte-identical to prior behaviour.
+    # var.use_spot = true  → GKE Spot nodes (~60-91% cheaper; reclaim ~15-30 s).
+    #   GKE automatically adds taint cloud.google.com/gke-spot=true:NoSchedule.
+    #   Pair with the RUNTIME spot flag (config gcp_use_spot / env
+    #   OPENRESEARCH_GCP_USE_SPOT=1): it adds the matching gke-spot toleration to
+    #   cell Pods and a >0 backoffLimit so a preempted cell reschedules onto a
+    #   fresh node. The cell entrypoint already flushes its checkpoint + partial
+    #   metrics to GCS on the preemption SIGTERM (grace OPENRESEARCH_CELL_PREEMPT_GRACE_S).
+    # preemptible is always false — GKE Spot supersedes the older preemptible API.
+    spot        = var.use_spot
     preemptible = false
 
     # ── GPU accelerator + auto driver install ─────────────────────────────────

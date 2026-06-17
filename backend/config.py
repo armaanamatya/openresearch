@@ -294,6 +294,19 @@ class Settings(BaseSettings):
         ge=0,
         description="Job.spec.backoffLimit (Pod-level retries); keep at 0 — OOM retry is delegated to the in-Job wrapper + podFailurePolicy",
     )
+    # Spot/preemptible data plane (opt-in). Must be paired with the IaC `useSpot`
+    # node-pool flag: this knob makes the runtime add the spot-taint toleration to the
+    # cell Pod and (when job_backoff_limit is 0) reschedule a preempted cell onto a fresh
+    # spot node. Default false → on-demand behavior, no manifest change.
+    azure_use_spot: bool = Field(
+        default=False,
+        description="Provision/treat the AKS GPU pool as Spot — adds the spot-taint toleration to cell Pods (pair with the Bicep useSpot param)",
+    )
+    azure_spot_backoff_limit: int = Field(
+        default=3,
+        ge=0,
+        description="Job.spec.backoffLimit used ONLY when use_spot is on and job_backoff_limit is 0 — lets a preempted cell Job reschedule onto a new spot node",
+    )
     # Path inside the Job Pod where the Azure Files share (HF_HOME + pip cache)
     # is mounted. Must match the volume mount in the Job template and the
     # HF_HOME / pip cache env vars injected by the runner.
@@ -392,6 +405,18 @@ class Settings(BaseSettings):
         default=0,
         ge=0,
         description="Job.spec.backoffLimit (Pod-level retries); keep at 0 — OOM retry is delegated to the in-Job wrapper",
+    )
+    # Spot/preemptible data plane (opt-in). Pair with the Terraform `use_spot` node-pool
+    # flag: adds the GKE spot-taint toleration to cell Pods and (when job_backoff_limit is
+    # 0) reschedules a preempted cell onto a fresh spot node. Default false → unchanged.
+    gcp_use_spot: bool = Field(
+        default=False,
+        description="Provision/treat the GKE GPU pool as Spot — adds the cloud.google.com/gke-spot toleration to cell Pods (pair with the TF use_spot var)",
+    )
+    gcp_spot_backoff_limit: int = Field(
+        default=3,
+        ge=0,
+        description="Job.spec.backoffLimit used ONLY when use_spot is on and job_backoff_limit is 0 — lets a preempted cell Job reschedule onto a new spot node",
     )
     # Path inside the Job Pod where the Filestore share (HF_HOME + pip cache)
     # is mounted. Must match the volume mount in the Job template.

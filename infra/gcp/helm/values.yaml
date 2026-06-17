@@ -84,8 +84,11 @@ gpu:
 
   # Default GPU SKU for smoke jobs and as the orchestrator fallback.
   # Must match a short_name in var.gpu_skus (i.e. a provisioned pool).
+  # Changed from gcp_a100_80 (a2-ultragpu-1g, 1×A100-80GB) to gcp_a100_40x8
+  # (a2-highgpu-8g, 8×A100-40GB) — sized for the 7B 8-GPU SDAR cell on one node.
+  # Override in envs/<env>/helm-values.yaml when a different pool is primary.
   # [TF: gpu_pools — first entry's sku_label]
-  defaultSku: gcp_a100_80
+  defaultSku: gcp_a100_40x8
 
 # ---------------------------------------------------------------------------
 # RBAC — the Google identities bound to the Job-management Role.

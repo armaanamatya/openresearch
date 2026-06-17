@@ -64,6 +64,7 @@ EXIT_ERROR: int = 41
 EXIT_OOM_SHRINK_EXHAUSTED: int = 42
 EXIT_METRICS_INVALID: int = 43
 EXIT_ARTIFACT_UPLOAD_ERROR: int = 44
+EXIT_PREEMPTED: int = 45
 
 # Outcome strings that land in status.json.outcome
 _OUTCOME_OK = "ok"
@@ -72,6 +73,7 @@ _OUTCOME_ERROR = "error"
 _OUTCOME_OOM_SHRINK_EXHAUSTED = "oom_shrink_exhausted"
 _OUTCOME_METRICS_INVALID = "metrics_invalid"
 _OUTCOME_ARTIFACT_UPLOAD_ERROR = "artifact_upload_error"
+_OUTCOME_PREEMPTED = "preempted"
 
 # ---------------------------------------------------------------------------
 # OOM recognition patterns (mirrors gpu_cell_runner._OOM_SIGNATURES)
@@ -286,6 +288,41 @@ def validate_metrics(metrics: dict[str, Any] | None) -> bool:
     if not isinstance(metrics, dict) or not metrics:
         return False
     return "final_training_loss" in metrics or "status" in metrics
+
+
+def build_preempt_sentinel(
+    *,
+    cell_id: str,
+    started_at: str,
+    finished_at: str,
+    attempts_so_far: int,
+    retries_so_far: int,
+) -> dict[str, Any]:
+    """Build a status.json payload for a spot-node preemption flush.
+
+    Pure function — no I/O.  The SIGTERM handler builds this payload and then
+    calls the GCS-upload helpers to persist it before the grace window expires.
+
+    Args:
+        cell_id:         Cell identifier string.
+        started_at:      ISO-8601 timestamp of wrapper start.
+        finished_at:     ISO-8601 timestamp of when the SIGTERM arrived.
+        attempts_so_far: Number of training attempts launched before preemption.
+        retries_so_far:  Number of OOM retries that ran before preemption.
+
+    Returns:
+        Dict suitable for serialising to JSON as status.json.
+    """
+    return build_sentinel(
+        cell_id=cell_id,
+        outcome=_OUTCOME_PREEMPTED,
+        exit_code=EXIT_PREEMPTED,
+        attempts=attempts_so_far,
+        retries=retries_so_far,
+        error="spot node preempted — partial checkpoint flushed",
+        started_at=started_at,
+        finished_at=finished_at,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -809,19 +846,97 @@ def _bootstrap(
 # Main entry point
 # ---------------------------------------------------------------------------
 
+def _flush_preemption(
+    *,
+    cell_id: str,
+    started_at: str,
+    output_dir: Path,
+    output_blob_prefix: str,
+    bucket_name: str,
+    project: str | None,
+    upload_fn: Any,
+    attempts_so_far: int,
+    retries_so_far: int,
+) -> None:
+    """Upload the latest checkpoint / partial metrics and a preempted sentinel.
+
+    This is called from the SIGTERM handler.  It is deliberately fail-soft:
+    every step is wrapped in a try/except so a failed upload never prevents the
+    process from exiting within the K8s grace window.  The injectable
+    *upload_fn* replaces the real GCS helpers in unit tests.
+
+    Args:
+        cell_id:            Cell identifier string.
+        started_at:         ISO-8601 timestamp of wrapper start.
+        output_dir:         Directory where train_cell.py writes metrics.json.
+        output_blob_prefix: Blob prefix for the cell's output artifacts.
+        bucket_name:        GCS bucket name.
+        project:            GCP project ID (or None to infer from ADC).
+        upload_fn:          Callable matching the signature
+                            ``(output_dir, *, output_blob_prefix, cell_id,
+                              bucket_name, project, client) -> bool``.
+                            In production this is ``_upload_metrics``; in tests
+                            a fake is injected.
+        attempts_so_far:    Number of training attempts launched so far.
+        retries_so_far:     Number of OOM retries that ran so far.
+    """
+    finished_at = _now_iso()
+    logger.warning(
+        "Cell %s: SIGTERM received — flushing partial checkpoint (attempts=%d retries=%d)",
+        cell_id, attempts_so_far, retries_so_far,
+    )
+
+    # Best-effort: upload whatever metrics.json exists on disk.
+    try:
+        upload_fn(
+            output_dir,
+            output_blob_prefix=output_blob_prefix,
+            cell_id=cell_id,
+            bucket_name=bucket_name,
+            project=project,
+            client=None,
+        )
+    except Exception as exc:
+        logger.warning("Cell %s: preemption metrics flush failed: %s", cell_id, exc)
+
+    # Write the preempted sentinel so the orchestrator can classify this cell.
+    sentinel = build_preempt_sentinel(
+        cell_id=cell_id,
+        started_at=started_at,
+        finished_at=finished_at,
+        attempts_so_far=attempts_so_far,
+        retries_so_far=retries_so_far,
+    )
+    try:
+        _upload_sentinel(
+            sentinel,
+            output_blob_prefix=output_blob_prefix,
+            cell_id=cell_id,
+            bucket_name=bucket_name,
+            project=project,
+            client=None,
+        )
+    except Exception as exc:
+        logger.warning("Cell %s: preemption sentinel upload failed: %s", cell_id, exc)
+
+
 def main(
     *,
     gcs_client: Any | None = None,
     subprocess_runner: Any | None = None,
+    _preempt_upload_fn: Any | None = None,
 ) -> int:
     """Run the full cell entrypoint.
 
     Args:
-        gcs_client:        Injectable Bucket-like client for GCS I/O (tests
-                           inject a fake; production uses None → lazy
-                           construction).
-        subprocess_runner: Replacement for _run_trainer_subprocess (tests inject
-                           a fake; production uses None → real subprocess).
+        gcs_client:         Injectable Bucket-like client for GCS I/O (tests
+                            inject a fake; production uses None → lazy
+                            construction).
+        subprocess_runner:  Replacement for _run_trainer_subprocess (tests inject
+                            a fake; production uses None → real subprocess).
+        _preempt_upload_fn: Injectable replacement for the metrics-upload callable
+                            used inside the SIGTERM preemption handler (tests only;
+                            production leaves this None to use _upload_metrics).
 
     Returns:
         The integer exit code to pass to sys.exit.
@@ -924,6 +1039,107 @@ def main(
         )
         return EXIT_BOOTSTRAP_ERROR
 
+    # -----------------------------------------------------------------------
+    # SIGTERM preemption handler — installed for the duration of training only.
+    #
+    # K8s sends SIGTERM when a spot node is reclaimed (both GCP and Azure give
+    # a grace window before SIGKILL).  The handler:
+    #   1. Reads the grace env var OPENRESEARCH_CELL_PREEMPT_GRACE_S (default 20s).
+    #   2. Forwards SIGTERM to the train_cell child so it can flush its own ckpt.
+    #   3. Waits (bounded) for the child to exit.
+    #   4. Uploads whatever partial metrics.json exist + a preempted sentinel.
+    #   5. Exits with EXIT_PREEMPTED (45).
+    # -----------------------------------------------------------------------
+    _preempt_fired = [False]           # idempotency guard
+    _active_child: list[Any] = [None]  # updated by the tracking runner wrapper
+
+    try:
+        _grace_s = int(os.environ.get("OPENRESEARCH_CELL_PREEMPT_GRACE_S", "20"))
+    except (ValueError, TypeError):
+        _grace_s = 20
+    _grace_s = max(1, min(_grace_s, 120))  # clamp to [1, 120]
+
+    _upload_fn = _preempt_upload_fn if _preempt_upload_fn is not None else _upload_metrics
+
+    def _sigterm_handler(_signum: int, _frame: Any) -> None:  # noqa: ANN001
+        if _preempt_fired[0]:
+            return  # idempotent
+        _preempt_fired[0] = True
+
+        child = _active_child[0]
+        if child is not None:
+            try:
+                child.send_signal(signal.SIGTERM)
+            except Exception:
+                pass
+            try:
+                child.wait(timeout=max(1, _grace_s - 3))
+            except Exception:
+                try:
+                    child.kill()
+                except Exception:
+                    pass
+
+        _flush_preemption(
+            cell_id=cell_id,
+            started_at=started_at,
+            output_dir=output_dir,
+            output_blob_prefix=output_blob_prefix,
+            bucket_name=bucket_name,
+            project=project,
+            upload_fn=_upload_fn,
+            attempts_so_far=0,
+            retries_so_far=0,
+        )
+        sys.exit(EXIT_PREEMPTED)
+
+    _prev_sigterm = signal.signal(signal.SIGTERM, _sigterm_handler)
+
+    # Wrap the subprocess runner so the handler can track the active child.
+    # We use a thin tracking wrapper on the real (non-injected) path; tests
+    # that inject a fake runner bypass this wrapper unchanged.
+    _base_runner = subprocess_runner  # may be None → use tracking wrapper
+
+    def _tracking_runner(
+        train_cell_path_: Path,
+        output_dir_: Path,
+        env_overrides_: dict[str, str],
+        attempt_log_path_: Path,
+    ) -> tuple[int, str]:
+        import subprocess as _sp
+
+        env_ = os.environ.copy()
+        env_.update(env_overrides_)
+        env_["OPENRESEARCH_CELL_OUTPUT_DIR"] = str(output_dir_)
+
+        output_lines_: list[str] = []
+        attempt_log_path_.parent.mkdir(parents=True, exist_ok=True)
+
+        with attempt_log_path_.open("w", encoding="utf-8") as log_fh_:
+            proc_ = _sp.Popen(
+                [sys.executable, str(train_cell_path_)],
+                env=env_,
+                stdout=_sp.PIPE,
+                stderr=_sp.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            _active_child[0] = proc_
+            assert proc_.stdout is not None
+            for line_ in proc_.stdout:
+                log_fh_.write(line_)
+                log_fh_.flush()
+                output_lines_.append(line_)
+                print(line_, end="", flush=True)
+            proc_.wait()
+            _active_child[0] = None
+
+        return proc_.returncode, "".join(output_lines_)
+
+    # Use the tracking runner only on the real (non-injected) path so tests
+    # that inject a fake runner still work unchanged.
+    effective_runner = _base_runner if _base_runner is not None else _tracking_runner
+
     (
         final_exit_code,
         final_outcome,
@@ -940,8 +1156,11 @@ def main(
         bucket_name=bucket_name,
         project=project,
         gcs_client=gcs_client,
-        subprocess_runner=subprocess_runner,
+        subprocess_runner=effective_runner,
     )
+
+    # Restore the previous SIGTERM handler now that training is done.
+    signal.signal(signal.SIGTERM, _prev_sigterm)
 
     # -----------------------------------------------------------------------
     # Phase 3 — Upload sentinel (status.json)

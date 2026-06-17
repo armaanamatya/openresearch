@@ -129,6 +129,12 @@ _SETTINGS_DEFAULTS: dict[str, Any] = {
     # P1-fix-8: configurable knobs (config.py additions by another agent).
     "azure_ttl_seconds_after_finished": 3600,
     "azure_job_backoff_limit": 0,
+    # Spot/preemptible data plane (opt-in; default off → on-demand behavior).
+    # use_spot adds the cloud spot-taint toleration to the cell Pod; spot_backoff_limit
+    # lets a preempted cell Job reschedule onto a fresh spot node (an evicted Pod exits
+    # outside the 40-44 FailJob codes, so backoff applies to preemptions, not app errors).
+    "azure_use_spot": False,
+    "azure_spot_backoff_limit": 3,
     "azure_cache_mount_path": "/mnt/reprolab-cache",
     "azure_watch_poll_interval_s": 5.0,
     "azure_cell_oom_batch_scale_step1": 0.5,
@@ -145,6 +151,8 @@ _SETTINGS_DEFAULTS: dict[str, Any] = {
     "gcp_gpu_skus": ["gcp_a100_80"],
     "gcp_ttl_seconds_after_finished": 3600,
     "gcp_job_backoff_limit": 0,
+    "gcp_use_spot": False,
+    "gcp_spot_backoff_limit": 3,
     "gcp_cache_mount_path": "/mnt/reprolab-cache",
     "gcp_watch_poll_interval_s": 5.0,
     "gcp_cell_oom_batch_scale_step1": 0.5,
@@ -502,8 +510,11 @@ def _check_budget(
     if max_run_gpu_usd and max_run_gpu_usd > 0:
         projected_usd = reserved_gpu_seconds * gpu_usd_per_hour / 3600.0
         if projected_usd >= max_run_gpu_usd:
+            # "budget_exhausted:" prefix is the terminal-stop contract: when EVERY
+            # remaining cell is refused with this prefix, _execute_cell_matrix promotes
+            # the matrix to a terminal budget_exhausted stop_reason (no re-loop).
             return (
-                f"budget: projected GPU spend ${projected_usd:.4f} "
+                f"budget_exhausted: projected GPU spend ${projected_usd:.4f} "
                 f">= max_run_gpu_usd ${max_run_gpu_usd:.4f} for cell={cell_id}"
             )
     # Pod-seconds cap
@@ -511,7 +522,7 @@ def _check_budget(
     if max_pod_seconds and max_pod_seconds > 0:
         if reserved_gpu_seconds >= max_pod_seconds:
             return (
-                f"budget: reserved_gpu_seconds {reserved_gpu_seconds:.0f}s "
+                f"budget_exhausted: reserved_gpu_seconds {reserved_gpu_seconds:.0f}s "
                 f">= max_pod_seconds {max_pod_seconds:.0f}s for cell={cell_id}"
             )
     return None
@@ -681,6 +692,23 @@ def _build_job_manifest(
         "effect": "NoSchedule",
     }
 
+    # Spot toleration (opt-in via <prefix>_use_spot): a spot/preemptible GPU pool gets a
+    # cloud-specific taint, so the cell Pod must tolerate it or it never schedules onto a
+    # spot node. Cloud-specific key (GKE vs AKS). Default (use_spot off) → tolerations is
+    # exactly [gpu_toleration], byte-identical to the on-demand path.
+    _tolerations: list[dict[str, Any]] = [gpu_toleration]
+    if _cloud_setting("use_spot", False):
+        if _get_settings_prefix() == "gcp":
+            _tolerations.append({
+                "key": "cloud.google.com/gke-spot",
+                "operator": "Equal", "value": "true", "effect": "NoSchedule",
+            })
+        else:
+            _tolerations.append({
+                "key": "kubernetes.azure.com/scalesetpriority",
+                "operator": "Equal", "value": "spot", "effect": "NoSchedule",
+            })
+
     # Pod template labels: base labels + cloud-specific extras.
     # Default to Azure Workload Identity label when pod_template_extra_labels is
     # not explicitly provided, preserving byte-for-byte backward compatibility.
@@ -702,7 +730,7 @@ def _build_job_manifest(
         "spec": {
             "serviceAccountName": service_account,
             "restartPolicy": "Never",
-            "tolerations": [gpu_toleration],
+            "tolerations": _tolerations,
             "nodeSelector": node_selector,
             "volumes": [
                 _cache_volume_spec(
@@ -1167,6 +1195,14 @@ def _run_cell_job(
 
     cell_params_json = json.dumps(cell)
 
+    # Spot-aware backoffLimit: on a spot pool a preempted Pod exits OUTSIDE the 40-44
+    # FailJob codes, so a >0 backoffLimit lets the Job controller reschedule that one
+    # cell onto a fresh spot node (bounding a preemption's cost to one cell's redo).
+    # Off spot, or with an explicit non-zero job_backoff_limit, the configured value wins.
+    _backoff_limit = int(_cloud_setting("job_backoff_limit", 0))
+    if _backoff_limit == 0 and _cloud_setting("use_spot", False):
+        _backoff_limit = int(_cloud_setting("spot_backoff_limit", 3))
+
     try:
         manifest = _build_job_manifest(
             job_name=job_name,
@@ -1188,7 +1224,7 @@ def _run_cell_job(
             gpu_plan=gpu_plan,
             # P1-fix-8: configurable knobs from settings.
             ttl_seconds_after_finished=int(_cloud_setting("ttl_seconds_after_finished", 3600)),
-            backoff_limit=int(_cloud_setting("job_backoff_limit", 0)),
+            backoff_limit=_backoff_limit,
             cache_mount_path=str(_cloud_setting("cache_mount_path", "/mnt/reprolab-cache")),
             files_cache_enabled=bool(_cloud_setting("files_cache_enabled", True)),
             # P1-fix-9: OOM shrink ratios forwarded from settings.
@@ -1574,6 +1610,50 @@ def run_matrix(
                     error=None,
                 )
             return
+
+        # --- Cross-pod resume (Blob) ---
+        # The local should_skip_cell above only sees the orchestrator pod's ephemeral
+        # filesystem. When armed and that local manifest is absent — a fresh orchestrator
+        # pod after a control-plane preemption, or any rescheduled run under a stable
+        # run_id (OPENRESEARCH_STABLE_RUN_ID) — consult the DURABLE Blob status.json the
+        # cell entrypoint wrote. A prior success (exit_code 0 / outcome "ok") under the
+        # SAME run_id means the cell already completed: skip it and reuse its Blob metrics,
+        # bounding a preemption's cost to the in-flight cell. Trust model: a stable run_id
+        # pins the same code prefix, so the cell definition is unchanged. Gated on
+        # _resume_armed → default (unarmed) runs submit normally, byte-identical.
+        if _resume_armed:
+            _blob_status = _try_reconcile_status(
+                cell_id=cell_id,
+                output_blob_prefix=output_blob_prefix,
+                account_name=storage_account,
+                container_name=blob_container,
+                client=shared_blob_client,
+            )
+            if _blob_status and (
+                _blob_status.get("exit_code") == 0 or _blob_status.get("outcome") == "ok"
+            ):
+                _resumed_metrics = _try_download_metrics(
+                    cell_id=cell_id,
+                    output_blob_prefix=output_blob_prefix,
+                    account_name=storage_account,
+                    container_name=blob_container,
+                    output_dir=output_dir,
+                    client=shared_blob_client,
+                )
+                logger.info(
+                    "k8s_job_cell_runner: cell=%s SKIPPED (Blob resume: prior ok status.json)",
+                    cell_id,
+                )
+                with results_lock:
+                    results[cell_id] = CellResult(
+                        cell_id=cell_id,
+                        status=STATUS_SKIPPED,
+                        metrics=_resumed_metrics,
+                        gpu=f"{_cloud_short}:unassigned",
+                        retries=0,
+                        error=None,
+                    )
+                return
 
         # --- Overall deadline ---
         if overall_deadline is not None and time.monotonic() >= overall_deadline:

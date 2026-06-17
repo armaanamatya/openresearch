@@ -24,8 +24,13 @@ variable "short_name" {
 }
 
 variable "machine_type" {
-  description = "GCE A2 machine type for this GPU node pool (e.g. 'a2-ultragpu-1g')."
+  # Sized so the 7B 8-GPU SDAR cell fits one node; scale-to-zero ⇒ idle=$0;
+  # override the var for a different size (e.g. a2-highgpu-1g for single-GPU).
+  # Default: a2-highgpu-8g = 8×A100-40GB (catalog short_name gcp_a100_40x8).
+  # a2-ultragpu-8g (8×A100-80GB) is available for override when 80 GB/GPU needed.
+  description = "GCE A2 machine type for this GPU node pool (e.g. 'a2-highgpu-8g'). Default 8×A100-40 GB fits the 7B SDAR cell on one node."
   type        = string
+  default     = "a2-highgpu-8g"
 }
 
 variable "accelerator_type" {
@@ -59,4 +64,21 @@ variable "labels" {
   description = "Map of labels applied to the node pool nodes."
   type        = map(string)
   default     = {}
+}
+
+variable "use_spot" {
+  description = <<-EOT
+    Enable GKE Spot nodes for this pool (default false = on-demand).
+
+    Spot nodes are reclaimed by GCP with a ~15-30 s TERMINATING window.
+    GKE automatically taints Spot nodes with:
+      cloud.google.com/gke-spot=true:NoSchedule
+    Cell Job pods opt in via the RUNTIME spot flag (config gcp_use_spot / env
+    OPENRESEARCH_GCP_USE_SPOT=1), which adds the matching toleration and a >0
+    backoffLimit so a preempted cell reschedules.  The existing nvidia.com/gpu
+    taint is unaffected.  The cell entrypoint flushes its checkpoint to GCS on
+    the preemption SIGTERM (grace window OPENRESEARCH_CELL_PREEMPT_GRACE_S).
+  EOT
+  type    = bool
+  default = false
 }

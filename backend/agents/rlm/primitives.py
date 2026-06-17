@@ -5730,6 +5730,22 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
                         f"(stuck-Pending past timeout) — quota or stock unavailable; "
                         f"try reducing azure_max_nodes or requesting a quota increase")
             return _terminal("capacity_exhausted", _cap_msg, metrics, logs)
+        # budget_exhausted promotion (mirror of the capacity branch): the K8s runner
+        # refuses a cell with a "budget_exhausted:"-prefixed error once the per-run GPU
+        # spend (max_run_gpu_usd) or pod-seconds cap would be exceeded. When EVERY errored
+        # cell carries that prefix (no ok, no OOM), the bottleneck is the budget, not the
+        # code — promote to a terminal stop so the run reports instead of re-burning the
+        # already-exceeded budget on a pointless repair loop. K8s-path-only (local/runpod
+        # error strings never carry the prefix), so other backends are unchanged.
+        _all_budget_exhausted = all(
+            str((r.get("error") or "")).startswith("budget_exhausted:")
+            for r in _err_cells
+        )
+        if _all_budget_exhausted:
+            _budget_msg = (f"all {n_err} run cell(s) refused: per-run GPU budget would be "
+                           f"exceeded (max_run_gpu_usd / max_pod_seconds) — raise --max-usd "
+                           f"or reduce scope; spot pricing lowers the bill ~3x")
+            return _terminal("budget_exhausted", _budget_msg, metrics, logs)
 
     # All-timeout classification (audit 2026-06-11): when the time-budget cap
     # (cap_overall_budget) floors the matrix budget below even one cell's
@@ -6004,7 +6020,17 @@ def run_experiment(
     # Bound before the branch so the post-loop rubric-contract check (which reads
     # outputs/<run_id>) is valid on BOTH paths; the legacy loop reassigns it per
     # iteration, the cell route uses this value as its artifact root.
-    run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
+    # run_id keys the per-run artifact + object-store prefix (runs/<run_id>/cells/...).
+    # Default: a fresh random suffix per run_experiment call (distinct prefixes, no
+    # cross-attempt collision). When OPENRESEARCH_STABLE_RUN_ID is set (the unattended
+    # in-cluster orchestrator sets it so a rescheduled pod re-attaches to the SAME blob
+    # prefix and the K8s runner's Blob-resume skips already-completed cells), pin the
+    # run_id to the deterministic project_id (already paper+arm-derived). Unset → today's
+    # behavior, byte-identical.
+    if os.environ.get("OPENRESEARCH_STABLE_RUN_ID", "").strip():
+        run_id = ctx.project_id
+    else:
+        run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
     _cell_route_taken = False
     _hybrid_grid_result: dict | None = None  # set when the hybrid route stashes a grid result
     # Progress→SSE tailer (local only): emit a sanitized experiment_progress event from the

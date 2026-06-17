@@ -17,6 +17,25 @@ version + date and start a new `[Unreleased]` block above it.
 
 ## [Unreleased]
 
+### Added (2026-06-17 — Stream C + D: spot GPU pools, preemption-safe resume, K8s cost gate; all opt-in/default-OFF, byte-identical when unset)
+
+Spec `2026-06-17-multi-cloud-production-gpu-execution-design.md` (Streams C/D); operator guide `docs/runbooks/2026-06-17-spot-preemption-budget-operator-guide.md`. The recon corrected the spec on two points: K8s resume + per-cell budget were *already* partially implemented, so these changes are narrower than the spec implied.
+
+**Stream C — spot/preemptible GPU pools + preemption-safe resume**
+- `infra/gcp/modules/gpu_nodepool/{main,variables}.tf` (CHANGED) — `use_spot` bool var (default false) → `spot = var.use_spot`; default `machine_type` → `a2-highgpu-8g` (8×A100-40GB, sized for the 7B 8-GPU SDAR cell).
+- `infra/azure/bicep/modules/gpu-nodepool.bicep` (CHANGED) — `useSpot` param (default false) → `union()`s `{scaleSetPriority:'Spot', spotMaxPrice:-1, evictionPolicy:'Delete'}` when on, `{scaleSetPriority:'Regular'}` when off (semantically identical to the prior render); default `vmSize` → `Standard_ND96asr_v4` (8×A100-40GB). `az bicep build` clean.
+- `backend/services/runtime/gpu_catalog.py` (CHANGED) — adds `azure_a100_40x8` (`Standard_ND96asr_v4`, 40GB, 8 GPU); existing 80GB rows untouched. `infra/{gcp,azure}/helm/values.yaml` `defaultSku` → the coherent `*_a100_40x8` label.
+- `backend/agents/rlm/k8s_job_cell_runner.py` (CHANGED) — when the runtime spot flag is set (`gcp_use_spot`/`azure_use_spot`; default false), `_build_job_manifest` adds the cloud-specific spot toleration (`cloud.google.com/gke-spot` / `kubernetes.azure.com/scalesetpriority`) and `_run_cell_job` sets `backoffLimit = *_spot_backoff_limit` (default 3) when `*_job_backoff_limit` is 0, so a preempted cell reschedules onto a fresh node. Default off → tolerations/backoff byte-identical.
+- `docker/{aks,gke}-cell-base/*_cell_entrypoint.py` (CHANGED) — SIGTERM preemption handler: forwards SIGTERM to the `train_cell.py` child, bounded-waits, then flushes the latest checkpoint + partial `metrics.json` to object storage and writes a `preempted` status sentinel (`EXIT_PREEMPTED=45`). Grace `OPENRESEARCH_CELL_PREEMPT_GRACE_S` (default 20s). Fail-soft; normal path unchanged.
+- **Cross-pod resume** — `primitives.py` pins `run_id = project_id` when `OPENRESEARCH_STABLE_RUN_ID` is set (default: random suffix, unchanged); `k8s_job_cell_runner._process_cell` adds a `_resume_armed`-gated Blob fallback that reads the durable `runs/<run_id>/cells/<cell_id>/status.json` and skips a prior-`ok` cell (reusing the existing `_try_reconcile_status`/`_try_download_metrics`), so a rescheduled orchestrator pod skips completed cells instead of redoing the matrix.
+
+**Stream D — per-run GPU cost ceiling as a terminal stop**
+- `backend/agents/rlm/k8s_job_cell_runner.py::_check_budget` (CHANGED) — refusal error string now carries the `budget_exhausted:` prefix (the terminal contract).
+- `backend/agents/rlm/primitives.py::_execute_cell_matrix` (CHANGED) — promotes an all-budget-refused matrix to a terminal `budget_exhausted` `stop_reason` (mirror of the existing `capacity_exhausted` promotion), so the run reports instead of re-burning the exceeded budget in a repair loop.
+- `backend/agents/rlm/forced_iteration.py` (CHANGED) — `budget_exhausted` added to `_TERMINAL_FAILURE_CLASSES` so the orchestrator accepts the next `FINAL_VAR`.
+- `backend/config.py` (CHANGED) — `azure_use_spot`/`gcp_use_spot` (bool, default false) + `azure_spot_backoff_limit`/`gcp_spot_backoff_limit` (int, default 3) Settings fields.
+- Tests: `tests/agents/rlm/test_k8s_job_cell_runner.py` (+`TestBlobResume`, +`TestBudgetTerminal`), `tests/services/runtime/test_spot_preemptible_sku.py` (NEW), `tests/services/runtime/test_cell_entrypoint_preempt.py` (NEW). Deferred (operational): the live SDAR validation (needs a provisioned cluster + GPU quota + admin grants). Stream E (Helm dedup) deferred per the spec.
+
 ### Added (2026-06-17 — Stream A + B: GCP in-cluster orchestrator parity + headless claude-oauth root)
 
 **Stream A — GCP in-cluster orchestrator (spec `2026-06-17-multi-cloud-production-gpu-execution-design.md`)**
