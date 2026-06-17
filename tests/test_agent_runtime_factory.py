@@ -115,6 +115,47 @@ def test_make_runtime_instantiates_without_credentials(monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Azure branch — make_runtime("azure") returns the Azure runtime directly.
+# selected_provider()/validate_provider_credentials() normalize azure→"openai",
+# so without an explicit branch a plain OpenAI runtime would be built. The
+# branch makes the Stream D executor tier reachable via make_runtime.
+# ---------------------------------------------------------------------------
+
+def test_make_runtime_azure_instantiates_without_credentials(monkeypatch) -> None:
+    from backend.agents.runtime.azure_openai_runtime import AzureOpenAiAgentRuntime
+
+    # No Azure env needed when require_api_key is False (offline import path).
+    monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_DEPLOYMENT", raising=False)
+
+    for alias in ("azure", "azure-openai", "azure_openai"):
+        runtime = make_runtime(alias)
+        assert isinstance(runtime, AzureOpenAiAgentRuntime)
+        # provider_name stays "openai" — Azure routes through the OpenAI SDK.
+        assert runtime.provider_name == "openai"
+
+
+def test_make_runtime_azure_requires_credentials_when_asked(monkeypatch) -> None:
+    monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
+
+    with pytest.raises(ProviderConfigurationError) as exc_info:
+        make_runtime("azure", require_api_key=True)
+    assert exc_info.value.provider == "azure-openai"
+
+
+def test_make_runtime_azure_with_credentials(monkeypatch) -> None:
+    from backend.agents.runtime.azure_openai_runtime import AzureOpenAiAgentRuntime
+
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "az-key")
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
+
+    runtime = make_runtime("azure", require_api_key=True)
+    assert isinstance(runtime, AzureOpenAiAgentRuntime)
+
+
+# ---------------------------------------------------------------------------
 # has_provider_credentials — predicate sibling of validate_provider_credentials.
 # Used by the orchestrator to filter the fallback chain so a run with only
 # anthropic credentials never tries to fall over to openai (the symptom: a

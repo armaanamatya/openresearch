@@ -1538,6 +1538,12 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     )
     _os.environ["OPENRESEARCH_SCOPE_SPEC_JSON"] = _effective_scope.model_dump_json()
 
+    # Per-role model selection (--models): unified surface consumed by
+    # run_pipeline_rlm → resolve_role_models. Only set when provided, so a
+    # directly-exported OPENRESEARCH_ROLE_MODELS is never clobbered.
+    if getattr(args, "models", None):
+        _os.environ["OPENRESEARCH_ROLE_MODELS"] = args.models
+
     if _paper_hint_obj is not None and _paper_hint_obj.guidance:
         _existing_guidance = _os.environ.get("OPENRESEARCH_BASELINE_EXTRA_GUIDANCE", "").strip()
         _hint_id = args.paper_hint
@@ -2089,6 +2095,16 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     reproduce.add_argument("--model", default=None, help="Model override for the RLM orchestrator.")
+    reproduce.add_argument(
+        "--models",
+        default=None,
+        help=(
+            "Per-role model selection, e.g. "
+            "planner=opus,executor=gpt-4o-azure,verifier=sonnet,grader=o4-mini "
+            "(or a JSON object). Mixes Claude (sonnet/opus) and OpenAI "
+            "(gpt-5/gpt-4o/gpt-4o-azure/o4-mini) across roles. Unset = single-provider."
+        ),
+    )
     reproduce.add_argument(
         "--provider",
         choices=("anthropic", "openai"),

@@ -6981,7 +6981,7 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
         scored = score_reproduction(
             rubric_tree=rubric,
             run_dir=ctx.project_dir,
-            llm_client=ctx.llm_client,
+            llm_client=getattr(ctx, "verifier_client", None) or ctx.llm_client,
             rubric_source=str(rubric.get("source") or "paperbench_bundle"),
             degraded=degraded,
             # Paper-hint invariant gate (2026-05-29): thread invariants from

@@ -487,6 +487,22 @@ def make_runtime(
     Credentials are validated only when requested so tests and offline import
     paths can instantiate the orchestrator without requiring local secrets.
     """
+    # Azure OpenAI is not a ProviderName literal — selected_provider() /
+    # validate_provider_credentials() normalize it to "openai", which would
+    # build a plain OpenAI runtime. Branch first so an explicit "azure" request
+    # returns the Azure runtime (Stream D executor tier reachable directly).
+    if str(provider or "").lower() in {"azure", "azure-openai", "azure_openai"}:
+        if require_api_key and not _has_azure_openai_credentials():
+            raise ProviderConfigurationError(
+                provider="azure-openai",
+                reason=(
+                    "Azure OpenAI credentials are missing; set both "
+                    "AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT."
+                ),
+            )
+        from backend.agents.runtime.azure_openai_runtime import AzureOpenAiAgentRuntime
+
+        return AzureOpenAiAgentRuntime()
     resolved = (
         validate_provider_credentials(provider)
         if require_api_key

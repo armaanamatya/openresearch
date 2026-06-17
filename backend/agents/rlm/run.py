@@ -332,7 +332,7 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
 
 
 def _resolve_agent_runtime(
-    runtime: Any, provider: str | None
+    runtime: Any, provider: str | None, role_selection: Any = None
 ) -> tuple[Any, str | None, str]:
     """Resolve the sub-agent runtime + model for primitives (``implement_baseline``).
 
@@ -372,6 +372,23 @@ def _resolve_agent_runtime(
     """
     if runtime is not None:
         return runtime, None, "caller-supplied"
+
+    # Per-role executor override (2026-06-17): an explicit unified-surface
+    # executor pick builds the matching runtime directly (Azure now reachable via
+    # make_runtime). A legacy OPENRESEARCH_EXECUTOR=qwen/vllm/etc. stays None in the
+    # selection, so the executor-tier path below still handles it unchanged.
+    _exec_spec = getattr(role_selection, "executor", None) if role_selection is not None else None
+    if _exec_spec is not None:
+        from backend.agents.runtime.factory import make_runtime as _make_runtime
+        _exec_provider = {
+            "anthropic-oauth": "anthropic", "anthropic": "anthropic",
+            "openai": "openai", "azure": "azure",
+        }[_exec_spec.provider]
+        return (
+            _make_runtime(_exec_provider, require_api_key=True),
+            _exec_spec.model,
+            f"role:executor:{_exec_spec.stamp}",
+        )
 
     # Executor tier (OPENRESEARCH_EXECUTOR): run the code-writing agent on a local Qwen
     # (vLLM) instead of Sonnet to save Sonnet usage. Health-probed with graceful
@@ -1676,6 +1693,18 @@ async def run_pipeline_rlm(
 
     # 2. Root model (resolved before the primitive LLM client so the client
     #    can mirror a custom endpoint when the root uses one).
+    # The unified surface's planner pick drives the ACTUAL root model when
+    # --model is unset, so `--models planner=opus` == `--model opus` and the
+    # planner stamp matches what ran (no split between --model and --models).
+    # Explicit --model wins. Resolution still goes through resolve_root_model, so
+    # the root alias collapse (opus→claude-oauth) applies uniformly to both.
+    if not model:
+        from backend.agents.rlm.role_models import planner_token_from_surface
+        _planner_tok = planner_token_from_surface(
+            os.environ.get("OPENRESEARCH_ROLE_MODELS", "").strip() or None
+        )
+        if _planner_tok:
+            model = _planner_tok
     root_model = resolve_root_model(model)
     if not root_model.paper_validated:
         logger.warning(
@@ -1737,10 +1766,63 @@ async def run_pipeline_rlm(
             "openai" if os.environ.get("OPENAI_API_KEY") else "anthropic"
         )
 
+    # 3b. Per-role model selection (2026-06-17, dynamic Sonnet/Opus ⇄ gpt-4/gpt-5):
+    #     resolve the unified surface (OPENRESEARCH_ROLE_MODELS / --models) + legacy
+    #     per-role feeders into one RoleSelection. Unset → every sub-role inherits
+    #     today's behaviour, so this is byte-identical when unused.
+    from backend.agents.rlm.role_models import resolve_role_models, RoleModelError
+    try:
+        role_selection = resolve_role_models(
+            planner_token=root_model.key,
+            role_models_json=os.environ.get("OPENRESEARCH_ROLE_MODELS", "").strip() or None,
+            grader_backend_env=os.environ.get("OPENRESEARCH_GRADER_BACKEND", "").strip() or None,
+            grader_model_env=os.environ.get("OPENRESEARCH_GRADER_MODEL", "").strip() or None,
+            verifier_model_setting=(
+                getattr(get_settings(), "rubric_verifier_model", "")
+                or os.environ.get("OPENRESEARCH_RUBRIC_VERIFIER_MODEL", "")
+            ).strip() or None,
+        )
+    except RoleModelError as _exc:
+        raise RuntimeError(f"invalid per-role model selection: {_exc}") from _exc
+
+    # Verifier transport: an overridden verifier role gets a dedicated
+    # sampler-capable client (reusing the grader transport); else None → the
+    # rubric judge inherits the planner client (today's behaviour). A Claude pick
+    # auto-resolves OAuth-vs-API-key by availability (api key ⇄ OAuth seamlessly).
+    from backend.agents.rlm.grader_transport import (
+        build_transport_client,
+        resolve_anthropic_subrole_backend,
+    )
+
+    def _subrole_backend(spec: Any) -> str:
+        # Claude tokens (opus/sonnet/haiku) → whichever Anthropic auth is present
+        # (honours llm_auth_strategy); openai/azure are key-only, pass through.
+        return resolve_anthropic_subrole_backend() if spec.is_claude else spec.provider
+
+    verifier_client = None
+    if role_selection.verifier is not None:
+        verifier_client, _verifier_label = build_transport_client(
+            backend=_subrole_backend(role_selection.verifier),
+            model=role_selection.verifier.model,
+            fallback_client=llm_client,
+            fallback_label=provider_label,
+            role_label="verifier",
+        )
+        logger.info("run_pipeline_rlm: verifier transport=%s", _verifier_label)
+
+    # Grader unified surface → feed the existing OPENRESEARCH_GRADER_* path that
+    # leaf_scorer.build_grader_client reads (only when the operator did not set
+    # GRADER_BACKEND directly — then resolve_role_models already derived from it).
+    # A Claude grader pick auto-resolves OAuth-vs-key the same way the verifier does.
+    if role_selection.grader is not None and not os.environ.get("OPENRESEARCH_GRADER_BACKEND", "").strip():
+        os.environ["OPENRESEARCH_GRADER_BACKEND"] = _subrole_backend(role_selection.grader)
+        if role_selection.grader.model:
+            os.environ.setdefault("OPENRESEARCH_GRADER_MODEL", role_selection.grader.model)
+
     # 4. RunContext. The sub-agent runtime + model are resolved here so
     #    implement_baseline never falls through to a dead env-default key,
     #    and runs Sonnet rather than the registry's Opus default.
-    agent_runtime, agent_model, runtime_label = _resolve_agent_runtime(runtime, provider)
+    agent_runtime, agent_model, runtime_label = _resolve_agent_runtime(runtime, provider, role_selection)
     logger.info("run_pipeline_rlm: sub-agent runtime=%s", runtime_label)
     # Per-run VRAM override from --vram-gb CLI flag (set as env var by cli.py
     # before Settings construction; consumed here so RunContext carries it and
@@ -1781,6 +1863,8 @@ async def run_pipeline_rlm(
         model=llm_model,
         runtime=agent_runtime,
         agent_model=agent_model,
+        role_selection=role_selection,
+        verifier_client=verifier_client,
         workspace_service=workspace_service,
         workspace_id=workspace_id,
         sandbox_mode=sandbox_mode,
@@ -1827,6 +1911,13 @@ async def run_pipeline_rlm(
         gpu_parallelism=_parse_gpu_parallelism(),
         gpu_visible_count=_visible_gpu_count(),
     )
+
+    # Fidelity advisories (never block): warn when a non-Claude model drives a
+    # sub-role on a fidelity-critical paper (a paper hint with invariants present).
+    for _msg in role_selection.fidelity_warnings(
+        fidelity_critical=bool(getattr(ctx, "paper_hint_invariants", None))
+    ):
+        emit(build_run_warning_event(level="warn", code="role_model_fidelity", message=_msg))
 
     # 4b. Full-scope environment provisioning (2026-06-01). When the scope names
     # heavy RL envs (ALFWorld / WebShop) or Search-QA, stand them up ONCE in the
@@ -2409,10 +2500,24 @@ def _finalize(
         )
         or llm_model
     )
+    # Selection-aware stamping: an overridden executor/verifier reports its
+    # resolved provider:model; planner + grader stay byte-identical when no
+    # unified surface is used (role_selection is None / those sub-roles inherit).
+    _role_selection = getattr(ctx, "role_selection", None)
+    _sel_executor = getattr(_role_selection, "executor", None)
+    _sel_verifier = getattr(_role_selection, "verifier", None)
     report.models = {
         "planner": llm_model,
-        "executor": getattr(ctx, "agent_model", None),
-        "verifier": llm_model,
+        "executor": (
+            _sel_executor.stamp
+            if _sel_executor is not None
+            else getattr(ctx, "agent_model", None)
+        ),
+        "verifier": (
+            _sel_verifier.stamp
+            if _sel_verifier is not None
+            else llm_model
+        ),
         "grader": _grader_stamp,
     }
     started_at: str | None = None

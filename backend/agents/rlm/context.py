@@ -40,6 +40,15 @@ class RunContext:
     model: str
     runtime: Any = None       # AgentRuntime — only implement_baseline uses it
     agent_model: str | None = None  # model for primitive-spawned agents (implement_baseline)
+    # Per-role model selection (2026-06-17, dynamic Sonnet/Opus ⇄ gpt-4/gpt-5):
+    # the resolved RoleSelection (role_models.py) for this run, threaded by
+    # run.py. ``None`` = no unified surface was used (legacy single-provider
+    # behaviour). ``verifier_client`` is a dedicated LlmClient for the rubric
+    # judge when the verifier role was overridden to a different model; ``None``
+    # → verify_against_rubric inherits ``llm_client`` (the planner client),
+    # which is today's behaviour.
+    role_selection: Any = None      # RoleSelection | None — typed Any to avoid an import cycle
+    verifier_client: Any = None     # LlmClient | None — None = inherit llm_client
     workspace_service: Any = None
     workspace_id: str | None = None
     deadline_utc: datetime | None = field(default=None)  # M-DEADLINE — set by run.py

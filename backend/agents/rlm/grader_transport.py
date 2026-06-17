@@ -36,6 +36,47 @@ def _flag_value(name: str) -> str:
     return os.environ.get(name, "").strip().lower()
 
 
+def resolve_anthropic_subrole_backend(settings: Any = None) -> str:
+    """Pick ``"oauth"`` vs ``"anthropic"`` (API key) for a Claude sub-role.
+
+    A per-role Claude pick (``--models verifier=sonnet``) must run on whichever
+    Anthropic auth is actually present — an API key seamlessly substituting for
+    OAuth and vice-versa — instead of hard-coding one transport. This mirrors
+    the SDK/``factory.validate_provider_credentials`` auto-resolution so the
+    decoupled verifier/grader CLIENT path behaves like the executor's
+    ``make_runtime("anthropic")`` runtime (which the SDK already auto-resolves).
+
+    Honours ``llm_auth_strategy`` (the production auth gate):
+
+    * ``oauth_only`` → always ``"oauth"`` (the in-cluster default; a dead
+      ``ANTHROPIC_API_KEY`` can't hijack the run — the documented trap);
+    * ``api_only``   → always ``"anthropic"`` (key required);
+    * ``auto`` (default) → prefer the key when present (consistent with
+      ``validate_provider_credentials``'s auto branch), else OAuth.
+
+    Returns a backend string ``build_transport_client`` understands; the actual
+    client construction there still fails soft to the caller's fallback, so an
+    unavailable transport never raises here.
+    """
+    try:
+        from backend.config import get_settings
+        s = settings if settings is not None else get_settings()
+    except Exception:  # noqa: BLE001 — settings must never crash transport selection
+        s = settings
+    strategy = (getattr(s, "llm_auth_strategy", "auto") or "auto").strip().lower()
+    if strategy == "oauth_only":
+        return "oauth"
+    if strategy == "api_only":
+        return "anthropic"
+    has_key = bool(
+        os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        or getattr(s, "anthropic_api_key", "")
+    )
+    if has_key:
+        return "anthropic"
+    return "oauth"
+
+
 def sample_completions(
     client: Any,
     *,
@@ -72,10 +113,137 @@ def sample_completions(
     return [client.complete(system=system, user=user) for _ in range(n)]
 
 
+def build_transport_client(
+    *,
+    backend: str | None,
+    model: str | None,
+    fallback_client: Any,
+    fallback_label: str = "",
+    role_label: str = "grader",
+) -> tuple[Any, str]:
+    """Resolve an independent, sampler-capable LLM transport from explicit args.
+
+    The backend-dispatch core shared by ``build_grader_client`` (grader role) and
+    any future role (e.g. a verifier) that wants to swap onto a decoupled
+    transport. ``backend`` / ``model`` are PARAMETERS here — no env reads — and
+    the returned label is namespaced by ``role_label`` (e.g.
+    ``"verifier:azure:gpt-4o"``).
+
+    Returns ``(client, label)``.
+
+    - ``backend`` and ``model`` both unset/empty → ``(fallback_client,
+      fallback_label)`` UNCHANGED. The caller rides whatever transport it
+      already had.
+    - ``backend`` in {oauth/claude-oauth/anthropic-oauth, anthropic, openai,
+      azure} → construct the corresponding sampler-capable client from env
+      (``model`` overrides the model id; anthropic defaults to Sonnet). The
+      label is ``"<role_label>:<backend>:<model>"``.
+    - Any other backend value, or any construction error (missing SDK, missing
+      credential), logs a warning and returns the fallback. We NEVER raise:
+      the caller must survive a misconfigured backend (and a root/CLI wedge is
+      exactly when this decoupling matters most).
+    """
+    backend = (backend or "").strip().lower()
+    model_override = (model or "").strip() or None
+
+    # Default path: nothing requested → ride the caller's client unchanged.
+    if not backend and not model_override:
+        return fallback_client, fallback_label
+
+    # A model override with no explicit backend is ambiguous about transport;
+    # honour it only on a known backend. Without a backend we can't know which
+    # SDK to build, so fall through to the default (caller's client) — the model
+    # override alone does not change the transport.
+    if not backend:
+        return fallback_client, fallback_label
+
+    try:
+        if backend in ("oauth", "claude-oauth", "anthropic-oauth"):
+            # Route through the Claude OAuth subscription (the most-available
+            # transport — no API credit needed; fits A5's "survives a root/CLI
+            # wedge" intent and unblocks calibration in OAuth-only environments).
+            # model_override or default_oauth_model() (Sonnet). Mirrors
+            # run.py::_build_llm_client's anthropic-oauth path.
+            from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
+
+            client = ClaudeLlmClient(model=model_override)
+            return client, f"{role_label}:oauth:{model_override or 'claude-oauth'}"
+
+        if backend == "anthropic":
+            from backend.services.context.workspace.tools.anthropic_messages_client import (
+                DEFAULT_GRADER_MODEL,
+                AnthropicMessagesClient,
+            )
+
+            model = model_override or DEFAULT_GRADER_MODEL
+            # api_key=None → SDK resolves ANTHROPIC_API_KEY from the env.
+            client = AnthropicMessagesClient(model=model)
+            return client, f"{role_label}:anthropic:{model}"
+
+        if backend == "openai":
+            from backend.services.context.workspace.tools.openai_client import (
+                OpenAILlmClient,
+            )
+
+            # model_override or the OpenAILlmClient default (gpt-4o-mini).
+            # api_key=None → SDK resolves OPENAI_API_KEY from the env.
+            if model_override:
+                client = OpenAILlmClient(model=model_override)
+            else:
+                client = OpenAILlmClient()
+            return client, f"{role_label}:openai:{model_override or 'gpt-4o-mini'}"
+
+        if backend == "azure":
+            from backend.services.context.workspace.tools.azure_openai_client import (
+                AzureOpenAILlmClient,
+            )
+
+            azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
+            if not azure_endpoint:
+                raise ValueError(
+                    "transport backend=azure requires AZURE_OPENAI_ENDPOINT"
+                )
+            azure_deployment = (
+                os.environ.get("AZURE_OPENAI_DEPLOYMENT", "").strip() or None
+            )
+            api_key = os.environ.get("AZURE_OPENAI_API_KEY", "").strip() or None
+            model = model_override or "gpt-4o"
+            client = AzureOpenAILlmClient(
+                model=model,
+                api_key=api_key,
+                azure_endpoint=azure_endpoint,
+                azure_deployment=azure_deployment,
+            )
+            return client, f"{role_label}:azure:{model}"
+
+        logger.warning(
+            "grader_transport: unknown %s backend=%r — falling back "
+            "to the caller's client. Supported: anthropic, openai, azure.",
+            role_label,
+            backend,
+        )
+        return fallback_client, fallback_label
+
+    except Exception as exc:  # noqa: BLE001 — never let transport setup kill the caller
+        logger.warning(
+            "grader_transport: failed to build %s backend %r (%s) — falling "
+            "back to the caller's client so it still runs.",
+            role_label,
+            backend,
+            exc,
+        )
+        return fallback_client, fallback_label
+
+
 def build_grader_client(
     fallback_client: Any, fallback_label: str = ""
 ) -> tuple[Any, str]:
     """Resolve the grader's transport, honouring ``OPENRESEARCH_GRADER_BACKEND``.
+
+    Thin env-reading wrapper over ``build_transport_client`` (role
+    ``"grader"``). Reads ``OPENRESEARCH_GRADER_BACKEND`` /
+    ``OPENRESEARCH_GRADER_MODEL`` and dispatches; observable behaviour is
+    unchanged from before the extraction.
 
     Returns ``(client, label)``.
 
@@ -91,94 +259,18 @@ def build_grader_client(
       grading must survive a misconfigured grader backend (and a root/CLI wedge
       is exactly when this decoupling matters most).
     """
-    backend = _flag_value("OPENRESEARCH_GRADER_BACKEND")
-    model_override = os.environ.get("OPENRESEARCH_GRADER_MODEL", "").strip() or None
-
-    # Default path: nothing requested → ride the root client unchanged.
-    if not backend and not model_override:
-        return fallback_client, fallback_label
-
-    # A model override with no explicit backend is ambiguous about transport;
-    # honour it only on a known backend. Without a backend we can't know which
-    # SDK to build, so fall through to the default (root client) — the model
-    # override alone does not change the transport.
-    if not backend:
-        return fallback_client, fallback_label
-
-    try:
-        if backend in ("oauth", "claude-oauth", "anthropic-oauth"):
-            # Route the grader through the Claude OAuth subscription (the
-            # most-available transport — no API credit needed; fits A5's
-            # "survives a root/CLI wedge" intent and unblocks grader calibration
-            # in OAuth-only environments). model_override or default_oauth_model()
-            # (Sonnet). Mirrors run.py::_build_llm_client's anthropic-oauth path.
-            from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
-
-            client = ClaudeLlmClient(model=model_override)
-            return client, f"grader:oauth:{model_override or 'claude-oauth'}"
-
-        if backend == "anthropic":
-            from backend.services.context.workspace.tools.anthropic_messages_client import (
-                DEFAULT_GRADER_MODEL,
-                AnthropicMessagesClient,
-            )
-
-            model = model_override or DEFAULT_GRADER_MODEL
-            # api_key=None → SDK resolves ANTHROPIC_API_KEY from the env.
-            client = AnthropicMessagesClient(model=model)
-            return client, f"grader:anthropic:{model}"
-
-        if backend == "openai":
-            from backend.services.context.workspace.tools.openai_client import (
-                OpenAILlmClient,
-            )
-
-            # model_override or the OpenAILlmClient default (gpt-4o-mini).
-            # api_key=None → SDK resolves OPENAI_API_KEY from the env.
-            if model_override:
-                client = OpenAILlmClient(model=model_override)
-            else:
-                client = OpenAILlmClient()
-            return client, f"grader:openai:{model_override or 'gpt-4o-mini'}"
-
-        if backend == "azure":
-            from backend.services.context.workspace.tools.azure_openai_client import (
-                AzureOpenAILlmClient,
-            )
-
-            azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
-            if not azure_endpoint:
-                raise ValueError(
-                    "OPENRESEARCH_GRADER_BACKEND=azure requires AZURE_OPENAI_ENDPOINT"
-                )
-            azure_deployment = (
-                os.environ.get("AZURE_OPENAI_DEPLOYMENT", "").strip() or None
-            )
-            api_key = os.environ.get("AZURE_OPENAI_API_KEY", "").strip() or None
-            model = model_override or "gpt-4o"
-            client = AzureOpenAILlmClient(
-                model=model,
-                api_key=api_key,
-                azure_endpoint=azure_endpoint,
-                azure_deployment=azure_deployment,
-            )
-            return client, f"grader:azure:{model}"
-
-        logger.warning(
-            "grader_transport: unknown OPENRESEARCH_GRADER_BACKEND=%r — falling back "
-            "to the root client. Supported: anthropic, openai, azure.",
-            backend,
-        )
-        return fallback_client, fallback_label
-
-    except Exception as exc:  # noqa: BLE001 — never let grader-backend setup kill grading
-        logger.warning(
-            "grader_transport: failed to build grader backend %r (%s) — falling "
-            "back to the root client so grading still runs.",
-            backend,
-            exc,
-        )
-        return fallback_client, fallback_label
+    return build_transport_client(
+        backend=_flag_value("OPENRESEARCH_GRADER_BACKEND"),
+        model=os.environ.get("OPENRESEARCH_GRADER_MODEL", "").strip() or None,
+        fallback_client=fallback_client,
+        fallback_label=fallback_label,
+        role_label="grader",
+    )
 
 
-__all__ = ["sample_completions", "build_grader_client"]
+__all__ = [
+    "sample_completions",
+    "build_grader_client",
+    "build_transport_client",
+    "resolve_anthropic_subrole_backend",
+]

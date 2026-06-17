@@ -560,6 +560,51 @@ class TestResolveAgentRuntime:
         assert model  # non-empty
         assert "claude" in label.lower()
 
+    def test_role_selection_none_is_byte_identical_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Passing ``role_selection=None`` (the default) leaves the legacy
+        resolution path untouched — same runtime, model, and label as the
+        2-arg call. Locks in the back-compat invariant of EDIT 2."""
+        from backend.agents.rlm import run as run_mod
+        from backend.agents.runtime.claude_runtime import ClaudeAgentRuntime
+
+        monkeypatch.setattr(
+            "backend.agents.runtime.factory.has_provider_credentials",
+            lambda provider=None: provider == "anthropic",
+        )
+        legacy = run_mod._resolve_agent_runtime(None, "openai")
+        with_none = run_mod._resolve_agent_runtime(None, "openai", None)
+        # Same shape: ClaudeAgentRuntime + Sonnet default + claude label.
+        assert isinstance(with_none[0], ClaudeAgentRuntime)
+        assert with_none[1] == legacy[1] == run_mod.get_settings().anthropic_default_model
+        assert with_none[2] == legacy[2]
+
+    def test_executor_role_override_builds_azure_runtime(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit unified-surface executor pick (provider=azure) builds the
+        Azure runtime directly via make_runtime, with the spec's model and a
+        ``role:executor:`` label — short-circuiting the legacy executor-tier and
+        Claude paths. Exercises EDIT 2's executor override."""
+        from backend.agents.rlm import run as run_mod
+        from backend.agents.rlm.role_models import RoleSelection, RoleSpec
+        from backend.agents.runtime.azure_openai_runtime import AzureOpenAiAgentRuntime
+
+        # Azure runtime construction requires these credentials to be present.
+        monkeypatch.setenv("AZURE_OPENAI_API_KEY", "az-test-key")
+        monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
+        monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+
+        planner = RoleSpec(role="planner", token="opus", provider="anthropic-oauth", model="claude-opus-4-7")
+        executor = RoleSpec(role="executor", token="gpt-4o-azure", provider="azure", model="gpt-4o")
+        sel = RoleSelection(planner=planner, executor=executor, verifier=None, grader=None)
+
+        resolved, model, label = run_mod._resolve_agent_runtime(None, None, sel)
+        assert isinstance(resolved, AzureOpenAiAgentRuntime)
+        assert model == "gpt-4o"
+        assert label == f"role:executor:{executor.stamp}"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
