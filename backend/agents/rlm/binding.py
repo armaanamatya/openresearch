@@ -27,6 +27,27 @@ from backend.agents.rlm.context import RunContext
 
 logger = logging.getLogger(__name__)
 
+
+def _champion_rubric_block(result: dict, score: float, target: Any) -> dict:
+    """Build the coherent rubric block to snapshot with a champion code snapshot.
+
+    Mirrors the fields the rubric_score event and rubric_evaluation.json carry,
+    so a restore re-materializes score+leaves+meets_target as ONE evidence state.
+    Field names are taken directly from the ``result`` dict returned by
+    ``verify_against_rubric`` (same names used by the ``payload`` construction in
+    :func:`wrap_primitive`).
+    """
+    return {
+        "overall_score": float(score),
+        "leaf_scores": result.get("leaf_scores", []),
+        "weak_leaves": result.get("weak_leaves", []),
+        "leaf_count": result.get("leaf_count"),
+        "meets_target": result.get("meets_target"),
+        "target_score": (float(target) if target is not None else None),
+        "compute_adjusted_score": result.get("compute_adjusted_score"),
+    }
+
+
 # ---------------------------------------------------------------------------
 # PR-γ.2 — Per-primitive wall-clock timeout table.
 #
@@ -840,17 +861,26 @@ def _emit_supplemental(
                         record_champion as _rec_champ_a4,
                         snapshot_code as _snap_champ_a4,
                     )
+                    import os as _os
+                    from backend.agents.rlm.champion_artifact import (
+                        snapshot_rubric as _snap_rubric_a4,
+                    )
                     _cdir_a4 = ctx.project_dir / "code"
                     if _cdir_a4.is_dir():
                         _snap_a4 = _snap_champ_a4(
                             _cdir_a4,
                             ctx.project_dir / "rlm_state" / "champions" / _evidence_key[:16] / "code",
                         )
+                        _snap_rubric_a4(
+                            _champion_rubric_block(result, score, target),
+                            _snap_a4.parent,
+                        )
                         _rec_champ_a4(
                             ctx.project_dir / "rlm_state" / "champions.json",
                             evidence_key=_evidence_key,
                             snapshot_dir=_snap_a4,
                             median_score=float(score),
+                            sample_count=int(_os.environ.get("OPENRESEARCH_GRADER_SAMPLES", "1") or "1"),
                         )
                 except Exception:  # noqa: BLE001 — champion snapshot is advisory, never block emit
                     pass
