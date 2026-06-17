@@ -28,6 +28,11 @@ output "workload_identity_gcp_service_account" {
   value       = module.identity.gsa_email
 }
 
+output "orchestrator_gcp_service_account" {
+  description = "Email of the orchestrator GSA. Set as --set orchestrator.gcpServiceAccount= in the Helm upgrade command. Annotated on the 'reprolab-orchestrator' KSA as iam.gke.io/gcp-service-account."
+  value       = module.identity.orchestrator_gsa_email
+}
+
 # ─── Artifact Registry ───────────────────────────────────────────────────────
 
 output "artifact_registry_url" {

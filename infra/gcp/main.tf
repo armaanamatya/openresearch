@@ -112,4 +112,25 @@ module "identity" {
   service_account_name = var.workload_identity_service_account
   bucket_name          = module.storage.bucket_name
   labels               = var.labels
+
+  # Orchestrator GSA Secret Manager bindings — only active when the
+  # secret_manager module is deployed (var.secret_manager_enabled = true).
+  secret_manager_module_enabled       = var.secret_manager_enabled
+  claude_code_oauth_token_secret_id   = var.secret_manager_enabled ? module.secret_manager[0].claude_code_oauth_token_secret_id : ""
+  anthropic_api_key_secret_id         = var.secret_manager_enabled ? module.secret_manager[0].anthropic_api_key_secret_id : ""
+  azure_openai_api_key_secret_id      = var.secret_manager_enabled ? module.secret_manager[0].azure_openai_api_key_secret_id : ""
+}
+
+# ─── Secret Manager (orchestrator API-key store) ─────────────────────────────
+# Optional — set var.secret_manager_enabled = true to create the three secret
+# NAME resources (values added out-of-band by the operator).  The orchestrator
+# GSA in the identity module receives secretmanager.secretAccessor on each.
+
+module "secret_manager" {
+  source = "./modules/secret_manager"
+  count  = var.secret_manager_enabled ? 1 : 0
+
+  project_id = var.project_id
+  region     = var.region
+  labels     = var.labels
 }

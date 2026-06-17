@@ -17,6 +17,24 @@ version + date and start a new `[Unreleased]` block above it.
 
 ## [Unreleased]
 
+### Added (2026-06-17 — Stream A + B: GCP in-cluster orchestrator parity + headless claude-oauth root)
+
+**Stream A — GCP in-cluster orchestrator (spec `2026-06-17-multi-cloud-production-gpu-execution-design.md`)**
+- `infra/gcp/modules/secret_manager/` (NEW) — Terraform module creating GCP Secret Manager names `claude-code-oauth-token`, `anthropic-api-key`, `azure-openai-api-key`. Names only; values set out-of-band with `gcloud secrets versions add`. Mirror of Azure `keyvault.bicep`.
+- `infra/gcp/modules/identity/` (CHANGED) — adds a second orchestrator GSA `<prefix>-orchestrator` with `roles/secretmanager.secretAccessor` on the three secrets, `roles/storage.objectAdmin` on the artifact bucket, and a Workload Identity KSA↔GSA binding for `reprolab-orchestrator`. New output `orchestrator_gsa_email`. Existing training GSA untouched.
+- `infra/gcp/helm/templates/orchestrator-{serviceaccount,deployment,cronjob,secretproviderclass}.yaml` (NEW) — four GCP orchestrator templates ported from the Azure Stream E templates. GCP differences: SA annotation is `iam.gke.io/gcp-service-account` (no per-pod WI label); SecretProviderClass uses `provider: gcp` and Secret Manager resource names. Deployment/CronJob target the system CPU pool (`nodeSelector: reprolab/node-type: system`). All four gated on `.Values.orchestrator.enabled` (default false).
+- `infra/gcp/helm/values.yaml` (CHANGED) — adds the `orchestrator:` block (enabled/image/paper/model/gcpServiceAccount/gcpProject/csiMountPath/claudeOauthToken/deployment/cronjob/env). Default `enabled: false`; byte-identical to HEAD on default render.
+- `infra/gcp/main.tf` / `variables.tf` / `outputs.tf` (CHANGED) — wires the `secret_manager` module (gated on `var.secret_manager_enabled`, default false) and exposes `orchestrator_gcp_service_account` output.
+- `backend/config.py` (CHANGED) — adds `gcp_orchestrator_image`, `gcp_csi_mount_path`, and `claude_code_oauth_token` Settings fields (read from `OPENRESEARCH_GCP_*` / `CLAUDE_CODE_OAUTH_TOKEN` env vars). Settings-only; no behaviour change when not set.
+
+**Stream B — long-lived CLAUDE_CODE_OAUTH_TOKEN headless root**
+- `infra/azure/bicep/modules/keyvault.bicep` (CHANGED) — additive: adds `claude-code-oauth-token` to the managed-secrets comment/doc block (name only; no Bicep resource added; value set out-of-band).
+- Azure `orchestrator-{deployment,cronjob,secretproviderclass}.yaml` + GCP orchestrator Deployment/CronJob (CHANGED) — inject `CLAUDE_CODE_OAUTH_TOKEN` env var from the secret store, gated on `.Values.orchestrator.claudeOauthToken.enabled` (default false). DEFAULT render is byte-identical to HEAD.
+- `infra/azure/helm/values.yaml` (CHANGED) — adds `orchestrator.claudeOauthToken: {enabled: false}` block.
+- `backend/agents/runtime/factory.py` (CHANGED) — `_has_claude_subscription_oauth()` now returns True immediately when `CLAUDE_CODE_OAUTH_TOKEN` is set in the environment, before checking `~/.claude/.credentials.json`. This makes `--model claude-oauth` viable in unattended in-cluster pods without requiring a local credentials file. The token env is NOT in `_warn_on_shell_env_override`'s `_SUSPECT_KEYS` (never triggers a spurious warning).
+- `tests/config/test_claude_oauth_token_headless.py` (NEW) — verifies `CLAUDE_CODE_OAUTH_TOKEN` resolves as valid unattended root, produces no shell-override warning, and does not break the existing credentials-file path.
+- `tests/config/test_gcp_orchestrator_settings.py` (NEW) — verifies new `gcp_*` orchestrator/secret fields parse and round-trip via `OPENRESEARCH_GCP_*` env.
+
 ### Added (leaf-frontier remediation — close the leaf-repair loop; all default-OFF, fail-soft, byte-for-byte today when unset)
 - `backend/agents/rlm/leaf_actuator.py` — the actuator that closes `leaf_triage`'s open loop. Today triage only *diagnoses* a weak leaf into an advisory directive the agent may ignore (the real Adam 0.764 run shipped two clean `0.0`s that way); the actuator turns the cheapest, most-deterministic repairs into concrete artifacts the EXISTING routes consume. Master flag `OPENRESEARCH_LEAF_ACTUATE`. Routes: **L4** `result_quality` (inverted optimizer ordering) → a synthesized per-condition lr `search` block the staged-search route tunes + re-runs; **L5** variance-demanding leaf → a budget-gated seed plan (behind `OPENRESEARCH_LEAF_ACTUATE_SEEDS`); **L6** `aggregation_gap` → a declared-vs-aggregated completeness audit surfacing silently-lost cells; **L2b** `render_artifact` → a grounded `fig_*.json` sidecar emitted straight from the measured on-disk metrics.
 - `leaf_actuator.emit_figure_sidecars` + `staged_search.synthesize_search_from_leaf` + `cell_matrix.audit_aggregation_completeness` — the pure cores (stdlib-only, fail-soft, unit-tested against plain dicts).

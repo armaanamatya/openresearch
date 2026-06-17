@@ -217,6 +217,20 @@ orchestrator:
   # Obtain with: az account show --query tenantId -o tsv
   tenantId: ""
 
+  # ── Long-lived Claude OAuth token (Stream B, opt-in) ────────────────────────
+  # CRITICAL INVARIANT: this block is DEFAULT FALSE so that the DEFAULT
+  # `helm template infra/azure/helm` render is byte-identical before and after
+  # this commit.  The env var CLAUDE_CODE_OAUTH_TOKEN and its secret mount
+  # appear ONLY when an operator sets orchestrator.claudeOauthToken.enabled=true.
+  claudeOauthToken:
+    # Set to true to inject CLAUDE_CODE_OAUTH_TOKEN from the Key Vault secret
+    # 'claude-code-oauth-token' as a container env var.
+    # Requires: the secret exists in Key Vault (set out-of-band):
+    #   az keyvault secret set --vault-name <kv> --name claude-code-oauth-token \
+    #     --value "$(claude setup-token)"
+    # and orchestrator.model=claude-oauth.
+    enabled: false
+
   # ── Deployment (always-on / interactive run) ────────────────────────────────
   deployment:
     # Set to true to deploy the long-running Deployment.  Requires orchestrator.enabled=true.

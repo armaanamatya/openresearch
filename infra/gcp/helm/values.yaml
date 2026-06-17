@@ -133,3 +133,154 @@ resourceQuota:
 devicePlugin:
   # GKE installs and manages the device plugin automatically; do NOT enable.
   enabled: false
+
+# ---------------------------------------------------------------------------
+# Orchestrator — in-cluster ReproLab reasoning loop (Deployment + CronJob)
+#
+# DISABLED BY DEFAULT — existing installs are unchanged.  Enable with:
+#   helm upgrade reprolab-gke ./infra/gcp/helm \
+#     --set orchestrator.enabled=true \
+#     --set orchestrator.deployment.enabled=true \
+#     --set orchestrator.image=<region>-docker.pkg.dev/<project>/reprolab/reprolab-orchestrator:<sha> \
+#     --set orchestrator.paper=2605.15155 \
+#     --set orchestrator.gcpServiceAccount=$(terraform -chdir=infra/gcp output -raw orchestrator_gcp_service_account) \
+#     --set orchestrator.gcpProject=<project-id> \
+#     --set orchestrator.env.gcpProject=<project-id> \
+#     --set orchestrator.env.gcpRegion=us-central1 \
+#     --set orchestrator.env.gkeCluster=$(terraform -chdir=infra/gcp output -raw gke_cluster_name) \
+#     --set orchestrator.env.artifactRegistry=$(terraform -chdir=infra/gcp output -raw artifact_registry_url) \
+#     --set orchestrator.env.gcsBucket=$(terraform -chdir=infra/gcp output -raw gcs_bucket_name) \
+#     --set orchestrator.env.nodePoolName=<gpu-pool-name> \
+#     --set orchestrator.env.baseImage=<region>-docker.pkg.dev/<project>/reprolab/gke-cell-base:<sha>
+#
+# Prerequisites (before enabling):
+#   1. Terraform applied with secret_manager_enabled = true (secrets created).
+#   2. Secret values set out-of-band:
+#        gcloud secrets versions add anthropic-api-key --data-file=<(echo -n "$KEY")
+#        gcloud secrets versions add azure-openai-api-key --data-file=<(echo -n "$KEY")
+#        # For claude-oauth headless root (Stream B):
+#        gcloud secrets versions add claude-code-oauth-token --data-file=<(claude setup-token)
+#   3. Secrets Store CSI driver + GCP provider installed cluster-wide (see
+#      orchestrator-secretproviderclass.yaml header for the helm commands).
+#   4. Orchestrator container image pushed to Artifact Registry with backend + the
+#      claude CLI + Node installed (see ORCHESTRATOR IMAGE NOTE below).
+#
+# ORCHESTRATOR IMAGE NOTE:
+#   The orchestrator pod runs `python -m backend.cli reproduce` which shells out
+#   to the `claude` binary (claude-agent-sdk sub-agent calls) and Node (required
+#   by the claude binary).  The image at orchestrator.image MUST include:
+#     • Python + the reprolab backend (pip install -r backend/requirements.txt)
+#     • Node >= 20.19 (the claude CLI runtime)
+#     • The claude CLI binary (`npm install -g @anthropic-ai/claude-code@<version>`)
+#   The gke-cell-base image does NOT include these (it is a GPU training image).
+#   Operator step: build a dedicated orchestrator image from the repo root and
+#   push it to Artifact Registry.  See docs/runbooks/running-the-project.md for
+#   the Dockerfile template.  Do NOT use :latest.
+#
+# MODEL NOTE:
+#   Default model is "claude-oauth" (unattended, $0/token) when
+#   orchestrator.claudeOauthToken.enabled = true and the claude-code-oauth-token
+#   secret is set.  Fall back to "azure" (AOAI root via AZURE_OPENAI_API_KEY)
+#   for a non-OAuth deployment.
+# ---------------------------------------------------------------------------
+orchestrator:
+  # Master gate — set to true to deploy the ServiceAccount, SecretProviderClass,
+  # and whichever of Deployment / CronJob are individually enabled below.
+  enabled: false
+
+  # Container image for both the Deployment and CronJob.
+  # Must be a PINNED Artifact Registry tag (never :latest) built from the repo root
+  # and include the claude CLI + Node (see ORCHESTRATOR IMAGE NOTE above).
+  # Example: us-central1-docker.pkg.dev/my-project/reprolab/reprolab-orchestrator:sha-abc1234
+  image: ""
+
+  # arXiv ID or local PDF path passed to `python -m backend.cli reproduce <paper>`.
+  paper: ""
+
+  # Root model for the reasoning loop.
+  # "claude-oauth"  — uses CLAUDE_CODE_OAUTH_TOKEN from Secret Manager; fully
+  #                   headless, $0/token (recommended; enable claudeOauthToken below).
+  # "azure"         — uses AZURE_OPENAI_API_KEY from Secret Manager; headless.
+  model: claude-oauth
+
+  # GCP project ID (or number) that owns the Secret Manager secrets.
+  # Used by the SecretProviderClass to build secret resource names.
+  # Obtain: gcloud config get-value project
+  gcpProject: ""
+
+  # GCP IAM service account email for the orchestrator KSA annotation.
+  # Source: Terraform output orchestrator_gcp_service_account.
+  # Annotated on the ServiceAccount as iam.gke.io/gcp-service-account.
+  gcpServiceAccount: ""
+
+  # Mount path inside the orchestrator pod where the CSI driver projects
+  # the secret files.  The synced k8s Secret is what env vars reference;
+  # this mount is required to keep that Secret live.
+  csiMountPath: /mnt/sm-secrets
+
+  # ── Long-lived Claude OAuth token (Stream B, opt-in) ────────────────────────
+  # CRITICAL INVARIANT: this block is DEFAULT FALSE so that the DEFAULT
+  # `helm template infra/gcp/helm` render is byte-identical before and after
+  # this commit.  The env var CLAUDE_CODE_OAUTH_TOKEN and its secret mount
+  # appear ONLY when an operator sets orchestrator.claudeOauthToken.enabled=true.
+  claudeOauthToken:
+    # Set to true to inject CLAUDE_CODE_OAUTH_TOKEN from the Secret Manager
+    # secret 'claude-code-oauth-token' as a container env var.
+    # Requires: the secret exists in Secret Manager AND has a version set:
+    #   claude setup-token | gcloud secrets versions add claude-code-oauth-token --data-file=-
+    # and orchestrator.model=claude-oauth.
+    enabled: false
+
+  # ── Deployment (always-on / interactive run) ─────────────────────────────────
+  deployment:
+    # Set to true to deploy the long-running Deployment.  Requires orchestrator.enabled=true.
+    enabled: false
+
+  # ── CronJob (scheduled / nightly batch) ──────────────────────────────────────
+  cronjob:
+    # Set to true to deploy the CronJob.  Requires orchestrator.enabled=true.
+    enabled: false
+    # Cron schedule in UTC.  Default: 02:00 UTC daily.
+    schedule: "0 2 * * *"
+
+  # ── OPENRESEARCH_GCP_* environment variables ──────────────────────────────────
+  # All default to empty; the orchestrator will fail fast with a clear message
+  # if a required value is missing (see config.py / gke_job_backend.py).
+  # Fill from Terraform outputs after `terraform apply`.
+  env:
+    # GCP project ID.
+    # Source: var.project_id (same as the Terraform root variable).
+    gcpProject: ""
+
+    # GCP region (e.g. us-central1).
+    # Source: var.region
+    gcpRegion: ""
+
+    # GKE cluster name.
+    # Source: terraform output -raw gke_cluster_name
+    gkeCluster: ""
+
+    # Artifact Registry base URL (REGION-docker.pkg.dev/PROJECT/REPO).
+    # Source: terraform output -raw artifact_registry_url
+    artifactRegistry: ""
+
+    # GCS bucket name for run artifacts.
+    # Source: terraform output -raw gcs_bucket_name
+    gcsBucket: ""
+
+    # Kubernetes namespace where training-cell Jobs are submitted.
+    # Must match .Values.namespace (default reprolab).
+    namespace: ""
+
+    # Kubernetes ServiceAccount name for training-cell Jobs (NOT the orchestrator SA).
+    # Must match .Values.serviceAccountName (default reprolab-sa).
+    serviceAccount: ""
+
+    # GPU node pool name used for nodeSelector on training-cell Jobs.
+    # Formula: <prefix><poolSuffix> from gpu_skus.
+    nodePoolName: ""
+
+    # Pre-baked Artifact Registry base image for training-cell Jobs.
+    # Must be a PINNED tag — never :latest.
+    # Example: us-central1-docker.pkg.dev/my-project/reprolab/gke-cell-base:sha-abc1234
+    baseImage: ""

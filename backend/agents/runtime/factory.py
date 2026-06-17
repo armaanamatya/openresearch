@@ -74,8 +74,12 @@ def _has_claude_subscription_oauth() -> bool:
 
     ``claude-agent-sdk`` spawns the ``claude`` CLI as a subprocess and inherits
     its OAuth session — so the predicate is "is there a valid stored session
-    on this machine that the CLI can read?"  There are two storage backends:
+    on this machine that the CLI can read?"  There are three credential sources:
 
+    - **Long-lived token** (headless / in-cluster, Stream B): ``claude setup-token``
+      mints a stable ``CLAUDE_CODE_OAUTH_TOKEN`` env var.  When set, the CLI and
+      the claude-agent-sdk honour it directly — no ``~/.claude/.credentials.json``
+      is needed.  This is the only viable path for unattended in-cluster runs.
     - **File-based** (Linux, older macOS, CI containers): ``claude login`` writes
       ``~/.claude/.credentials.json``. Existence of that file is sufficient proof.
     - **macOS Keychain** (modern Claude Code on macOS): the credentials are
@@ -97,13 +101,22 @@ def _has_claude_subscription_oauth() -> bool:
     warning with the symlink command the user should run.
 
     Returns True iff a stored session is detectable by the SDK (i.e. under
-    ``~`` or ``%USERPROFILE%``). On Windows, the ``claude`` binary may not be
-    on PATH (Git Bash doesn't inherit the Windows PATH entry for
-    ``~/.local/bin``), but the SDK can still read the credentials file and
-    locate the binary via known install paths.  Times out at 5 s on the
-    Keychain probe to prevent a hung Keychain Access daemon from blocking
-    pipeline startup.
+    ``~`` or ``%USERPROFILE%``, macOS Keychain, or ``CLAUDE_CODE_OAUTH_TOKEN``
+    env var). On Windows, the ``claude`` binary may not be on PATH (Git Bash
+    doesn't inherit the Windows PATH entry for ``~/.local/bin``), but the SDK
+    can still read the credentials file and locate the binary via known install
+    paths.  Times out at 5 s on the Keychain probe to prevent a hung Keychain
+    Access daemon from blocking pipeline startup.
     """
+    # 0. Long-lived token (headless/in-cluster, Stream B).
+    #    CLAUDE_CODE_OAUTH_TOKEN is honoured directly by the claude CLI and
+    #    the claude-agent-sdk without needing a credentials file.  When set we
+    #    treat it as equivalent to a stored session.  We do NOT warn about this
+    #    in _warn_on_shell_env_override — it is intentionally operator-supplied
+    #    in production and must not trigger a spurious "shell shadows .env" warning.
+    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", ""):
+        return True
+
     # 1. POSIX user home — the canonical location the SDK reads from.
     if os.path.isfile(os.path.expanduser("~/.claude/.credentials.json")):
         # On non-Windows, also verify a claude binary the SDK can spawn is available

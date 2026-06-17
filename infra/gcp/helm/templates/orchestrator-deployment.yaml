@@ -1,0 +1,140 @@
+{{- if and .Values.orchestrator.enabled .Values.orchestrator.deployment.enabled }}
+# ---------------------------------------------------------------------------
+# orchestrator-deployment.yaml
+#
+# Runs the ReproLab reasoning loop (RLM root + primitives) continuously inside
+# GKE on a CPU system-pool node — no GPU requested here.  Training cells are
+# dispatched outward as K8s Jobs via k8s_job_cell_runner (--sandbox gcp).
+#
+# DEFAULT MODEL: claude-oauth (root via CLAUDE_CODE_OAUTH_TOKEN from Secret
+# Manager, $0/token, the recommended unattended model).  For azure-hosted roots
+# set orchestrator.model=azure (requires azure-openai-api-key secret).
+#
+# API key secrets are injected via the Secrets Store CSI volume (see
+# orchestrator-secretproviderclass.yaml).  The CSI volumeMount MUST be present
+# to keep the synced k8s Secret live; remove it and the Secret expires.
+#
+# NODE PLACEMENT: system pool (CPU only).
+#   nodeSelector: reprolab/node-type: system
+# No GPU taint toleration — confirms the orchestrator never lands on a GPU node.
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reprolab-orchestrator
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "reprolab-gke.labels" . | nindent 4 }}
+    app.kubernetes.io/component: orchestrator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "reprolab-gke.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: orchestrator
+  template:
+    metadata:
+      labels:
+        {{- include "reprolab-gke.labels" . | nindent 8 }}
+        app.kubernetes.io/component: orchestrator
+    spec:
+      serviceAccountName: reprolab-orchestrator
+
+      # CPU system pool — orchestrator must NOT land on a (scarce, expensive) GPU node.
+      # GKE system pool nodes are labeled reprolab/node-type=system by the Terraform
+      # gke module.  GPU nodes carry a NoSchedule taint (nvidia.com/gpu=present) that
+      # the orchestrator has no toleration for, providing a second line of defence.
+      nodeSelector:
+        reprolab/node-type: system
+
+      containers:
+        - name: orchestrator
+          image: {{ .Values.orchestrator.image | quote }}
+          imagePullPolicy: IfNotPresent
+
+          command:
+            - python
+            - -m
+            - backend.cli
+            - reproduce
+            - {{ .Values.orchestrator.paper | quote }}
+            - --mode
+            - rlm
+            - --model
+            # Default: claude-oauth (unattended, $0/token via CLAUDE_CODE_OAUTH_TOKEN).
+            # For smoke tests or AOAI root: override with --set orchestrator.model=azure
+            - {{ .Values.orchestrator.model | quote }}
+            - --sandbox
+            - gcp
+
+          env:
+            # ── API keys (from synced Secret Manager secret) ──────────────────
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: reprolab-orchestrator-secrets
+                  key: ANTHROPIC_API_KEY
+            - name: AZURE_OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: reprolab-orchestrator-secrets
+                  key: AZURE_OPENAI_API_KEY
+
+            # ── Long-lived Claude OAuth token (opt-in, Stream B) ───────────────
+            # CRITICAL: gated on .Values.orchestrator.claudeOauthToken.enabled
+            # (default false) so the DEFAULT render is byte-identical to HEAD.
+            # The token is only present in the SecretProviderClass + synced Secret
+            # when this flag is on; the secretKeyRef below would fail if the key
+            # is absent from the Secret, so the entire block is conditional.
+            {{- if .Values.orchestrator.claudeOauthToken.enabled }}
+            - name: CLAUDE_CODE_OAUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: reprolab-orchestrator-secrets
+                  key: CLAUDE_CODE_OAUTH_TOKEN
+            {{- end }}
+
+            # ── GCP backend config (OPENRESEARCH_GCP_* block) ──────────────────
+            # Values sourced from .Values.orchestrator.env; all default to empty
+            # so the chart installs cleanly even before the operator fills them.
+            - name: OPENRESEARCH_GCP_PROJECT
+              value: {{ .Values.orchestrator.env.gcpProject | default "" | quote }}
+            - name: OPENRESEARCH_GCP_REGION
+              value: {{ .Values.orchestrator.env.gcpRegion | default "" | quote }}
+            - name: OPENRESEARCH_GCP_GKE_CLUSTER
+              value: {{ .Values.orchestrator.env.gkeCluster | default "" | quote }}
+            - name: OPENRESEARCH_GCP_ARTIFACT_REGISTRY
+              value: {{ .Values.orchestrator.env.artifactRegistry | default "" | quote }}
+            - name: OPENRESEARCH_GCP_GCS_BUCKET
+              value: {{ .Values.orchestrator.env.gcsBucket | default "" | quote }}
+            - name: OPENRESEARCH_GCP_NAMESPACE
+              value: {{ .Values.orchestrator.env.namespace | default "reprolab" | quote }}
+            - name: OPENRESEARCH_GCP_SERVICE_ACCOUNT
+              value: {{ .Values.orchestrator.env.serviceAccount | default "reprolab-sa" | quote }}
+            - name: OPENRESEARCH_GCP_NODE_POOL_NAME
+              value: {{ .Values.orchestrator.env.nodePoolName | default "" | quote }}
+            - name: OPENRESEARCH_GCP_BASE_IMAGE
+              value: {{ .Values.orchestrator.env.baseImage | default "" | quote }}
+
+          resources:
+            requests:
+              cpu: "1"
+              memory: "2Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+
+          volumeMounts:
+            # CSI volume mount MUST be present for the synced k8s Secret to stay live.
+            - name: sm-secrets
+              mountPath: {{ .Values.orchestrator.csiMountPath | default "/mnt/sm-secrets" | quote }}
+              readOnly: true
+
+      volumes:
+        - name: sm-secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: reprolab-orchestrator-sm
+{{- end }}

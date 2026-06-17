@@ -30,3 +30,33 @@ variable "labels" {
   type        = map(string)
   default     = {}
 }
+
+# ─── Orchestrator Secret Manager bindings (optional) ─────────────────────────
+# When the secret_manager module is also deployed, pass its secret IDs here so
+# the orchestrator GSA receives secretmanager.secretAccessor on each secret.
+# Set secret_manager_module_enabled = false to skip the IAM bindings (e.g. during
+# the initial bootstrap before the secret_manager module is applied).
+
+variable "secret_manager_module_enabled" {
+  description = "When true, create IAM bindings from the orchestrator GSA to the three Secret Manager secrets. Set false if the secret_manager module has not been applied yet."
+  type        = bool
+  default     = false
+}
+
+variable "claude_code_oauth_token_secret_id" {
+  description = "Fully-qualified resource name of the 'claude-code-oauth-token' secret (output of the secret_manager module). Only used when secret_manager_module_enabled = true."
+  type        = string
+  default     = ""
+}
+
+variable "anthropic_api_key_secret_id" {
+  description = "Fully-qualified resource name of the 'anthropic-api-key' secret (output of the secret_manager module). Only used when secret_manager_module_enabled = true."
+  type        = string
+  default     = ""
+}
+
+variable "azure_openai_api_key_secret_id" {
+  description = "Fully-qualified resource name of the 'azure-openai-api-key' secret (output of the secret_manager module). Only used when secret_manager_module_enabled = true."
+  type        = string
+  default     = ""
+}

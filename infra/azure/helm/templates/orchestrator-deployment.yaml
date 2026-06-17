@@ -84,6 +84,21 @@ spec:
                   name: reprolab-orchestrator-secrets
                   key: ANTHROPIC_API_KEY
 
+            # ── Long-lived Claude OAuth token (opt-in, Stream B) ──────────────
+            # CRITICAL: gated on .Values.orchestrator.claudeOauthToken.enabled
+            # (default false) so the DEFAULT render is byte-identical to HEAD.
+            # Requires the 'claude-code-oauth-token' secret to exist in Key Vault
+            # and the SecretProviderClass to surface it.  Enable with:
+            #   --set orchestrator.claudeOauthToken.enabled=true
+            #   --set orchestrator.model=claude-oauth
+            {{- if .Values.orchestrator.claudeOauthToken.enabled }}
+            - name: CLAUDE_CODE_OAUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: reprolab-orchestrator-secrets
+                  key: CLAUDE_CODE_OAUTH_TOKEN
+            {{- end }}
+
             # ── Azure backend config (OPENRESEARCH_AZURE_* block) ─────────────
             # Values sourced from .Values.orchestrator.env; all default to empty
             # so the chart installs cleanly even before the operator fills them.

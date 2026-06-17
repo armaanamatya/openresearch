@@ -425,6 +425,53 @@ class Settings(BaseSettings):
         ge=1,
         description="Timeout (seconds) for pip install in the Job bootstrap script",
     )
+    # GCP orchestrator / secret-store knobs (Stream A parity with azure_* block)
+    # These are settings-only — no behaviour change when the new flags are off.
+    gcp_orchestrator_image: str = Field(
+        default="",
+        description=(
+            "Container image for the in-cluster GCP orchestrator (Deployment + CronJob). "
+            "Must be a PINNED Artifact Registry tag; must include the claude CLI + Node. "
+            "Operator sets this in the Helm --set or values override. "
+            "Read by helm/values.yaml, not directly by backend code."
+        ),
+    )
+    gcp_csi_mount_path: str = Field(
+        default="/mnt/sm-secrets",
+        description=(
+            "Mount path inside the orchestrator pod where the Secrets Store CSI driver "
+            "projects Secret Manager secret files. Must match orchestrator-deployment.yaml "
+            "volumeMount.mountPath."
+        ),
+    )
+    # Stream B — long-lived Claude OAuth token (headless/unattended root)
+    # CLAUDE_CODE_OAUTH_TOKEN is read natively by the claude CLI and the
+    # claude-agent-sdk (which shells out to the claude binary).  When set, it
+    # satisfies the claude-oauth credential check WITHOUT requiring a local
+    # ~/.claude/.credentials.json file, making --model claude-oauth viable in
+    # unattended environments (pods, CI) that cannot run `claude login`.
+    #
+    # This field is read-only from Settings — the actual env var is consumed
+    # directly by the claude binary.  We surface it here so:
+    #   1. The _has_claude_subscription_oauth() helper can detect it (it reads
+    #      the CLAUDE_CODE_OAUTH_TOKEN env var directly).
+    #   2. The shell-vs-.env override validator knows it is NOT a suspect key
+    #      (an operator intentionally sets it in-cluster; it should not warn).
+    claude_code_oauth_token: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "OPENRESEARCH_CLAUDE_CODE_OAUTH_TOKEN",
+        ),
+        description=(
+            "Long-lived Claude OAuth token minted by `claude setup-token`. "
+            "When set, satisfies the claude-oauth credential check for headless / "
+            "unattended in-cluster runs without requiring ~/.claude/.credentials.json. "
+            "Value sourced from the secret store (Key Vault / Secret Manager) by the "
+            "orchestrator pod. Never set this in .env for local dev — use `claude login` "
+            "instead (the interactive flow writes ~/.claude/.credentials.json)."
+        ),
+    )
 
     # --- Forced-iteration policy (Lane H, spec 2026-05-24) ---
     # When the root model calls FINAL_VAR but the latest rubric overall_score
