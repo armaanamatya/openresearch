@@ -80,6 +80,9 @@ def run_safe_capture(
         "OPENRESEARCH_BES_ENABLED": "1",
         "OPENRESEARCH_BES_CANDIDATES_PER_CLUSTER": str(n),
         "OPENRESEARCH_BES_ADAPTIVE": "0",
+        # Fail fast if OAuth isn't detected rather than silently 400 on a no-credit
+        # API key (factory.py honors oauth_only when the claude CLI is present).
+        "OPENRESEARCH_LLM_AUTH_STRATEGY": "oauth_only",
     })
     cmd = [
         sys.executable, "-m", "backend.cli", "reproduce", paper,
