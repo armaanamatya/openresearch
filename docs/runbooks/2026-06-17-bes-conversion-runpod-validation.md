@@ -135,16 +135,28 @@ env -u ANTHROPIC_API_KEY \
 > # also written to runs/<id>/a1_result.json
 > ```
 >
-> **⚠️ Root-model reliability (2026-06-17 finding — do NOT use `claude-oauth` as the
-> A1 root).** Two local `claude-oauth` capture attempts failed *operationally* (not a
-> BES result): one was too slow (≈15 min/candidate × 3 > a short timeout), and the
-> second **degenerated** — the root read the paper, then called `FINAL_VAR` 16× at
-> iteration 0 without ever calling `implement_baseline`, so BES never engaged and **no
-> candidate pool was produced**. `claude-oauth` is flagged `root_model_unvalidated` for
-> a reason: it does not reliably drive the pipeline. Use a paper-validated root
-> (**`gpt-5`**) for A1. The wrapper makes auth model-aware: `--model gpt-5` uses
-> `OPENAI_API_KEY`; only `--model claude-oauth` forces `oauth_only` + pops
-> `ANTHROPIC_API_KEY`.
+> **Root-model reliability — updated guidance (Tasks 1–5 of the oauth-root-reliability
+> plan landed on this branch).** The original finding (a `claude-oauth` root degenerated:
+> read the paper, called `FINAL_VAR` 16× without ever calling `implement_baseline`,
+> produced no candidate pool) is now handled by the degenerate-loop detector
+> (`OPENRESEARCH_DEGENERATE_REFUSAL_THRESHOLD`, default 3): the harness aborts the run
+> after ≤ 3 same-signature no-progress refusals and the safe-capture wrapper polls
+> `dashboard_events.jsonl` for `root_degenerate_refusal_loop`, kills the run immediately,
+> and writes `a1_result.json {"ok": false, "verdict": "root_degenerate", ...}` — no more
+> waiting out the 2h pool timeout.
+>
+> **Local OAuth A1 is now ALLOWED** for zero-cost dev runs. A degenerate oauth run
+> aborts in ~3 refusals (~minutes, not 15 min/candidate), the wrapper exits early, and
+> you get a clean `verdict=root_degenerate` rather than an orphaned run. The safe-capture
+> wrapper is auth model-aware: `--model gpt-5` uses `OPENAI_API_KEY`; `--model
+> claude-oauth` forces `oauth_only` + pops `ANTHROPIC_API_KEY`.
+>
+> **`OPENRESEARCH_OAUTH_AUTODRIVE=1` is EXPERIMENTAL** — when ON, the harness issues one
+> auto-drive directive at the degenerate threshold instead of aborting. v1 caveat: the
+> harness cannot reconstruct the root-assembled REPL args for `implement_baseline`/etc.,
+> so it issues a structured directive rather than truly executing the primitive. This is
+> not yet a guaranteed recovery. **gpt-5 stays the recommended reliable root** for A1
+> until OAuth has a green replay test (no such test exists yet).
 >
 > The manual steps below are the same thing decomposed (use them to run on a pod, or
 > to re-grade an existing capture with `scripts/bes_a1_capture.py --run-dir <dir>`).
@@ -159,11 +171,14 @@ training); the *re-grade* loop is CPU/LLM only.
 ```bash
 # 1) Capture N>=3 competing candidates on a fresh paper (forces a first-attempt lineage
 #    via a project-id suffix so adaptive gating engages the pool).
+#    Recommended root: gpt-5 (needs OPENAI_API_KEY) — paper-validated, no degeneration.
+#    Local OAuth allowed (safe since the degenerate-loop early-abort landed), but
+#    gpt-5 is preferred until OAuth has a green replay test.
 env -u ANTHROPIC_API_KEY \
   OPENRESEARCH_BES_ENABLED=1 OPENRESEARCH_BES_CANDIDATES_PER_CLUSTER=3 \
   OPENRESEARCH_BES_ADAPTIVE=0 \
   .venv/bin/python -m backend.cli reproduce 1412.6980 \
-  --mode rlm --sandbox runpod --model claude-oauth \
+  --mode rlm --sandbox runpod --model gpt-5 \
   --max-wall-clock 5400 --project-id bes_a1_capture --project-id-suffix a1
 
 # 2) The candidate snapshots land in runs/bes_a1_capture*/candidates/rlm_impl_*/ ;
