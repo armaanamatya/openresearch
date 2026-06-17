@@ -123,16 +123,34 @@ env -u ANTHROPIC_API_KEY \
 ## Tier 3 — A1 kill-experiment (the decisive one; ZERO paid GPU, bounded LLM)
 
 > **Turnkey (recommended):** one command does the whole thing safely — it launches a
-> BES capture on `--sandbox local`, **kills the run the instant the graded pool exists
-> (before any `run_experiment`/GPU cell)**, then re-grades K× and prints the verdict.
-> Needs only Claude OAuth (`claude login`); zero GPU by construction.
+> BES capture, **kills the run the instant the graded pool exists (before any
+> `run_experiment`/GPU cell)**, then re-grades K× and prints the verdict. A1 is
+> **zero GPU on any backend** — the kill-trigger fires inside `implement_baseline`,
+> before a pod is ever booted — so `--sandbox runpod` never spends GPU-hours.
 > ```bash
-> .venv/bin/python scripts/bes_a1_safe_capture.py --paper 1412.6980 --n 3 --k 10
+> # PREFERRED — paper-validated root on GPU infra (needs OPENAI_API_KEY):
+> .venv/bin/python scripts/bes_a1_safe_capture.py \
+>   --paper 1412.6980 --n 3 --k 10 --model gpt-5 --sandbox runpod --timeout-s 7200
 > # -> {"ok": true, "verdict": "select_is_noise"|"select_stable", "report": {...}}
 > # also written to runs/<id>/a1_result.json
 > ```
+>
+> **⚠️ Root-model reliability (2026-06-17 finding — do NOT use `claude-oauth` as the
+> A1 root).** Two local `claude-oauth` capture attempts failed *operationally* (not a
+> BES result): one was too slow (≈15 min/candidate × 3 > a short timeout), and the
+> second **degenerated** — the root read the paper, then called `FINAL_VAR` 16× at
+> iteration 0 without ever calling `implement_baseline`, so BES never engaged and **no
+> candidate pool was produced**. `claude-oauth` is flagged `root_model_unvalidated` for
+> a reason: it does not reliably drive the pipeline. Use a paper-validated root
+> (**`gpt-5`**) for A1. The wrapper makes auth model-aware: `--model gpt-5` uses
+> `OPENAI_API_KEY`; only `--model claude-oauth` forces `oauth_only` + pops
+> `ANTHROPIC_API_KEY`.
+>
 > The manual steps below are the same thing decomposed (use them to run on a pod, or
 > to re-grade an existing capture with `scripts/bes_a1_capture.py --run-dir <dir>`).
+> A partial local `claude-oauth` capture left **one reusable candidate** at
+> `runs/bes_a1_1412_6980_1781707862/candidates/rlm_impl_0/` (17-file code dir) — a
+> reliable-root run needs ≥2 more before `regrade_candidates` can test SELECT stability.
 
 Decide whether static LLM SELECT is signal or noise on a **fresh** (first-attempt)
 paper. The candidate *capture* runs on the pod (cheap, code-only static grade — no

@@ -71,22 +71,32 @@ def _kill_group(proc: subprocess.Popen) -> None:
 
 def run_safe_capture(
     paper: str, *, n: int, k: int, sigma: float, timeout_s: int, project_id: str,
-    model: str = "claude-oauth", poll_s: float = 5.0,
+    model: str = "claude-oauth", sandbox: str = "local", poll_s: float = 5.0,
 ) -> dict:
     run_dir = REPO_ROOT / "runs" / project_id
     env = dict(os.environ)
-    env.pop("ANTHROPIC_API_KEY", None)  # never let a no-credit key shadow OAuth
     env.update({
         "OPENRESEARCH_BES_ENABLED": "1",
         "OPENRESEARCH_BES_CANDIDATES_PER_CLUSTER": str(n),
         "OPENRESEARCH_BES_ADAPTIVE": "0",
-        # Fail fast if OAuth isn't detected rather than silently 400 on a no-credit
-        # API key (factory.py honors oauth_only when the claude CLI is present).
-        "OPENRESEARCH_LLM_AUTH_STRATEGY": "oauth_only",
     })
+    # Auth is model-specific. claude-oauth drives the root off the local claude CLI
+    # subscription, so pop any (possibly no-credit) ANTHROPIC_API_KEY and force
+    # oauth_only to fail fast rather than silently 400. Any other root (e.g. gpt-5,
+    # the paper-validated root for GPU-infra runs) uses its own API key via the
+    # normal credential resolution — do NOT pop keys or force oauth_only there.
+    #
+    # NOTE: claude-oauth is an UNRELIABLE RLM root — observed degenerating into a
+    # forced_iteration loop that never calls implement_baseline, so BES never
+    # engages and no candidate pool is produced. Prefer a paper-validated root
+    # (gpt-5) on GPU infra for A1. See docs/runbooks/2026-06-17-bes-conversion-
+    # runpod-validation.md (Tier 3).
+    if model.startswith("claude-oauth"):
+        env.pop("ANTHROPIC_API_KEY", None)
+        env["OPENRESEARCH_LLM_AUTH_STRATEGY"] = "oauth_only"
     cmd = [
         sys.executable, "-m", "backend.cli", "reproduce", paper,
-        "--mode", "rlm", "--sandbox", "local", "--model", model,
+        "--mode", "rlm", "--sandbox", sandbox, "--model", model,
         "--project-id", project_id,
     ]
     logger.info("launching capture: %s", " ".join(cmd))
@@ -134,14 +144,27 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--n", type=int, default=3, help="candidates to capture (>=3)")
     p.add_argument("--k", type=int, default=10, help="re-grades per candidate (temp=0)")
     p.add_argument("--sigma", type=float, default=0.02, help="grader repeatability sigma")
-    p.add_argument("--timeout-s", type=int, default=2400, help="max wait for the pool")
-    p.add_argument("--model", default="claude-oauth")
+    p.add_argument(
+        "--timeout-s", type=int, default=7200,
+        help="max wait for the pool (N candidates generate sequentially, ~15min each; "
+        "default 7200 gives 3 candidates + ingest comfortable margin)",
+    )
+    p.add_argument(
+        "--model", default="claude-oauth",
+        help="RLM root model. claude-oauth is UNRELIABLE as a root (see module docstring); "
+        "prefer gpt-5 on GPU infra with OPENAI_API_KEY set.",
+    )
+    p.add_argument(
+        "--sandbox", default="local",
+        help="sandbox backend. A1 is zero-GPU on ANY backend (kill-trigger fires before "
+        "run_experiment), so --sandbox runpod still never boots a pod.",
+    )
     p.add_argument("--project-id", default=None)
     a = p.parse_args(argv)
     pid = a.project_id or f"bes_a1_{a.paper.replace('.', '_')}_{int(time.time())}"
     out = run_safe_capture(
         a.paper, n=a.n, k=a.k, sigma=a.sigma, timeout_s=a.timeout_s,
-        project_id=pid, model=a.model,
+        project_id=pid, model=a.model, sandbox=a.sandbox,
     )
     print(json.dumps(out, indent=2))
     return 0 if out.get("ok") else 1
