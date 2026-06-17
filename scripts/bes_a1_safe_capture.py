@@ -37,6 +37,31 @@ from scripts.bes_a1_capture import regrade_candidates, summarize_regrades  # noq
 logger = logging.getLogger("bes_a1_safe_capture")
 
 
+def degenerate_event(run_dir: Path) -> dict | None:
+    """Return the first root_degenerate_refusal_loop event dict, or None.
+
+    Reads dashboard_events.jsonl (append-only JSONL); missing file / malformed
+    lines are skipped (fail-soft).
+    """
+    events_file = Path(run_dir) / "dashboard_events.jsonl"
+    try:
+        lines = events_file.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        if not line.strip():
+            continue
+        if "root_degenerate_refusal_loop" not in line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if ev.get("code") == "root_degenerate_refusal_loop":
+            return ev
+    return None
+
+
 def pool_ready(run_dir: Path, n: int) -> bool:
     """True once the graded pool is fully on disk (safe-to-kill point).
 
@@ -104,11 +129,23 @@ def run_safe_capture(
 
     deadline = time.time() + timeout_s
     killed_reason = None
+    degenerate_info: dict | None = None
     try:
         while True:
             if pool_ready(run_dir, n):
                 killed_reason = "pool_ready"
                 logger.info("graded pool detected — killing run BEFORE any GPU cell")
+                _kill_group(proc)
+                break
+            degen = degenerate_event(run_dir)
+            if degen is not None:
+                degenerate_info = degen
+                killed_reason = "root_degenerate"
+                logger.warning(
+                    "root_degenerate_refusal_loop detected (count=%s, required_stage=%s) — "
+                    "killing run immediately (no candidate pool will be produced)",
+                    degen.get("count"), degen.get("required_stage"),
+                )
                 _kill_group(proc)
                 break
             if proc.poll() is not None:
@@ -124,6 +161,19 @@ def run_safe_capture(
     except KeyboardInterrupt:
         _kill_group(proc)
         killed_reason = "interrupted"
+
+    if degenerate_info is not None and not pool_ready(run_dir, n):
+        verdict = {
+            "ok": False,
+            "verdict": "root_degenerate",
+            "required_stage": degenerate_info.get("required_stage"),
+            "signature": degenerate_info.get("signature"),
+            "count": degenerate_info.get("count"),
+            "killed_reason": "root_degenerate",
+            "run_dir": str(run_dir),
+        }
+        (run_dir / "a1_result.json").write_text(json.dumps(verdict, indent=2), encoding="utf-8")
+        return verdict
 
     if not pool_ready(run_dir, n):
         return {
