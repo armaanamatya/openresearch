@@ -204,3 +204,84 @@ def test_run_experiment_falls_to_legacy_when_no_cells(tmp_path, monkeypatch):
         primitives.run_experiment(str(code), env_id="", ctx=_mock_ctx(tmp_path))
 
     assert spy["called"] is False           # fell through to the legacy monolithic path
+
+
+# --- azure backend wiring ---
+
+def test_run_experiment_takes_cell_route_for_azure(tmp_path, monkeypatch):
+    """On azure backend the cells-route gate must be entered (red on the old tuple)."""
+    from unittest.mock import patch
+    from backend.agents.rlm import pre_flight_validator
+    code = tmp_path / "code"
+    _write_cells(code, [_SMALL])
+    (code / "commands.json").write_text('["echo hi"]', encoding="utf-8")
+
+    spy = {"called": False}
+
+    def fake_cell_matrix(ctx, code_path, caps, *, timeout_s, run_id):
+        spy["called"] = True
+        return {"success": False, "metrics": {}, "failure_class": "test_stub"}
+
+    monkeypatch.setattr(primitives, "_execute_cell_matrix", fake_cell_matrix)
+    # Azure's build_environment returns image_tag="" → env_id is EMPTY here. The
+    # empty-env_id guard must exempt azure (it routes on sandbox_mode +
+    # azure_base_image, not env_id) so the cells route is reached. Stub pre-flight
+    # so no hard violations fire.
+    monkeypatch.setattr(pre_flight_validator, "validate_code_pre_flight",
+                        lambda *a, **k: [])
+
+    azure_ctx = _mock_ctx(tmp_path)
+    azure_ctx.sandbox_mode = "azure"
+
+    with patch("backend.services.runtime.gpu_capacity.describe_capacity",
+               return_value=_caps(backend="azure")):
+        primitives.run_experiment(str(code), env_id="", ctx=azure_ctx)
+
+    assert spy["called"] is True
+
+
+def test_execute_cell_matrix_azure_dispatches_k8s_runner(tmp_path, monkeypatch):
+    """Azure branch of _execute_cell_matrix calls k8s_job_cell_runner.run_matrix."""
+    from backend.agents.rlm import k8s_job_cell_runner
+
+    code = tmp_path / "code"
+    _write_cells(code, [_SMALL, _SMALL2])
+
+    k8s_called = {"called": False}
+
+    def fake_k8s_run_matrix(cells, script, **kw):
+        k8s_called["called"] = True
+        return {
+            _SMALL["id"]: {"status": "ok", "metrics": {"status": "ok", "metric": 0.42, "steps_run": 50},
+                           "gpu": None, "retries": 0, "error": None},
+            _SMALL2["id"]: {"status": "oom_failed", "metrics": None,
+                            "gpu": None, "retries": 2, "error": "CUDA out of memory. Tried to allocate..."},
+        }
+
+    monkeypatch.setattr(k8s_job_cell_runner, "run_matrix", fake_k8s_run_matrix)
+    # bind_run_context is a context manager we must also stub so it doesn't try real K8s.
+    from contextlib import contextmanager
+
+    @contextmanager
+    def fake_bind(**kw):
+        yield
+
+    monkeypatch.setattr(k8s_job_cell_runner, "bind_run_context", fake_bind)
+
+    azure_ctx = _ctx(tmp_path)
+    azure_ctx.sandbox_mode = "azure"
+
+    res = primitives._execute_cell_matrix(
+        azure_ctx, str(code), _caps(backend="azure"), timeout_s=60, run_id="prj_test-rid"
+    )
+
+    assert k8s_called["called"] is True
+    # Leaf aggregation must produce the same shape as the local runner.
+    assert res["success"] is True
+    leaf = res["metrics"]["per_model"]["qwen3_1_7b"]["search_qa"]
+    assert leaf["sdar"]["status"] == "ok" and leaf["sdar"]["metric"] == 0.42
+    assert leaf["grpo"]["status"] == "failed"
+    assert (code / "metrics.json").is_file()
+    assert (code / "outputs" / "prj_test-rid" / "metrics.json").is_file()
+    on_disk = json.loads((code / "metrics.json").read_text())
+    assert on_disk["per_model"]["qwen3_1_7b"]["search_qa"]["sdar"]["metric"] == 0.42

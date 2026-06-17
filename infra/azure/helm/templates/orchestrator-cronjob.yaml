@@ -1,0 +1,128 @@
+{{- if and .Values.orchestrator.enabled .Values.orchestrator.cronjob.enabled }}
+# ---------------------------------------------------------------------------
+# orchestrator-cronjob.yaml
+#
+# Runs the ReproLab reasoning loop on a schedule (e.g. nightly batch).
+# Each invocation is a single Job execution; the CronJob controller manages
+# scheduling and prevents concurrency (concurrencyPolicy: Forbid).
+#
+# DEFAULT MODEL: azure (same headless rationale as the Deployment — see
+# orchestrator-deployment.yaml header comment for the claude-oauth caveat).
+#
+# Schedule: .Values.orchestrator.cronjob.schedule (default "0 2 * * *" = 02:00 UTC)
+# Concurrency: Forbid — do not queue a new Job if the previous one is still running.
+#
+# NODE PLACEMENT: system pool (CPU only) — same as Deployment.
+# ---------------------------------------------------------------------------
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: reprolab-orchestrator-cron
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "reprolab-aks.labels" . | nindent 4 }}
+    app.kubernetes.io/component: orchestrator-cron
+spec:
+  schedule: {{ .Values.orchestrator.cronjob.schedule | default "0 2 * * *" | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            {{- include "reprolab-aks.labels" . | nindent 12 }}
+            app.kubernetes.io/component: orchestrator-cron
+            # MANDATORY: Workload Identity webhook injects the OIDC projected volume
+            # only when this label is present on the pod spec.
+            azure.workload.identity/use: "true"
+        spec:
+          serviceAccountName: reprolab-orchestrator
+          restartPolicy: Never
+
+          # CPU system pool — same placement constraint as the Deployment.
+          nodeSelector:
+            kubernetes.azure.com/mode: system
+
+          containers:
+            - name: orchestrator
+              image: {{ .Values.orchestrator.image | quote }}
+              imagePullPolicy: IfNotPresent
+
+              command:
+                - python
+                - -m
+                - backend.cli
+                - reproduce
+                - {{ .Values.orchestrator.paper | quote }}
+                - --mode
+                - rlm
+                - --model
+                # Default: azure (AOAI root, fully headless — unattended pod cannot
+                # use claude-oauth; see STREAM-E-NOTES.md for details).
+                - {{ .Values.orchestrator.model | quote }}
+                - --sandbox
+                - azure
+
+              env:
+                # ── API keys (from synced KV secret) ──────────────────────────
+                - name: AZURE_OPENAI_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: reprolab-orchestrator-secrets
+                      key: AZURE_OPENAI_API_KEY
+                - name: ANTHROPIC_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: reprolab-orchestrator-secrets
+                      key: ANTHROPIC_API_KEY
+
+                # ── Azure backend config (OPENRESEARCH_AZURE_* block) ─────────
+                - name: OPENRESEARCH_AZURE_RESOURCE_GROUP
+                  value: {{ .Values.orchestrator.env.resourceGroup | default "" | quote }}
+                - name: OPENRESEARCH_AZURE_REGION
+                  value: {{ .Values.orchestrator.env.region | default "" | quote }}
+                - name: OPENRESEARCH_AZURE_AKS_CLUSTER
+                  value: {{ .Values.orchestrator.env.aksCluster | default "" | quote }}
+                - name: OPENRESEARCH_AZURE_ACR_LOGIN_SERVER
+                  value: {{ .Values.orchestrator.env.acrLoginServer | default "" | quote }}
+                - name: OPENRESEARCH_AZURE_STORAGE_ACCOUNT
+                  value: {{ .Values.orchestrator.env.storageAccount | default "" | quote }}
+                - name: OPENRESEARCH_AZURE_BLOB_CONTAINER
+                  value: {{ .Values.orchestrator.env.blobContainer | default "" | quote }}
+                - name: OPENRESEARCH_AZURE_FILES_SHARE
+                  value: {{ .Values.orchestrator.env.filesShare | default "" | quote }}
+                - name: OPENRESEARCH_AZURE_NAMESPACE
+                  value: {{ .Values.orchestrator.env.namespace | default "reprolab" | quote }}
+                - name: OPENRESEARCH_AZURE_SERVICE_ACCOUNT
+                  value: {{ .Values.orchestrator.env.serviceAccount | default "reprolab-sa" | quote }}
+                - name: OPENRESEARCH_AZURE_NODE_POOL_NAME
+                  value: {{ .Values.orchestrator.env.nodePoolName | default "" | quote }}
+                - name: OPENRESEARCH_AZURE_BASE_IMAGE
+                  value: {{ .Values.orchestrator.env.baseImage | default "" | quote }}
+
+              resources:
+                requests:
+                  cpu: "1"
+                  memory: "2Gi"
+                limits:
+                  cpu: "2"
+                  memory: "4Gi"
+
+              volumeMounts:
+                # CSI volume mount MUST be present to keep the synced k8s Secret live.
+                - name: kv-secrets
+                  mountPath: /mnt/kv-secrets
+                  readOnly: true
+
+          volumes:
+            - name: kv-secrets
+              csi:
+                driver: secrets-store.csi.k8s.io
+                readOnly: true
+                volumeAttributes:
+                  secretProviderClass: reprolab-orchestrator-kv
+{{- end }}

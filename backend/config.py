@@ -167,14 +167,14 @@ class Settings(BaseSettings):
     # defaults remain controlled separately by argparse flags. Local launchers
     # set this to runpod for GPU-backed dev runs; deployments can set it to
     # docker or local in env.
-    default_sandbox: Literal["auto", "local", "docker", "runpod", "azure"] = "runpod"
+    default_sandbox: Literal["auto", "local", "docker", "runpod", "azure", "gcp"] = "runpod"
 
     # Optional hard override for every run's sandbox mode, regardless of what
     # the client requested. Empty means "honor the request/default_sandbox".
     # Deployments that must forbid RunPod should set OPENRESEARCH_FORCE_SANDBOX to
     # "docker" or "local" explicitly; the code default must stay empty so a
     # missing/commented .env line does not silently rewrite sandbox=runpod.
-    force_sandbox: Literal["", "auto", "local", "docker", "runpod", "azure"] = ""
+    force_sandbox: Literal["", "auto", "local", "docker", "runpod", "azure", "gcp"] = ""
 
     # Force the LLM provider for every run regardless of what the client
     # requested — analogous to force_sandbox. The UI hard-codes provider=
@@ -235,6 +235,16 @@ class Settings(BaseSettings):
     azure_storage_account: str = Field(default="", description="Azure storage account name (Blob + Files)")
     azure_blob_container: str = Field(default="reprolab-artifacts", description="Blob container for run artifacts")
     azure_files_share: str = Field(default="reprolab-cache", description="Azure Files share for HF_HOME + pip cache")
+    azure_files_cache_enabled: bool = Field(
+        default=True,
+        description=(
+            "When True (default), AKS cell Jobs mount the Azure Files PVC "
+            "(<namespace>-files-pvc) at azure_cache_mount_path as the HF/pip "
+            "cache. When False — or when azure_files_share is empty — the cell "
+            "Job uses an ephemeral emptyDir instead, so no Files share / "
+            "Storage Account Key Operator grant is required (blob-only path)."
+        ),
+    )
     azure_acr_login_server: str = Field(default="", description="ACR login server (e.g. myregistry.azurecr.io)")
     azure_aks_cluster: str = Field(default="", description="AKS cluster name")
     azure_namespace: str = Field(default="reprolab", description="Kubernetes namespace for Job submission")
@@ -319,6 +329,98 @@ class Settings(BaseSettings):
     # bootstrap script. Some SDAR dependency trees are large; 600s avoids
     # spurious bootstrap timeouts on slow ACR pulls or large sdists.
     azure_bootstrap_pip_timeout_s: int = Field(
+        default=600,
+        ge=1,
+        description="Timeout (seconds) for pip install in the Job bootstrap script",
+    )
+
+    # --- GCP GKE backend settings (OPENRESEARCH_GCP_*) ---
+    gcp_project: str = Field(default="", description="GCP project ID for the GKE cluster")
+    gcp_region: str = Field(default="us-central1", description="GCP region (e.g. us-central1, us-east1)")
+    gcp_gcs_bucket: str = Field(default="", description="GCS bucket name for run artifacts (replaces Azure storage account + container)")
+    gcp_filestore_share: str = Field(default="reprolab-cache", description="Filestore share name for HF_HOME + pip cache")
+    gcp_files_cache_enabled: bool = Field(
+        default=False,
+        description=(
+            "Mount the Filestore PVC (reprolab-cache) as the cell cache. GCP "
+            "Filestore is OPTIONAL and off by default, so this defaults False — "
+            "cells then use an ephemeral emptyDir and never block on a missing "
+            "PVC. Set True only when the optional Filestore is provisioned."
+        ),
+    )
+    gcp_artifact_registry: str = Field(default="", description="Artifact Registry host (e.g. us-central1-docker.pkg.dev/myproject/reprolab)")
+    gcp_gke_cluster: str = Field(default="", description="GKE cluster name")
+    gcp_namespace: str = Field(default="reprolab", description="Kubernetes namespace for Job submission")
+    gcp_service_account: str = Field(default="reprolab-sa", description="K8s ServiceAccount annotated for Workload Identity (must match the IAM binding subject)")
+    gcp_node_pool_name: str = Field(default="gpua100", description="GPU node pool name (scale-to-zero)")
+    gcp_per_gpu_vram_gb: float = Field(default=80.0, ge=1.0, description="VRAM per GPU in the node pool (A100=80)")
+    gcp_max_nodes: int = Field(default=4, ge=1, description="Node pool max-nodes (orchestrator-side concurrency cap)")
+    # Empty means the operator MUST set OPENRESEARCH_GCP_BASE_IMAGE to a PINNED
+    # Artifact Registry tag. The runner errors clearly on empty rather than
+    # defaulting to a floating :latest tag.
+    gcp_base_image: str = Field(default="", description="Pre-baked Artifact Registry base image (build_environment no-op); operator must set to a PINNED tag — never :latest")
+    gcp_gpu_usd_per_hour: float = Field(default=3.93, ge=0.0, description="Per-GPU $/hr for budget tracking (default = A100-80 on-demand list price; set your negotiated rate). 0 disables the run-USD cost cap.")
+    gcp_boot_timeout_seconds: int = Field(default=900, ge=1, description="Seconds to wait for a Job pod to leave Pending")
+    gcp_pending_timeout_seconds: int = Field(default=1500, ge=1, description="Seconds before a stuck-Pending cell is failed as capacity_exhausted (GKE GPU cold-start from zero can take 10-12 min; 900s killed legitimate scale-up)")
+    # Catalog short_names of the GCP GPU SKUs that are actually provisioned
+    # as GKE node pools. The SKU resolver only selects from this list; the OOM
+    # escalation ladder only advances within it.
+    # pydantic-settings 2.x parses this from a JSON array env var:
+    #   OPENRESEARCH_GCP_GPU_SKUS='["gcp_a100_80","gcp_a100_80x2"]'
+    # or from a comma-separated string via the built-in list coercion.
+    # Default = single A100-80 pool = one quota ask at cluster bootstrap.
+    gcp_gpu_skus: list[str] = Field(
+        default_factory=lambda: ["gcp_a100_80"],
+        description=(
+            "Catalog short_names of the GCP GPU SKUs that are actually provisioned "
+            "as node pools. The resolver only selects from these; the OOM ladder "
+            "only escalates within these. "
+            "Default = single A100-80 pool = one quota ask."
+        ),
+    )
+    # TTL added to the Job spec's ttlSecondsAfterFinished; Kubernetes deletes
+    # the Job + Pod objects this many seconds after they reach a terminal state.
+    gcp_ttl_seconds_after_finished: int = Field(
+        default=3600,
+        ge=1,
+        description="Job.spec.ttlSecondsAfterFinished — Kubernetes auto-deletes finished Jobs after this many seconds",
+    )
+    # Number of times Kubernetes will restart the Job's Pod on failure.
+    # Set to 0 because OOM retry is handled in-process; Kubernetes restarts
+    # would bypass that logic and double-count failures.
+    gcp_job_backoff_limit: int = Field(
+        default=0,
+        ge=0,
+        description="Job.spec.backoffLimit (Pod-level retries); keep at 0 — OOM retry is delegated to the in-Job wrapper",
+    )
+    # Path inside the Job Pod where the Filestore share (HF_HOME + pip cache)
+    # is mounted. Must match the volume mount in the Job template.
+    gcp_cache_mount_path: str = Field(
+        default="/mnt/reprolab-cache",
+        description="Mount path for the Filestore share (HF_HOME + pip cache) inside Job Pods",
+    )
+    # How often the Job watcher polls the Kubernetes API for Pod phase changes.
+    gcp_watch_poll_interval_s: float = Field(
+        default=5.0,
+        gt=0,
+        description="Polling interval (seconds) for the Job/Pod phase watcher",
+    )
+    # Batch-size scale factors for the two-step OOM shrink retry.
+    gcp_oom_batch_scale_step1: float = Field(
+        default=0.5,
+        gt=0,
+        le=1,
+        description="Batch-size scale factor applied on the first OOM retry (step 1 of 2)",
+    )
+    gcp_oom_batch_scale_floor: float = Field(
+        default=0.25,
+        gt=0,
+        le=1,
+        description="Minimum batch-size scale factor for OOM shrink retries (floor; never go below this)",
+    )
+    # Timeout (seconds) for `pip install -r requirements.txt` inside the Job
+    # bootstrap script.
+    gcp_bootstrap_pip_timeout_s: int = Field(
         default=600,
         ge=1,
         description="Timeout (seconds) for pip install in the Job bootstrap script",

@@ -98,13 +98,15 @@ def describe_capacity(ctx: Any) -> GpuCapacity:
         return _describe_cloud(ctx, kind)
     if kind == "azure":
         return _describe_azure(ctx)
+    if kind == "gcp":
+        return _describe_gcp(ctx)
     return _describe_local(ctx, kind)
 
 
 def _backend_kind(ctx: Any) -> str:
     raw = getattr(ctx, "sandbox_mode", None)
     name = (getattr(raw, "value", None) or getattr(raw, "name", None) or str(raw or "")).lower()
-    for k in ("runpod", "brev", "azure", "docker"):
+    for k in ("runpod", "brev", "azure", "gcp", "docker"):
         if k in name:
             return k
     return "local"
@@ -242,6 +244,63 @@ def _describe_azure(ctx: Any) -> GpuCapacity:
         can_escalate=False,
         total_vram_gb=per_gpu_vram_gb * num_gpus,
         detail={"node_pool": s.azure_node_pool_name},
+    )
+
+
+def _describe_gcp(ctx: Any) -> GpuCapacity:
+    """Plan-aware GCP GKE GPU capacity descriptor.
+
+    Mirrors ``_describe_azure`` but reads ``gcp_*`` settings and disambiguates
+    GCP plans by ``short_name.startswith("gcp_")`` — NOT by ``cloud_type``.
+    Both Azure and GCP plans use ``cloud_type == "ONDEMAND"``; using
+    ``short_name`` prefix is the only unambiguous discriminator.
+
+    ``num_gpus`` always comes from ``gcp_max_nodes`` (the GKE node-pool
+    concurrency cap) — the plan's ``gpu_count`` is per-node and GKE scales
+    horizontally.
+
+    ``can_escalate=False``: GKE dispatches Kubernetes Jobs with node-pool SKU
+    selection at dispatch time; the RunPod ladder escalation loop does not apply.
+    """
+    import json
+    from pathlib import Path
+
+    from backend.config import get_settings
+
+    s = get_settings()
+    num_gpus = max(1, int(s.gcp_max_nodes))
+    per_gpu_vram_gb = float(s.gcp_per_gpu_vram_gb)
+
+    # Try to load the resolved gpu_plan and refine per_gpu_vram_gb from it.
+    try:
+        project_dir = getattr(ctx, "project_dir", None)
+        if project_dir is not None:
+            plan_path = Path(project_dir) / "rlm_state" / "gpu_plan.json"
+            if plan_path.exists():
+                raw = json.loads(plan_path.read_text(encoding="utf-8"))
+                short_name = raw.get("short_name", "") or ""
+                # Discriminate by prefix — both azure and GCP plans have
+                # cloud_type=="ONDEMAND", so cloud_type alone would misclassify.
+                is_gcp_plan = isinstance(short_name, str) and short_name.startswith("gcp_")
+                if is_gcp_plan:
+                    plan_vram = raw.get("vram_gb")
+                    if plan_vram is not None:
+                        per_gpu_vram_gb = float(plan_vram)
+    except Exception:  # noqa: BLE001 — capacity probe must never raise
+        logger.warning(
+            "_describe_gcp: gpu_plan.json present but unreadable; using settings defaults",
+            exc_info=True,
+        )
+
+    ids = tuple(str(i) for i in range(num_gpus))
+    return GpuCapacity(
+        "gcp",
+        num_gpus=num_gpus,
+        per_gpu_vram_gb=per_gpu_vram_gb,
+        free_gpu_ids=ids,
+        can_escalate=False,
+        total_vram_gb=per_gpu_vram_gb * num_gpus,
+        detail={"node_pool": s.gcp_node_pool_name},
     )
 
 

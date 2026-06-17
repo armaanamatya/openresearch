@@ -1,0 +1,27 @@
+{{- if .Values.storage.filestoreShare }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.namespace }}-filestore-rwx
+  labels:
+    {{- include "reprolab-gke.labels" . | nindent 4 }}
+# Filestore CSI driver — bundled with GKE (enable with --addons=GcpFilestoreCsiDriver
+# on older clusters; on by default for Standard clusters created recently).
+# ---------------------------------------------------------------------------
+# This StorageClass references the EXISTING Filestore instance provisioned by
+# Terraform (filestore_enabled = true).  No static credential is used — the
+# Filestore CSI driver mounts the NFS share via the node's network identity.
+# ---------------------------------------------------------------------------
+provisioner: filestore.csi.storage.gke.io
+parameters:
+  # Bind to the pre-existing Filestore instance/share rather than dynamically
+  # provisioning a new one (we want the single shared cache, not per-PVC shares).
+  # The PVC below references this share by IP + share name via the PV's volume
+  # handle conventions; see pvc-cache.yaml.
+  tier: standard
+volumeBindingMode: Immediate
+reclaimPolicy: {{ .Values.storage.reclaimPolicy }}
+allowVolumeExpansion: true
+mountOptions:
+  - nfsvers=3
+{{- end }}

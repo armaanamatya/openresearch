@@ -1949,10 +1949,11 @@ class TestEnvVarNamesInManifest:
     """P0-fix-1: verify the canonical env-var names appear in the Job manifest."""
 
     # Canonical contract: runner injects these names; entrypoint reads the same names.
+    # NOTE: OPENRESEARCH_CELL_OUTPUT_DIR is intentionally NOT injected by the runner —
+    # aks_cell_entrypoint.py always overrides it to its own scratch tempdir (FIX-10).
     _REQUIRED_ENV_NAMES = {
         "OPENRESEARCH_CELL_ID",
         "OPENRESEARCH_CELL_PARAMS",
-        "OPENRESEARCH_CELL_OUTPUT_DIR",
         "OPENRESEARCH_CELL_MAX_OOM_RETRIES",
         "OPENRESEARCH_AZURE_STORAGE_ACCOUNT",   # P0-fix-1: was OPENRESEARCH_BLOB_ACCOUNT
         "OPENRESEARCH_AZURE_BLOB_CONTAINER",     # P0-fix-1: was OPENRESEARCH_BLOB_CONTAINER
@@ -2318,4 +2319,149 @@ class TestContainerClientReuse:
         assert len(received_args) == 1, f"expected 1 factory call, got {len(received_args)}"
         assert received_args[0] == ("correct-account", "correct-container"), (
             f"P0-scale-2: factory called with wrong args: {received_args[0]!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 30. FIX-4/7/8/10 guard tests
+# ---------------------------------------------------------------------------
+
+def _build_manifest_for_guard_tests(
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    extra_settings: dict | None = None,
+) -> dict:
+    """Helper: build a manifest via _build_job_manifest with controllable settings.
+
+    Patches kjcr._setting so callers can inject arbitrary config values.
+    Returns the raw manifest dict from _build_job_manifest.
+    """
+    base_settings: dict = {
+        "azure_namespace": "reprolab",
+        "azure_service_account": "reprolab-sa",
+        "azure_node_pool_name": "gpunodes",
+        "azure_base_image": "img:latest",
+        "azure_storage_account": "acct",
+        "azure_blob_container": "ctr",
+        "azure_files_share": "share",
+        "azure_max_nodes": 4,
+        "azure_gpu_usd_per_hour": 3.5,
+        "azure_pending_timeout_seconds": 1500,
+        "azure_gpu_skus": ["azure_a100_80"],
+        "dynamic_gpu_max_escalations": 2,
+        "azure_ttl_seconds_after_finished": 3600,
+        "azure_job_backoff_limit": 0,
+        "azure_cache_mount_path": "/mnt/reprolab-cache",
+        "azure_watch_poll_interval_s": 0.001,
+        "azure_oom_batch_scale_step1": 0.5,
+        "azure_oom_batch_scale_floor": 0.25,
+        "azure_bootstrap_pip_timeout_s": 600,
+    }
+    if extra_settings:
+        base_settings.update(extra_settings)
+
+    monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: base_settings.get(name, default))
+
+    return kjcr._build_job_manifest(
+        job_name="test-job",
+        namespace="reprolab",
+        service_account="reprolab-sa",
+        node_pool_name="gpunodes",
+        base_image="img:latest",
+        storage_account="acct",
+        blob_container="ctr",
+        files_share="share",
+        cell_id="c0",
+        cell_params_json="{}",
+        output_blob_prefix="runs/r1/cells",
+        code_blob_prefix="runs/r1/code",
+        active_deadline_seconds=3600,
+        max_oom_retries=2,
+        fingerprint=None,
+        now_iso=None,
+        oom_batch_scale_step1=float(base_settings.get("azure_oom_batch_scale_step1", 0.5)),
+        oom_batch_scale_floor=float(base_settings.get("azure_oom_batch_scale_floor", 0.25)),
+    )
+
+
+def _get_env_list(manifest: dict) -> list[dict]:
+    return manifest["spec"]["template"]["spec"]["containers"][0]["env"]
+
+
+class TestFix4OomScaleRenamedKeys:
+    """FIX-4 (P1): _setting keys for OOM batch-scale must use azure_oom_* (no 'cell_' infix)."""
+
+    def test_manifest_oom_scale_reads_renamed_config_keys(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Patch azure_oom_batch_scale_floor to a non-default value and verify it
+        flows through to the OPENRESEARCH_CELL_OOM_BATCH_SCALE_FLOOR env var in the
+        manifest — proving the renamed key is actually read."""
+        manifest = _build_manifest_for_guard_tests(
+            monkeypatch=monkeypatch,
+            extra_settings={
+                "azure_oom_batch_scale_floor": 0.1,   # non-default
+                "azure_oom_batch_scale_step1": 0.6,   # non-default
+            },
+        )
+        env_list = _get_env_list(manifest)
+        env_map = {e["name"]: e["value"] for e in env_list}
+
+        assert "OPENRESEARCH_CELL_OOM_BATCH_SCALE_FLOOR" in env_map, (
+            "FIX-4: OPENRESEARCH_CELL_OOM_BATCH_SCALE_FLOOR must be injected into the manifest"
+        )
+        assert env_map["OPENRESEARCH_CELL_OOM_BATCH_SCALE_FLOOR"] == "0.1", (
+            f"FIX-4: expected '0.1' from renamed azure_oom_batch_scale_floor config key, "
+            f"got {env_map['OPENRESEARCH_CELL_OOM_BATCH_SCALE_FLOOR']!r}"
+        )
+        assert env_map.get("OPENRESEARCH_CELL_OOM_BATCH_SCALE_STEP1") == "0.6", (
+            f"FIX-4: expected '0.6' from renamed azure_oom_batch_scale_step1 config key, "
+            f"got {env_map.get('OPENRESEARCH_CELL_OOM_BATCH_SCALE_STEP1')!r}"
+        )
+
+
+class TestFix10NoDeadOutputDirEnv:
+    """FIX-10 (P2): OPENRESEARCH_CELL_OUTPUT_DIR must NOT be injected by the runner —
+    aks_cell_entrypoint.py always overrides it to its own scratch tempdir."""
+
+    def test_manifest_has_no_dead_output_dir_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        manifest = _build_manifest_for_guard_tests(monkeypatch=monkeypatch)
+        env_list = _get_env_list(manifest)
+        env_names = [e["name"] for e in env_list]
+
+        assert "OPENRESEARCH_CELL_OUTPUT_DIR" not in env_names, (
+            "FIX-10: OPENRESEARCH_CELL_OUTPUT_DIR must not be injected by the runner — "
+            "the entrypoint always overrides it to its own scratch tempdir; "
+            "a static /mnt/outputs/<cell_id> value is dead (no such volume mounted)."
+        )
+
+
+class TestFix8NoShimDuplicates:
+    """FIX-8 (P2): the no-op image-compat shim is gone; env-var names must be unique."""
+
+    def test_manifest_env_names_unique(self, monkeypatch: pytest.MonkeyPatch):
+        """Build a manifest and verify there are no duplicate env-var names.
+
+        The old shim re-prepended OPENRESEARCH_ to every OPENRESEARCH_* env var,
+        producing exact duplicates. After removal, all names must be unique.
+        """
+        manifest = _build_manifest_for_guard_tests(monkeypatch=monkeypatch)
+        env_list = _get_env_list(manifest)
+        names = [e["name"] for e in env_list]
+
+        assert len(names) == len(set(names)), (
+            f"FIX-8: duplicate env-var names found in manifest (shim not fully removed?): "
+            f"{[n for n in names if names.count(n) > 1]!r}"
+        )
+
+
+class TestFix7PendingTimeoutDefault:
+    """FIX-7 (P2): both pending-timeout fallback literals must be 1500, matching config.py."""
+
+    def test_settings_defaults_pending_timeout_is_1500(self):
+        assert kjcr._SETTINGS_DEFAULTS["azure_pending_timeout_seconds"] == 1500, (
+            "FIX-7: _SETTINGS_DEFAULTS['azure_pending_timeout_seconds'] must be 1500 "
+            "(config.py default, raised from 900 to accommodate AKS GPU cold-start scale-up)"
         )

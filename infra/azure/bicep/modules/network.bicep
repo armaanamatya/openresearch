@@ -38,7 +38,9 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = {
 
 // ─── AKS subnet ──────────────────────────────────────────────────────────────
 // Matches: azurerm_subnet.aks — name = "${var.prefix}-aks-subnet"
-// service_endpoints = ["Microsoft.Storage"] — lets pods reach Storage without NAT.
+// service_endpoints = ["Microsoft.Storage", "Microsoft.KeyVault"] — lets pods reach
+// Storage and Key Vault over the Azure backbone (no NAT), which the storage and
+// keyvault firewall virtualNetworkRules require (ignoreMissingVnetServiceEndpoint: false).
 
 resource aksSubnet 'Microsoft.Network/virtualNetworks/subnets@2023-11-01' = {
   parent: vnet
@@ -47,6 +49,7 @@ resource aksSubnet 'Microsoft.Network/virtualNetworks/subnets@2023-11-01' = {
     addressPrefix: aksSubnetCidr
     serviceEndpoints: [
       { service: 'Microsoft.Storage' }
+      { service: 'Microsoft.KeyVault' }
     ]
     // NSG is associated below via a separate resource to match TF ordering.
     networkSecurityGroup: {

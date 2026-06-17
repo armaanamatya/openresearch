@@ -1,0 +1,134 @@
+{{- if and .Values.orchestrator.enabled .Values.orchestrator.deployment.enabled }}
+# ---------------------------------------------------------------------------
+# orchestrator-deployment.yaml
+#
+# Runs the ReproLab reasoning loop (RLM root + primitives) continuously inside
+# AKS on a CPU system-pool node — no GPU requested here.  Training cells are
+# dispatched outward as K8s Jobs via k8s_job_cell_runner (--sandbox azure).
+#
+# DEFAULT MODEL: azure (AOAI root via AZURE_OPENAI_API_KEY from Key Vault).
+# For local smoke-tests swap to claude-oauth, but note that unattended in-AKS
+# runs cannot use claude-oauth because the Claude desktop credential is not
+# available in a pod (see STREAM-E-NOTES.md "Known gaps" section).
+#
+# API key secrets are injected via the Secrets Store CSI volume (see
+# orchestrator-secretproviderclass.yaml).  The CSI volumeMount MUST be present
+# to keep the synced k8s Secret live; remove it and the Secret expires.
+#
+# NODE PLACEMENT: system pool (CPU only).
+#   nodeSelector: kubernetes.azure.com/mode: system
+# No GPU taint toleration — confirms the orchestrator never lands on a GPU node.
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reprolab-orchestrator
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "reprolab-aks.labels" . | nindent 4 }}
+    app.kubernetes.io/component: orchestrator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "reprolab-aks.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: orchestrator
+  template:
+    metadata:
+      labels:
+        {{- include "reprolab-aks.labels" . | nindent 8 }}
+        app.kubernetes.io/component: orchestrator
+        # MANDATORY: Workload Identity webhook injects the OIDC projected volume
+        # only when this label is present on the pod spec.
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: reprolab-orchestrator
+
+      # CPU system pool — orchestrator must NOT land on a (scarce, expensive) GPU node.
+      nodeSelector:
+        kubernetes.azure.com/mode: system
+
+      # No restartPolicy field on Deployment pods — default OnFailure semantics apply.
+
+      containers:
+        - name: orchestrator
+          image: {{ .Values.orchestrator.image | quote }}
+          imagePullPolicy: IfNotPresent
+
+          command:
+            - python
+            - -m
+            - backend.cli
+            - reproduce
+            - {{ .Values.orchestrator.paper | quote }}
+            - --mode
+            - rlm
+            - --model
+            # Default: azure (AOAI root, fully headless).
+            # For smoke tests only: override with --set orchestrator.model=claude-oauth
+            # (requires the Claude desktop credential — not available in an unattended pod).
+            - {{ .Values.orchestrator.model | quote }}
+            - --sandbox
+            - azure
+
+          env:
+            # ── API keys (from synced KV secret) ──────────────────────────────
+            - name: AZURE_OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: reprolab-orchestrator-secrets
+                  key: AZURE_OPENAI_API_KEY
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: reprolab-orchestrator-secrets
+                  key: ANTHROPIC_API_KEY
+
+            # ── Azure backend config (OPENRESEARCH_AZURE_* block) ─────────────
+            # Values sourced from .Values.orchestrator.env; all default to empty
+            # so the chart installs cleanly even before the operator fills them.
+            - name: OPENRESEARCH_AZURE_RESOURCE_GROUP
+              value: {{ .Values.orchestrator.env.resourceGroup | default "" | quote }}
+            - name: OPENRESEARCH_AZURE_REGION
+              value: {{ .Values.orchestrator.env.region | default "" | quote }}
+            - name: OPENRESEARCH_AZURE_AKS_CLUSTER
+              value: {{ .Values.orchestrator.env.aksCluster | default "" | quote }}
+            - name: OPENRESEARCH_AZURE_ACR_LOGIN_SERVER
+              value: {{ .Values.orchestrator.env.acrLoginServer | default "" | quote }}
+            - name: OPENRESEARCH_AZURE_STORAGE_ACCOUNT
+              value: {{ .Values.orchestrator.env.storageAccount | default "" | quote }}
+            - name: OPENRESEARCH_AZURE_BLOB_CONTAINER
+              value: {{ .Values.orchestrator.env.blobContainer | default "" | quote }}
+            - name: OPENRESEARCH_AZURE_FILES_SHARE
+              value: {{ .Values.orchestrator.env.filesShare | default "" | quote }}
+            - name: OPENRESEARCH_AZURE_NAMESPACE
+              value: {{ .Values.orchestrator.env.namespace | default "reprolab" | quote }}
+            - name: OPENRESEARCH_AZURE_SERVICE_ACCOUNT
+              value: {{ .Values.orchestrator.env.serviceAccount | default "reprolab-sa" | quote }}
+            - name: OPENRESEARCH_AZURE_NODE_POOL_NAME
+              value: {{ .Values.orchestrator.env.nodePoolName | default "" | quote }}
+            - name: OPENRESEARCH_AZURE_BASE_IMAGE
+              value: {{ .Values.orchestrator.env.baseImage | default "" | quote }}
+
+          resources:
+            requests:
+              cpu: "1"
+              memory: "2Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+
+          volumeMounts:
+            # CSI volume mount MUST be present for the synced k8s Secret to stay live.
+            - name: kv-secrets
+              mountPath: /mnt/kv-secrets
+              readOnly: true
+
+      volumes:
+        - name: kv-secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: reprolab-orchestrator-kv
+{{- end }}

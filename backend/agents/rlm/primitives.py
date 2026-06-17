@@ -1236,18 +1236,25 @@ def resolve_gpu_requirements(
     except (ValueError, TypeError):
         _sb_enum = None
     _is_azure = _sb_enum is _SandboxMode.azure
+    _is_gcp = _sb_enum is _SandboxMode.gcp
 
-    # ``provisioned_skus`` restricts the azure resolver to the GPU pools that are
-    # actually provisioned (Terraform ``var.gpu_skus`` ⇒ ``settings.azure_gpu_skus``),
-    # so the primary pick + OOM escalation ladder can never name a pool that does
-    # not exist (which would otherwise hang the cell Pending until the
-    # capacity-exhausted timeout). ``None`` for non-azure leaves the runpod path
+    # ``provisioned_skus`` restricts the azure/gcp resolver to the GPU pools that are
+    # actually provisioned (Terraform ``var.gpu_skus`` ⇒ ``settings.azure_gpu_skus`` /
+    # ``settings.gcp_gpu_skus``), so the primary pick + OOM escalation ladder can never
+    # name a pool that does not exist (which would otherwise hang the cell Pending until
+    # the capacity-exhausted timeout). ``None`` for non-azure/gcp leaves the runpod path
     # byte-for-byte unchanged.
     if _is_azure:
         _provider = "azure"
         cloud_types: tuple[str, ...] = ("ONDEMAND",)
         _provisioned_skus: tuple[str, ...] | None = tuple(
             getattr(settings, "azure_gpu_skus", None) or ()
+        ) or None
+    elif _is_gcp:
+        _provider = "gcp"
+        cloud_types = ("ONDEMAND",)
+        _provisioned_skus = tuple(
+            getattr(settings, "gcp_gpu_skus", None) or ()
         ) or None
     else:
         _provider = "runpod"
@@ -1397,6 +1404,14 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
             "attempts": 0,
             "skipped": True,
             "note": "azure sandbox: image is pre-baked in ACR; build_environment is a no-op",
+        }, PrimitiveOutcome.ok)
+    if _sb_key == "gcp":
+        return _with_outcome({
+            "ok": True,
+            "image_tag": "",
+            "attempts": 0,
+            "skipped": True,
+            "note": "gcp sandbox: image is pre-baked in Artifact Registry (gcp_base_image); build_environment is a no-op",
         }, PrimitiveOutcome.ok)
     # C6 (2026-06-16): under runpod the locally-built image is NEVER used — the
     # pod boots OPENRESEARCH_RUNPOD_IMAGE and runs over SSH in a per-run venv
@@ -2726,6 +2741,13 @@ def _backend_for_sandbox_mode(
 
         _runtime.ensure_azure_available()
         return AksJobBackend(run_budget=run_budget, gpu_plan=gpu_plan)
+
+    if mode is SandboxMode.gcp:
+        import backend.services.runtime as _runtime
+        from backend.services.runtime.gke_job_backend import GkeJobBackend
+
+        _runtime.ensure_gcp_available()
+        return GkeJobBackend(run_budget=run_budget, gpu_plan=gpu_plan)
 
     # All other modes (auto, brev, simulate) are not yet wired
     # for the RLM path.  Fall back with a loud WARNING so the operator knows.
@@ -5499,7 +5521,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         from backend.agents.rlm import execution_smoke as _execution_smoke_cm
         if (
             _execution_smoke_cm.is_enabled()
-            and _sb_key_ecm != "azure"
+            and _sb_key_ecm not in ("azure", "gcp")
             and gpus
             and len(kept) > 1
         ):
@@ -5520,7 +5542,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     # failure). Shape-gated + local/docker only; no `search` key → the legacy
     # single-phase dispatch below runs byte-for-byte unchanged.
     matrix_result = None
-    if _sb_key_ecm != "azure":
+    if _sb_key_ecm not in ("azure", "gcp"):
         _staged_groups = []
         try:
             from backend.agents.rlm import staged_search as _ss
@@ -5589,10 +5611,11 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
             matrix_result = _staged_out.get("results") or {}
             kept = _staged_out.get("kept_cells") or []
 
-    if matrix_result is None and _sb_key_ecm == "azure":
-        with k8s_job_cell_runner.bind_run_context(
-            run_budget=_run_budget_ecm, event_sink=_event_sink_ecm, gpu_plan=_ecm_gpu_plan
-        ):
+    if matrix_result is None and _sb_key_ecm in ("azure", "gcp"):
+        with k8s_job_cell_runner._bind_settings_prefix(_sb_key_ecm), \
+             k8s_job_cell_runner.bind_run_context(
+                 run_budget=_run_budget_ecm, event_sink=_event_sink_ecm, gpu_plan=_ecm_gpu_plan,
+             ):
             matrix_result = k8s_job_cell_runner.run_matrix(
                 kept, str(code / "train_cell.py"),
                 output_root=str(artifact_root),
@@ -5849,16 +5872,17 @@ def run_experiment(
         env_id = build["image_tag"] or ("__local__" if build.get("skipped") else "")
 
     # A2-H2: guard empty env_id (reachable only when no Dockerfile was on disk
-    # to rebuild from AND the build was not skipped for local-sandbox mode).
-    # We exempt the local-sandbox path: build_environment deliberately returns
-    # image_tag="" there (see build_environment local-short-circuit above), and
-    # _execute_in_sandbox routes to LocalProcessBackend via sandbox_mode, making
-    # env_id irrelevant.
-    _is_local_sb = (
-        str(getattr(getattr(ctx, "sandbox_mode", None), "value",
-                    getattr(ctx, "sandbox_mode", None) or "")).lower() == "local"
-    )
-    if not _is_local_sb and (not env_id or not str(env_id).strip()):
+    # to rebuild from AND the build was not skipped for an imageless sandbox).
+    # We exempt the local AND azure sandboxes: build_environment deliberately
+    # returns image_tag="" for both (local has no Docker daemon; azure's image is
+    # pre-baked in ACR), and both route on sandbox_mode — LocalProcessBackend /
+    # AksJobBackend + the cells route's azure_base_image — never on env_id. An
+    # empty env_id must not hard-block them, or the azure cells route would be
+    # refused before it is ever reached.
+    _sb_mode_str = str(getattr(getattr(ctx, "sandbox_mode", None), "value",
+                               getattr(ctx, "sandbox_mode", None) or "")).lower()
+    _is_local_sb = (_sb_mode_str == "local")
+    if _sb_mode_str not in ("local", "azure", "gcp") and (not env_id or not str(env_id).strip()):
         return _persist_experiment_result(ctx, {
             "success": False,
             "metrics": {},
@@ -6015,6 +6039,10 @@ def run_experiment(
             "1", "true", "yes", "on"
         ):
             _cell_route_kinds.append("azure")
+        if os.environ.get("OPENRESEARCH_GCP_CELL_ROUTE", "1").strip().lower() in (
+            "1", "true", "yes", "on"
+        ):
+            _cell_route_kinds.append("gcp")
         if (
             _caps.backend_kind in _cell_route_kinds
             and not _caps.is_empty

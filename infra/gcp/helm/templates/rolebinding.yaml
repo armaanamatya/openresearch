@@ -1,0 +1,39 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: reprolab-orchestrator
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "reprolab-gke.labels" . | nindent 4 }}
+subjects:
+  # ---------------------------------------------------------------------------
+  # Bind to each operator Google identity.  GKE's auth plugin maps a gcloud
+  # identity to a Kubernetes user/group whose NAME is the bare email; the IAM
+  # member prefix (user:/group:) selects the RBAC subject kind.  Every member
+  # can create/watch/delete Jobs in the namespace after authenticating with
+  # `gcloud auth login` + `gcloud container clusters get-credentials`.
+  # [tfvar: operator_iam_members]  (envs/deepinvent/main.tfvars — not a TF output)
+  # ---------------------------------------------------------------------------
+  {{- range .Values.rbac.operatorMembers }}
+  {{- if hasPrefix "group:" . }}
+  - kind: Group
+    name: {{ trimPrefix "group:" . | quote }}
+    apiGroup: rbac.authorization.k8s.io
+  {{- else if hasPrefix "user:" . }}
+  - kind: User
+    name: {{ trimPrefix "user:" . | quote }}
+    apiGroup: rbac.authorization.k8s.io
+  {{- else if hasPrefix "serviceAccount:" . }}
+  - kind: User
+    name: {{ trimPrefix "serviceAccount:" . | quote }}
+    apiGroup: rbac.authorization.k8s.io
+  {{- else }}
+  - kind: User
+    name: {{ . | quote }}
+    apiGroup: rbac.authorization.k8s.io
+  {{- end }}
+  {{- end }}
+roleRef:
+  kind: Role
+  name: reprolab-orchestrator
+  apiGroup: rbac.authorization.k8s.io

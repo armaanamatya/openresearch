@@ -462,6 +462,12 @@ def _run_trainer_subprocess(
     merged in.  Stdout and stderr are written to *attempt_log_path* as they
     arrive and returned together as a string.
 
+    ``--cell-id`` and ``--output-dir`` are passed as argv so that a
+    spec-compliant train_cell.py (which reads both env vars AND argparse flags,
+    matching the local gpu_cell_runner.py convention) works identically on AKS
+    and on the local runner.  The env vars are still set for backward
+    compatibility with implementations that read only the env surface.
+
     Args:
         train_cell_path:  Path to the train_cell.py script.
         output_dir:       Value for OPENRESEARCH_CELL_OUTPUT_DIR.
@@ -471,6 +477,8 @@ def _run_trainer_subprocess(
     Returns:
         (returncode, combined_output_text)
     """
+    cell_id = os.environ.get("OPENRESEARCH_CELL_ID", "unknown")
+
     env = os.environ.copy()
     env.update(env_overrides)
     env["OPENRESEARCH_CELL_OUTPUT_DIR"] = str(output_dir)
@@ -480,7 +488,12 @@ def _run_trainer_subprocess(
 
     with attempt_log_path.open("w", encoding="utf-8") as log_fh:
         proc = subprocess.Popen(
-            [sys.executable, str(train_cell_path)],
+            [
+                sys.executable,
+                str(train_cell_path),
+                f"--cell-id={cell_id}",
+                f"--output-dir={output_dir}",
+            ],
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

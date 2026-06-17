@@ -36,6 +36,7 @@ class SandboxMode(str, Enum):
     azure = "azure"
     brev = "brev"
     docker = "docker"
+    gcp = "gcp"
     local = "local"
     runpod = "runpod"
     simulate = "simulate"
@@ -290,6 +291,10 @@ def ensure_sandbox_mode_available(mode: SandboxMode | str) -> None:
         from backend.services.runtime import ensure_azure_available
 
         ensure_azure_available()
+    elif resolved is SandboxMode.gcp:
+        from backend.services.runtime import ensure_gcp_available
+
+        ensure_gcp_available()
 
 
 def _gpu_environment(mode: GpuMode) -> dict[str, str]:

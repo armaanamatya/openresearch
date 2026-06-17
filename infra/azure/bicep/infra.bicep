@@ -117,6 +117,9 @@ param filesPremium bool = false
 @description('Name of the dedicated Premium FileStorage account (filesPremium = true only).')
 param filesPremiumStorageAccountName string = ''
 
+@description('When true (default), assign Storage Account Key Operator to the kubelet identity (required for the azurefile CSI Files mount). Set false when the deploying operator cannot assign role 81a9662b — the Blob artifact bus still deploys fully; the Files mount is enabled later once the role is granted.')
+param deployStorageKeyOperatorRole bool = true
+
 // ─── Workload identity ────────────────────────────────────────────────────────
 
 @description('Kubernetes namespace where the workload-identity ServiceAccount lives.')
@@ -124,6 +127,17 @@ param workloadIdentityNamespace string = 'reprolab'
 
 @description('Name of the Kubernetes ServiceAccount annotated with the workload-identity client ID.')
 param workloadIdentityServiceAccount string = 'reprolab-sa'
+
+@description('Name of the Kubernetes ServiceAccount for the in-cluster orchestrator. Must match the federated-credential subject: system:serviceaccount:<workloadIdentityNamespace>:<orchestratorServiceAccount>.')
+param orchestratorServiceAccount string = 'reprolab-orchestrator'
+
+// ─── Key Vault ────────────────────────────────────────────────────────────────
+
+@description('When true, deploy a hardened Key Vault to hold the AOAI and Anthropic API keys.')
+param deployKeyVault bool = true
+
+@description('Key Vault name. When empty, defaults to "<prefix>-kv". Must be 3-24 chars, globally unique.')
+param keyVaultName string = ''
 
 // ─── Module wiring ────────────────────────────────────────────────────────────
 // Mirrors infra/azure/main.tf module invocations, in the same order.
@@ -210,6 +224,7 @@ module storage 'modules/storage.bicep' = {
     authorizedIpRanges:             authorizedIpRanges
     filesPremium:                   filesPremium
     filesPremiumStorageAccountName: filesPremiumStorageAccountName
+    deployKeyOperatorRole:          deployStorageKeyOperatorRole
     tags:                           tags
   }
 }
@@ -226,6 +241,51 @@ module identity 'modules/identity.bicep' = {
     serviceAccountName:  workloadIdentityServiceAccount
     artifactContainerId: storage.outputs.blobContainerResourceId
     tags:                tags
+  }
+}
+
+// ── Orchestrator workload identity ────────────────────────────────────────────
+//
+// A dedicated UAMI for the in-cluster orchestrator Deployment / CronJob.
+// Separate from the training-workload identity so its Key Vault Secrets User
+// role assignment is narrowly scoped and auditable independently.
+//
+// Naming: "<prefix>-orchestrator-mi" (distinct from "<prefix>-workload-mi").
+// Federated subject: system:serviceaccount:<namespace>:<orchestratorServiceAccount>
+// Audience: api://AzureADTokenExchange  (same as the workload identity module)
+
+module orchestratorIdentity 'modules/identity.bicep' = {
+  name: 'orchestrator-identity'
+  params: {
+    prefix:              '${prefix}-orch'
+    location:            location
+    oidcIssuerUrl:       aks.outputs.oidcIssuerUrl
+    namespace:           workloadIdentityNamespace
+    serviceAccountName:  orchestratorServiceAccount
+    artifactContainerId: storage.outputs.blobContainerResourceId
+    tags:                tags
+  }
+}
+
+// ── Key Vault ─────────────────────────────────────────────────────────────────
+//
+// Deployed only when deployKeyVault = true (default).  Holds azure-openai-api-key
+// and anthropic-api-key; secret values are set out-of-band by an operator with
+// Key Vault Officer rights — never by this template.
+//
+// The resolved vault name: keyVaultName param when non-empty, else "<prefix>-kv".
+
+var resolvedKeyVaultName = empty(keyVaultName) ? '${prefix}-kv' : keyVaultName
+
+module keyvault 'modules/keyvault.bicep' = if (deployKeyVault) {
+  name: 'keyvault'
+  params: {
+    name:                   resolvedKeyVaultName
+    location:               location
+    authorizedIpRanges:     authorizedIpRanges
+    aksSubnetId:            network.outputs.aksSubnetId
+    secretsUserPrincipalId: orchestratorIdentity.outputs.miPrincipalId
+    tags:                   tags
   }
 }
 
@@ -339,3 +399,19 @@ output gpuTaintKey string = 'nvidia.com/gpu'
 
 @description('Resource ID of the Log Analytics workspace (new — not in TF).')
 output logAnalyticsWorkspaceId string = monitoring.outputs.workspaceId
+
+// ── Orchestrator identity ─────────────────────────────────────────────────────
+
+@description('Client ID of the orchestrator user-assigned managed identity. Set as azure.workload.identity/client-id on the reprolab-orchestrator ServiceAccount.')
+output orchestratorIdentityClientId string = orchestratorIdentity.outputs.miClientId
+
+@description('Object/principal ID of the orchestrator managed identity.')
+output orchestratorIdentityPrincipalId string = orchestratorIdentity.outputs.miPrincipalId
+
+// ── Key Vault ─────────────────────────────────────────────────────────────────
+
+@description('Name of the deployed Key Vault (empty string when deployKeyVault = false).')
+output keyVaultNameOut string = deployKeyVault ? keyvault.outputs.keyVaultName : ''
+
+@description('HTTPS URI of the Key Vault (empty string when deployKeyVault = false).')
+output keyVaultUriOut string = deployKeyVault ? keyvault.outputs.keyVaultUri : ''

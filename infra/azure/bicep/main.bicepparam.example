@@ -16,20 +16,20 @@
 using 'main.bicep'
 
 // Azure region for both resource groups.
-// Must match the region you plan to use for Terraform L1.
+// Must match the region you plan to use for Bicep L1 (infra.bicep).
 // Common choices: eastus, westus3, swedencentral, northeurope
 param location = '<AZURE_REGION>'
 
-// Name of the main resource group (Terraform will import this after L0 runs).
+// Name of the main resource group (must exist or will be created by L0).
 // Default 'rg-reprolab' — change only if it conflicts with an existing RG.
 param mainRgName = 'rg-reprolab'
 
-// Create the tfstate RG in the same deployment.
-// Set to false only if the bootstrap RG already exists and you are re-running.
-param createTfstateRg = true
+// Create a legacy tfstate RG alongside the main RG.
+// Default false — Bicep deployment stacks store state server-side; no tfstate
+// storage account is needed. Set true only for legacy Terraform workflows.
+param createTfstateRg = false
 
-// Name of the Terraform remote-state resource group.
-// Must match var.state_resource_group_name in infra/azure/bootstrap/.
+// Name of the legacy tfstate resource group (only relevant when createTfstateRg = true).
 param tfstateRgName = 'rg-reprolab-tfstate'
 
 // Tags applied to both resource groups.
@@ -40,8 +40,8 @@ param tags = {
   managedBy:   'bicep-l0'
 }
 
-// Object ID of the Entra group (or user / service principal) that will run
-// Terraform day-to-day.
+// Object ID of the Entra group (or user / service principal) that will deploy
+// L1 day-to-day via az stack group create.
 //
 // Find an Entra group:
 //   az ad group show --group "<GROUP_DISPLAY_NAME>" --query id -o tsv
@@ -49,8 +49,6 @@ param tags = {
 //   az ad user show --id "<UPN_OR_EMAIL>" --query id -o tsv
 // Find a service principal:
 //   az ad sp show --id "<APP_ID>" --query id -o tsv
-//
-// Use the same value as operator_entra_group_object_id in main.tfvars.
 param principalId = '<OPERATOR_ENTRA_GROUP_OBJECT_ID>'
 
 // Type of the principal above.

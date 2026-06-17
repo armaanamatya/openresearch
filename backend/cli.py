@@ -2116,7 +2116,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     reproduce.add_argument(
         "--sandbox",
-        choices=("auto", "local", "docker", "runpod", "azure"),
+        choices=("auto", "local", "docker", "runpod", "azure", "gcp"),
         default=DEFAULT_SANDBOX_MODE.value,
         help=(
             f"Experiment backend (default: {DEFAULT_SANDBOX_MODE.value}). "

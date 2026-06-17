@@ -106,6 +106,30 @@ def test_substantiated_requires_both_model_and_dataset():
     assert _result_leaf_substantiated(_toks("resnet on cifar10"), {}) is False
 
 
+def test_aggregate_coverage_leaf_substantiated_when_cells_ran():
+    # An aggregate/coverage/trend claim is NOT a single-cell result; when >=1 cell
+    # ran, the grader judges it over real data → the gate must not veto it
+    # (2026-06-16 All-CNN live-run false-veto fix: 0.528 -> 0.615).
+    assert _result_leaf_substantiated(
+        _toks("test error reported for all 12 model configurations in Table 3"), METRICS
+    ) is True  # 'configurations' + 'table'
+    assert _result_leaf_substantiated(
+        _toks("strided variants consistently underperform base across A B C"), METRICS
+    ) is True  # 'consistently' + 'across' + 'variants'
+    # but an aggregate-SHAPED leaf with NOTHING run is still vetoed (fabrication)
+    assert _result_leaf_substantiated(
+        _toks("test error reported for all 12 configurations"), {"per_model": {}}
+    ) is False
+
+
+def test_alnum_split_matches_separator_style_dataset():
+    # cell env 'cifar100' must match leaf prose 'CIFAR-100' (tokenises to cifar,100)
+    m = {"per_model": {"all_cnn_c": {"cifar100": {"allcnn": {"status": "ok", "test_error_percent": 64.7}}}}}
+    assert _result_leaf_substantiated(_toks("All-CNN-C evaluated on CIFAR-100"), m) is True
+    # a genuinely-absent dataset (imagenet) on the same model is still NOT substantiated
+    assert _result_leaf_substantiated(_toks("All-CNN-C evaluated on ImageNet"), m) is False
+
+
 # --- integration via score_reproduction --------------------------------------
 
 def test_gate_off_is_byte_for_byte_today(tmp_path):

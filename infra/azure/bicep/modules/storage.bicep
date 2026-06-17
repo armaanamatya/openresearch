@@ -48,6 +48,9 @@ param filesPremium bool = false
 @description('Globally unique name for the Premium FileStorage account (filesPremium = true only).')
 param filesPremiumStorageAccountName string = ''
 
+@description('When true (default), assign Storage Account Key Operator to the kubelet identity so the azurefile CSI driver can mount the Files share via account key. Set false when the deploying operator lacks permission to assign this role (e.g. a constrained RBAC-Administrator condition that omits 81a9662b); the Files mount is then deferred until the role is granted out-of-band, while Blob-based workloads (the artifact bus) still deploy fully.')
+param deployKeyOperatorRole bool = true
+
 @description('Map of tags applied to storage resources.')
 param tags object = {}
 
@@ -59,6 +62,17 @@ var filesSmbContributorRoleId = '0c867c2a-1d8c-454a-a3db-ab2ea1bdc8bb'
 // stops it persisting the key in a Secret); the SMB data role above does NOT
 // include listKeys, so the kubelet needs this on the files-hosting account.
 var keyOperatorRoleId = '81a9662b-bebf-436f-a333-f67b29880f12'
+
+// ─── Storage IP network rules ─────────────────────────────────────────────────
+// Azure Storage rejects /31 and /32 in IP network rules: a single host must be a
+// BARE IPv4 (no mask), only /0–/30 ranges are accepted. AKS authorizedIPRanges,
+// by contrast, REQUIRE CIDR notation — so the operator CIDR list arrives as
+// "x.x.x.x/32" and must have the /32 stripped here (a wider CIDR passes through
+// unchanged). One canonical transform, reused by both account network ACLs below.
+var storageIpRules = [for cidr in authorizedIpRanges: {
+  value:  replace(cidr, '/32', '')
+  action: 'Allow'
+}]
 
 // ─── Standard StorageV2 account ───────────────────────────────────────────────
 // Matches: azurerm_storage_account.main
@@ -101,10 +115,7 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
           action: 'Allow'
         }
       ]
-      ipRules: [for cidr in authorizedIpRanges: {
-        value:  cidr
-        action: 'Allow'
-      }]
+      ipRules: storageIpRules
       bypass: 'AzureServices'
     }
   }
@@ -179,10 +190,7 @@ resource filesPremiumAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = if
           action: 'Allow'
         }
       ]
-      ipRules: [for cidr in authorizedIpRanges: {
-        value:  cidr
-        action: 'Allow'
-      }]
+      ipRules: storageIpRules
       bypass: 'AzureServices'
     }
   }
@@ -242,7 +250,7 @@ resource filesSmbKubeletPremium 'Microsoft.Authorization/roleAssignments@2022-04
 // the whole account (listKeys is an account-level action — no narrower scope
 // exists). Exactly one of the two deploys, matching the SMB-role pattern above.
 
-resource keyOperatorKubeletStandard 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!filesPremium) {
+resource keyOperatorKubeletStandard 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!filesPremium && deployKeyOperatorRole) {
   scope: storageAccount
   name:  guid(storageAccount.id, kubeletObjectId, keyOperatorRoleId)
   properties: {
@@ -253,7 +261,7 @@ resource keyOperatorKubeletStandard 'Microsoft.Authorization/roleAssignments@202
   }
 }
 
-resource keyOperatorKubeletPremium 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (filesPremium) {
+resource keyOperatorKubeletPremium 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (filesPremium && deployKeyOperatorRole) {
   scope: filesPremiumAccount
   name:  guid(filesPremiumStorageAccountName, kubeletObjectId, keyOperatorRoleId)
   properties: {

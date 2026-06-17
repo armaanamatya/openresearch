@@ -77,6 +77,29 @@ CATALOG: tuple[GpuSku, ...] = (
            aliases=("2x a100",),              provider="azure", gpu_count=2),
     GpuSku("Standard_NC96ads_A100_v4",  "azure_a100_80x4", 80, "ONDEMAND", 14.69,
            aliases=("4x a100",),              provider="azure", gpu_count=4),
+
+    # GCP rows — Google Compute Engine A2 machine types on GKE. The provider SKU
+    # id is the GCE machine type (e.g. "a2-highgpu-8g"); the orchestrator maps it
+    # to a GKE node pool. a2-highgpu = A100 40GB; a2-ultragpu = A100 80GB. The
+    # 4g/8g rows are the dynamically-selectable 4×A100 / 8×A100 clusters.
+    # approx_usd_per_hr is the TOTAL on-demand rate for the machine (us-central1,
+    # ~$2.93/GPU for 40GB, ~$3.93/GPU for 80GB — refresh quarterly).
+    GpuSku("a2-highgpu-1g",  "gcp_a100_40",    40, "ONDEMAND",  2.93,
+           aliases=("a100 40", "a100 40gb", "a100-40"), provider="gcp", gpu_count=1),
+    GpuSku("a2-highgpu-2g",  "gcp_a100_40x2",  40, "ONDEMAND",  5.86,
+           aliases=("2x a100", "2x a100 40"),           provider="gcp", gpu_count=2),
+    GpuSku("a2-highgpu-4g",  "gcp_a100_40x4",  40, "ONDEMAND", 11.72,
+           aliases=("4x a100", "4x a100 40"),           provider="gcp", gpu_count=4),
+    GpuSku("a2-highgpu-8g",  "gcp_a100_40x8",  40, "ONDEMAND", 23.44,
+           aliases=("8x a100", "8x a100 40"),           provider="gcp", gpu_count=8),
+    GpuSku("a2-ultragpu-1g", "gcp_a100_80",    80, "ONDEMAND",  3.93,
+           aliases=("a100 80", "a100 80gb", "a100"),    provider="gcp", gpu_count=1),
+    GpuSku("a2-ultragpu-2g", "gcp_a100_80x2",  80, "ONDEMAND",  7.86,
+           aliases=("2x a100 80",),                     provider="gcp", gpu_count=2),
+    GpuSku("a2-ultragpu-4g", "gcp_a100_80x4",  80, "ONDEMAND", 15.72,
+           aliases=("4x a100 80",),                     provider="gcp", gpu_count=4),
+    GpuSku("a2-ultragpu-8g", "gcp_a100_80x8",  80, "ONDEMAND", 31.44,
+           aliases=("8x a100 80",),                     provider="gcp", gpu_count=8),
 )
 
 

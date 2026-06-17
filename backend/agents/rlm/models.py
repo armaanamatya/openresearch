@@ -329,7 +329,7 @@ def _inject_api_key(env_var: str | None, kwargs: dict) -> dict:
 def _inject_azure_kwargs(kwargs: dict, *, model_key: str) -> dict:
     """Return a copy of *kwargs* with Azure-specific env vars injected.
 
-    ``rlm.clients.azure_openai.AzureOpenAIClient`` needs three values beyond
+    ``rlm.clients.azure_openai.AzureOpenAIClient`` needs four values beyond
     the standard ``api_key``:
 
     - ``azure_endpoint`` (required): the Azure OpenAI resource URL, e.g.
@@ -337,10 +337,17 @@ def _inject_azure_kwargs(kwargs: dict, *, model_key: str) -> dict:
     - ``azure_deployment`` (optional override): the deployment name.  Defaults
       to the registry's ``backend_kwargs["azure_deployment"]`` value but can be
       overridden per-environment via ``AZURE_OPENAI_DEPLOYMENT``.
+    - ``api_version``: overrides the vendored rlm default (``2024-02-01``) with
+      the repo-standard GA version.  Resolution order: existing kwarg value →
+      ``AZURE_OPENAI_API_VERSION`` env var → ``DEFAULT_AZURE_OPENAI_API_VERSION``.
 
     Raises ``ValueError`` with an actionable message when ``azure_endpoint``
     is missing — the Azure backend cannot function without it.
     """
+    from backend.services.context.workspace.tools.azure_openai_client import (
+        DEFAULT_AZURE_OPENAI_API_VERSION,
+    )
+
     out = dict(kwargs)
     endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
     if not endpoint:
@@ -355,6 +362,12 @@ def _inject_azure_kwargs(kwargs: dict, *, model_key: str) -> dict:
     deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT")
     if deployment:
         out["azure_deployment"] = deployment
+    # Inject api_version only when not already present in the registry kwargs,
+    # so a caller that sets it explicitly wins.
+    if "api_version" not in out:
+        out["api_version"] = (
+            os.environ.get("AZURE_OPENAI_API_VERSION") or DEFAULT_AZURE_OPENAI_API_VERSION
+        )
     return out
 
 

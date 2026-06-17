@@ -1,0 +1,168 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# DeepInvent environment — Terraform variable overrides (GCP / GKE)
+#
+# Usage:
+#   cp main.tfvars.example main.tfvars
+#   # Fill in every placeholder marked your-... / <...>
+#   terraform plan  -var-file=main.tfvars
+#   terraform apply -var-file=main.tfvars
+#
+# NEVER commit main.tfvars (contains the project ID, bucket name, operator IPs,
+# and operator emails). It is listed in .gitignore.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ─── GCP project / region ─────────────────────────────────────────────────────
+
+# Client's GCP project ID.
+project_id = "your-gcp-project"
+
+# GCP region. Pick one where A100 GPU quota has been granted.
+# Common A100 regions: us-central1, us-east1, europe-west4, asia-southeast1.
+# Check availability: gcloud compute accelerator-types list --filter="zone:( <region>-a )"
+region = "us-central1"
+
+# ─── Naming & labels ───────────────────────────────────────────────────────────
+
+# Short prefix for all resource names. Keep ≤8 chars, lowercase, start with a
+# letter (GCE resource names must not start with a digit), no underscores.
+prefix = "your-prefix"
+
+# Labels applied to every resource (lowercase keys/values).
+labels = {
+  project     = "reprolab"
+  environment = "production"
+  client      = "deepinvent"
+}
+
+# ─── Networking ────────────────────────────────────────────────────────────────
+
+# Primary node-subnet CIDR.
+subnet_cidr = "10.0.0.0/22"
+
+# VPC-native secondary ranges (must not overlap each other or subnet_cidr).
+pods_secondary_cidr     = "10.4.0.0/14"
+services_secondary_cidr = "10.8.0.0/20"
+
+# Operator CIDR(s) permitted to reach the GKE public control-plane endpoint.
+# SECURITY: the control-plane endpoint is public but IP-restricted (Phase 1 —
+# the orchestrator runs locally). Nodes themselves are private (no public IP).
+# Add every egress IP that will run `kubectl` or the Python orchestrator.
+# Confirm with DeepInvent's security team that a public endpoint is acceptable.
+# Example: ["203.0.113.10/32", "198.51.100.0/24"]
+authorized_ip_ranges = ["your.operator.egress.ip/32"]
+
+# ─── GKE cluster ────────────────────────────────────────────────────────────────
+
+# Minimum master version. Leave "" to use the release channel default.
+# Check: gcloud container get-server-config --region <region>
+kubernetes_version = ""
+
+# GKE release channel: RAPID, REGULAR (recommended), or STABLE.
+release_channel = "REGULAR"
+
+# System (CPU) node pool. e2-standard-4 = 4 vCPU / 16 GiB, ≥1 always running.
+system_node_machine_type = "e2-standard-4"
+system_node_min_count    = 1
+system_node_max_count    = 3
+
+# Google identities granted Job-management RBAC in the namespace via Helm L2.
+# Each entry is a fully-qualified IAM member (user:/group:/serviceAccount:).
+operator_iam_members = [
+  "user:your-operator@example.com",
+  # "group:reprolab-operators@example.com",
+]
+
+# ─── GPU node pools ─────────────────────────────────────────────────────────────
+#
+# gpu_skus controls which GKE GPU node pools are provisioned.
+# Each entry creates ONE scale-to-zero pool labeled reprolab/sku=<short_name>.
+# Jobs target a pool with nodeSelector { reprolab/sku: <short_name> }.
+#
+# !! QUOTA REQUIREMENT — one request per accelerator family !!
+# Fresh projects ship with 0 A100 quota. File requests BEFORE applying.
+#
+# Catalog:
+#   short_name      machine_type     accelerator_type    gpus  quota family
+#   gcp_a100_40     a2-highgpu-1g     nvidia-tesla-a100   1     "NVIDIA A100 GPUs"
+#   gcp_a100_40x2   a2-highgpu-2g     nvidia-tesla-a100   2     "NVIDIA A100 GPUs"
+#   gcp_a100_40x4   a2-highgpu-4g     nvidia-tesla-a100   4     "NVIDIA A100 GPUs"
+#   gcp_a100_40x8   a2-highgpu-8g     nvidia-tesla-a100   8     "NVIDIA A100 GPUs"
+#   gcp_a100_80     a2-ultragpu-1g    nvidia-a100-80gb    1     "NVIDIA A100 80GB GPUs"
+#   gcp_a100_80x2   a2-ultragpu-2g    nvidia-a100-80gb    2     "NVIDIA A100 80GB GPUs"
+#   gcp_a100_80x4   a2-ultragpu-4g    nvidia-a100-80gb    4     "NVIDIA A100 80GB GPUs"
+#   gcp_a100_80x8   a2-ultragpu-8g    nvidia-a100-80gb    8     "NVIDIA A100 80GB GPUs"
+#
+# Required quota per pool = gpu_count × max_nodes in the matching family.
+#
+# START HERE: single A100-80 pool, max_nodes=1 (1 GPU) — ONE quota ask.
+# Increase max_nodes or add more entries after quota is approved.
+
+gpu_skus = [
+  {
+    short_name       = "gcp_a100_80"
+    machine_type     = "a2-ultragpu-1g"
+    accelerator_type = "nvidia-a100-80gb"
+    gpu_count        = 1
+    max_nodes        = 1 # requires 1 "NVIDIA A100 80GB GPUs" quota
+    disk_size_gb     = 256
+  },
+
+  # ── Escalation ladder (uncomment after quota is granted) ────────────────────
+  #
+  # {
+  #   short_name       = "gcp_a100_80x2"
+  #   machine_type     = "a2-ultragpu-2g"
+  #   accelerator_type = "nvidia-a100-80gb"
+  #   gpu_count        = 2
+  #   max_nodes        = 2   # requires 4 "NVIDIA A100 80GB GPUs" quota
+  #   disk_size_gb     = 256
+  # },
+  #
+  # {
+  #   short_name       = "gcp_a100_40"
+  #   machine_type     = "a2-highgpu-1g"
+  #   accelerator_type = "nvidia-tesla-a100"
+  #   gpu_count        = 1
+  #   max_nodes        = 4   # requires 4 "NVIDIA A100 GPUs" quota
+  #   disk_size_gb     = 256
+  # },
+]
+
+# ─── Artifact Registry ──────────────────────────────────────────────────────────
+
+artifact_registry_repo = "reprolab"
+
+# ─── Storage ─────────────────────────────────────────────────────────────────────
+
+# Globally unique GCS bucket name (3-63 lowercase alphanum/hyphen).
+# Hosts the artifact bus between the orchestrator and GKE Jobs.
+gcs_bucket_name = "your-prefix-reprolab-artifacts"
+
+# ── Filestore RWX cache (opt-in) ──────────────────────────────────────────────
+#
+# filestore_enabled = false (DEFAULT — no Filestore; emptyDir / GCS-only cache)
+#   Each fresh node re-downloads model weights. Zero extra cost.
+#
+# filestore_enabled = true (Filestore NFS share, the GCP analog of Azure Files
+#   Premium) — model weights download once per cluster lifetime, shared RWX.
+#   BASIC_HDD enforces a 1024 GiB (1 TiB) minimum. ZONAL/ENTERPRISE give higher
+#   IOPS at higher cost.
+#
+# Leave the lines below commented to keep the default (no Filestore).
+
+# filestore_enabled     = true
+# filestore_share_name  = "reprolab-cache"
+# filestore_tier        = "BASIC_HDD"
+# filestore_capacity_gb = 1024
+
+# ─── Workload identity ────────────────────────────────────────────────────────────
+# These MUST match the Helm L2 values in envs/deepinvent/helm-values.yaml AND
+# gcp_namespace / gcp_service_account in backend/config.py.
+
+workload_identity_namespace       = "reprolab"
+workload_identity_service_account = "reprolab-sa"
+
+# ─── Remote state reference ────────────────────────────────────────────────────────
+# Informational only — the actual backend is configured in backend.hcl.
+# Name of the GCS bucket created by the bootstrap module.
+state_bucket_name = "your-prefix-tfstate"

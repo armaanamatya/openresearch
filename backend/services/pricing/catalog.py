@@ -153,6 +153,50 @@ GPU_PRICING: dict[str, GpuPriceEntry] = {
         last_audited_utc=_AUDITED,
         cloud_type="ONDEMAND",
     ),
+    # GCP A100 (a2 machine family, us-central1 on-demand). Per-GPU base prices —
+    # a2-highgpu (40 GB) ≈ $3.67/GPU/hr, a2-ultragpu (80 GB) ≈ $5.07/GPU/hr —
+    # scaled linearly by GPU count, matching the azure multi-GPU convention above.
+    # Added 2026-06-16 to pair the gcp_a100_* catalog SKUs landed by the GKE backend.
+    "gcp_a100_40": GpuPriceEntry(
+        usd_per_hour=3.67,
+        last_audited_utc=_AUDITED,
+        cloud_type="ONDEMAND",
+    ),
+    "gcp_a100_40x2": GpuPriceEntry(
+        usd_per_hour=7.35,
+        last_audited_utc=_AUDITED,
+        cloud_type="ONDEMAND",
+    ),
+    "gcp_a100_40x4": GpuPriceEntry(
+        usd_per_hour=14.69,
+        last_audited_utc=_AUDITED,
+        cloud_type="ONDEMAND",
+    ),
+    "gcp_a100_40x8": GpuPriceEntry(
+        usd_per_hour=29.38,
+        last_audited_utc=_AUDITED,
+        cloud_type="ONDEMAND",
+    ),
+    "gcp_a100_80": GpuPriceEntry(
+        usd_per_hour=5.07,
+        last_audited_utc=_AUDITED,
+        cloud_type="ONDEMAND",
+    ),
+    "gcp_a100_80x2": GpuPriceEntry(
+        usd_per_hour=10.14,
+        last_audited_utc=_AUDITED,
+        cloud_type="ONDEMAND",
+    ),
+    "gcp_a100_80x4": GpuPriceEntry(
+        usd_per_hour=20.28,
+        last_audited_utc=_AUDITED,
+        cloud_type="ONDEMAND",
+    ),
+    "gcp_a100_80x8": GpuPriceEntry(
+        usd_per_hour=40.55,
+        last_audited_utc=_AUDITED,
+        cloud_type="ONDEMAND",
+    ),
 }
 
 

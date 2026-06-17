@@ -659,23 +659,57 @@ def _leaf_has_disk_evidence(leaf_tokens: frozenset[str], subjects: list[frozense
     return any(subj and subj.issubset(leaf_tokens) for subj in subjects)
 
 
+# Aggregate/coverage/trend markers: a result-leaf carrying one of these is a claim
+# ACROSS the cells that ran ("all 12 configurations", "Strided underperforms base
+# across A/B/C"), not about one (model, dataset) cell — the grader judges the trend
+# over real data, so the gate must not veto it for "no single matching cell".
+# Deliberately EXCLUDES "all" (collides with "All-CNN" model names). Surfaced by the
+# 2026-06-16 All-CNN live run, where the strict single-cell rule false-vetoed these.
+_AGGREGATE_MARKERS: frozenset[str] = frozenset({
+    "across", "consistently", "configurations", "variants", "table",
+    "each", "every", "respectively",
+})
+
+
+def _expand_alnum(tokens: frozenset[str]) -> frozenset[str]:
+    """Add the alpha/digit split of mixed tokens so a cell key like ``cifar100``
+    also matches leaf text that wrote ``CIFAR-100`` (which tokenises to
+    ``{cifar, 100}`` on the hyphen). Cell keys carry no separator, leaf prose does,
+    so without this they never meet — the second cause of the 2026-06-16 false
+    vetoes (the CIFAR-100 hparam leaf)."""
+    out = set(tokens)
+    for t in tokens:
+        m = re.fullmatch(r"([a-z]+)(\d+)", t)
+        if m:
+            out.add(m.group(1))
+            out.add(m.group(2))
+    return frozenset(out)
+
+
 def _result_leaf_substantiated(
     leaf_tokens: frozenset[str], metrics_data: dict[str, Any]
 ) -> bool:
     """A7 EVIDENCE_GATE: is a result-claiming leaf substantiated by on-disk metrics?
 
-    True iff some ``per_model`` cell with a SUCCESSFUL status matches the leaf on
-    BOTH halves of its identity: the model tokens AND the env/dataset tokens both
-    overlap the leaf text. Requiring both halves is what distinguishes "this cell
-    ran" from "a different cell on the same model ran" — it catches cross-dataset
-    fabrication ("ResNet on ImageNet" credited when only "ResNet on CIFAR10" ran:
-    model overlaps, dataset does not → NOT substantiated → veto) while sparing a
-    leaf that names a cell that truly ran. The dataset half is alias-expanded
-    (imagenet↔ilsvrc) so a true-synonym leaf is never false-vetoed.
+    Substantiated (NOT vetoed) when ANY of:
+      1. some SUCCESSFUL ``per_model`` cell matches the leaf on BOTH its model and
+         env/dataset tokens (the single-result case) — alias-expanded (imagenet↔
+         ilsvrc) and alnum-split (``cifar100``↔``CIFAR-100``) so true-synonym /
+         separator-style leaves are never false-vetoed; OR
+      2. the leaf is an AGGREGATE/coverage claim (``_AGGREGATE_MARKERS``) AND at
+         least one cell ran — a trend over real data, judged by the grader.
 
-    Used ONLY by the evidence gate (OPENRESEARCH_EVIDENCE_GATE, default-OFF); never in
-    the default scoring path. An empty/absent ``per_model`` returns False, so a run
-    that credited results while computing nothing has every result leaf vetoed.
+    Vetoed (returns False) only when the cited result is genuinely unsupported:
+    ``per_model`` empty / no successful cell (nothing ran — the MLR-Bench
+    fabrication shape), OR a SPECIFIC (model, dataset) result with no matching
+    successful cell and no aggregate framing (e.g. "ResNet on ImageNet" credited
+    when only CIFAR ran).
+
+    Used ONLY by the evidence gate (OPENRESEARCH_EVIDENCE_GATE, default-OFF); never
+    in the default scoring path. The single-cell rule alone over-vetoed legitimate
+    aggregate + separator-style result leaves on the 2026-06-16 All-CNN live run
+    (0.528→0.615 once corrected) — paths 2 + the alnum-split close that gap without
+    weakening the genuine-fabrication veto.
     """
     per_model = metrics_data.get("per_model")
     if not isinstance(per_model, dict):
@@ -684,10 +718,11 @@ def _result_leaf_substantiated(
     if not leaf_distinct:
         return False
     _ok_status = {"ok", "success", "succeeded", "completed"}
+    any_ok = False
     for mkey, envs in per_model.items():
         if not isinstance(envs, dict):
             continue
-        model_toks = _distinctive(_normalise_dataset_name(str(mkey)))
+        model_toks = _expand_alnum(_distinctive(_normalise_dataset_name(str(mkey))))
         for env, baselines in envs.items():
             if not isinstance(baselines, dict):
                 continue
@@ -697,13 +732,14 @@ def _result_leaf_substantiated(
             ]
             if not ok_cells:
                 continue
+            any_ok = True
             env_toks: set[str] = set(_normalise_dataset_name(str(env)))
             for c in ok_cells:
                 for key in ("dataset", "letter", "variant"):
                     v = c.get(key)
                     if isinstance(v, str):
                         env_toks |= set(_normalise_dataset_name(v))
-            env_distinct = _distinctive(frozenset(env_toks))
+            env_distinct = _expand_alnum(_distinctive(frozenset(env_toks)))
             # alias-expand the dataset half (curated true synonyms only)
             env_variants = [env_distinct] + _alias_token_sets([env_distinct])
             model_match = (not model_toks) or bool(model_toks & leaf_distinct)
@@ -712,6 +748,13 @@ def _result_leaf_substantiated(
             )
             if model_match and env_match:
                 return True
+    # No single-cell match. Nothing ran at all → genuine fabrication shape → veto.
+    if not any_ok:
+        return False
+    # Some cell ran: an aggregate/coverage/trend leaf is a claim over those cells,
+    # not a single absent result — substantiate it (the grader judges the trend).
+    if leaf_tokens & _AGGREGATE_MARKERS:
+        return True
     return False
 
 

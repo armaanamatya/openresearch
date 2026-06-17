@@ -37,6 +37,12 @@ param systemNodeMax int = 3
 @description('Map of tags applied to the cluster.')
 param tags object = {}
 
+@description('Kubernetes service CIDR (in-cluster ClusterIP range). MUST be disjoint from vnetCidr/aksSubnetCidr — AKS rejects an overlap with ServiceCidrOverlapExistingSubnetsCidr. The 10.2.0.0/16 default is disjoint from the 10.0.0.0/16 VNet.')
+param serviceCidr string = '10.2.0.0/16'
+
+@description('Cluster DNS service IP. MUST lie within serviceCidr.')
+param dnsServiceIp string = '10.2.0.10'
+
 // ─── AKS Cluster ──────────────────────────────────────────────────────────────
 // Matches: azurerm_kubernetes_cluster.main — name = "${var.prefix}-aks"
 
@@ -119,6 +125,8 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-02-01' = {
       networkPolicy:    'azure'
       loadBalancerSku:  'standard'
       outboundType:     'loadBalancer'
+      serviceCidr:      serviceCidr
+      dnsServiceIp:     dnsServiceIp
     }
 
     // ── Azure RBAC ──────────────────────────────────────────────────────────

@@ -88,6 +88,9 @@ from backend.agents.rlm.forced_iteration import (
 # BUG-LR-011: restore globals()/locals() inside rlm's LocalREPL sandbox
 # (upstream blacklists them alongside eval/exec/compile/input — incorrect).
 from backend.agents.rlm import safe_builtins_patch as _safe_builtins_patch  # noqa: F401
+# Harden the rlm vendored AzureOpenAIClient: rebuild openai.AzureOpenAI /
+# AsyncAzureOpenAI with max_retries=6 so root completions survive AOAI 429 bursts.
+from backend.agents.rlm import azure_root_hardening_patch as _azure_root_hardening_patch  # noqa: F401
 # BUG-LR-012: include traceback.format_exc() in REPL exception stderr so the
 # root model can diagnose failures rather than concluding primitives unavailable.
 from backend.agents.rlm import safe_repl_traceback_patch as _safe_repl_traceback_patch  # noqa: F401
@@ -929,6 +932,15 @@ def _partial_evidence_from_experiment_runs(project_dir: Path) -> list[dict[str, 
     return evidence
 
 
+def _notify_run_terminal(project_dir: Path) -> None:
+    """Fire the opt-in terminal webhook (no-op unless OPENRESEARCH_NOTIFY_WEBHOOK_URL is set)."""
+    try:
+        from backend.agents.rlm.run_notify import notify_run_terminal
+        notify_run_terminal(project_dir)
+    except Exception:  # noqa: BLE001 — a notification must never affect run outcome
+        logger.debug("run-notify: terminal helper raised", exc_info=True)
+
+
 def _finalize_fatal_primitive_abort(
     *,
     abort: _FatalPrimitiveAbort,
@@ -989,6 +1001,7 @@ def _finalize_fatal_primitive_abort(
         run_experiment_ok_calls=run_experiment_success_count(ctx),
         run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx)
     )
+    _notify_run_terminal(project_dir)
 
     try:
         emit(
@@ -1112,6 +1125,7 @@ def _hard_stop_with_report(
         )
     except Exception:  # noqa: BLE001
         logger.exception("run_pipeline_rlm: hard-stop could not write final report")
+    _notify_run_terminal(project_dir)
     try:
         emit(
             build_run_complete_event(
@@ -1989,10 +2003,9 @@ async def run_pipeline_rlm(
     compaction_threshold_pct = 0.7 if is_featherless else 0.85
 
     # 9. Construct the RLM engine.
-    # Accelerator sub-backend override: when an accelerator endpoint is active and
-    # not Azure, redirect rlm_query/llm_query navigation to the same fast endpoint
-    # so context-navigation calls also benefit from the accelerator.  Azure endpoints
-    # require their own backend type and are left unchanged.
+    # Accelerator sub-backend override: when an accelerator endpoint is active,
+    # redirect rlm_query/llm_query navigation to the same fast endpoint so
+    # context-navigation calls also benefit from the accelerator.
     _other_backends = [root_model.sub_backend]
     _other_backend_kwargs = [root_model.sub_backend_kwargs]
     if _accel_ep is not None and not _accel_ep.is_azure:
@@ -2002,6 +2015,23 @@ async def run_pipeline_rlm(
                 "model_name": _accel_ep.model,
                 "base_url": _accel_ep.base_url,
                 "api_key": _accel_ep.api_key,
+            }
+        ]
+    elif _accel_ep is not None and _accel_ep.is_azure:
+        from backend.services.context.workspace.tools.azure_openai_client import (
+            DEFAULT_AZURE_OPENAI_API_VERSION,
+        )
+        _other_backends = ["azure_openai"]
+        _other_backend_kwargs = [
+            {
+                "model_name": _accel_ep.model,
+                "azure_endpoint": _accel_ep.base_url,
+                "azure_deployment": _accel_ep.model,
+                "api_key": _accel_ep.api_key,
+                "api_version": (
+                    os.environ.get("AZURE_OPENAI_API_VERSION")
+                    or DEFAULT_AZURE_OPENAI_API_VERSION
+                ),
             }
         ]
 
@@ -2488,6 +2518,7 @@ def _finalize(
         run_experiment_ok_calls=run_experiment_success_count(ctx),
         run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx)
     )
+    _notify_run_terminal(project_dir)
 
     # Per-paper negative lessons (MUSE-lite, OPENRESEARCH_NEGATIVE_LESSONS): mine
     # agent-correctable failures from experiment_runs.jsonl into
