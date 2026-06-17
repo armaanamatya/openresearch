@@ -57,3 +57,13 @@ def test_budget_dropped_merges_with_capacity_gaps():
     assert any(g.get("reason") == "vram_exceeded" for g in gaps)
     assert any(g.get("reason") == "staged_search_budget_dropped" for g in gaps)
     assert len(gaps) == 2
+
+
+def test_dropped_cell_axes_fall_back_to_params():
+    """Dropped cell with axes under params sub-dict → gap still populated correctly."""
+    res = cm.aggregate_cell_metrics(
+        {"cells": []}, [], capacity_gaps=[], dataset_gaps=[],
+        budget_dropped=[{"params": {"model_key": "m", "env": "e", "baseline": "b"}}],
+    )
+    g = [x for x in res["scope"]["gaps"] if x.get("reason") == "staged_search_budget_dropped"][0]
+    assert g["model_key"] == "m" and g["env"] == "e" and g["baseline"] == "b"

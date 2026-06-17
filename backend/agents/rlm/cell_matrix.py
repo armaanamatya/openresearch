@@ -833,10 +833,11 @@ def aggregate_cell_metrics(
         gaps.extend(g for g in dataset_gaps if isinstance(g, dict))
     for _bd in (budget_dropped or []):
         if isinstance(_bd, dict):
+            _p = _bd.get("params") or {}
             gaps.append({
-                "model_key": _bd.get("model_key"),
-                "env": _bd.get("env"),
-                "baseline": _bd.get("baseline"),
+                "model_key": _bd.get("model_key") or _p.get("model_key"),
+                "env": _bd.get("env") or _p.get("env"),
+                "baseline": _bd.get("baseline") or _p.get("baseline"),
                 "reason": "staged_search_budget_dropped",
             })
 

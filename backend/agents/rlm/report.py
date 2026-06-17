@@ -1211,16 +1211,11 @@ def build_final_report(
     # Conversion-guard repair (Task 6): if provenance is empty but the grader
     # scored a populated code/metrics.json, repopulate baseline_metrics from disk.
     # Evidence-tightening only — no-op on already-coherent reports.
+    # detect_projection_incoherence has a score-based fallback
+    # (overall_score not in (None,0) AND metrics_on_disk) so no explicit
+    # evidence_cites_metrics flag is needed — setting it on every report was an
+    # unconditional output change (fix: strict parity).
     _rubric_block = kwargs.get("rubric") or {}
-    if isinstance(_rubric_block, dict):
-        _rubric_block["evidence_cites_metrics"] = any(
-            (
-                "metrics.json" in (l.get("justification", "") or "")
-                or "outputs/" in (l.get("justification", "") or "")
-            )
-            for l in _rubric_block.get("leaf_scores", [])
-            if isinstance(l, dict)
-        )
     repair_projection_from_disk(kwargs, _rubric_block, ctx.project_dir)
     # The sentinel key must be stripped before passing to the pydantic model
     # (RLMFinalReport has no provenance_repaired field and no extra="allow").

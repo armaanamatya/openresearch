@@ -46,3 +46,13 @@ def test_repair_is_noop_when_rubric_no_evidence(tmp_path):
     rubric = {"overall_score": 0.0}  # no evidence_cites_metrics, score=0
     fixed = repair_projection_from_disk(kwargs, rubric, tmp_path)
     assert fixed.get("provenance_repaired") is None
+
+
+def test_repair_fires_without_explicit_flag(tmp_path):
+    """Adam-shape: no evidence_cites_metrics key but overall_score>0 + metrics.json → repaired."""
+    (tmp_path / "code").mkdir()
+    (tmp_path / "code" / "metrics.json").write_text(json.dumps({"cnn": {"top1": 0.9}}))
+    kwargs = {"baseline_metrics": {}, "experiment_run_id": None, "primitive_trace": {}}
+    rubric = {"overall_score": 0.53}   # no evidence_cites_metrics key
+    fixed = repair_projection_from_disk(kwargs, rubric, tmp_path)
+    assert fixed["baseline_metrics"] == {"cnn": {"top1": 0.9}}
