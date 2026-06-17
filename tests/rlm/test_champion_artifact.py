@@ -182,3 +182,17 @@ def test_record_returns_in_memory_entry_when_write_fails(tmp_path):
     entry = ca.record_champion(reg, evidence_key="k", snapshot_dir="s", median_score=0.4)
     assert entry["evidence_key"] == "k"
     assert entry["median_score"] == pytest.approx(0.4)
+
+
+from pathlib import Path
+from backend.agents.rlm import champion_artifact as ca  # noqa: F811 (re-import for clarity)
+
+
+def test_record_champion_carries_sample_count(tmp_path: Path):
+    reg = tmp_path / "champions.json"
+    entry = ca.record_champion(
+        reg, evidence_key="k1", snapshot_dir=tmp_path / "snap",
+        median_score=0.5, sample_count=1,
+    )
+    assert entry["sample_count"] == 1
+    assert entry["median_score"] == 0.5

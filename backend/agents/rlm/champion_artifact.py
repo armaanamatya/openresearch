@@ -119,6 +119,7 @@ def record_champion(
     evidence_key: str,
     snapshot_dir: Path | str,
     median_score: float,
+    sample_count: int = 1,
 ) -> dict:
     """Append a champion entry to the JSON registry and return it.
 
@@ -141,6 +142,7 @@ def record_champion(
         "evidence_key": str(evidence_key),
         "snapshot_dir": str(snapshot_dir),
         "median_score": score,
+        "sample_count": int(sample_count),
         "seq": seq,
     }
     entries.append(entry)
