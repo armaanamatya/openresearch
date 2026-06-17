@@ -834,7 +834,11 @@ def _apply_champion_artifact(rubric: dict, project_dir: "Path") -> dict:
     if not _champion_artifact_enabled():
         return rubric
     try:
-        from backend.agents.rlm.champion_artifact import best_champion, restore_snapshot
+        from backend.agents.rlm.champion_artifact import (
+            best_champion,
+            restore_rubric,
+            restore_snapshot,
+        )
         champ = best_champion(Path(project_dir) / "rlm_state" / "champions.json")
         if not champ:
             return rubric
@@ -852,7 +856,21 @@ def _apply_champion_artifact(rubric: dict, project_dir: "Path") -> dict:
         if snap and (cur_f is None or champ_score >= cur_f):
             restore_snapshot(Path(snap), Path(project_dir) / "code")
             out["overall_score"] = champ_score
+            # Restore the champion's own rubric block so score ≡ its leaf evidence.
+            # snap is the *code* dir; its parent is the entry dir holding rubric_block.json.
+            champ_rubric = restore_rubric(Path(snap).parent) or {}
+            for _k in (
+                "leaf_scores",
+                "weak_leaves",
+                "leaf_count",
+                "meets_target",
+                "target_score",
+                "compute_adjusted_score",
+            ):
+                if champ_rubric.get(_k) is not None:
+                    out[_k] = champ_rubric[_k]
             out["champion_restored"] = True
+            out["champion_sample_count"] = int(champ.get("sample_count", 1))
         return out
     except Exception:  # noqa: BLE001 — champion-artifact restore is best-effort, never fatal
         logger.exception("report: champion-artifact restore failed (non-fatal)")
