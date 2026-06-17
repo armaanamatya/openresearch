@@ -221,6 +221,22 @@ orchestrator:
   # this mount is required to keep that Secret live.
   csiMountPath: /mnt/sm-secrets
 
+  # Per-run USD budget cap passed as `--max-usd` to `backend.cli reproduce`.
+  # Bounds total spend (root LLM + GPU) for a single orchestrator run.
+  maxUsd: 400
+
+  # OPENRESEARCH_RESUME_CELLS — "1" resumes already-completed training cells from
+  # the GCS artifact bus instead of re-running them (cheaper restarts).
+  resumeCells: "1"
+
+  # OPENRESEARCH_STABLE_RUN_ID — "1" derives a deterministic run id so a restarted
+  # orchestrator pod rejoins the same run/artifacts rather than forking a new one.
+  stableRunId: "1"
+
+  # OPENRESEARCH_GCP_USE_SPOT — set to "1" to request spot GPU nodes for training
+  # cells (cheaper, preemptible).  Empty ("") keeps the on-demand default.
+  useSpot: ""
+
   # ── Long-lived Claude OAuth token (Stream B, opt-in) ────────────────────────
   # CRITICAL INVARIANT: this block is DEFAULT FALSE so that the DEFAULT
   # `helm template infra/gcp/helm` render is byte-identical before and after

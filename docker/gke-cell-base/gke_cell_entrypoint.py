@@ -499,6 +499,12 @@ def _run_trainer_subprocess(
     merged in.  Stdout and stderr are written to *attempt_log_path* as they
     arrive and returned together as a string.
 
+    ``--cell-id`` and ``--output-dir`` are passed as argv so that a
+    spec-compliant train_cell.py (which reads both env vars AND argparse flags,
+    matching the local gpu_cell_runner.py convention) works identically on GKE
+    and on the local runner.  The env vars are still set for backward
+    compatibility with implementations that read only the env surface.
+
     Args:
         train_cell_path:  Path to the train_cell.py script.
         output_dir:       Value for OPENRESEARCH_CELL_OUTPUT_DIR.
@@ -508,6 +514,8 @@ def _run_trainer_subprocess(
     Returns:
         (returncode, combined_output_text)
     """
+    cell_id = os.environ.get("OPENRESEARCH_CELL_ID", "unknown")
+
     env = os.environ.copy()
     env.update(env_overrides)
     env["OPENRESEARCH_CELL_OUTPUT_DIR"] = str(output_dir)
@@ -517,7 +525,12 @@ def _run_trainer_subprocess(
 
     with attempt_log_path.open("w", encoding="utf-8") as log_fh:
         proc = subprocess.Popen(
-            [sys.executable, str(train_cell_path)],
+            [
+                sys.executable,
+                str(train_cell_path),
+                f"--cell-id={cell_id}",
+                f"--output-dir={output_dir}",
+            ],
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -1052,6 +1065,8 @@ def main(
     # -----------------------------------------------------------------------
     _preempt_fired = [False]           # idempotency guard
     _active_child: list[Any] = [None]  # updated by the tracking runner wrapper
+    _term_requested = [False]          # set by the handler if SIGTERM arrives
+                                       # during the Popen window (race guard)
 
     try:
         _grace_s = int(os.environ.get("OPENRESEARCH_CELL_PREEMPT_GRACE_S", "20"))
@@ -1062,6 +1077,10 @@ def main(
     _upload_fn = _preempt_upload_fn if _preempt_upload_fn is not None else _upload_metrics
 
     def _sigterm_handler(_signum: int, _frame: Any) -> None:  # noqa: ANN001
+        # Record the request so a SIGTERM that landed during the Popen window
+        # (before _active_child[0] was assigned) is still delivered to the child
+        # right after the handle is registered.
+        _term_requested[0] = True
         if _preempt_fired[0]:
             return  # idempotent
         _preempt_fired[0] = True
@@ -1117,7 +1136,12 @@ def main(
 
         with attempt_log_path_.open("w", encoding="utf-8") as log_fh_:
             proc_ = _sp.Popen(
-                [sys.executable, str(train_cell_path_)],
+                [
+                    sys.executable,
+                    str(train_cell_path_),
+                    f"--cell-id={cell_id}",
+                    f"--output-dir={output_dir_}",
+                ],
                 env=env_,
                 stdout=_sp.PIPE,
                 stderr=_sp.STDOUT,
@@ -1125,6 +1149,11 @@ def main(
                 bufsize=1,
             )
             _active_child[0] = proc_
+            if _term_requested[0] and proc_.poll() is None:
+                try:
+                    proc_.terminate()
+                except Exception:
+                    pass
             assert proc_.stdout is not None
             for line_ in proc_.stdout:
                 log_fh_.write(line_)

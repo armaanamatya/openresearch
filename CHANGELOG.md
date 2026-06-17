@@ -17,6 +17,35 @@ version + date and start a new `[Unreleased]` block above it.
 
 ## [Unreleased]
 
+### Fixed (2026-06-17 — Stream F: GCP production-hardening; runtime/IaC split + 3 BLOCKERs + MAJORs; all IaC additions flag-gated, default helm render byte-identical)
+A production-readiness audit found the GCP GPU runtime wired but the Terraform/Helm
+layer not caught up, plus correctness bugs in the spot/budget/resume code.
+- **Budget multi-GPU undercount (BLOCKER):** `_check_budget` bills GPU-dollars as
+  Σ(`wall_clock_s × gpu_count × $/GPU-hr`) via a second accumulator separate from the
+  wall-clock pod-seconds cap — an 8-GPU cell was billed as 1, so `--max-usd` fired 8×
+  too late. OOM-escalation retries now reserve their own added budget.
+- **Spot reschedule killed (BLOCKER):** `_watch_job` no longer treats the first spot
+  preemption as terminal while `backoffLimit>0` (waits for `failed > backoffLimit`;
+  the FailJob condition still terminates exits 40-44).
+- **Orchestrator RBAC (BLOCKER):** the `reprolab-orchestrator` ServiceAccount is bound
+  to its Role (GCP + Azure) so the in-cluster pod can create cell Jobs.
+- **Resume result-loss (MAJOR):** cross-pod resume resubmits a cell whose status.json
+  is "ok" but whose metrics blob is missing, instead of skipping with `metrics=None`.
+- **Preempt grace (MAJOR):** the cell Job manifest injects
+  `OPENRESEARCH_CELL_PREEMPT_GRACE_S` and sets `terminationGracePeriodSeconds`
+  (grace+10s) so the kubelet's 30s default can't truncate the checkpoint flush.
+- **Fail-closed routing (MAJOR):** `_object_store` raises on an unknown settings prefix
+  instead of silently routing to Azure; the GKE entrypoint passes `--cell-id/--output-dir`
+  like AKS; both entrypoints close a SIGTERM-vs-Popen race.
+- **IaC wiring:** root TF threads `use_spot` per-SKU into the gpu_nodepool module; the
+  default GCP GPU pool is now 8×A100-80 (`a2-ultragpu-8g`); the orchestrator
+  Deployment/CronJob export `--max-usd` + `OPENRESEARCH_RESUME_CELLS/STABLE_RUN_ID/
+  GCP_USE_SPOT`; smoke jobs gate the Filestore PVC mount; the bootstrap CI SA gains
+  `roles/secretmanager.admin`; the GKE cluster enables Cloud Logging/Monitoring +
+  managed Prometheus.
+- Regression coverage: multi-GPU billing, spot-aware watcher, preempt-grace manifest,
+  resume-requires-metrics (the previously-missing budget-gate/resume-skip tests).
+
 ### Added (2026-06-17 — Stream C + D: spot GPU pools, preemption-safe resume, K8s cost gate; all opt-in/default-OFF, byte-identical when unset)
 
 Spec `2026-06-17-multi-cloud-production-gpu-execution-design.md` (Streams C/D); operator guide `docs/runbooks/2026-06-17-spot-preemption-budget-operator-guide.md`. The recon corrected the spec on two points: K8s resume + per-cell budget were *already* partially implemented, so these changes are narrower than the spec implied.

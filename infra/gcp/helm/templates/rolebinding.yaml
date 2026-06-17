@@ -33,6 +33,16 @@ subjects:
     apiGroup: rbac.authorization.k8s.io
   {{- end }}
   {{- end }}
+  {{- if .Values.orchestrator.enabled }}
+  # ---------------------------------------------------------------------------
+  # Bind the orchestrator's ServiceAccount so the in-cluster reasoning loop can
+  # create/watch/delete training-cell Jobs.  Gated on orchestrator.enabled so the
+  # DEFAULT render is byte-identical (this rolebinding is NOT itself gated).
+  # ---------------------------------------------------------------------------
+  - kind: ServiceAccount
+    name: reprolab-orchestrator
+    namespace: {{ .Values.namespace }}
+  {{- end }}
 roleRef:
   kind: Role
   name: reprolab-orchestrator

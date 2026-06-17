@@ -32,11 +32,13 @@ but incomplete.
 > provisioning spot nodes just adds an inert toleration. Always set both.
 
 ### Node SKU (sized for the 7B 8-GPU cell)
-The GPU node-pool module now defaults to an **8×A100-40 GB** machine
-(`a2-highgpu-8g` on GCP, `Standard_ND96asr_v4` on Azure) so the SDAR 7B 8-GPU
-cell fits one node and lighter cells pack onto the same node. Scale-to-zero means
-idle = \$0. Override the TF `machine_type` / Bicep `vmSize` for a different size
-(e.g. `a2-ultragpu-8g` / `Standard_ND96amsr_v4` for 80 GB/GPU).
+The GPU node-pool defaults to an **8×A100** machine so the SDAR 7B 8-GPU cell fits
+one node and lighter cells pack onto the same node — **8×A100-80** (`a2-ultragpu-8g`)
+on GCP (Stream F made this the default: the memory-correct size for the 3B/7B cells,
+which don't fit a 40 GB card under full-Adam GRPO), **8×A100-40**
+(`Standard_ND96asr_v4`) on Azure. Scale-to-zero means idle = \$0. Override the TF
+`gpu_skus[].machine_type` / Bicep `vmSize` for a different size. Azure still defaults
+to 40 GB/GPU — bump its `vmSize` to `Standard_ND96amsr_v4` for 80 GB/GPU parity.
 
 ---
 

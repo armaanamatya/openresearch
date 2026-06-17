@@ -725,6 +725,32 @@ class TestBlobResume:
         assert results["b0"]["status"] != "skipped"
         assert len(k8s.batch.created_jobs) == 1
 
+    def test_blob_status_ok_but_missing_metrics_resubmits(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # R1 (Stream F): status.json says "ok" but the metrics blob is gone — the
+        # entrypoint ignores a metrics-upload failure on its success path, leaving
+        # ok+no-metrics. Skipping here would store metrics=None and SILENTLY LOSE the
+        # result; the cell must instead be resubmitted.
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+
+        def _status_ok_no_metrics(blob_name: str, *, account_name: str,
+                                  container_name: str, client: Any = None) -> bytes:
+            if "status.json" in blob_name:
+                return json.dumps({"version": "1", "cell_id": "b0",
+                                   "outcome": "ok", "exit_code": 0}).encode()
+            raise FileNotFoundError(blob_name)   # metrics.json absent → download None
+
+        fake = self._blob_with_status(outcome="ok", exit_code=0)
+        fake["download_bytes"] = _status_ok_no_metrics
+        self._patch(monkeypatch, fake)
+        monkeypatch.setenv("OPENRESEARCH_RESUME_CELLS", "1")
+        results = run_matrix([{"id": "b0"}], tmp_path / "train_cell.py",
+                             output_root=tmp_path / "outputs")
+        assert results["b0"]["status"] != "skipped"          # NOT silently skipped
+        assert len(k8s.batch.created_jobs) == 1               # resubmitted instead
+
 
 # ---------------------------------------------------------------------------
 # 8c. Budget exhaustion is a TERMINAL stop (spec 2026-06-17 Stream D1)
@@ -734,16 +760,113 @@ class TestBudgetTerminal:
     def test_check_budget_emits_terminal_prefix(self):
         from backend.agents.resilience.budget import RunBudget
         budget = RunBudget(max_run_gpu_usd=0.001)
+        # Two-accumulator signature: the caller passes projected GPU-dollars (already
+        # × gpu_count) and projected wall-clock pod-seconds separately.
         err = kjcr._check_budget(
-            run_budget=budget, reserved_gpu_seconds=3600.0,
-            gpu_usd_per_hour=3.67, cell_id="z0",
+            run_budget=budget,
+            projected_gpu_usd=3.67,        # over the $0.001 cap
+            projected_pod_seconds=3600.0,
+            cell_id="z0",
         )
         # The prefix is the contract _execute_cell_matrix promotes on.
         assert err is not None and err.startswith("budget_exhausted:")
 
+    def test_check_budget_pod_seconds_cap_is_wall_clock(self):
+        from backend.agents.resilience.budget import RunBudget
+        # The pod-seconds cap keys on wall-clock seconds, independent of GPU-dollars:
+        # a huge dollar figure with no USD cap set must NOT trip it below its bound.
+        b = RunBudget(max_pod_seconds=100)
+        assert kjcr._check_budget(
+            run_budget=b, projected_gpu_usd=1e9, projected_pod_seconds=99.0, cell_id="c"
+        ) is None
+        err = kjcr._check_budget(
+            run_budget=b, projected_gpu_usd=0.0, projected_pod_seconds=100.0, cell_id="c"
+        )
+        assert err is not None and "pod-seconds" in err
+
     def test_budget_exhausted_is_a_terminal_failure_class(self):
         from backend.agents.rlm import forced_iteration
         assert "budget_exhausted" in forced_iteration._TERMINAL_FAILURE_CLASSES
+
+    def test_multi_gpu_cell_billed_per_gpu_count(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """BLOCKER fix: an N-GPU cell costs N× a 1-GPU cell for the same wall-clock.
+        3600s × 8 GPUs × $3.67/GPU-hr = $29.36 > the $10 cap ⇒ the cell is REFUSED
+        before submit (0 Jobs). The pre-fix code billed it as 1 GPU ($3.67 < $10) and
+        would have submitted, blowing the cap 8×."""
+        from backend.agents.resilience.budget import RunBudget
+        # Pin gpu_usd_per_hour to the 3.67 default deterministically (ignore real config).
+        monkeypatch.setattr(
+            kjcr, "_setting",
+            lambda name, default=None: kjcr._SETTINGS_DEFAULTS.get(name, default),
+        )
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics=None)
+        plan = _FakeGpuPlan(short_name="gcp_a100_80x8", gpu_count=8, ladder_remaining=())
+        with bind_run_context(
+            gpu_plan=plan,
+            run_budget=RunBudget(max_run_gpu_usd=10.0),
+            event_sink=lambda t, p: None,
+        ):
+            # No overall_timeout_s ⇒ overall_deadline None ⇒ eff_cell_s == 3600 exactly.
+            results = run_matrix(
+                [{"id": "g8"}], tmp_path / "train_cell.py",
+                output_root=tmp_path / "out", per_cell_timeout_s=3600.0, max_parallel=1,
+            )
+        assert len(k8s.batch.created_jobs) == 0, "8-GPU cell must be refused before submit"
+        assert results["g8"]["status"] == "error"
+        assert "budget_exhausted" in (results["g8"].get("error") or "")
+
+
+class TestStreamFSpotAndGrace:
+    """Stream F (2026-06-17): the watcher must not kill a spot reschedule, and the
+    Job manifest must carry the preempt-grace knob + terminationGracePeriodSeconds."""
+
+    @staticmethod
+    def _failed_status_job() -> _FakeJob:
+        # failed=1, active absent (→0), no terminal condition: a Pod has exited but the
+        # Job controller has NOT (yet) declared the Job Failed.
+        return _FakeJob(_FakeJobStatus(failed=1, succeeded=0))
+
+    def test_watch_job_no_backoff_fails_on_first(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(
+            kjcr, "_cloud_setting",
+            lambda name, default=None: 0.001 if name == "watch_poll_interval_s" else default,
+        )
+        k8s = _make_k8s(job_sequence=[self._failed_status_job() for _ in range(5)],
+                        pods=[_FakePod(exit_code=1)])
+        res = kjcr._watch_job(
+            k8s=k8s, job_name="j", namespace="n", overall_deadline=None,
+            active_deadline_seconds=5, pending_timeout_s=5.0, backoff_limit=0,
+        )
+        assert res["status"] == "failed"   # on-demand (backoff 0): first failure terminal
+
+    def test_watch_job_spot_backoff_defers_terminal(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(
+            kjcr, "_cloud_setting",
+            lambda name, default=None: 0.001 if name == "watch_poll_interval_s" else default,
+        )
+        # failed=1 < backoff_limit=3 → the controller may still reschedule the preempted
+        # spot Pod, so the watcher must NOT classify it terminal; it runs to the deadline.
+        k8s = _make_k8s(job_sequence=[self._failed_status_job() for _ in range(2000)],
+                        pods=[_FakePod(exit_code=1)])
+        res = kjcr._watch_job(
+            k8s=k8s, job_name="j", namespace="n", overall_deadline=None,
+            active_deadline_seconds=1, pending_timeout_s=5.0, backoff_limit=3,
+        )
+        assert res["status"] == "deadline"   # NOT "failed" — spot retry preserved
+
+    def test_manifest_injects_preempt_grace(self, monkeypatch: pytest.MonkeyPatch):
+        manifest = _build_manifest_for_guard_tests(monkeypatch=monkeypatch)
+        env = {e["name"]: e["value"] for e in _get_env_list(manifest)}
+        assert "OPENRESEARCH_CELL_PREEMPT_GRACE_S" in env
+        grace = int(env["OPENRESEARCH_CELL_PREEMPT_GRACE_S"])
+        assert 1 <= grace <= 120
+        spec = manifest["spec"]["template"]["spec"]
+        # +10s buffer so the kubelet doesn't SIGKILL before the entrypoint's flush upload.
+        assert spec["terminationGracePeriodSeconds"] == grace + 10
 
 
 # ---------------------------------------------------------------------------

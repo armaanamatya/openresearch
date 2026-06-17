@@ -1066,6 +1066,8 @@ def main(
     # -----------------------------------------------------------------------
     _preempt_fired = [False]           # idempotency guard
     _active_child: list[Any] = [None]  # updated by a wrapper around the runner
+    _term_requested = [False]          # set by the handler if SIGTERM arrives
+                                       # during the Popen window (race guard)
 
     try:
         _grace_s = int(os.environ.get("OPENRESEARCH_CELL_PREEMPT_GRACE_S", "20"))
@@ -1076,6 +1078,10 @@ def main(
     _upload_fn = _preempt_upload_fn if _preempt_upload_fn is not None else _upload_metrics
 
     def _sigterm_handler(_signum: int, _frame: Any) -> None:  # noqa: ANN001
+        # Record the request so a SIGTERM that landed during the Popen window
+        # (before _active_child[0] was assigned) is still delivered to the child
+        # right after the handle is registered.
+        _term_requested[0] = True
         if _preempt_fired[0]:
             return  # idempotent
         _preempt_fired[0] = True
@@ -1147,6 +1153,11 @@ def main(
                 bufsize=1,
             )
             _active_child[0] = proc_
+            if _term_requested[0] and proc_.poll() is None:
+                try:
+                    proc_.terminate()
+                except Exception:
+                    pass
             assert proc_.stdout is not None
             for line_ in proc_.stdout:
                 log_fh_.write(line_)

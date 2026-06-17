@@ -94,17 +94,21 @@ operator_iam_members = [
 #
 # Required quota per pool = gpu_count × max_nodes in the matching family.
 #
-# START HERE: single A100-80 pool, max_nodes=1 (1 GPU) — ONE quota ask.
+# START HERE: single 8×A100-80 pool, max_nodes=1 (8 GPUs) — ONE quota ask.
 # Increase max_nodes or add more entries after quota is approved.
+#
+# Set use_spot = true on a pool to back it with GKE Spot nodes (~60-91%
+# cheaper, ~15-30 s reclaim notice) — pair with the runtime spot toleration.
 
 gpu_skus = [
   {
-    short_name       = "gcp_a100_80"
-    machine_type     = "a2-ultragpu-1g"
+    short_name       = "gcp_a100_80x8"
+    machine_type     = "a2-ultragpu-8g"
     accelerator_type = "nvidia-a100-80gb"
-    gpu_count        = 1
-    max_nodes        = 1 # requires 1 "NVIDIA A100 80GB GPUs" quota
+    gpu_count        = 8
+    max_nodes        = 1 # requires 8 "NVIDIA A100 80GB GPUs" quota
     disk_size_gb     = 256
+    # use_spot       = true   # uncomment for ~60-91% cheaper Spot nodes
   },
 
   # ── Escalation ladder (uncomment after quota is granted) ────────────────────

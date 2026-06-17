@@ -85,9 +85,14 @@ spec:
             - name: SMOKE_OBJECT_NAME
               value: "smoke/cpu-stub-smoke-marker.txt"
 
+          # Mount the shared Filestore cache PVC — present ONLY when Filestore is
+          # enabled (storage.filestoreShare set).  Gated so the default (Filestore
+          # off) render omits the mount and the Job stays schedulable without the PVC.
+          {{- if .Values.storage.filestoreShare }}
           volumeMounts:
             - name: reprolab-cache
               mountPath: /mnt/reprolab-cache
+          {{- end }}
 
           command:
             - /bin/bash
@@ -130,7 +135,9 @@ spec:
 
               echo "=== cpu-stub-smoke PASSED ==="
 
+      {{- if .Values.storage.filestoreShare }}
       volumes:
         - name: reprolab-cache
           persistentVolumeClaim:
             claimName: reprolab-cache
+      {{- end }}

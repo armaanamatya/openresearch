@@ -107,6 +107,19 @@ resource "google_container_cluster" "main" {
   # Shielded nodes (secure boot + integrity monitoring) on every node pool.
   enable_shielded_nodes = true
 
+  # ── Observability ───────────────────────────────────────────────────────────
+  # Ship system + workload logs to Cloud Logging and system metrics to Cloud
+  # Monitoring, with Google Managed Prometheus collection enabled.
+  logging_config {
+    enable_components = ["SYSTEM_COMPONENTS", "WORKLOADS"]
+  }
+  monitoring_config {
+    enable_components = ["SYSTEM_COMPONENTS"]
+    managed_prometheus {
+      enabled = true
+    }
+  }
+
   resource_labels = var.labels
 
   # GKE requires a deletion-protection acknowledgement; default true keeps the

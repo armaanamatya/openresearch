@@ -61,6 +61,8 @@ resource "google_storage_bucket" "tfstate" {
 #   - roles/resourcemanager.projectIamAdmin (grant the project-level node roles)
 #   - roles/artifactregistry.admin (create the Docker repository)
 #   - roles/file.editor           (create the Filestore instance)
+#   - roles/secretmanager.admin   (create the Secret Manager secrets when
+#                                  secret_manager_enabled = true)
 # Keyless: NO service-account JSON key is created — grant a human or CI
 # workload-identity-federation principal `roles/iam.serviceAccountTokenCreator`
 # on this SA to impersonate it instead.
@@ -81,6 +83,7 @@ locals {
     "roles/resourcemanager.projectIamAdmin",
     "roles/artifactregistry.admin",
     "roles/file.editor",
+    "roles/secretmanager.admin",
   ]) : toset([])
 }
 

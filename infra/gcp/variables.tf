@@ -128,10 +128,13 @@ variable "operator_iam_members" {
 # QUOTA: Each entry consumes per-region A100 quota in the matching family.
 #   nvidia-tesla-a100 (40 GB) → "NVIDIA A100 GPUs" quota in the region.
 #   nvidia-a100-80gb          → "NVIDIA A100 80GB GPUs" quota in the region.
-# The required GPU count per pool = gpu_count × max_nodes.  The default single
-# A100-80 pool (gpu_count=1, max_nodes=4) needs 4 "NVIDIA A100 80GB GPUs".
-# START with max_nodes=1 (1 GPU) until the quota request is granted — fresh
+# The required GPU count per pool = gpu_count × max_nodes.  The default 8×A100-80
+# pool (gpu_count=8, max_nodes=4) needs 32 "NVIDIA A100 80GB GPUs".
+# START with max_nodes=1 (8 GPUs) until the quota request is granted — fresh
 # projects ship with 0 A100 quota and approval can take hours to days.
+#
+# Each entry may set use_spot = true to back the pool with GKE Spot nodes
+# (~60-91% cheaper; ~15-30 s reclaim notice).  Default false = on-demand.
 
 variable "gpu_skus" {
   description = <<-EOT
@@ -151,9 +154,14 @@ variable "gpu_skus" {
                          256 GiB is sufficient for the gke-cell-base image +
                          working dir; raise to 512 for SKUs that pull very large
                          images or have large local pip/HF cache overflow.
-    Default: a single A100-80 pool — ONE quota ask.  Add 40GB / multi-GPU
-    entries (each needing its own per-region quota) to enable the escalation
-    ladder.  See the comment block above for the full catalog.
+      use_spot         — when true, back this pool with GKE Spot nodes
+                         (~60-91% cheaper; ~15-30 s reclaim notice; GKE adds the
+                         cloud.google.com/gke-spot=true:NoSchedule taint, matched
+                         by the runtime spot toleration). Default false =
+                         on-demand.
+    Default: a single 8×A100-80 pool (a2-ultragpu-8g) — ONE quota ask.  Add 40GB
+    / other multi-GPU entries (each needing its own per-region quota) to enable
+    the escalation ladder.  See the comment block above for the full catalog.
   EOT
   type = list(object({
     short_name       = string
@@ -162,13 +170,14 @@ variable "gpu_skus" {
     gpu_count        = number
     max_nodes        = number
     disk_size_gb     = optional(number, 256)
+    use_spot         = optional(bool, false)
   }))
   default = [
     {
-      short_name       = "gcp_a100_80"
-      machine_type     = "a2-ultragpu-1g"
+      short_name       = "gcp_a100_80x8"
+      machine_type     = "a2-ultragpu-8g"
       accelerator_type = "nvidia-a100-80gb"
-      gpu_count        = 1
+      gpu_count        = 8
       max_nodes        = 4
       disk_size_gb     = 256
     }

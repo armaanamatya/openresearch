@@ -66,6 +66,8 @@ spec:
             - {{ .Values.orchestrator.model | quote }}
             - --sandbox
             - gcp
+            - --max-usd
+            - {{ .Values.orchestrator.maxUsd | default 400 | quote }}
 
           env:
             # ── API keys (from synced Secret Manager secret) ──────────────────
@@ -115,6 +117,14 @@ spec:
               value: {{ .Values.orchestrator.env.nodePoolName | default "" | quote }}
             - name: OPENRESEARCH_GCP_BASE_IMAGE
               value: {{ .Values.orchestrator.env.baseImage | default "" | quote }}
+
+            # ── Run reliability knobs (resume / stable id / spot) ──────────────
+            - name: OPENRESEARCH_RESUME_CELLS
+              value: {{ .Values.orchestrator.resumeCells | default "1" | quote }}
+            - name: OPENRESEARCH_STABLE_RUN_ID
+              value: {{ .Values.orchestrator.stableRunId | default "1" | quote }}
+            - name: OPENRESEARCH_GCP_USE_SPOT
+              value: {{ .Values.orchestrator.useSpot | default "" | quote }}
 
           resources:
             requests:

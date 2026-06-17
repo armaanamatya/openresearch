@@ -69,6 +69,7 @@ module "gpu_nodepool" {
   gpu_count        = each.value.gpu_count
   max_nodes        = each.value.max_nodes
   disk_size_gb     = each.value.disk_size_gb
+  use_spot         = each.value.use_spot
   service_account  = module.gke.node_service_account_email
   labels           = var.labels
 }

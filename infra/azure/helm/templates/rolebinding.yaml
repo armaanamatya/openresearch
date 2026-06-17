@@ -16,6 +16,11 @@ subjects:
   - kind: Group
     name: {{ .Values.rbac.operatorGroupObjectId | quote }}
     apiGroup: rbac.authorization.k8s.io
+  # Bind the orchestrator's ServiceAccount so the in-cluster reasoning loop can
+  # create/watch/delete training-cell Jobs (this whole file is orchestrator-gated).
+  - kind: ServiceAccount
+    name: reprolab-orchestrator
+    namespace: {{ .Values.namespace }}
 roleRef:
   kind: Role
   name: reprolab-orchestrator
