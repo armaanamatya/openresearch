@@ -89,7 +89,7 @@ _RUN_EXPERIMENT_FATAL_FAILURES = {
 def _local_core_bootstrap_commands(requirements_path: "Path", torch_index: str) -> list[str]:
     """pip-install commands for the local-sandbox bootstrap, hardened by env_pin.
 
-    Installs the harness-owned cu121 core pins (torch/vision/audio) FIRST, then the
+    Installs the harness-owned cu121 core pins (torch/vision/audio) FIRST **unless the venv already carries a coherent CUDA-≥12.1 torch** (a modern Deep-Learning-VM image is kept, not downgraded), then the
     agent's requirements with any conflicting core re-pin stripped (writing
     ``requirements.hardened.txt`` next to ``requirements.txt``). This is the fix for the
     2026-06-07 All-Conv-Net collapse, where the agent's ``torch==2.2.0`` re-pin
@@ -121,10 +121,7 @@ def _local_core_bootstrap_commands(requirements_path: "Path", torch_index: str) 
             # later as missing_module. Strip such lines and keep the rest.
             kept, invalid = env_pin.sanitize_requirements(kept)
             if specs:
-                core_install_cmd = (
-                    f"python -m pip install {' '.join(specs)} "
-                    f"--index-url {torch_index} || true"
-                )
+                core_install_cmd = env_pin.core_install_command(specs, torch_index)
             if dropped or invalid:
                 hardened = requirements_path.with_name("requirements.hardened.txt")
                 header = [
@@ -7745,11 +7742,6 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
 }
 
 PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
-    "read_context_map": "read_context_map() -> dict — the intra-run orientation "
-        "cache: the union of your prior understand_section / extract_hyperparameters "
-        "/ detect_environment outputs (datasets, metrics, hyperparameters, env "
-        "clues). Consult it before re-deriving a slice. Navigation aid only — never "
-        "a report source. Empty {} when the context-map flag is off.",
     "understand_section": "understand_section(text_slice) -> dict — datasets, "
         "metrics, training recipe, hardware clues, ambiguities from a text slice. "
         "A PARTIAL PaperClaimMap (no core_contribution/claims/architecture).",

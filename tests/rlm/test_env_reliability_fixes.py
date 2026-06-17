@@ -32,8 +32,10 @@ def test_bootstrap_strips_torch_repin_and_pins_core(tmp_path: Path, monkeypatch)
     cmds = _local_core_bootstrap_commands(req, "https://download.pytorch.org/whl/cu121")
     joined = "\n".join(cmds)
 
-    # harness-owned cu121 core installed FIRST, from the cu121 index
-    assert cmds[0].startswith("python -m pip install torch==2.5.1 torchvision==0.20.1")
+    # harness-owned cu121 core installed FIRST (now guarded by a host-torch probe
+    # so a coherent CUDA-≥12.1 venv keeps its build), from the cu121 index
+    assert cmds[0].index("import torch") < cmds[0].index("pip install")  # probe precedes install
+    assert "python -m pip install torch==2.5.1 torchvision==0.20.1" in cmds[0]
     assert "--index-url https://download.pytorch.org/whl/cu121" in cmds[0]
     # agent deps installed from the HARDENED file, not the raw requirements.txt
     assert any("requirements.hardened.txt" in c for c in cmds)

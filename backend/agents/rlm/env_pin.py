@@ -62,6 +62,36 @@ COMPAT_MATRIX: dict[str, PinSet] = {
     "runpod": PinSet(torch="", torchvision="", torchaudio=None, numpy="numpy<2"),
 }
 
+# The minimum CUDA (major, minor) a host torch must advertise for the harness to
+# KEEP it instead of installing the cu121 pin. The pin is cu121, so a torch built
+# for CUDA >= 12.1 is at least as capable; downgrading it would only waste a ~2 GB
+# reinstall and risk a newer-dep (flash-attn/vllm) mismatch. A missing / older /
+# CPU-only / broken host torch falls through to the pin (the 8xA5000 driver-12.2
+# case the pin was built for): the probe exits non-zero and the install runs.
+HOST_TORCH_MIN_CUDA: tuple[int, int] = (12, 1)
+
+
+def core_install_command(specs: list[str], torch_index: str) -> str:
+    """Shell command that installs the core pins ONLY when the venv lacks a
+    coherent CUDA-``>= HOST_TORCH_MIN_CUDA`` torch.
+
+    Deployment-agnostic and idempotent: on a modern CUDA Deep-Learning VM whose
+    torch is reachable from the run venv, the host build is KEPT (and still
+    protected from the agent's re-pin by :func:`harden_requirements`); on a bare
+    venv (no torch) the cu121 pin installs exactly as before. The probe runs IN
+    the target venv, so the decision reflects the torch the experiment will use,
+    not the orchestrator's. Fail-soft: a broken/absent torch import -> non-zero ->
+    the pin install runs; a trailing ``|| true`` keeps the bootstrap fail-soft.
+    """
+    probe = (
+        "python -c \"import torch,sys;"
+        "cu=getattr(torch.version,'cuda',None);"
+        "sys.exit(0 if cu and tuple(int(p) for p in cu.split('.')[:2])>="
+        f"{HOST_TORCH_MIN_CUDA} else 1)\" 2>/dev/null"
+    )
+    install = f"python -m pip install {' '.join(specs)} --index-url {torch_index}"
+    return f"{probe} || {install} || true"
+
 
 def _canon(name: str) -> str:
     """PEP 503 canonical name: lower-case, runs of -/_/. collapsed to a single -."""
@@ -175,10 +205,12 @@ def pin_install_specs(base_tag: str) -> list[str]:
 
 
 __all__ = [
-    "CORE_DENYLIST",
     "COMPAT_MATRIX",
+    "CORE_DENYLIST",
+    "HOST_TORCH_MIN_CUDA",
     "PinSet",
     "base_tag_for",
+    "core_install_command",
     "harden_requirements",
     "pin_install_specs",
     "sanitize_requirements",
