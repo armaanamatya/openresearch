@@ -1208,6 +1208,24 @@ def build_final_report(
         kwargs["overall_score"] = _final_rubric.get("overall_score")
         kwargs["meets_target"] = _final_rubric.get("meets_target")
 
+    # Conversion-guard repair (Task 6): if provenance is empty but the grader
+    # scored a populated code/metrics.json, repopulate baseline_metrics from disk.
+    # Evidence-tightening only — no-op on already-coherent reports.
+    _rubric_block = kwargs.get("rubric") or {}
+    if isinstance(_rubric_block, dict):
+        _rubric_block["evidence_cites_metrics"] = any(
+            (
+                "metrics.json" in (l.get("justification", "") or "")
+                or "outputs/" in (l.get("justification", "") or "")
+            )
+            for l in _rubric_block.get("leaf_scores", [])
+            if isinstance(l, dict)
+        )
+    repair_projection_from_disk(kwargs, _rubric_block, ctx.project_dir)
+    # The sentinel key must be stripped before passing to the pydantic model
+    # (RLMFinalReport has no provenance_repaired field and no extra="allow").
+    kwargs.pop("provenance_repaired", None)
+
     return RLMFinalReport(**kwargs)
 
 
@@ -1275,6 +1293,38 @@ def _metric_provenance_enabled() -> bool:
         "no",
         "off",
     )
+
+
+def repair_projection_from_disk(kwargs_report: dict, rubric: dict, project_dir: "Path") -> dict:
+    """If provenance is empty but the grader scored code/metrics.json, repopulate
+    baseline_metrics from that file.  Evidence-tightening only; no-op when coherent.
+
+    Returns the (mutated) kwargs_report dict.  The ``provenance_repaired`` sentinel
+    key is set to True on the dict when a repair was made — callers that pass this
+    to ``RLMFinalReport(**kwargs)`` must pop it first (the model has no such field).
+    """
+    from backend.agents.rlm.conversion_guard import detect_projection_incoherence
+
+    try:
+        mpath = Path(project_dir) / "code" / "metrics.json"
+        metrics = json.loads(mpath.read_text(encoding="utf-8")) if mpath.is_file() else None
+    except (OSError, ValueError, TypeError):
+        metrics = None
+
+    probe = {
+        "baseline_metrics": kwargs_report.get("baseline_metrics"),
+        "experiment_run_id": kwargs_report.get("experiment_run_id"),
+        "primitive_trace": kwargs_report.get("primitive_trace"),
+    }
+    if detect_projection_incoherence(probe, rubric, metrics) is None:
+        return kwargs_report
+
+    kwargs_report["baseline_metrics"] = metrics
+    kwargs_report["provenance_repaired"] = True
+    logger.warning(
+        "report: repaired empty provenance from code/metrics.json (conversion guard)"
+    )
+    return kwargs_report
 
 
 # ---------------------------------------------------------------------------
