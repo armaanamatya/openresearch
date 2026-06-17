@@ -1,19 +1,39 @@
 """Pure gate: a BES efficacy claim requires a complete run archive (the Adam
 lesson — without it the most important number becomes folklore). Stdlib only.
 
-NOTE: this checks an ARCHIVED A/B arm directory (e.g. best_runs/<paper>_ab/<arm>/),
-where metrics.json / dashboard_events.jsonl / etc. sit at the top level. A LIVE run
-keeps metrics.json under code/ — this checker is NOT for live run dirs."""
+Supports TWO layouts transparently:
+
+* **Curated archive** (``best_runs/<paper>_ab/<arm>/``): all artifacts are
+  flattened to the top level by the archiver.
+* **Live run dir** (``runs/<project_id>/``): artifacts live at their natural
+  production locations (``code/metrics.json``, ``rlm_state/bes_candidates.json``,
+  etc.).
+
+``check_bes_archive`` resolves each logical artifact against its ordered list of
+candidate relative paths — the first path that exists satisfies the requirement.
+A logical artifact is reported missing only when NONE of its candidates exist.
+"""
 from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-REQUIRED_ARTIFACTS = (
-    "bes_candidates.json", "dashboard_events.jsonl", "experiment_runs.jsonl",
-    "rubric_evaluation.json", "final_report.json", "metrics.json",
-    "generated_rubric.json",
-)
-REQUIRED_DIRS = ("candidates",)
+# Logical artifact name → tuple of candidate relative paths.
+# Any one path satisfying the check is sufficient (ordered: live location first,
+# then curated-archive / legacy top-level location).
+REQUIRED_ARTIFACTS: dict[str, tuple[str, ...]] = {
+    "final_report.json": ("final_report.json",),
+    "dashboard_events.jsonl": ("dashboard_events.jsonl",),
+    "experiment_runs.jsonl": ("experiment_runs.jsonl",),
+    "rubric_evaluation.json": ("rubric_evaluation.json", "rlm_state/rubric_evaluation.json"),
+    "generated_rubric.json": ("generated_rubric.json",),
+    "metrics.json": ("code/metrics.json", "metrics.json"),
+    "bes_candidates.json": ("rlm_state/bes_candidates.json", "bes_candidates.json"),
+}
+
+# Logical directory name → tuple of candidate relative paths.
+REQUIRED_DIRS: dict[str, tuple[str, ...]] = {
+    "candidates": ("candidates",),
+}
 
 
 @dataclass
@@ -24,6 +44,14 @@ class ArchiveCheck:
 
 def check_bes_archive(run_dir: Path) -> ArchiveCheck:
     run_dir = Path(run_dir)
-    missing = [n for n in REQUIRED_ARTIFACTS if not (run_dir / n).is_file()]
-    missing += [d + "/" for d in REQUIRED_DIRS if not (run_dir / d).is_dir()]
+    missing: list[str] = []
+
+    for logical_name, candidates in REQUIRED_ARTIFACTS.items():
+        if not any((run_dir / p).is_file() for p in candidates):
+            missing.append(logical_name)
+
+    for logical_name, candidates in REQUIRED_DIRS.items():
+        if not any((run_dir / p).is_dir() for p in candidates):
+            missing.append(logical_name + "/")
+
     return ArchiveCheck(complete=not missing, missing=missing)
