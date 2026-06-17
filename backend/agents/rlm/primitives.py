@@ -5542,6 +5542,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     # failure). Shape-gated + local/docker only; no `search` key → the legacy
     # single-phase dispatch below runs byte-for-byte unchanged.
     matrix_result = None
+    _staged_out = None
     if _sb_key_ecm not in ("azure", "gcp"):
         _staged_groups = []
         try:
@@ -5643,7 +5644,8 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
 
     metrics = cell_matrix.aggregate_cell_metrics(
         matrix_result, kept, capacity_gaps=cap_gaps, dataset_gaps=ds_gaps,
-        models_skipped=models_skipped, environments_skipped=envs_skipped)
+        models_skipped=models_skipped, environments_skipped=envs_skipped,
+        budget_dropped=_staged_out.get("dropped_cells_full") if _staged_out is not None else None)
     metrics = _apply_operator_scope(metrics, ctx)
     logs = _summarize_cell_logs(kept, matrix_result, gpus)
 

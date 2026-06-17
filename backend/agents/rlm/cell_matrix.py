@@ -697,6 +697,7 @@ def aggregate_cell_metrics(
     dataset_gaps: list[dict[str, Any]] | None = None,
     models_skipped: list[str] | None = None,
     environments_skipped: list[str] | None = None,
+    budget_dropped: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Fold per-cell results into the canonical harness ``metrics.json`` shape.
 
@@ -830,6 +831,14 @@ def aggregate_cell_metrics(
         gaps.extend(g for g in capacity_gaps if isinstance(g, dict))
     if dataset_gaps:
         gaps.extend(g for g in dataset_gaps if isinstance(g, dict))
+    for _bd in (budget_dropped or []):
+        if isinstance(_bd, dict):
+            gaps.append({
+                "model_key": _bd.get("model_key"),
+                "env": _bd.get("env"),
+                "baseline": _bd.get("baseline"),
+                "reason": "staged_search_budget_dropped",
+            })
 
     scope: dict[str, Any] = {
         "models_run": sorted(models_with_ok),
