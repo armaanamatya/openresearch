@@ -796,12 +796,141 @@ def _autodrive_enabled() -> bool:
     )
 
 
+# Lifecycle stages the harness can DRIVE itself (Task 6). A degenerate root
+# stuck before one of these has done strictly less than the harness can do for
+# it, so the backstop drives exactly ONE step and hands control back.
+_AUTODRIVE_DRIVABLE_STAGES = frozenset(
+    {"need_baseline", "need_environment", "need_experiment"}
+)
+
+# Stage -> the structured directive the auto-drive backstop hands the root.
+# Sibling maps (kept separate by design — different audiences/formats): the
+# refusal-text map and the oauth REPL skeleton both live in
+# forced_iteration.ForcedIterationPolicy (_STAGE_DIRECTIVES / _oauth_command_skeleton).
+# If a primitive's call shape changes, update all three.
+_AUTODRIVE_DIRECTIVES = {
+    "need_baseline": (
+        "The reproduction loop is stuck before implement_baseline. Assemble the "
+        "plan (paper_claim_map + environment_spec + reproduction_contract) and "
+        "call implement_baseline(plan) next — do NOT call FINAL_VAR again."
+    ),
+    "need_environment": (
+        "Code exists but the environment is not built. Call "
+        "build_environment(env_spec) next — do NOT call FINAL_VAR again."
+    ),
+    "need_experiment": (
+        "Code and environment are ready but no experiment has run. Call "
+        "run_experiment(code_path, env_id) next — do NOT call FINAL_VAR again."
+    ),
+}
+
+
+def _autodrive_one_step(
+    *,
+    stage: str,
+    tools: dict,
+    ctx: "RunContext",
+    emit: "Callable[[dict], None]",
+    payload: dict,
+) -> None:
+    """Drive ONE missing lifecycle step on the root's behalf (Task 6 backstop).
+
+    Marks a postmortem trail (``rlm_state/root_autodrive.json`` + a
+    ``root_autodrive`` run_warning) and issues exactly ONE structured,
+    stage-specific directive via ``recommend_next_tool`` — then returns so
+    control flows back to the root.  See the inline v1-limitation note below for
+    why the harness issues a directive rather than executing
+    implement_baseline / build_environment / run_experiment itself.
+
+    Fires at most ONCE per run: the policy's ``_degenerate_fired`` latch is reset
+    only by a state-changing primitive (implement_baseline / build_environment /
+    run_experiment), and ``recommend_next_tool`` is NOT one — so issuing a
+    directive does not re-arm the detector and the marker is written once.
+
+    Every side effect (marker write, emit, directive dispatch) is independently
+    fail-soft: a backstop that crashes the run is worse than no backstop.  The
+    wrapped tool is called WITHOUT ``ctx`` — binding's wrapper pops/re-supplies
+    it — so only the ``situation`` arg is passed.
+    """
+    signature = payload.get("signature")
+    count = payload.get("count")
+    required_stage = payload.get("required_stage")
+
+    # 1a. Marker — postmortem trail.
+    try:
+        state_dir = ctx.project_dir / "rlm_state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        marker = state_dir / "root_autodrive.json"
+        marker.write_text(
+            json.dumps(
+                {
+                    "stage": stage,
+                    "signature": signature,
+                    "count": count,
+                    "required_stage": required_stage,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except Exception:  # noqa: BLE001 — marker is best-effort
+        logger.exception("_autodrive_one_step: marker write failed")
+
+    # 1b. Event — surface the backstop in the SSE stream.
+    try:
+        emit(
+            build_run_warning_event(
+                level="warn",
+                code="root_autodrive",
+                message=(
+                    f"Auto-drive backstop: issued a structured directive for "
+                    f"missing stage '{stage}'."
+                ),
+                data={
+                    "stage": stage,
+                    "signature": signature,
+                    "count": count,
+                    "required_stage": required_stage,
+                },
+            )
+        )
+    except Exception:  # noqa: BLE001 — emit must never block the drive
+        logger.exception("_autodrive_one_step: event emit failed")
+
+    # 2. Drive ONE step via a stage-specific structured directive.
+    #
+    # v1 LIMITATION (honest): implement_baseline(plan, *, ctx),
+    # build_environment(env_spec, *, ctx) and run_experiment(code_path, env_id,
+    # *, ...) all require root-assembled context (the plan / env_spec / code+env
+    # ids) that the root builds in the REPL and that is NOT persisted to a fixed
+    # disk location the harness can reconstruct. So the harness cannot faithfully
+    # synthesize their arguments and CANNOT truly execute them in v1 — calling
+    # them with no args would simply TypeError. The one primitive the harness can
+    # fully drive is `recommend_next_tool` (it takes only a `situation` string),
+    # so v1 issues exactly ONE structured, stage-specific directive that names the
+    # concrete next call the root must make. This is the "one final structured
+    # step" the plan permits; a TRUE harness-driven primitive execution needs the
+    # lifecycle-state-machine refactor in the plan's Follow-on (persist the
+    # plan/specs, then call the primitive directly here). The marker + event above
+    # plus the Task-3 escalated refusal message remain the operative backstop.
+    try:
+        entry = tools.get("recommend_next_tool")
+        if entry is not None and callable(entry.get("tool")):
+            entry["tool"](
+                situation=_AUTODRIVE_DIRECTIVES.get(stage, _AUTODRIVE_DIRECTIVES["need_baseline"])
+            )
+    except Exception:  # noqa: BLE001 — a failed drive must not crash the run
+        logger.exception("_autodrive_one_step: drive dispatch failed (stage=%s)", stage)
+
+
 def _make_degenerate_loop_callback(
     *,
     emit: "Callable[[dict], None]",
     ctx: "RunContext",
     policy: "ForcedIterationPolicy",
     autodrive_enabled: bool,
+    tools: dict | None = None,
+    oauth_root: bool = False,
 ):
     """Return the ``on_degenerate_refusal_loop`` callback.
 
@@ -809,8 +938,14 @@ def _make_degenerate_loop_callback(
     run_warning + mark a terminal stop so the run finalizes fast (the next
     FINAL_VAR is accepted via the ``root_degenerate_loop`` terminal class)
     instead of churning to the 16-refusal cap / wall clock.  Wall-clock floor
-    and a pre-existing terminal stop take precedence.  The AUTODRIVE ON path
-    (Task 6) only emits — it does NOT early-abort.
+    and a pre-existing terminal stop take precedence.
+
+    AUTODRIVE ON (Task 6, ``OPENRESEARCH_OAUTH_AUTODRIVE=1``, experimental):
+    instead of early-aborting, for an oauth root stuck on a drivable lifecycle
+    stage the harness DRIVES exactly one missing step (``implement_baseline`` /
+    ``build_environment`` / ``run_experiment``) itself and hands control back to
+    the root.  Inert (emit-only) for a non-oauth root, a non-drivable stage,
+    near-wall-clock, an already-terminal stop, or when ``tools`` is unavailable.
     """
 
     def _on_degenerate(payload: dict) -> None:
@@ -844,8 +979,34 @@ def _make_degenerate_loop_callback(
             )
 
         if autodrive_enabled:
-            # Task 6 fills the auto-drive recovery branch; for now do NOT
-            # early-abort — only the warning above is emitted.
+            # Task 6 — flag-gated OAuth auto-drive backstop. Drive ONE missing
+            # lifecycle step (then hand control back to the root) ONLY when ALL
+            # gates hold; otherwise this branch is emit-only (NO early-abort,
+            # NO drive). DEFAULT-OFF keeps the Task-4 path below byte-for-byte.
+            if not oauth_root:
+                return  # only the unreliable oauth root is auto-driven
+            if stage not in _AUTODRIVE_DRIVABLE_STAGES:
+                return  # stage the harness cannot drive itself
+            if tools is None:
+                return  # no wrapped primitives to dispatch
+            # Same precedence as Task 4: never drive near the wall clock or over
+            # an already-terminal stop.
+            remaining = None
+            try:
+                remaining = ctx.remaining_s()
+            except Exception:  # noqa: BLE001
+                remaining = None
+            if remaining is not None and remaining <= _WALL_CLOCK_FLOOR_S:
+                return
+            if getattr(ctx, "_terminal_stop_reason", None):
+                return
+            _autodrive_one_step(
+                stage=stage,
+                tools=tools,
+                ctx=ctx,
+                emit=emit,
+                payload=payload,
+            )
             return
 
         # Precedence guard: never override a near-wall-clock or an
@@ -2352,6 +2513,11 @@ async def run_pipeline_rlm(
         ctx=ctx,
         policy=iteration_policy,
         autodrive_enabled=_autodrive_enabled(),
+        # `custom_tools` here is the WRAPPED dict (binding tools wrapped by
+        # `_record_last_primitive_result_tools`) — so the backstop dispatches the
+        # same wrapped primitives the root uses (ctx re-supplied by the wrapper).
+        tools=custom_tools,
+        oauth_root=oauth_root,
     )
     # PR-α followup: populate the late-binding holder so the tool wrapper
     # can call policy.record_repair_attempt() when run_experiment returns
