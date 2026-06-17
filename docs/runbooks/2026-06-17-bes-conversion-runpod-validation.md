@@ -120,7 +120,19 @@ env -u ANTHROPIC_API_KEY \
 
 ---
 
-## Tier 3 — A1 kill-experiment (the decisive one; zero GPU for the regrade, bounded LLM)
+## Tier 3 — A1 kill-experiment (the decisive one; ZERO paid GPU, bounded LLM)
+
+> **Turnkey (recommended):** one command does the whole thing safely — it launches a
+> BES capture on `--sandbox local`, **kills the run the instant the graded pool exists
+> (before any `run_experiment`/GPU cell)**, then re-grades K× and prints the verdict.
+> Needs only Claude OAuth (`claude login`); zero GPU by construction.
+> ```bash
+> .venv/bin/python scripts/bes_a1_safe_capture.py --paper 1412.6980 --n 3 --k 10
+> # -> {"ok": true, "verdict": "select_is_noise"|"select_stable", "report": {...}}
+> # also written to runs/<id>/a1_result.json
+> ```
+> The manual steps below are the same thing decomposed (use them to run on a pod, or
+> to re-grade an existing capture with `scripts/bes_a1_capture.py --run-dir <dir>`).
 
 Decide whether static LLM SELECT is signal or noise on a **fresh** (first-attempt)
 paper. The candidate *capture* runs on the pod (cheap, code-only static grade — no
