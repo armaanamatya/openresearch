@@ -36,6 +36,8 @@ __all__ = [
     "SNAPSHOT_IGNORE",
     "snapshot_code",
     "restore_snapshot",
+    "snapshot_rubric",
+    "restore_rubric",
     "record_champion",
     "best_champion",
 ]
@@ -92,6 +94,26 @@ def restore_snapshot(snapshot_dir: Path, code_dir: Path) -> None:
         # copy2 preserves mtime so a downstream mtime-sensitive reader sees the
         # restored file as the (older) snapshot time, not "just written".
         shutil.copy2(src, dst)
+
+
+# ---------------------------------------------------------------------------
+# Rubric-block snapshot / restore
+# ---------------------------------------------------------------------------
+
+def snapshot_rubric(rubric: dict, snapshot_dir: "Path") -> None:
+    """Persist the graded rubric block next to the code snapshot so a restore
+    re-materializes score+leaves+meets_target as ONE coherent evidence state."""
+    p = Path(snapshot_dir)
+    p.mkdir(parents=True, exist_ok=True)
+    (p / "rubric_block.json").write_text(json.dumps(rubric, indent=2), encoding="utf-8")
+
+
+def restore_rubric(snapshot_dir: "Path") -> dict | None:
+    """Return the snapshotted rubric block, or None if absent/unreadable (fail-soft)."""
+    try:
+        return json.loads((Path(snapshot_dir) / "rubric_block.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
 
 
 # ---------------------------------------------------------------------------

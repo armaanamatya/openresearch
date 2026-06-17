@@ -196,3 +196,12 @@ def test_record_champion_carries_sample_count(tmp_path: Path):
     )
     assert entry["sample_count"] == 1
     assert entry["median_score"] == 0.5
+
+
+def test_snapshot_and_restore_rubric_block(tmp_path: Path):
+    snap = tmp_path / "snap"
+    snap.mkdir()
+    rubric = {"overall_score": 0.73, "leaf_scores": [{"id": "a", "score": 1.0}], "meets_target": True}
+    ca.snapshot_rubric(rubric, snap)
+    assert json.loads((snap / "rubric_block.json").read_text())["overall_score"] == 0.73
+    assert ca.restore_rubric(snap) == rubric
