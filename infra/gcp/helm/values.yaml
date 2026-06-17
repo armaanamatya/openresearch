@@ -206,6 +206,21 @@ orchestrator:
   # "azure"         — uses AZURE_OPENAI_API_KEY from Secret Manager; headless.
   model: claude-oauth
 
+  # ── Azure OpenAI endpoint/deployment (NON-SECRET; required for model=azure) ──
+  # The `azure` root model also needs the (non-secret) resource coordinates —
+  # backend/agents/rlm/models.py RAISES without AZURE_OPENAI_ENDPOINT and uses
+  # AZURE_OPENAI_DEPLOYMENT when set.  Only AZURE_OPENAI_API_KEY comes from
+  # Secret Manager; these come from plain .Values.  Default empty → no env var
+  # in the default render.  Set when orchestrator.model=azure.
+  azureOpenai:
+    # Azure OpenAI resource URL, e.g. https://<resource>.openai.azure.com
+    endpoint: ""
+    # Azure OpenAI deployment name (the deployed model, e.g. gpt-4o).
+    deployment: ""
+    # Optional API version override (e.g. 2024-10-21); empty → the repo default
+    # (DEFAULT_AZURE_OPENAI_API_VERSION) is used by the backend.
+    apiVersion: ""
+
   # GCP project ID (or number) that owns the Secret Manager secrets.
   # Used by the SecretProviderClass to build secret resource names.
   # Obtain: gcloud config get-value project

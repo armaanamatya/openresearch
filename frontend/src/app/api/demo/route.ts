@@ -51,7 +51,12 @@ function toExecutionMode(request: Request): DemoExecutionMode | undefined {
 
 function toSandboxMode(request: Request): DemoSandboxMode | undefined {
   const value = search(request).get("sandbox");
-  return value === "auto" || value === "docker" || value === "local" || value === "runpod"
+  return value === "auto" ||
+    value === "docker" ||
+    value === "local" ||
+    value === "runpod" ||
+    value === "azure" ||
+    value === "gcp"
     ? value
     : undefined;
 }

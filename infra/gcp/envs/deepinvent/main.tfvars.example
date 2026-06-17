@@ -132,6 +132,26 @@ gpu_skus = [
   # },
 ]
 
+# ── Lean smallest-two validation (low quota) ──────────────────────────────────
+# For a cheap correctness/validation run on a project with little A100 quota,
+# replace the active block above with this single 1-GPU pool. You MUST also set
+#   OPENRESEARCH_GCP_GPU_SKUS='["gcp_a100_80"]'
+# on the orchestrator so config.gcp_gpu_skus matches the provisioned reprolab/sku
+# label (the SKU resolver only picks SKUs that have a matching pool — a mismatch
+# leaves every cell Pending → capacity_exhausted). This needs only
+# gpu_count(1) × max_nodes A100-80 GPUs of quota.
+#
+# gpu_skus = [
+#   {
+#     short_name       = "gcp_a100_80"
+#     machine_type     = "a2-ultragpu-1g"
+#     accelerator_type = "nvidia-a100-80gb"
+#     gpu_count        = 1
+#     max_nodes        = 1 # requires 1 "NVIDIA A100 80GB GPUs" quota
+#     disk_size_gb     = 256
+#   },
+# ]
+
 # ─── Artifact Registry ──────────────────────────────────────────────────────────
 
 artifact_registry_repo = "reprolab"

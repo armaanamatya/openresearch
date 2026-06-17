@@ -40,7 +40,12 @@ export default async function LabPage({
   ]);
   const rawSandbox = (process.env.OPENRESEARCH_DEFAULT_SANDBOX ?? process.env.REPROLAB_DEFAULT_SANDBOX);
   const serverDefaultSandbox: DemoSandboxMode | undefined =
-    rawSandbox === "runpod" || rawSandbox === "docker" || rawSandbox === "local" || rawSandbox === "auto"
+    rawSandbox === "runpod" ||
+    rawSandbox === "docker" ||
+    rawSandbox === "local" ||
+    rawSandbox === "auto" ||
+    rawSandbox === "azure" ||
+    rawSandbox === "gcp"
       ? rawSandbox
       : undefined;
 

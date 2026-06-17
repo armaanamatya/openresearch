@@ -255,6 +255,16 @@ def test_python_script_preserves_registry_model_key() -> None:
     assert '\\"model\\": \\"claude-sonnet-4-6\\"' not in script
 
 
+def test_start_run_request_accepts_azure_and_gcp_sandbox() -> None:
+    # The API-layer SandboxMode Literal must include the cloud backends the
+    # canonical execution enum + CLI already accept, else a POST /runs with
+    # sandbox "gcp"/"azure" 422s before the run starts.
+    from backend.services.events.live_runs import StartRunRequest
+
+    assert StartRunRequest(sandbox="azure").sandbox == "azure"
+    assert StartRunRequest(sandbox="gcp").sandbox == "gcp"
+
+
 def test_models_endpoint_lists_rlm_registry() -> None:
     service = FakeRunService()
     client = TestClient(create_app(run_service=service))

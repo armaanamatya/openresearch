@@ -1,4 +1,5 @@
 {{- if and .Values.orchestrator.enabled .Values.orchestrator.cronjob.enabled }}
+{{- if not .Values.orchestrator.image }}{{ fail "orchestrator.image must be set to a pinned Artifact Registry tag when orchestrator.enabled=true (see docker/orchestrator/Dockerfile + scripts/build_orchestrator_image.sh)" }}{{- end }}
 # ---------------------------------------------------------------------------
 # orchestrator-cronjob.yaml
 #
@@ -78,6 +79,25 @@ spec:
                       name: reprolab-orchestrator-secrets
                       key: AZURE_OPENAI_API_KEY
 
+                # ── Azure OpenAI endpoint/deployment (NON-SECRET config) ─────
+                # Required by the `azure` root model (backend/agents/rlm/models.py
+                # raises without AZURE_OPENAI_ENDPOINT/AZURE_OPENAI_DEPLOYMENT).
+                # Non-secret resource coordinates → .Values, NOT the
+                # SecretProviderClass.  Gated on value set, so the DEFAULT render
+                # (all empty) is byte-identical.
+                {{- if .Values.orchestrator.azureOpenai.endpoint }}
+                - name: AZURE_OPENAI_ENDPOINT
+                  value: {{ .Values.orchestrator.azureOpenai.endpoint | quote }}
+                {{- end }}
+                {{- if .Values.orchestrator.azureOpenai.deployment }}
+                - name: AZURE_OPENAI_DEPLOYMENT
+                  value: {{ .Values.orchestrator.azureOpenai.deployment | quote }}
+                {{- end }}
+                {{- if .Values.orchestrator.azureOpenai.apiVersion }}
+                - name: AZURE_OPENAI_API_VERSION
+                  value: {{ .Values.orchestrator.azureOpenai.apiVersion | quote }}
+                {{- end }}
+
                 # ── Long-lived Claude OAuth token (opt-in, Stream B) ─────────
                 # CRITICAL: gated on .Values.orchestrator.claudeOauthToken.enabled
                 # (default false) so the DEFAULT render is byte-identical to HEAD.
@@ -87,6 +107,14 @@ spec:
                     secretKeyRef:
                       name: reprolab-orchestrator-secrets
                       key: CLAUDE_CODE_OAUTH_TOKEN
+                # Auth-hijack guard: the pod injects ANTHROPIC_API_KEY
+                # unconditionally, and the default "auto" strategy prefers an API
+                # key over OAuth — so a present-but-DEAD ANTHROPIC_API_KEY 400s
+                # the run instead of falling back to OAuth.  When the OAuth token
+                # is enabled, force the OAuth surface (backend/config.py
+                # llm_auth_strategy, enforced in backend/agents/runtime/factory.py).
+                - name: OPENRESEARCH_LLM_AUTH_STRATEGY
+                  value: "oauth_only"
                 {{- end }}
 
                 # ── GCP backend config (OPENRESEARCH_GCP_* block) ────────────

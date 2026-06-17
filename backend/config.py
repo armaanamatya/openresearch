@@ -378,17 +378,28 @@ class Settings(BaseSettings):
     # Catalog short_names of the GCP GPU SKUs that are actually provisioned
     # as GKE node pools. The SKU resolver only selects from this list; the OOM
     # escalation ladder only advances within it.
+    # INVARIANT: this list must name exactly the reprolab/sku labels your tfvars
+    # `gpu_skus` variable provisions. The cell scheduler places Jobs via
+    # nodeSelector {reprolab/sku: <short_name>}; a short_name with no matching
+    # provisioned pool resolves to a label that exists on no node, so every cell
+    # stays Pending → capacity_exhausted. Keep config ⊇ TF pool labels.
     # pydantic-settings 2.x parses this from a JSON array env var:
-    #   OPENRESEARCH_GCP_GPU_SKUS='["gcp_a100_80","gcp_a100_80x2"]'
+    #   OPENRESEARCH_GCP_GPU_SKUS='["gcp_a100_80x8"]'
     # or from a comma-separated string via the built-in list coercion.
-    # Default = single A100-80 pool = one quota ask at cluster bootstrap.
+    # Default = the single 8×A100-80 pool (gcp_a100_80x8) that infra/gcp
+    # variables.tf `gpu_skus` provisions by default — needs gpu_count(8) ×
+    # max_nodes A100-80 GPUs of quota in the matching region.
+    # Lean smallest-two validation run: override to ["gcp_a100_80"] AND give
+    # tfvars a single 1-GPU gcp_a100_80 (a2-ultragpu-1g) pool — only
+    # gpu_count(1) × max_nodes A100-80 GPUs of quota.
     gcp_gpu_skus: list[str] = Field(
-        default_factory=lambda: ["gcp_a100_80"],
+        default_factory=lambda: ["gcp_a100_80x8"],
         description=(
             "Catalog short_names of the GCP GPU SKUs that are actually provisioned "
-            "as node pools. The resolver only selects from these; the OOM ladder "
-            "only escalates within these. "
-            "Default = single A100-80 pool = one quota ask."
+            "as node pools. Must equal the reprolab/sku labels tfvars `gpu_skus` "
+            "provisions (config ⊇ TF pools). The resolver only selects from these; "
+            "the OOM ladder only escalates within these. "
+            "Default = the single 8×A100-80 pool (gcp_a100_80x8) from the TF default."
         ),
     )
     # TTL added to the Job spec's ttlSecondsAfterFinished; Kubernetes deletes

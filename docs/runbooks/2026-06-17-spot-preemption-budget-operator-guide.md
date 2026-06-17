@@ -95,9 +95,34 @@ scales to zero when idle.
 
 Provision these **before** the first run; several need a support ticket:
 
-1. **GPU quota.** Request the 8×A100 family in the target region.
-   - GCP: `NVIDIA_A100_GPUS` (and `PREEMPTIBLE_NVIDIA_A100_GPUS` for spot) ≥ 8 in the zone.
+1. **GPU quota.** The required count per pool = `gpu_count × max_nodes` in the
+   matching A100 family. The default GCP pool (`gcp_a100_80x8`, `gpu_count=8`)
+   at `max_nodes=4` needs **32** `NVIDIA A100 80GB GPUs` quota; at `max_nodes=1`
+   it needs 8. Request the matching family in the target region/zone.
+   - GCP: `NVIDIA_A100_80GB_GPUS` (and `PREEMPTIBLE_NVIDIA_A100_80GB_GPUS` for
+     spot) ≥ `gpu_count × max_nodes` in the zone (`nvidia-tesla-a100`/40 GB pools
+     use the `NVIDIA_A100_GPUS` family instead).
    - Azure: the `Standard_ND96asr_v4` / `NDASv4` family vCPU quota (and the Spot quota for spot pools).
+
+   **SKU ↔ pool invariant.** Terraform provisions one node pool labeled
+   `reprolab/sku=<short_name>` per `gpu_skus` entry, and cells schedule via
+   `nodeSelector {reprolab/sku: <short_name>}`. `config.gcp_gpu_skus` (env
+   `OPENRESEARCH_GCP_GPU_SKUS`) must name **exactly** the `reprolab/sku` labels
+   tfvars provisions — the SKU resolver only picks SKUs that have a matching
+   pool. A mismatch (config SKU with no pool) leaves every cell Pending →
+   `capacity_exhausted`. The shipped defaults already match (`gcp_a100_80x8`
+   in both `config.py` and the TF default), and a guard test
+   (`tests/config/test_gcp_sku_pool_invariant.py`) catches future drift.
+
+   **Lean smallest-two recipe (low quota).** For a cheap validation run, swap
+   the tfvars `gpu_skus` to a single 1-GPU pool and override config to match:
+   ```
+   # main.tfvars: a single gcp_a100_80 (a2-ultragpu-1g, gpu_count=1) pool
+   #   (see the commented "lean smallest-two" block in main.tfvars.example)
+   export OPENRESEARCH_GCP_GPU_SKUS='["gcp_a100_80"]'   # config matches the pool
+   ```
+   This needs only `gpu_count(1) × max_nodes` = ~8 (at `max_nodes=8`) — or as
+   few as 1 (`max_nodes=1`) — `NVIDIA A100 80GB GPUs` of quota.
 2. **Cluster RBAC.** Grant the operator `cluster-admin` (or the namespaced
    Job-management Role the chart binds) on the GKE/AKS cluster.
 3. **Secret values, out-of-band.** The IaC creates secret **names** only. Set the

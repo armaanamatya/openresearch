@@ -154,7 +154,7 @@ _SETTINGS_DEFAULTS: dict[str, Any] = {
     "gcp_max_nodes": 4,
     "gcp_gpu_usd_per_hour": 3.67,
     "gcp_pending_timeout_seconds": 900,
-    "gcp_gpu_skus": ["gcp_a100_80"],
+    "gcp_gpu_skus": ["gcp_a100_80x8"],  # dormant fallback; keep == config.gcp_gpu_skus default (live Settings always wins; this only guards the get_settings()-failed path from re-introducing the nodeSelector mismatch)
     "gcp_ttl_seconds_after_finished": 3600,
     "gcp_job_backoff_limit": 0,
     "gcp_use_spot": False,

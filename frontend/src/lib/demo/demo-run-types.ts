@@ -4,7 +4,7 @@ export type DemoProvider = "anthropic" | "openai";
 
 export type DemoExecutionMode = "efficient" | "max";
 
-export type DemoSandboxMode = "auto" | "docker" | "local" | "runpod";
+export type DemoSandboxMode = "auto" | "docker" | "local" | "runpod" | "azure" | "gcp";
 
 export type DemoGpuMode = "off" | "auto" | "prefer" | "max";
 
