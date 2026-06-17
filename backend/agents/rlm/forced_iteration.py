@@ -150,6 +150,11 @@ class ForcedIterationPolicy:
     degenerate_threshold: int = field(default_factory=_default_degenerate_threshold)
     on_degenerate_refusal_loop: Callable[[dict], None] | None = None
     required_stage: Callable[[], str] | None = None
+    # Task 3 — set by run.py (Task 4) when the root model is claude-oauth.
+    # Sonnet recovers better with fewer degrees of freedom, so the escalated
+    # degenerate-loop message appends a one-line command skeleton for it.
+    # Default False keeps non-oauth / unset runs skeleton-free.
+    oauth_root: bool = False
     # Internal: set by should_refuse() to signal which SSE event code the
     # interceptor should use when calling on_refusal / on_repair_refusal.
     _pending_refusal_code: str = field(default="forced_iteration", compare=False, repr=False)
@@ -178,6 +183,100 @@ class ForcedIterationPolicy:
     target_score: float | None = field(default=None, compare=False, repr=False)
     run_id: str | None = field(default=None, compare=False, repr=False)
     ctx: Any | None = field(default=None, compare=False, repr=False)
+
+    # Task 3 — map an inferred lifecycle stage (root_progress.infer_required_stage
+    # enum value) to the concrete next-call directive the refusal text should name.
+    # An unmapped / None stage (e.g. ``can_finalize``) falls back to the legacy text.
+    _STAGE_DIRECTIVES = {
+        "need_baseline": "call plan_reproduction, then implement_baseline(plan); do NOT call FINAL_VAR again",
+        "need_environment": "call build_environment",
+        "need_experiment": "call run_experiment(code_path, env_id)",
+        "need_verification": "call verify_against_rubric on your latest run_experiment result",
+    }
+
+    def _safe_required_stage(self) -> str | None:
+        """Return the current required lifecycle stage, or None (fail-soft).
+
+        Wraps the injected ``required_stage`` callable; a missing callable or a
+        raising one degrades to None so the refusal text falls back to the
+        legacy form rather than crashing the policy.
+        """
+        if self.required_stage is None:
+            return None
+        try:
+            return self.required_stage()
+        except Exception:  # noqa: BLE001 — never crash the policy
+            return None
+
+    def _no_experiment_message(self, cur: int) -> str:
+        """Build the no-experiment refusal text, stage-specific when a stage is known.
+
+        When ``required_stage`` resolves to a mapped stage, the message NAMES
+        that stage's concrete next call (so ``need_baseline`` mentions
+        ``implement_baseline``, not just ``run_experiment``).  When the stage is
+        None or unmapped, returns the legacy text byte-for-byte — the single
+        source of truth for that string.
+        """
+        stage = self._safe_required_stage()
+        directive = self._STAGE_DIRECTIVES.get(stage or "") if stage else None
+        if directive is not None:
+            return (
+                f"FINAL_VAR refused at iteration {cur}: run_experiment has never "
+                "been called and there is no executed evidence to report. Your "
+                f"next step in the reproduction lifecycle is to {directive}, then "
+                "run_experiment to execute the code, then verify_against_rubric to "
+                "score it, then FINAL_VAR."
+            )
+        # Legacy text — preserved byte-for-byte (required_stage None / unmapped).
+        return (
+            f"FINAL_VAR refused at iteration {cur}: run_experiment has never "
+            "been called. You must execute the baseline code at least once "
+            "before terminating. Next steps: call build_environment (if the "
+            "image is not built yet), then run_experiment(code_path, env_id) "
+            "to execute the code, then verify_against_rubric to score it, "
+            "then FINAL_VAR."
+        )
+
+    def escalate_refusal_message(self, signature: str) -> str:
+        """Strong loop-naming message once the no-progress counter hit the threshold.
+
+        Called by the interceptor AFTER ``register_refusal`` so
+        ``_noprogress_refusals`` is the true post-registration count.  This
+        REPLACES (does not append to) the base refusal text — a weak root
+        recovers better from one unambiguous directive.  For ``claude-oauth``
+        roots a one-line recovery skeleton is appended.
+        """
+        stage = self._safe_required_stage()
+        action = self._STAGE_DIRECTIVES.get(
+            stage or "", "call plan_reproduction, then implement_baseline(plan), then run_experiment"
+        )
+        msg = (
+            f"You have called FINAL_VAR {self._noprogress_refusals}× with zero progress "
+            f"(signature={signature}). STOP reading and analyzing — your only valid "
+            f"next call is to {action}."
+        )
+        if self.oauth_root:
+            msg += " " + self._oauth_command_skeleton(stage)
+        return msg
+
+    @staticmethod
+    def _oauth_command_skeleton(stage: str | None) -> str:
+        """A ONE-LINE stage-appropriate command skeleton for claude-oauth recovery."""
+        skeletons = {
+            "need_baseline": (
+                "Recovery: plan = plan_reproduction(); "
+                "impl = implement_baseline(plan); "
+                "run_experiment(impl['code_path'], env_id)"
+            ),
+            "need_environment": "Recovery: env = build_environment(); run_experiment(code_path, env['env_id'])",
+            "need_experiment": "Recovery: run_experiment(code_path, env_id)",
+            "need_verification": "Recovery: verify_against_rubric(metrics_path)",
+        }
+        return skeletons.get(
+            stage or "",
+            "Recovery: plan = plan_reproduction(); impl = implement_baseline(plan); "
+            "run_experiment(impl['code_path'], env_id)",
+        )
 
     def record_repair_attempt(self, failure_class: str) -> None:
         """Record that run_experiment returned a repairable outcome.
@@ -287,16 +386,8 @@ class ForcedIterationPolicy:
         # regardless of how many iterations it consumed on planning/implementing.
         if self._total_run_experiments == 0:
             cur = self.current_iteration() if self.current_iteration is not None else 0
-            msg = (
-                f"FINAL_VAR refused at iteration {cur}: run_experiment has never "
-                "been called. You must execute the baseline code at least once "
-                "before terminating. Next steps: call build_environment (if the "
-                "image is not built yet), then run_experiment(code_path, env_id) "
-                "to execute the code, then verify_against_rubric to score it, "
-                "then FINAL_VAR."
-            )
             self._pending_refusal_signature = "no_experiment"
-            return (True, msg)
+            return (True, self._no_experiment_message(cur))
 
         # Compute repair-iteration refusal eagerly — this check is independent
         # of min_iterations (rubric floor) so it fires even when the rubric
@@ -646,13 +737,18 @@ def apply_forced_iteration_patch() -> None:
             if two_exp_decision.refuse:
                 policy.refusal_count += 1
                 policy.register_refusal("two_experiment_same_iteration")
+                message = two_exp_decision.reason
+                if policy._noprogress_refusals >= policy.degenerate_threshold:
+                    message = policy.escalate_refusal_message(
+                        "two_experiment_same_iteration"
+                    )
                 if policy.on_refusal is not None:
                     try:
-                        policy.on_refusal(two_exp_decision.reason)
+                        policy.on_refusal(message)
                     except Exception:
                         logger.exception("forced_iteration: on_refusal (two-exp) raised")
                 policy.on_iteration_advance()
-                return _build_block_message(variable_name, two_exp_decision.reason)
+                return _build_block_message(variable_name, message)
 
             refuse, message = policy.should_refuse()
             if not refuse:
@@ -660,7 +756,15 @@ def apply_forced_iteration_patch() -> None:
 
             assert message is not None  # invariant from should_refuse contract
             policy.refusal_count += 1
-            policy.register_refusal(policy._pending_refusal_signature or "forced_iteration")
+            _signature = policy._pending_refusal_signature or "forced_iteration"
+            policy.register_refusal(_signature)
+
+            # Task 3 — escalate once the no-progress counter has reached the
+            # degenerate threshold (must be AFTER register_refusal so the count
+            # is the true post-registration value). Healthy runs (1-2 refusals)
+            # never reach it; no accept/refuse decision changes.
+            if policy._noprogress_refusals >= policy.degenerate_threshold:
+                message = policy.escalate_refusal_message(_signature)
 
             # Notify the policy's callback so the orchestrator can surface a
             # run_warning SSE event. Route to on_repair_refusal when the
