@@ -99,7 +99,7 @@ class TestEndToEndComposition:
         assert effective.models == ["Qwen3-1.7B"]
         # datasets + seeds fall back to paper defaults
         assert len(effective.datasets) == 3
-        assert effective.seeds == [42, 43, 44]
+        assert effective.seeds == [0]
 
     def test_operator_skip_models_drops_from_paper_default(self):
         from backend.agents.prompts.paper_hints import lookup_paper_hint

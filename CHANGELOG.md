@@ -17,6 +17,72 @@ version + date and start a new `[Unreleased]` block above it.
 
 ## [Unreleased]
 
+### Fixed (2026-06-17 — Stream F: GCP production-hardening; runtime/IaC split + 3 BLOCKERs + MAJORs; all IaC additions flag-gated, default helm render byte-identical)
+A production-readiness audit found the GCP GPU runtime wired but the Terraform/Helm
+layer not caught up, plus correctness bugs in the spot/budget/resume code.
+- **Budget multi-GPU undercount (BLOCKER):** `_check_budget` bills GPU-dollars as
+  Σ(`wall_clock_s × gpu_count × $/GPU-hr`) via a second accumulator separate from the
+  wall-clock pod-seconds cap — an 8-GPU cell was billed as 1, so `--max-usd` fired 8×
+  too late. OOM-escalation retries now reserve their own added budget.
+- **Spot reschedule killed (BLOCKER):** `_watch_job` no longer treats the first spot
+  preemption as terminal while `backoffLimit>0` (waits for `failed > backoffLimit`;
+  the FailJob condition still terminates exits 40-44).
+- **Orchestrator RBAC (BLOCKER):** the `reprolab-orchestrator` ServiceAccount is bound
+  to its Role (GCP + Azure) so the in-cluster pod can create cell Jobs.
+- **Resume result-loss (MAJOR):** cross-pod resume resubmits a cell whose status.json
+  is "ok" but whose metrics blob is missing, instead of skipping with `metrics=None`.
+- **Preempt grace (MAJOR):** the cell Job manifest injects
+  `OPENRESEARCH_CELL_PREEMPT_GRACE_S` and sets `terminationGracePeriodSeconds`
+  (grace+10s) so the kubelet's 30s default can't truncate the checkpoint flush.
+- **Fail-closed routing (MAJOR):** `_object_store` raises on an unknown settings prefix
+  instead of silently routing to Azure; the GKE entrypoint passes `--cell-id/--output-dir`
+  like AKS; both entrypoints close a SIGTERM-vs-Popen race.
+- **IaC wiring:** root TF threads `use_spot` per-SKU into the gpu_nodepool module; the
+  default GCP GPU pool is now 8×A100-80 (`a2-ultragpu-8g`); the orchestrator
+  Deployment/CronJob export `--max-usd` + `OPENRESEARCH_RESUME_CELLS/STABLE_RUN_ID/
+  GCP_USE_SPOT`; smoke jobs gate the Filestore PVC mount; the bootstrap CI SA gains
+  `roles/secretmanager.admin`; the GKE cluster enables Cloud Logging/Monitoring +
+  managed Prometheus.
+- Regression coverage: multi-GPU billing, spot-aware watcher, preempt-grace manifest,
+  resume-requires-metrics (the previously-missing budget-gate/resume-skip tests).
+
+### Added (2026-06-17 — Stream C + D: spot GPU pools, preemption-safe resume, K8s cost gate; all opt-in/default-OFF, byte-identical when unset)
+
+Spec `2026-06-17-multi-cloud-production-gpu-execution-design.md` (Streams C/D); operator guide `docs/runbooks/2026-06-17-spot-preemption-budget-operator-guide.md`. The recon corrected the spec on two points: K8s resume + per-cell budget were *already* partially implemented, so these changes are narrower than the spec implied.
+
+**Stream C — spot/preemptible GPU pools + preemption-safe resume**
+- `infra/gcp/modules/gpu_nodepool/{main,variables}.tf` (CHANGED) — `use_spot` bool var (default false) → `spot = var.use_spot`; default `machine_type` → `a2-highgpu-8g` (8×A100-40GB, sized for the 7B 8-GPU SDAR cell).
+- `infra/azure/bicep/modules/gpu-nodepool.bicep` (CHANGED) — `useSpot` param (default false) → `union()`s `{scaleSetPriority:'Spot', spotMaxPrice:-1, evictionPolicy:'Delete'}` when on, `{scaleSetPriority:'Regular'}` when off (semantically identical to the prior render); default `vmSize` → `Standard_ND96asr_v4` (8×A100-40GB). `az bicep build` clean.
+- `backend/services/runtime/gpu_catalog.py` (CHANGED) — adds `azure_a100_40x8` (`Standard_ND96asr_v4`, 40GB, 8 GPU); existing 80GB rows untouched. `infra/{gcp,azure}/helm/values.yaml` `defaultSku` → the coherent `*_a100_40x8` label.
+- `backend/agents/rlm/k8s_job_cell_runner.py` (CHANGED) — when the runtime spot flag is set (`gcp_use_spot`/`azure_use_spot`; default false), `_build_job_manifest` adds the cloud-specific spot toleration (`cloud.google.com/gke-spot` / `kubernetes.azure.com/scalesetpriority`) and `_run_cell_job` sets `backoffLimit = *_spot_backoff_limit` (default 3) when `*_job_backoff_limit` is 0, so a preempted cell reschedules onto a fresh node. Default off → tolerations/backoff byte-identical.
+- `docker/{aks,gke}-cell-base/*_cell_entrypoint.py` (CHANGED) — SIGTERM preemption handler: forwards SIGTERM to the `train_cell.py` child, bounded-waits, then flushes the latest checkpoint + partial `metrics.json` to object storage and writes a `preempted` status sentinel (`EXIT_PREEMPTED=45`). Grace `OPENRESEARCH_CELL_PREEMPT_GRACE_S` (default 20s). Fail-soft; normal path unchanged.
+- **Cross-pod resume** — `primitives.py` pins `run_id = project_id` when `OPENRESEARCH_STABLE_RUN_ID` is set (default: random suffix, unchanged); `k8s_job_cell_runner._process_cell` adds a `_resume_armed`-gated Blob fallback that reads the durable `runs/<run_id>/cells/<cell_id>/status.json` and skips a prior-`ok` cell (reusing the existing `_try_reconcile_status`/`_try_download_metrics`), so a rescheduled orchestrator pod skips completed cells instead of redoing the matrix.
+
+**Stream D — per-run GPU cost ceiling as a terminal stop**
+- `backend/agents/rlm/k8s_job_cell_runner.py::_check_budget` (CHANGED) — refusal error string now carries the `budget_exhausted:` prefix (the terminal contract).
+- `backend/agents/rlm/primitives.py::_execute_cell_matrix` (CHANGED) — promotes an all-budget-refused matrix to a terminal `budget_exhausted` `stop_reason` (mirror of the existing `capacity_exhausted` promotion), so the run reports instead of re-burning the exceeded budget in a repair loop.
+- `backend/agents/rlm/forced_iteration.py` (CHANGED) — `budget_exhausted` added to `_TERMINAL_FAILURE_CLASSES` so the orchestrator accepts the next `FINAL_VAR`.
+- `backend/config.py` (CHANGED) — `azure_use_spot`/`gcp_use_spot` (bool, default false) + `azure_spot_backoff_limit`/`gcp_spot_backoff_limit` (int, default 3) Settings fields.
+- Tests: `tests/agents/rlm/test_k8s_job_cell_runner.py` (+`TestBlobResume`, +`TestBudgetTerminal`), `tests/services/runtime/test_spot_preemptible_sku.py` (NEW), `tests/services/runtime/test_cell_entrypoint_preempt.py` (NEW). Deferred (operational): the live SDAR validation (needs a provisioned cluster + GPU quota + admin grants). Stream E (Helm dedup) deferred per the spec.
+
+### Added (2026-06-17 — Stream A + B: GCP in-cluster orchestrator parity + headless claude-oauth root)
+
+**Stream A — GCP in-cluster orchestrator (spec `2026-06-17-multi-cloud-production-gpu-execution-design.md`)**
+- `infra/gcp/modules/secret_manager/` (NEW) — Terraform module creating GCP Secret Manager names `claude-code-oauth-token`, `anthropic-api-key`, `azure-openai-api-key`. Names only; values set out-of-band with `gcloud secrets versions add`. Mirror of Azure `keyvault.bicep`.
+- `infra/gcp/modules/identity/` (CHANGED) — adds a second orchestrator GSA `<prefix>-orchestrator` with `roles/secretmanager.secretAccessor` on the three secrets, `roles/storage.objectAdmin` on the artifact bucket, and a Workload Identity KSA↔GSA binding for `reprolab-orchestrator`. New output `orchestrator_gsa_email`. Existing training GSA untouched.
+- `infra/gcp/helm/templates/orchestrator-{serviceaccount,deployment,cronjob,secretproviderclass}.yaml` (NEW) — four GCP orchestrator templates ported from the Azure Stream E templates. GCP differences: SA annotation is `iam.gke.io/gcp-service-account` (no per-pod WI label); SecretProviderClass uses `provider: gcp` and Secret Manager resource names. Deployment/CronJob target the system CPU pool (`nodeSelector: reprolab/node-type: system`). All four gated on `.Values.orchestrator.enabled` (default false).
+- `infra/gcp/helm/values.yaml` (CHANGED) — adds the `orchestrator:` block (enabled/image/paper/model/gcpServiceAccount/gcpProject/csiMountPath/claudeOauthToken/deployment/cronjob/env). Default `enabled: false`; byte-identical to HEAD on default render.
+- `infra/gcp/main.tf` / `variables.tf` / `outputs.tf` (CHANGED) — wires the `secret_manager` module (gated on `var.secret_manager_enabled`, default false) and exposes `orchestrator_gcp_service_account` output.
+- `backend/config.py` (CHANGED) — adds `gcp_orchestrator_image`, `gcp_csi_mount_path`, and `claude_code_oauth_token` Settings fields (read from `OPENRESEARCH_GCP_*` / `CLAUDE_CODE_OAUTH_TOKEN` env vars). Settings-only; no behaviour change when not set.
+
+**Stream B — long-lived CLAUDE_CODE_OAUTH_TOKEN headless root**
+- `infra/azure/bicep/modules/keyvault.bicep` (CHANGED) — additive: adds `claude-code-oauth-token` to the managed-secrets comment/doc block (name only; no Bicep resource added; value set out-of-band).
+- Azure `orchestrator-{deployment,cronjob,secretproviderclass}.yaml` + GCP orchestrator Deployment/CronJob (CHANGED) — inject `CLAUDE_CODE_OAUTH_TOKEN` env var from the secret store, gated on `.Values.orchestrator.claudeOauthToken.enabled` (default false). DEFAULT render is byte-identical to HEAD.
+- `infra/azure/helm/values.yaml` (CHANGED) — adds `orchestrator.claudeOauthToken: {enabled: false}` block.
+- `backend/agents/runtime/factory.py` (CHANGED) — `_has_claude_subscription_oauth()` now returns True immediately when `CLAUDE_CODE_OAUTH_TOKEN` is set in the environment, before checking `~/.claude/.credentials.json`. This makes `--model claude-oauth` viable in unattended in-cluster pods without requiring a local credentials file. The token env is NOT in `_warn_on_shell_env_override`'s `_SUSPECT_KEYS` (never triggers a spurious warning).
+- `tests/config/test_claude_oauth_token_headless.py` (NEW) — verifies `CLAUDE_CODE_OAUTH_TOKEN` resolves as valid unattended root, produces no shell-override warning, and does not break the existing credentials-file path.
+- `tests/config/test_gcp_orchestrator_settings.py` (NEW) — verifies new `gcp_*` orchestrator/secret fields parse and round-trip via `OPENRESEARCH_GCP_*` env.
+
 ### Added (leaf-frontier remediation — close the leaf-repair loop; all default-OFF, fail-soft, byte-for-byte today when unset)
 - `backend/agents/rlm/leaf_actuator.py` — the actuator that closes `leaf_triage`'s open loop. Today triage only *diagnoses* a weak leaf into an advisory directive the agent may ignore (the real Adam 0.764 run shipped two clean `0.0`s that way); the actuator turns the cheapest, most-deterministic repairs into concrete artifacts the EXISTING routes consume. Master flag `OPENRESEARCH_LEAF_ACTUATE`. Routes: **L4** `result_quality` (inverted optimizer ordering) → a synthesized per-condition lr `search` block the staged-search route tunes + re-runs; **L5** variance-demanding leaf → a budget-gated seed plan (behind `OPENRESEARCH_LEAF_ACTUATE_SEEDS`); **L6** `aggregation_gap` → a declared-vs-aggregated completeness audit surfacing silently-lost cells; **L2b** `render_artifact` → a grounded `fig_*.json` sidecar emitted straight from the measured on-disk metrics.
 - `leaf_actuator.emit_figure_sidecars` + `staged_search.synthesize_search_from_leaf` + `cell_matrix.audit_aggregation_completeness` — the pure cores (stdlib-only, fail-soft, unit-tested against plain dicts).

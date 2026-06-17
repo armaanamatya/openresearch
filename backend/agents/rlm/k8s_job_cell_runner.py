@@ -107,37 +107,99 @@ _SENTINEL_OOM_OUTCOME = "oom_shrink_exhausted"
 # Default fallback values used when a settings attribute is absent (defensive,
 # so the module imports + tests run against a partial/older config).
 _SETTINGS_DEFAULTS: dict[str, Any] = {
+    # --- Azure / AKS ---
     "azure_namespace": "reprolab",
     "azure_service_account": "reprolab-sa",
-    "azure_node_pool_name": "gpunodes",
+    "azure_node_pool_name": "gpua100",
     # P1-fix-5: empty string fallback — ERROR clearly at submit if blank rather
     # than silently using a floating :latest tag.
     "azure_base_image": "",
     "azure_storage_account": "",
     "azure_blob_container": "reprolab-artifacts",
     "azure_files_share": "reprolab-cache",
+    "azure_files_cache_enabled": True,
     # P1-fix-5: aligns with config.py default of 4.
     "azure_max_nodes": 4,
     "azure_per_gpu_vram_gb": 80.0,
     "azure_gpu_usd_per_hour": 3.67,
-    "azure_pending_timeout_seconds": 900,
+    "azure_pending_timeout_seconds": 1500,
     "azure_boot_timeout_seconds": 900,
     "azure_gpu_skus": [],        # provisioned SKU short_names (list[str])
     "dynamic_gpu_max_escalations": 2,
     # P1-fix-8: configurable knobs (config.py additions by another agent).
     "azure_ttl_seconds_after_finished": 3600,
     "azure_job_backoff_limit": 0,
+    # Spot/preemptible data plane (opt-in; default off → on-demand behavior).
+    # use_spot adds the cloud spot-taint toleration to the cell Pod; spot_backoff_limit
+    # lets a preempted cell Job reschedule onto a fresh spot node (an evicted Pod exits
+    # outside the 40-44 FailJob codes, so backoff applies to preemptions, not app errors).
+    "azure_use_spot": False,
+    "azure_spot_backoff_limit": 3,
+    # Grace window the cell entrypoint gets on a SIGTERM (spot preemption / node
+    # drain) to flush its checkpoint + partial metrics before the kubelet SIGKILLs.
+    # Injected as both the OPENRESEARCH_CELL_PREEMPT_GRACE_S env (entrypoint reads it)
+    # and the pod terminationGracePeriodSeconds (else the kubelet's 30s default would
+    # truncate a longer flush). Clamped to [1, 120].
+    "azure_cell_preempt_grace_s": 20,
     "azure_cache_mount_path": "/mnt/reprolab-cache",
     "azure_watch_poll_interval_s": 5.0,
+    "azure_cell_oom_batch_scale_step1": 0.5,
+    "azure_cell_oom_batch_scale_floor": 0.25,
+    "azure_bootstrap_pip_timeout_s": 600,
+    # --- GCP / GKE ---
+    "gcp_namespace": "reprolab",
+    "gcp_service_account": "reprolab-sa",
+    "gcp_node_pool_name": "gpua100",
+    "gcp_base_image": "",
+    "gcp_max_nodes": 4,
+    "gcp_gpu_usd_per_hour": 3.67,
+    "gcp_pending_timeout_seconds": 900,
+    "gcp_gpu_skus": ["gcp_a100_80x8"],  # dormant fallback; keep == config.gcp_gpu_skus default (live Settings always wins; this only guards the get_settings()-failed path from re-introducing the nodeSelector mismatch)
+    "gcp_ttl_seconds_after_finished": 3600,
+    "gcp_job_backoff_limit": 0,
+    "gcp_use_spot": False,
+    "gcp_spot_backoff_limit": 3,
+    "gcp_cell_preempt_grace_s": 20,
+    "gcp_cache_mount_path": "/mnt/reprolab-cache",
+    "gcp_watch_poll_interval_s": 5.0,
+    "gcp_cell_oom_batch_scale_step1": 0.5,
+    "gcp_cell_oom_batch_scale_floor": 0.25,
+    "gcp_bootstrap_pip_timeout_s": 600,
 }
 
 # ---------------------------------------------------------------------------
-# Context var — concurrent-safe budget + event-sink + gpu_plan injection
+# Context vars — concurrent-safe budget + event-sink + gpu_plan + prefix injection
 # ---------------------------------------------------------------------------
 
 _RUN_CONTEXT: ContextVar[dict[str, Any]] = ContextVar(
     "k8s_job_cell_runner_context", default={}
 )
+
+# Separate ContextVar for the cloud prefix so that callers that patch
+# bind_run_context in tests (with 3-arg fakes) remain unaffected.
+_SETTINGS_PREFIX_CTX: ContextVar[str] = ContextVar(
+    "k8s_job_cell_runner_settings_prefix", default="azure"
+)
+
+
+@contextmanager
+def _bind_settings_prefix(prefix: str) -> Iterator[None]:
+    """Set the cloud-provider settings prefix for the duration of the ``with`` block.
+
+    Used by ``primitives._execute_cell_matrix`` alongside ``bind_run_context`` to
+    activate the GCP path without breaking existing tests that patch
+    ``bind_run_context`` with 3-argument fakes.
+
+    Example::
+
+        with _bind_settings_prefix("gcp"), bind_run_context(...):
+            run_matrix(...)
+    """
+    token = _SETTINGS_PREFIX_CTX.set(prefix)
+    try:
+        yield
+    finally:
+        _SETTINGS_PREFIX_CTX.reset(token)
 
 
 @contextmanager
@@ -146,6 +208,7 @@ def bind_run_context(
     run_budget: Any | None = None,
     event_sink: Callable[[str, dict[str, Any]], None] | None = None,
     gpu_plan: Any | None = None,
+    settings_prefix: str | None = None,
 ) -> Iterator[None]:
     """Bind a ``RunBudget``, event sink, and/or a ``GpuPlan`` for the duration of the
     ``with`` block.
@@ -156,13 +219,21 @@ def bind_run_context(
     resolved GPU plan without changing ``run_matrix``'s signature.
 
     Args:
-        run_budget:  A ``RunBudget`` instance (or None to disable checks).
-        event_sink:  ``(event_type, payload) → None`` called to emit EXISTING SSE
-                     events (``primitive_call``, ``repl_iteration``, ``run_warning``,
-                     ``gpu_escalated``).  Default no-op when None.
-        gpu_plan:    A ``GpuPlan`` instance (or None to use default pool + 1 GPU).
-                     When bound, Jobs target the plan's SKU node pool; OOM cells
-                     escalate through ``plan.ladder_remaining``.
+        run_budget:       A ``RunBudget`` instance (or None to disable checks).
+        event_sink:       ``(event_type, payload) → None`` called to emit EXISTING SSE
+                          events (``primitive_call``, ``repl_iteration``, ``run_warning``,
+                          ``gpu_escalated``).  Default no-op when None.
+        gpu_plan:         A ``GpuPlan`` instance (or None to use default pool + 1 GPU).
+                          When bound, Jobs target the plan's SKU node pool; OOM cells
+                          escalate through ``plan.ladder_remaining``.
+        settings_prefix:  Cloud provider prefix for settings reads, e.g. ``"azure"``
+                          or ``"gcp"``.  ``None`` (the default) means "do not change
+                          the prefix" — it preserves whatever ``_bind_settings_prefix``
+                          already bound, so the ``primitives.py`` nesting
+                          ``with _bind_settings_prefix("gcp"), bind_run_context():``
+                          resolves to ``"gcp"`` instead of being clobbered back to the
+                          azure default.  Pass an explicit value only when binding the
+                          prefix directly through this context manager.
 
     Example::
 
@@ -178,10 +249,19 @@ def bind_run_context(
         "event_sink": event_sink,
         "gpu_plan": gpu_plan,
     })
+    # Only (re)bind the cloud prefix when one is explicitly passed; a None prefix
+    # preserves whatever _bind_settings_prefix already set. This is what makes the
+    # primitives nesting resolve correctly and lets test fakes that patch
+    # bind_run_context (without a settings_prefix kwarg) keep working.
+    prefix_token = (
+        _SETTINGS_PREFIX_CTX.set(settings_prefix) if settings_prefix is not None else None
+    )
     try:
         yield
     finally:
         _RUN_CONTEXT.reset(token)
+        if prefix_token is not None:
+            _SETTINGS_PREFIX_CTX.reset(prefix_token)
 
 
 def _get_run_budget() -> Any | None:
@@ -196,6 +276,25 @@ def _get_event_sink() -> Callable[[str, dict[str, Any]], None]:
 def _get_gpu_plan() -> Any | None:
     """Return the bound GpuPlan (or None when none was bound)."""
     return _RUN_CONTEXT.get({}).get("gpu_plan")
+
+
+def _get_settings_prefix() -> str:
+    """Return the active cloud-provider settings prefix (default ``"azure"``).
+
+    ``_SETTINGS_PREFIX_CTX`` is the single source of truth — set either by
+    ``_bind_settings_prefix`` (the ``primitives.py`` path) or by an explicit
+    ``settings_prefix=`` on ``bind_run_context``.
+    """
+    return _SETTINGS_PREFIX_CTX.get("azure")
+
+
+def _cloud_setting(logical: str, default: Any = None) -> Any:
+    """Read ``<prefix>_<logical>`` from settings, using ``_SETTINGS_DEFAULTS`` as fallback.
+
+    Equivalent to ``_setting(f"{_get_settings_prefix()}_{logical}", default)`` but
+    centralises the prefix-composition so callers stay readable.
+    """
+    return _setting(f"{_get_settings_prefix()}_{logical}", default)
 
 
 # ---------------------------------------------------------------------------
@@ -254,15 +353,13 @@ def _blob_upload_prefix(
     container_name: str,
     client: Any | None = None,
 ) -> list[str]:
-    """Delegate to ``backend.services.runtime.azure_blob.upload_prefix``."""
-    from backend.services.runtime import azure_blob  # type: ignore[import]
-    return azure_blob.upload_prefix(
-        local_root,
-        blob_prefix=blob_prefix,
-        account_name=account_name,
-        container_name=container_name,
-        client=client,
-    )
+    """Delegate to the active ObjectStore's upload_prefix.
+
+    ``account_name`` and ``container_name`` are kept in the signature for
+    call-site compatibility but are now unused for routing — the ObjectStore
+    encapsulates those details.
+    """
+    return _object_store().upload_prefix(local_root, blob_prefix=blob_prefix)
 
 
 def _blob_download_bytes(
@@ -272,13 +369,8 @@ def _blob_download_bytes(
     container_name: str,
     client: Any | None = None,
 ) -> bytes:
-    from backend.services.runtime import azure_blob  # type: ignore[import]
-    return azure_blob.download_bytes(
-        blob_name,
-        account_name=account_name,
-        container_name=container_name,
-        client=client,
-    )
+    """Delegate to the active ObjectStore's download_bytes."""
+    return _object_store().download_bytes(blob_name)
 
 
 def _blob_download_artifact(
@@ -289,13 +381,41 @@ def _blob_download_artifact(
     container_name: str,
     client: Any | None = None,
 ) -> Path:
-    from backend.services.runtime import azure_blob  # type: ignore[import]
-    return azure_blob.download_artifact(
-        blob_name,
-        destination,
-        account_name=account_name,
-        container_name=container_name,
-        client=client,
+    """Delegate to the active ObjectStore's download_artifact."""
+    return _object_store().download_artifact(blob_name, destination)
+
+
+# ---------------------------------------------------------------------------
+# Cloud ObjectStore factory — monkeypatchable for tests
+# ---------------------------------------------------------------------------
+
+def _object_store() -> Any:
+    """Return the active ObjectStore for the current cloud prefix.
+
+    Resolved lazily from the bound ``settings_prefix`` (``"azure"`` → AzureBlobStore
+    via ``_AZURE_CLOUD``; ``"gcp"`` → GcsStore via ``_GCP_CLOUD``).  Lazy imports
+    prevent circular-import issues; ``_AZURE_CLOUD``/``_GCP_CLOUD`` live in their
+    respective thin-adapter modules which already import ``k8s_job_backend``.
+
+    Monkeypatch this symbol in tests via::
+
+        monkeypatch.setattr(kjcr, "_object_store", lambda: FakeStore())
+    """
+    prefix = _get_settings_prefix()
+    if prefix == "gcp":
+        from backend.services.runtime.gke_job_backend import _GCP_CLOUD  # type: ignore[import]
+        return _GCP_CLOUD.make_object_store(_get_settings(), None)
+    if prefix == "azure":
+        account = _setting("azure_storage_account", "") or ""
+        container = _setting("azure_blob_container", "reprolab-artifacts") or "reprolab-artifacts"
+        from backend.services.runtime.k8s_job_backend import AzureBlobStore  # type: ignore[import]
+        return AzureBlobStore(account, container, None)
+    # Fail closed: an unrecognised prefix must NOT silently route a run's blob I/O to
+    # the wrong cloud (the prior `else: azure` failed OPEN). The ContextVar default is
+    # "azure" and both real backends bind explicitly via _bind_settings_prefix, so this
+    # only fires on a genuine typo or a missing binding — where a loud error is correct.
+    raise ValueError(
+        f"k8s_job_cell_runner: unknown settings prefix {prefix!r}; expected 'gcp' or 'azure'"
     )
 
 
@@ -325,6 +445,9 @@ def _make_blob_client(
     but those helpers already catch all exceptions, so the worst case is a
     logged debug warning.
     """
+    # GCP uses its own client internally via GcsStore; no shared ContainerClient.
+    if _get_settings_prefix() == "gcp":
+        return None
     if not account_name:
         return None
     try:
@@ -388,36 +511,71 @@ def _job_name(cell_id: str, run_id: str = "") -> str:
 def _check_budget(
     *,
     run_budget: Any | None,
-    reserved_gpu_seconds: float,
-    gpu_usd_per_hour: float,
+    projected_gpu_usd: float,
+    projected_pod_seconds: float,
     cell_id: str,
 ) -> str | None:
-    """Return an error string if budget caps are exceeded, else None."""
+    """Return a ``budget_exhausted:`` error string if either cap is exceeded, else None.
+
+    Takes two independent projected totals (the caller maintains both under
+    ``budget_lock``), because the two caps measure different quantities:
+
+    * ``projected_gpu_usd`` — Σ over reserved attempts of
+      ``wall_clock_s × gpu_count × $/GPU-hour / 3600``. The ``× gpu_count`` is the
+      load-bearing fix: ``gpu_usd_per_hour`` is a PER-GPU rate, so an 8-GPU cell costs
+      8× a 1-GPU cell for the same wall-clock. Folding ``gpu_count`` in here (not into
+      the seconds accumulator) keeps the dollar cap correct for heterogeneous
+      multi-GPU matrices without distorting the pod-seconds cap.
+    * ``projected_pod_seconds`` — Σ of wall-clock seconds (NOT × gpu_count), the right
+      quantity for ``max_pod_seconds`` (a wall-clock pod-time cap, not GPU-seconds).
+
+    The ``budget_exhausted:`` prefix is the terminal-stop contract: when EVERY remaining
+    cell is refused with it, _execute_cell_matrix promotes the matrix to a terminal
+    budget_exhausted stop_reason (no re-loop). Comparisons stay ``>=`` (fail-closed: a
+    cell that would land exactly on the cap is refused, not admitted).
+    """
     if run_budget is None:
         return None
     # GPU-USD cap
     max_run_gpu_usd = getattr(run_budget, "max_run_gpu_usd", None)
-    if max_run_gpu_usd and max_run_gpu_usd > 0:
-        projected_usd = reserved_gpu_seconds * gpu_usd_per_hour / 3600.0
-        if projected_usd >= max_run_gpu_usd:
-            return (
-                f"budget: projected GPU spend ${projected_usd:.4f} "
-                f">= max_run_gpu_usd ${max_run_gpu_usd:.4f} for cell={cell_id}"
-            )
-    # Pod-seconds cap
+    if max_run_gpu_usd and max_run_gpu_usd > 0 and projected_gpu_usd >= max_run_gpu_usd:
+        return (
+            f"budget_exhausted: projected GPU spend ${projected_gpu_usd:.4f} "
+            f">= max_run_gpu_usd ${max_run_gpu_usd:.4f} for cell={cell_id}"
+        )
+    # Pod-seconds cap (wall-clock)
     max_pod_seconds = getattr(run_budget, "max_pod_seconds", None)
-    if max_pod_seconds and max_pod_seconds > 0:
-        if reserved_gpu_seconds >= max_pod_seconds:
-            return (
-                f"budget: reserved_gpu_seconds {reserved_gpu_seconds:.0f}s "
-                f">= max_pod_seconds {max_pod_seconds:.0f}s for cell={cell_id}"
-            )
+    if max_pod_seconds and max_pod_seconds > 0 and projected_pod_seconds >= max_pod_seconds:
+        return (
+            f"budget_exhausted: reserved pod-seconds {projected_pod_seconds:.0f}s "
+            f">= max_pod_seconds {max_pod_seconds:.0f}s for cell={cell_id}"
+        )
     return None
 
 
 # ---------------------------------------------------------------------------
 # K8s Job manifest builder
 # ---------------------------------------------------------------------------
+
+def _cache_volume_spec(
+    *, namespace: str, files_share: str, files_cache_enabled: bool
+) -> dict[str, Any]:
+    """Return the K8s volume dict named 'reprolab-cache'.
+
+    PVC (<namespace>-files-pvc) when the Azure Files cache is enabled AND a
+    share name is configured; otherwise an ephemeral emptyDir so the cell Pod
+    never blocks on a missing PVC (spec 2026-06-14 §4.1, blob-only path).
+    """
+    if files_cache_enabled and files_share.strip():
+        return {
+            "name": "reprolab-cache",
+            # claimName MUST match the Helm PVC metadata.name in
+            # infra/azure/helm/templates/pvc-cache.yaml (and the smoke-job
+            # claimNames) — both are the literal "reprolab-cache".
+            "persistentVolumeClaim": {"claimName": "reprolab-cache"},
+        }
+    return {"name": "reprolab-cache", "emptyDir": {}}
+
 
 def _build_job_manifest(
     *,
@@ -447,7 +605,14 @@ def _build_job_manifest(
     oom_batch_scale_floor: float = 0.25,
     # pip bootstrap timeout
     bootstrap_pip_timeout_s: int = 600,
-    default_sku: str = "azure_a100_80",
+    default_sku: str | None = None,
+    # Cloud-specific pod template labels (e.g. AKS Workload Identity).
+    # When None the function uses the azure default ({"azure.workload.identity/use": "true"})
+    # to preserve backward compatibility for callers that don't pass this param.
+    pod_template_extra_labels: dict | None = None,
+    # Spec 2026-06-14 §4.1: blob-only fallback. When False (or files_share is
+    # empty) the cache volume is an ephemeral emptyDir, not the Azure Files PVC.
+    files_cache_enabled: bool = True,
 ) -> dict[str, Any]:
     """Build the K8s Job manifest dict for a single training cell.
 
@@ -458,16 +623,28 @@ def _build_job_manifest(
 
     Without ``gpu_plan`` the manifest falls back to ``{"reprolab/sku": default_sku}``
     (P0-fix-3) so the pod is always placed on a GPU node in the correct pool.
+
+    ``pod_template_extra_labels``:
+        Additional labels merged into the pod template metadata.  When ``None``
+        (the default) the Azure Workload Identity label is applied, preserving
+        byte-for-byte compatibility for existing callers.  Pass ``{}`` explicitly
+        for GCP (or any cloud that does not need WI labels).
     """
     # P1-fix-5: refuse to submit with an empty image tag rather than silently
     # using whatever :latest resolves to at runtime.
     if not base_image:
+        _img_setting = f"{_get_settings_prefix()}_base_image"
         raise ValueError(
-            "k8s_job_cell_runner: azure_base_image is empty — set OPENRESEARCH_AZURE_BASE_IMAGE "
-            "or the azure_base_image config field before submitting AKS Jobs."
+            f"k8s_job_cell_runner: {_img_setting} is empty — set the "
+            f"OPENRESEARCH_{_img_setting.upper()} config field before submitting K8s Jobs."
         )
 
-    pvc_name = f"{namespace}-files-pvc"
+    # Resolve default_sku lazily from the active cloud context when not supplied.
+    # This ensures the correct cloud-specific default (gcp_a100_80 vs azure_a100_80)
+    # is used even when _build_job_manifest is called directly without default_sku.
+    if default_sku is None:
+        _gpu_skus_for_default: list = _cloud_setting("gpu_skus", []) or []
+        default_sku = str(_gpu_skus_for_default[0]) if _gpu_skus_for_default else "azure_a100_80"
 
     # P0-fix-1: env-var NAMES must exactly match what aks_cell_entrypoint.py reads.
     # Canonical contract (runner injects → entrypoint reads):
@@ -483,14 +660,12 @@ def _build_job_manifest(
     #   OPENRESEARCH_CELL_OOM_BATCH_SCALE_STEP1  → (entrypoint plan_attempts)
     #   OPENRESEARCH_CELL_OOM_BATCH_SCALE_FLOOR  → (entrypoint plan_attempts)
     #   OPENRESEARCH_BOOTSTRAP_PIP_TIMEOUT_S     → (entrypoint _bootstrap pip install)
+    # Cloud-neutral env vars (both clouds).
+    _preempt_grace_s = max(1, min(120, int(_cloud_setting("cell_preempt_grace_s", 20))))
     env_vars = [
         {"name": "OPENRESEARCH_CELL_ID",               "value": cell_id},
         {"name": "OPENRESEARCH_CELL_PARAMS",            "value": cell_params_json},
-        {"name": "OPENRESEARCH_CELL_OUTPUT_DIR",        "value": f"/mnt/outputs/{cell_id}"},
         {"name": "OPENRESEARCH_CELL_MAX_OOM_RETRIES",   "value": str(max_oom_retries)},
-        # P0-fix-1: standardised on OPENRESEARCH_AZURE_* names the entrypoint reads.
-        {"name": "OPENRESEARCH_AZURE_STORAGE_ACCOUNT",  "value": storage_account},
-        {"name": "OPENRESEARCH_AZURE_BLOB_CONTAINER",   "value": blob_container},
         {"name": "OPENRESEARCH_BLOB_CODE_PREFIX",       "value": code_blob_prefix},
         {"name": "OPENRESEARCH_BLOB_OUTPUT_PREFIX",     "value": output_blob_prefix},
         {"name": "OPENRESEARCH_CACHE_MOUNT",            "value": cache_mount_path},
@@ -501,21 +676,30 @@ def _build_job_manifest(
          "value": str(oom_batch_scale_floor)},
         {"name": "OPENRESEARCH_BOOTSTRAP_PIP_TIMEOUT_S",
          "value": str(bootstrap_pip_timeout_s)},
+        # Preemption grace (spot/drain): the entrypoint flushes checkpoint + partial
+        # metrics on SIGTERM within this window; paired with the pod
+        # terminationGracePeriodSeconds below so the kubelet can't truncate the flush.
+        {"name": "OPENRESEARCH_CELL_PREEMPT_GRACE_S",
+         "value": str(_preempt_grace_s)},
     ]
+    # Cloud-specific object-store env vars.
+    # Azure: frozen contract with the baked ACR image — keep injecting the exact names.
+    # GCP: inject OPENRESEARCH_GCP_GCS_BUCKET (the cloud-neutral pair stays above).
+    _prefix = _get_settings_prefix()
+    if _prefix == "gcp":
+        env_vars.append(
+            {"name": "OPENRESEARCH_GCP_GCS_BUCKET", "value": _cloud_setting("gcs_bucket", "")}
+        )
+    else:
+        # Default / azure: P0-fix-1 standardised on OPENRESEARCH_AZURE_* names.
+        env_vars.extend([
+            {"name": "OPENRESEARCH_AZURE_STORAGE_ACCOUNT",  "value": storage_account},
+            {"name": "OPENRESEARCH_AZURE_BLOB_CONTAINER",   "value": blob_container},
+        ])
     if fingerprint:
         env_vars.append({"name": "OPENRESEARCH_CELL_FINGERPRINT", "value": fingerprint})
     if now_iso:
         env_vars.append({"name": "OPENRESEARCH_CELL_NOW_ISO", "value": now_iso})
-    # Image-compat shim (audit 2026-06-10): the entrypoint baked into a PINNED
-    # ACR image may predate the REPROLAB_->OPENRESEARCH_ rename and read the
-    # legacy names. Inject both spellings until every base image is rebuilt
-    # (the in-repo aks_cell_entrypoint.py reads the canonical names).
-    env_vars.extend(
-        {"name": "OPENRESEARCH_" + e["name"][len("OPENRESEARCH_"):], "value": e["value"]}
-        for e in list(env_vars)
-        if e["name"].startswith("OPENRESEARCH_")
-    )
-
     # GPU count: from plan when available, else 1.
     gpu_count_str: str
     if gpu_plan is not None:
@@ -539,24 +723,56 @@ def _build_job_manifest(
         "effect": "NoSchedule",
     }
 
+    # Spot toleration (opt-in via <prefix>_use_spot): a spot/preemptible GPU pool gets a
+    # cloud-specific taint, so the cell Pod must tolerate it or it never schedules onto a
+    # spot node. Cloud-specific key (GKE vs AKS). Default (use_spot off) → tolerations is
+    # exactly [gpu_toleration], byte-identical to the on-demand path.
+    _tolerations: list[dict[str, Any]] = [gpu_toleration]
+    if _cloud_setting("use_spot", False):
+        if _get_settings_prefix() == "gcp":
+            _tolerations.append({
+                "key": "cloud.google.com/gke-spot",
+                "operator": "Equal", "value": "true", "effect": "NoSchedule",
+            })
+        else:
+            _tolerations.append({
+                "key": "kubernetes.azure.com/scalesetpriority",
+                "operator": "Equal", "value": "spot", "effect": "NoSchedule",
+            })
+
+    # Pod template labels: base labels + cloud-specific extras.
+    # Default to Azure Workload Identity label when pod_template_extra_labels is
+    # not explicitly provided, preserving byte-for-byte backward compatibility.
+    _pod_extra: dict[str, str] = (
+        {"azure.workload.identity/use": "true"}
+        if pod_template_extra_labels is None
+        else pod_template_extra_labels
+    )
+    _pod_labels: dict[str, str] = {
+        "app": "reprolab-cell",
+        "cell-id": cell_id[:63],
+    }
+    _pod_labels.update(_pod_extra)
+
     pod_template: dict[str, Any] = {
         "metadata": {
-            "labels": {
-                "azure.workload.identity/use": "true",
-                "app": "reprolab-cell",
-                "cell-id": cell_id[:63],
-            },
+            "labels": _pod_labels,
         },
         "spec": {
             "serviceAccountName": service_account,
             "restartPolicy": "Never",
-            "tolerations": [gpu_toleration],
+            # +10s buffer over the entrypoint grace so the kubelet doesn't SIGKILL
+            # mid-flush (the entrypoint's metrics/sentinel upload runs AFTER the
+            # trainer child exits). Without this the kubelet default (30s) caps it.
+            "terminationGracePeriodSeconds": _preempt_grace_s + 10,
+            "tolerations": _tolerations,
             "nodeSelector": node_selector,
             "volumes": [
-                {
-                    "name": "reprolab-cache",
-                    "persistentVolumeClaim": {"claimName": pvc_name},
-                }
+                _cache_volume_spec(
+                    namespace=namespace,
+                    files_share=files_share,
+                    files_cache_enabled=files_cache_enabled,
+                )
             ],
             "containers": [
                 {
@@ -623,6 +839,7 @@ def _watch_job(
     overall_deadline: float | None,
     active_deadline_seconds: int,
     pending_timeout_s: float,
+    backoff_limit: int = 0,
 ) -> dict[str, Any]:
     """Watch a K8s Job until terminal or timeout.
 
@@ -665,7 +882,7 @@ def _watch_job(
             return _watch_result("deadline")
 
         # --- Single API call: read Job status ---
-        _poll_interval: float = _setting("azure_watch_poll_interval_s", 5.0)
+        _poll_interval: float = _cloud_setting("watch_poll_interval_s", 5.0)
         try:
             job = k8s.batch.read_namespaced_job_status(job_name, namespace)
         except Exception as exc:
@@ -713,9 +930,16 @@ def _watch_job(
             return _watch_result("succeeded", exit_code=exit_code, node_name=node, log=log)
 
         # failed>0 and active==0 means all pods have exited and none are still
-        # running — the job is done.  We derive this from Job-level counters
-        # alone (no list_namespaced_pod) to avoid the per-poll thundering herd.
-        if failed and active == 0:
+        # running.  But with a spot backoffLimit>0 the Job controller RESCHEDULES a
+        # preempted Pod, and there is a window where failed>=1 while active==0 BEFORE
+        # the replacement Pod appears — classifying that as terminal would defeat the
+        # spot retry. Only the Failed *condition* (checked above) is authoritative for
+        # backoff exhaustion; from counters alone we wait until the retries are spent
+        # (failed > backoffLimit). With backoff_limit=0 (on-demand, the default) this
+        # is byte-for-byte the prior behavior: the first failure (failed=1 > 0) is
+        # terminal. App failures (exit 40-44) FailJob immediately via podFailurePolicy,
+        # so they still terminate at the condition check regardless of backoffLimit.
+        if failed and active == 0 and failed > backoff_limit:
             node, exit_code, log = _collect_pod_info(k8s, job_name, namespace)
             return _watch_result("failed", exit_code=exit_code, node_name=node, log=log)
 
@@ -998,6 +1222,7 @@ def _run_cell_job(
     run_id: str,
     gpu_plan: Any | None = None,
     blob_client: Any | None = None,
+    pod_template_extra_labels: dict | None = None,
 ) -> CellResult:
     """Submit a K8s Job for ``cell`` and block until terminal, then return a CellResult.
 
@@ -1013,6 +1238,14 @@ def _run_cell_job(
 
     cell_params_json = json.dumps(cell)
 
+    # Spot-aware backoffLimit: on a spot pool a preempted Pod exits OUTSIDE the 40-44
+    # FailJob codes, so a >0 backoffLimit lets the Job controller reschedule that one
+    # cell onto a fresh spot node (bounding a preemption's cost to one cell's redo).
+    # Off spot, or with an explicit non-zero job_backoff_limit, the configured value wins.
+    _backoff_limit = int(_cloud_setting("job_backoff_limit", 0))
+    if _backoff_limit == 0 and _cloud_setting("use_spot", False):
+        _backoff_limit = int(_cloud_setting("spot_backoff_limit", 3))
+
     try:
         manifest = _build_job_manifest(
             job_name=job_name,
@@ -1022,7 +1255,7 @@ def _run_cell_job(
             base_image=base_image,
             storage_account=storage_account,
             blob_container=blob_container,
-            files_share=_setting("azure_files_share", "reprolab-cache"),
+            files_share=_cloud_setting("files_share", "reprolab-cache"),
             cell_id=cell_id,
             cell_params_json=cell_params_json,
             output_blob_prefix=output_blob_prefix,
@@ -1033,23 +1266,25 @@ def _run_cell_job(
             now_iso=now_iso,
             gpu_plan=gpu_plan,
             # P1-fix-8: configurable knobs from settings.
-            ttl_seconds_after_finished=int(_setting("azure_ttl_seconds_after_finished", 3600)),
-            backoff_limit=int(_setting("azure_job_backoff_limit", 0)),
-            cache_mount_path=str(_setting("azure_cache_mount_path", "/mnt/reprolab-cache")),
+            ttl_seconds_after_finished=int(_cloud_setting("ttl_seconds_after_finished", 3600)),
+            backoff_limit=_backoff_limit,
+            cache_mount_path=str(_cloud_setting("cache_mount_path", "/mnt/reprolab-cache")),
+            files_cache_enabled=bool(_cloud_setting("files_cache_enabled", True)),
             # P1-fix-9: OOM shrink ratios forwarded from settings.
             oom_batch_scale_step1=float(
-                _setting("azure_cell_oom_batch_scale_step1", 0.5)
+                _cloud_setting("oom_batch_scale_step1", 0.5)
             ),
             oom_batch_scale_floor=float(
-                _setting("azure_cell_oom_batch_scale_floor", 0.25)
+                _cloud_setting("oom_batch_scale_floor", 0.25)
             ),
             bootstrap_pip_timeout_s=int(
-                _setting("azure_bootstrap_pip_timeout_s", 600)
+                _cloud_setting("bootstrap_pip_timeout_s", 600)
             ),
             # P0-fix-3: default SKU for no-plan fallback.
             default_sku=str(
-                (_setting("azure_gpu_skus", []) or ["azure_a100_80"])[0]
+                (_cloud_setting("gpu_skus", []) or ["azure_a100_80"])[0]
             ),
+            pod_template_extra_labels=pod_template_extra_labels,
         )
     except ValueError as exc:
         # P1-fix-5: manifest builder raises ValueError on empty base_image.
@@ -1057,16 +1292,18 @@ def _run_cell_job(
         logger.error(
             "k8s_job_cell_runner: manifest build failed cell=%s: %s", cell_id, exc
         )
+        _cs = "gke" if _get_settings_prefix() == "gcp" else "aks"
         return CellResult(
             cell_id=cell_id,
             status=STATUS_ERROR,
             metrics=None,
-            gpu="aks:unassigned",
+            gpu=f"{_cs}:unassigned",
             retries=0,
             error=f"manifest build failed: {exc}",
         )
 
     # Submit the Job.
+    _cs = "gke" if _get_settings_prefix() == "gcp" else "aks"
     try:
         k8s.batch.create_namespaced_job(namespace, manifest)
         logger.info(
@@ -1080,7 +1317,7 @@ def _run_cell_job(
             cell_id=cell_id,
             status=STATUS_ERROR,
             metrics=None,
-            gpu="aks:unassigned",
+            gpu=f"{_cs}:unassigned",
             retries=0,
             error=f"job submission failed: {exc}",
         )
@@ -1093,10 +1330,11 @@ def _run_cell_job(
         overall_deadline=overall_deadline,
         active_deadline_seconds=active_deadline_seconds,
         pending_timeout_s=pending_timeout_s,
+        backoff_limit=_backoff_limit,
     )
 
     node_name = watch.get("node_name")
-    gpu_label = f"aks:{node_name}" if node_name else "aks:unassigned"
+    gpu_label = f"{_cs}:{node_name}" if node_name else f"{_cs}:unassigned"
 
     # Reconcile Blob status.json if Job was TTL-deleted before we could read it.
     blob_status: dict[str, Any] | None = None
@@ -1252,20 +1490,28 @@ def run_matrix(
     if not cells:
         return {}
 
-    # Read settings defensively.
-    namespace: str = _setting("azure_namespace", "reprolab")
-    service_account: str = _setting("azure_service_account", "reprolab-sa")
-    node_pool_name: str = _setting("azure_node_pool_name", "gpunodes")
+    # Read settings defensively — cloud-specific keys via _cloud_setting(),
+    # cloud-agnostic keys via _setting() directly.
+    namespace: str = _cloud_setting("namespace", "reprolab")
+    service_account: str = _cloud_setting("service_account", "reprolab-sa")
+    node_pool_name: str = _cloud_setting("node_pool_name", "gpunodes")
     # P1-fix-5: default is "" — _build_job_manifest raises clearly if still empty.
-    base_image: str = _setting("azure_base_image", "")
-    storage_account: str = _setting("azure_storage_account", "")
-    blob_container: str = _setting("azure_blob_container", "reprolab-artifacts")
+    base_image: str = _cloud_setting("base_image", "")
+    storage_account: str = _cloud_setting("storage_account", "") or ""
+    blob_container: str = _cloud_setting("blob_container", "reprolab-artifacts") or "reprolab-artifacts"
     # P1-fix-5: align with config.py default of 4 (was incorrectly 8 here).
-    azure_max_nodes: int = int(_setting("azure_max_nodes", 4))
-    gpu_usd_per_hour: float = float(_setting("azure_gpu_usd_per_hour", 3.67))
-    pending_timeout_s: float = float(_setting("azure_pending_timeout_seconds", 900))
-    provisioned_skus: list[str] = list(_setting("azure_gpu_skus", []) or [])
+    cloud_max_nodes: int = int(_cloud_setting("max_nodes", 4))
+    gpu_usd_per_hour: float = float(_cloud_setting("gpu_usd_per_hour", 3.67))
+    pending_timeout_s: float = float(_cloud_setting("pending_timeout_seconds", 900))
+    provisioned_skus: list[str] = list(_cloud_setting("gpu_skus", []) or [])
     max_escalations: int = int(_setting("dynamic_gpu_max_escalations", 2))
+    # Derive cloud prefix short label for gpu result fields ("aks" for azure, "gke" for gcp).
+    _prefix = _get_settings_prefix()
+    _cloud_short = "gke" if _prefix == "gcp" else "aks"
+    # Pod template extra labels: AKS needs WI label, GKE does not.
+    _pod_extra_labels: dict = (
+        {} if _prefix == "gcp" else {"azure.workload.identity/use": "true"}
+    )
 
     _fingerprints: dict[str, str] = fingerprints or {}
     _force_cells: set[str] = force_cells or set()
@@ -1290,7 +1536,7 @@ def run_matrix(
                 cell_id=cell.get("id", f"cell_{i}"),
                 status=STATUS_ERROR,
                 metrics=None,
-                gpu="aks:unassigned",
+                gpu=f"{_cloud_short}:unassigned",
                 retries=0,
                 error=msg,
             ).to_dict()
@@ -1302,8 +1548,8 @@ def run_matrix(
 
     # Parallelism.
     parallelism = min(
-        max_parallel or azure_max_nodes,
-        azure_max_nodes,
+        max_parallel or cloud_max_nodes,
+        cloud_max_nodes,
         len(cells),
     )
     parallelism = max(1, parallelism)
@@ -1319,7 +1565,7 @@ def run_matrix(
                 cell_id=cell.get("id", f"cell_{i}"),
                 status=STATUS_ERROR,
                 metrics=None,
-                gpu="aks:unassigned",
+                gpu=f"{_cloud_short}:unassigned",
                 retries=0,
                 error=err,
             ).to_dict()
@@ -1350,7 +1596,7 @@ def run_matrix(
                 cell_id=cell.get("id", f"cell_{i}"),
                 status=STATUS_ERROR,
                 metrics=None,
-                gpu="aks:unassigned",
+                gpu=f"{_cloud_short}:unassigned",
                 retries=0,
                 error=err,
             ).to_dict()
@@ -1365,20 +1611,26 @@ def run_matrix(
     shared_blob_client: Any | None = _make_blob_client(storage_account, blob_container)
 
     # Budget tracking: sum of reserved GPU-seconds for active + completed cells.
-    reserved_gpu_seconds = 0.0
+    reserved_gpu_seconds = 0.0    # Σ wall-clock seconds → the max_pod_seconds cap
+    reserved_gpu_usd = 0.0        # Σ wall_clock_s × gpu_count × $/GPU-hr → the max_run_gpu_usd cap
     budget_lock = threading.Lock()
 
     results: dict[str, CellResult] = {}
     results_lock = threading.Lock()
 
     def _process_cell(cell: dict[str, Any]) -> None:
-        nonlocal reserved_gpu_seconds
+        nonlocal reserved_gpu_seconds, reserved_gpu_usd
 
         # P0-fix-4: per-cell copy so escalation can update the rate for THIS cell
         # without affecting other concurrent cells (shared outer var would be a race
         # AND would cause UnboundLocalError since Python sees the assignment below
         # as making the name local throughout the whole function body).
         cell_gpu_usd_per_hour: float = gpu_usd_per_hour
+        # GPUs this cell occupies — the dollar cap must bill ALL of them, because
+        # gpu_usd_per_hour is a PER-GPU rate and the manifest requests plan.gpu_count
+        # GPUs. From the plan when available, else 1. (The fix for the multi-GPU
+        # undercount where an 8-GPU cell was billed as 1.)
+        _cell_gpu_count: int = max(1, int(getattr(gpu_plan, "gpu_count", 1) or 1))
 
         cell_id: str = cell.get("id", f"cell_{id(cell)}")
         output_dir = output_root / cell_id
@@ -1403,11 +1655,68 @@ def run_matrix(
                     cell_id=cell_id,
                     status=STATUS_SKIPPED,
                     metrics=prior_metrics,
-                    gpu="aks:unassigned",
+                    gpu=f"{_cloud_short}:unassigned",
                     retries=0,
                     error=None,
                 )
             return
+
+        # --- Cross-pod resume (Blob) ---
+        # The local should_skip_cell above only sees the orchestrator pod's ephemeral
+        # filesystem. When armed and that local manifest is absent — a fresh orchestrator
+        # pod after a control-plane preemption, or any rescheduled run under a stable
+        # run_id (OPENRESEARCH_STABLE_RUN_ID) — consult the DURABLE Blob status.json the
+        # cell entrypoint wrote. A prior success (exit_code 0 / outcome "ok") under the
+        # SAME run_id means the cell already completed: skip it and reuse its Blob metrics,
+        # bounding a preemption's cost to the in-flight cell. Trust model: a stable run_id
+        # pins the same code prefix, so the cell definition is unchanged. Gated on
+        # _resume_armed → default (unarmed) runs submit normally, byte-identical.
+        if _resume_armed:
+            _blob_status = _try_reconcile_status(
+                cell_id=cell_id,
+                output_blob_prefix=output_blob_prefix,
+                account_name=storage_account,
+                container_name=blob_container,
+                client=shared_blob_client,
+            )
+            if _blob_status and (
+                _blob_status.get("exit_code") == 0 or _blob_status.get("outcome") == "ok"
+            ):
+                _resumed_metrics = _try_download_metrics(
+                    cell_id=cell_id,
+                    output_blob_prefix=output_blob_prefix,
+                    account_name=storage_account,
+                    container_name=blob_container,
+                    output_dir=output_dir,
+                    client=shared_blob_client,
+                )
+                # R1: an "ok" status.json with NO downloadable/parseable metrics blob is
+                # untrustworthy — the entrypoint ignores a metrics-upload failure on its
+                # success path, so a transient upload error leaves ok+no-metrics. Skipping
+                # here would store metrics=None and SILENTLY LOSE the cell's result. Only
+                # skip when real metrics came back; otherwise fall through and resubmit
+                # (re-running one cell is cheap; a lost result is not).
+                if _resumed_metrics is not None:
+                    logger.info(
+                        "k8s_job_cell_runner: cell=%s SKIPPED (Blob resume: prior ok status.json)",
+                        cell_id,
+                    )
+                    with results_lock:
+                        results[cell_id] = CellResult(
+                            cell_id=cell_id,
+                            status=STATUS_SKIPPED,
+                            metrics=_resumed_metrics,
+                            gpu=f"{_cloud_short}:unassigned",
+                            retries=0,
+                            error=None,
+                        )
+                    return
+                logger.warning(
+                    "k8s_job_cell_runner: cell=%s blob status ok but metrics "
+                    "missing/unreadable — NOT skipping, resubmitting to avoid silent "
+                    "result loss",
+                    cell_id,
+                )
 
         # --- Overall deadline ---
         if overall_deadline is not None and time.monotonic() >= overall_deadline:
@@ -1416,7 +1725,7 @@ def run_matrix(
                     cell_id=cell_id,
                     status=STATUS_ERROR,
                     metrics=None,
-                    gpu="aks:unassigned",
+                    gpu=f"{_cloud_short}:unassigned",
                     retries=0,
                     error="overall matrix timeout — cell not submitted",
                 )
@@ -1439,11 +1748,13 @@ def run_matrix(
         active_deadline_seconds = max(1, math.ceil(eff_cell_s))
 
         with budget_lock:
-            new_reserved = reserved_gpu_seconds + eff_cell_s
+            _cell_usd = eff_cell_s * _cell_gpu_count * cell_gpu_usd_per_hour / 3600.0
+            new_reserved_s = reserved_gpu_seconds + eff_cell_s
+            new_reserved_usd = reserved_gpu_usd + _cell_usd
             budget_err = _check_budget(
                 run_budget=run_budget,
-                reserved_gpu_seconds=new_reserved,
-                gpu_usd_per_hour=cell_gpu_usd_per_hour,
+                projected_gpu_usd=new_reserved_usd,
+                projected_pod_seconds=new_reserved_s,
                 cell_id=cell_id,
             )
             if budget_err:
@@ -1454,12 +1765,13 @@ def run_matrix(
                         cell_id=cell_id,
                         status=STATUS_ERROR,
                         metrics=None,
-                        gpu="aks:unassigned",
+                        gpu=f"{_cloud_short}:unassigned",
                         retries=0,
                         error=budget_err,
                     )
                 return
-            reserved_gpu_seconds = new_reserved
+            reserved_gpu_seconds = new_reserved_s
+            reserved_gpu_usd = new_reserved_usd
 
         # --- Submit and watch (with optional SKU escalation on oom_failed) ---
         current_plan = gpu_plan  # may become a lighter stub on escalation
@@ -1492,6 +1804,7 @@ def run_matrix(
                 gpu_plan=current_plan,
                 # P0-scale-2: shared client avoids per-call MSI probe.
                 blob_client=shared_blob_client,
+                pod_template_extra_labels=_pod_extra_labels,
             )
 
             # Escalation check: only if oom_failed + plan available + cap not hit.
@@ -1531,15 +1844,31 @@ def run_matrix(
                     getattr(next_sku, "approx_usd_per_hr", cell_gpu_usd_per_hour)
                 )
 
-            # P0-fix-4 (cont.): re-check budget with escalated rate + already-
-            # reserved seconds before committing to the resubmit.
+            # P0-fix-4 (cont.): RESERVE the escalated retry's ADDITIONAL budget before
+            # committing — the escalated attempt runs another ~deadline on a bigger SKU,
+            # so it must bill its own wall-clock × the escalated SKU's gpu_count × the
+            # (higher) escalated rate, not merely re-price the already-reserved seconds.
+            _esc_gpu_count = max(
+                1, int(getattr(next_sku, "gpu_count", _cell_gpu_count) or _cell_gpu_count)
+            )
+            _esc_eff_s = (
+                max(0.0, overall_deadline - time.monotonic())
+                if overall_deadline is not None else eff_cell_s
+            )
             with budget_lock:
+                _esc_usd = _esc_eff_s * _esc_gpu_count * escalated_usd_per_hour / 3600.0
+                _esc_new_s = reserved_gpu_seconds + _esc_eff_s
+                _esc_new_usd = reserved_gpu_usd + _esc_usd
                 escalated_budget_err = _check_budget(
                     run_budget=run_budget,
-                    reserved_gpu_seconds=reserved_gpu_seconds,
-                    gpu_usd_per_hour=escalated_usd_per_hour,
+                    projected_gpu_usd=_esc_new_usd,
+                    projected_pod_seconds=_esc_new_s,
                     cell_id=cell_id,
                 )
+                if not escalated_budget_err:
+                    # Commit the reservation only when we're actually going to resubmit.
+                    reserved_gpu_seconds = _esc_new_s
+                    reserved_gpu_usd = _esc_new_usd
             if escalated_budget_err:
                 logger.warning(
                     "k8s_job_cell_runner: escalation budget exceeded, stopping: %s",
@@ -1620,7 +1949,7 @@ def run_matrix(
                 cell_id=cid,
                 status=STATUS_ERROR,
                 metrics=None,
-                gpu="aks:unassigned",
+                gpu=f"{_cloud_short}:unassigned",
                 retries=0,
                 error="worker exited without recording a result",
             )

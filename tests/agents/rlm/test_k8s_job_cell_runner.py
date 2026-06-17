@@ -645,6 +645,231 @@ class TestResume:
 
 
 # ---------------------------------------------------------------------------
+# 8b. Cross-pod Blob resume (spec 2026-06-17 Stream C4)
+#
+# Distinct from TestResume (local-manifest fast path): a FRESH orchestrator pod
+# after a preemption has NO local manifest, so the runner must consult the durable
+# Blob status.json the entrypoint wrote and skip a prior-ok cell.
+# ---------------------------------------------------------------------------
+
+class TestBlobResume:
+    @staticmethod
+    def _blob_with_status(*, outcome: str = "ok", exit_code: int = 0,
+                          metric: float = 0.81) -> dict[str, Any]:
+        """Fake blob whose status.json reports a prior outcome (no local manifest)."""
+
+        def fake_download_bytes(blob_name: str, *, account_name: str,
+                                container_name: str, client: Any = None) -> bytes:
+            if "status.json" in blob_name:
+                return json.dumps({
+                    "version": "1", "cell_id": "b0",
+                    "outcome": outcome, "exit_code": exit_code,
+                }).encode()
+            if "metrics.json" in blob_name:
+                return json.dumps({"metric": metric}).encode()
+            raise FileNotFoundError(blob_name)
+
+        def fake_upload_prefix(local_root: Any, *, blob_prefix: str, account_name: str,
+                               container_name: str, client: Any = None) -> list[str]:
+            return ["f.py"]
+
+        def fake_download_artifact(blob_name: str, destination: Any, *, account_name: str,
+                                   container_name: str, client: Any = None) -> Path:
+            return Path(destination)
+
+        return {"upload_prefix": fake_upload_prefix, "download_bytes": fake_download_bytes,
+                "download_artifact": fake_download_artifact}
+
+    def _patch(self, monkeypatch: pytest.MonkeyPatch, fake: dict[str, Any]) -> None:
+        monkeypatch.setattr(kjcr, "_blob_upload_prefix", fake["upload_prefix"])
+        monkeypatch.setattr(kjcr, "_blob_download_bytes", fake["download_bytes"])
+        monkeypatch.setattr(kjcr, "_blob_download_artifact", fake["download_artifact"])
+
+    def test_blob_status_ok_skips_without_local_manifest(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # No local manifest seeded (fresh pod). Blob status.json says outcome ok.
+        k8s = _make_k8s(job_sequence=_succeeded_job())
+        kjcr._k8s_clients_override = k8s
+        self._patch(monkeypatch, self._blob_with_status(outcome="ok", exit_code=0, metric=0.81))
+        monkeypatch.setenv("OPENRESEARCH_RESUME_CELLS", "1")
+        results = run_matrix([{"id": "b0"}], tmp_path / "train_cell.py",
+                             output_root=tmp_path / "outputs")
+        assert results["b0"]["status"] == "skipped"
+        assert results["b0"]["metrics"] == {"metric": 0.81}
+        assert len(k8s.batch.created_jobs) == 0  # never submitted
+
+    def test_blob_status_not_ok_runs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        # status.json present but a failed outcome / nonzero exit → must NOT skip.
+        self._patch(monkeypatch, self._blob_with_status(outcome="error", exit_code=41))
+        monkeypatch.setenv("OPENRESEARCH_RESUME_CELLS", "1")
+        results = run_matrix([{"id": "b0"}], tmp_path / "train_cell.py",
+                             output_root=tmp_path / "outputs")
+        assert results["b0"]["status"] != "skipped"
+        assert len(k8s.batch.created_jobs) == 1
+
+    def test_blob_resume_inert_when_unarmed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        self._patch(monkeypatch, self._blob_with_status(outcome="ok", exit_code=0))
+        monkeypatch.delenv("OPENRESEARCH_RESUME_CELLS", raising=False)
+        results = run_matrix([{"id": "b0"}], tmp_path / "train_cell.py",
+                             output_root=tmp_path / "outputs")
+        # Unarmed → blob resume never consulted → cell runs.
+        assert results["b0"]["status"] != "skipped"
+        assert len(k8s.batch.created_jobs) == 1
+
+    def test_blob_status_ok_but_missing_metrics_resubmits(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # R1 (Stream F): status.json says "ok" but the metrics blob is gone — the
+        # entrypoint ignores a metrics-upload failure on its success path, leaving
+        # ok+no-metrics. Skipping here would store metrics=None and SILENTLY LOSE the
+        # result; the cell must instead be resubmitted.
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+
+        def _status_ok_no_metrics(blob_name: str, *, account_name: str,
+                                  container_name: str, client: Any = None) -> bytes:
+            if "status.json" in blob_name:
+                return json.dumps({"version": "1", "cell_id": "b0",
+                                   "outcome": "ok", "exit_code": 0}).encode()
+            raise FileNotFoundError(blob_name)   # metrics.json absent → download None
+
+        fake = self._blob_with_status(outcome="ok", exit_code=0)
+        fake["download_bytes"] = _status_ok_no_metrics
+        self._patch(monkeypatch, fake)
+        monkeypatch.setenv("OPENRESEARCH_RESUME_CELLS", "1")
+        results = run_matrix([{"id": "b0"}], tmp_path / "train_cell.py",
+                             output_root=tmp_path / "outputs")
+        assert results["b0"]["status"] != "skipped"          # NOT silently skipped
+        assert len(k8s.batch.created_jobs) == 1               # resubmitted instead
+
+
+# ---------------------------------------------------------------------------
+# 8c. Budget exhaustion is a TERMINAL stop (spec 2026-06-17 Stream D1)
+# ---------------------------------------------------------------------------
+
+class TestBudgetTerminal:
+    def test_check_budget_emits_terminal_prefix(self):
+        from backend.agents.resilience.budget import RunBudget
+        budget = RunBudget(max_run_gpu_usd=0.001)
+        # Two-accumulator signature: the caller passes projected GPU-dollars (already
+        # × gpu_count) and projected wall-clock pod-seconds separately.
+        err = kjcr._check_budget(
+            run_budget=budget,
+            projected_gpu_usd=3.67,        # over the $0.001 cap
+            projected_pod_seconds=3600.0,
+            cell_id="z0",
+        )
+        # The prefix is the contract _execute_cell_matrix promotes on.
+        assert err is not None and err.startswith("budget_exhausted:")
+
+    def test_check_budget_pod_seconds_cap_is_wall_clock(self):
+        from backend.agents.resilience.budget import RunBudget
+        # The pod-seconds cap keys on wall-clock seconds, independent of GPU-dollars:
+        # a huge dollar figure with no USD cap set must NOT trip it below its bound.
+        b = RunBudget(max_pod_seconds=100)
+        assert kjcr._check_budget(
+            run_budget=b, projected_gpu_usd=1e9, projected_pod_seconds=99.0, cell_id="c"
+        ) is None
+        err = kjcr._check_budget(
+            run_budget=b, projected_gpu_usd=0.0, projected_pod_seconds=100.0, cell_id="c"
+        )
+        assert err is not None and "pod-seconds" in err
+
+    def test_budget_exhausted_is_a_terminal_failure_class(self):
+        from backend.agents.rlm import forced_iteration
+        assert "budget_exhausted" in forced_iteration._TERMINAL_FAILURE_CLASSES
+
+    def test_multi_gpu_cell_billed_per_gpu_count(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """BLOCKER fix: an N-GPU cell costs N× a 1-GPU cell for the same wall-clock.
+        3600s × 8 GPUs × $3.67/GPU-hr = $29.36 > the $10 cap ⇒ the cell is REFUSED
+        before submit (0 Jobs). The pre-fix code billed it as 1 GPU ($3.67 < $10) and
+        would have submitted, blowing the cap 8×."""
+        from backend.agents.resilience.budget import RunBudget
+        # Pin gpu_usd_per_hour to the 3.67 default deterministically (ignore real config).
+        monkeypatch.setattr(
+            kjcr, "_setting",
+            lambda name, default=None: kjcr._SETTINGS_DEFAULTS.get(name, default),
+        )
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics=None)
+        plan = _FakeGpuPlan(short_name="gcp_a100_80x8", gpu_count=8, ladder_remaining=())
+        with bind_run_context(
+            gpu_plan=plan,
+            run_budget=RunBudget(max_run_gpu_usd=10.0),
+            event_sink=lambda t, p: None,
+        ):
+            # No overall_timeout_s ⇒ overall_deadline None ⇒ eff_cell_s == 3600 exactly.
+            results = run_matrix(
+                [{"id": "g8"}], tmp_path / "train_cell.py",
+                output_root=tmp_path / "out", per_cell_timeout_s=3600.0, max_parallel=1,
+            )
+        assert len(k8s.batch.created_jobs) == 0, "8-GPU cell must be refused before submit"
+        assert results["g8"]["status"] == "error"
+        assert "budget_exhausted" in (results["g8"].get("error") or "")
+
+
+class TestStreamFSpotAndGrace:
+    """Stream F (2026-06-17): the watcher must not kill a spot reschedule, and the
+    Job manifest must carry the preempt-grace knob + terminationGracePeriodSeconds."""
+
+    @staticmethod
+    def _failed_status_job() -> _FakeJob:
+        # failed=1, active absent (→0), no terminal condition: a Pod has exited but the
+        # Job controller has NOT (yet) declared the Job Failed.
+        return _FakeJob(_FakeJobStatus(failed=1, succeeded=0))
+
+    def test_watch_job_no_backoff_fails_on_first(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(
+            kjcr, "_cloud_setting",
+            lambda name, default=None: 0.001 if name == "watch_poll_interval_s" else default,
+        )
+        k8s = _make_k8s(job_sequence=[self._failed_status_job() for _ in range(5)],
+                        pods=[_FakePod(exit_code=1)])
+        res = kjcr._watch_job(
+            k8s=k8s, job_name="j", namespace="n", overall_deadline=None,
+            active_deadline_seconds=5, pending_timeout_s=5.0, backoff_limit=0,
+        )
+        assert res["status"] == "failed"   # on-demand (backoff 0): first failure terminal
+
+    def test_watch_job_spot_backoff_defers_terminal(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(
+            kjcr, "_cloud_setting",
+            lambda name, default=None: 0.001 if name == "watch_poll_interval_s" else default,
+        )
+        # failed=1 < backoff_limit=3 → the controller may still reschedule the preempted
+        # spot Pod, so the watcher must NOT classify it terminal; it runs to the deadline.
+        k8s = _make_k8s(job_sequence=[self._failed_status_job() for _ in range(2000)],
+                        pods=[_FakePod(exit_code=1)])
+        res = kjcr._watch_job(
+            k8s=k8s, job_name="j", namespace="n", overall_deadline=None,
+            active_deadline_seconds=1, pending_timeout_s=5.0, backoff_limit=3,
+        )
+        assert res["status"] == "deadline"   # NOT "failed" — spot retry preserved
+
+    def test_manifest_injects_preempt_grace(self, monkeypatch: pytest.MonkeyPatch):
+        manifest = _build_manifest_for_guard_tests(monkeypatch=monkeypatch)
+        env = {e["name"]: e["value"] for e in _get_env_list(manifest)}
+        assert "OPENRESEARCH_CELL_PREEMPT_GRACE_S" in env
+        grace = int(env["OPENRESEARCH_CELL_PREEMPT_GRACE_S"])
+        assert 1 <= grace <= 120
+        spec = manifest["spec"]["template"]["spec"]
+        # +10s buffer so the kubelet doesn't SIGKILL before the entrypoint's flush upload.
+        assert spec["terminationGracePeriodSeconds"] == grace + 10
+
+
+# ---------------------------------------------------------------------------
 # 9. Completeness — every input cell present in result
 # ---------------------------------------------------------------------------
 
@@ -1949,10 +2174,11 @@ class TestEnvVarNamesInManifest:
     """P0-fix-1: verify the canonical env-var names appear in the Job manifest."""
 
     # Canonical contract: runner injects these names; entrypoint reads the same names.
+    # NOTE: OPENRESEARCH_CELL_OUTPUT_DIR is intentionally NOT injected by the runner —
+    # aks_cell_entrypoint.py always overrides it to its own scratch tempdir (FIX-10).
     _REQUIRED_ENV_NAMES = {
         "OPENRESEARCH_CELL_ID",
         "OPENRESEARCH_CELL_PARAMS",
-        "OPENRESEARCH_CELL_OUTPUT_DIR",
         "OPENRESEARCH_CELL_MAX_OOM_RETRIES",
         "OPENRESEARCH_AZURE_STORAGE_ACCOUNT",   # P0-fix-1: was OPENRESEARCH_BLOB_ACCOUNT
         "OPENRESEARCH_AZURE_BLOB_CONTAINER",     # P0-fix-1: was OPENRESEARCH_BLOB_CONTAINER
@@ -2318,4 +2544,149 @@ class TestContainerClientReuse:
         assert len(received_args) == 1, f"expected 1 factory call, got {len(received_args)}"
         assert received_args[0] == ("correct-account", "correct-container"), (
             f"P0-scale-2: factory called with wrong args: {received_args[0]!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 30. FIX-4/7/8/10 guard tests
+# ---------------------------------------------------------------------------
+
+def _build_manifest_for_guard_tests(
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    extra_settings: dict | None = None,
+) -> dict:
+    """Helper: build a manifest via _build_job_manifest with controllable settings.
+
+    Patches kjcr._setting so callers can inject arbitrary config values.
+    Returns the raw manifest dict from _build_job_manifest.
+    """
+    base_settings: dict = {
+        "azure_namespace": "reprolab",
+        "azure_service_account": "reprolab-sa",
+        "azure_node_pool_name": "gpunodes",
+        "azure_base_image": "img:latest",
+        "azure_storage_account": "acct",
+        "azure_blob_container": "ctr",
+        "azure_files_share": "share",
+        "azure_max_nodes": 4,
+        "azure_gpu_usd_per_hour": 3.5,
+        "azure_pending_timeout_seconds": 1500,
+        "azure_gpu_skus": ["azure_a100_80"],
+        "dynamic_gpu_max_escalations": 2,
+        "azure_ttl_seconds_after_finished": 3600,
+        "azure_job_backoff_limit": 0,
+        "azure_cache_mount_path": "/mnt/reprolab-cache",
+        "azure_watch_poll_interval_s": 0.001,
+        "azure_oom_batch_scale_step1": 0.5,
+        "azure_oom_batch_scale_floor": 0.25,
+        "azure_bootstrap_pip_timeout_s": 600,
+    }
+    if extra_settings:
+        base_settings.update(extra_settings)
+
+    monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: base_settings.get(name, default))
+
+    return kjcr._build_job_manifest(
+        job_name="test-job",
+        namespace="reprolab",
+        service_account="reprolab-sa",
+        node_pool_name="gpunodes",
+        base_image="img:latest",
+        storage_account="acct",
+        blob_container="ctr",
+        files_share="share",
+        cell_id="c0",
+        cell_params_json="{}",
+        output_blob_prefix="runs/r1/cells",
+        code_blob_prefix="runs/r1/code",
+        active_deadline_seconds=3600,
+        max_oom_retries=2,
+        fingerprint=None,
+        now_iso=None,
+        oom_batch_scale_step1=float(base_settings.get("azure_oom_batch_scale_step1", 0.5)),
+        oom_batch_scale_floor=float(base_settings.get("azure_oom_batch_scale_floor", 0.25)),
+    )
+
+
+def _get_env_list(manifest: dict) -> list[dict]:
+    return manifest["spec"]["template"]["spec"]["containers"][0]["env"]
+
+
+class TestFix4OomScaleRenamedKeys:
+    """FIX-4 (P1): _setting keys for OOM batch-scale must use azure_oom_* (no 'cell_' infix)."""
+
+    def test_manifest_oom_scale_reads_renamed_config_keys(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Patch azure_oom_batch_scale_floor to a non-default value and verify it
+        flows through to the OPENRESEARCH_CELL_OOM_BATCH_SCALE_FLOOR env var in the
+        manifest — proving the renamed key is actually read."""
+        manifest = _build_manifest_for_guard_tests(
+            monkeypatch=monkeypatch,
+            extra_settings={
+                "azure_oom_batch_scale_floor": 0.1,   # non-default
+                "azure_oom_batch_scale_step1": 0.6,   # non-default
+            },
+        )
+        env_list = _get_env_list(manifest)
+        env_map = {e["name"]: e["value"] for e in env_list}
+
+        assert "OPENRESEARCH_CELL_OOM_BATCH_SCALE_FLOOR" in env_map, (
+            "FIX-4: OPENRESEARCH_CELL_OOM_BATCH_SCALE_FLOOR must be injected into the manifest"
+        )
+        assert env_map["OPENRESEARCH_CELL_OOM_BATCH_SCALE_FLOOR"] == "0.1", (
+            f"FIX-4: expected '0.1' from renamed azure_oom_batch_scale_floor config key, "
+            f"got {env_map['OPENRESEARCH_CELL_OOM_BATCH_SCALE_FLOOR']!r}"
+        )
+        assert env_map.get("OPENRESEARCH_CELL_OOM_BATCH_SCALE_STEP1") == "0.6", (
+            f"FIX-4: expected '0.6' from renamed azure_oom_batch_scale_step1 config key, "
+            f"got {env_map.get('OPENRESEARCH_CELL_OOM_BATCH_SCALE_STEP1')!r}"
+        )
+
+
+class TestFix10NoDeadOutputDirEnv:
+    """FIX-10 (P2): OPENRESEARCH_CELL_OUTPUT_DIR must NOT be injected by the runner —
+    aks_cell_entrypoint.py always overrides it to its own scratch tempdir."""
+
+    def test_manifest_has_no_dead_output_dir_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        manifest = _build_manifest_for_guard_tests(monkeypatch=monkeypatch)
+        env_list = _get_env_list(manifest)
+        env_names = [e["name"] for e in env_list]
+
+        assert "OPENRESEARCH_CELL_OUTPUT_DIR" not in env_names, (
+            "FIX-10: OPENRESEARCH_CELL_OUTPUT_DIR must not be injected by the runner — "
+            "the entrypoint always overrides it to its own scratch tempdir; "
+            "a static /mnt/outputs/<cell_id> value is dead (no such volume mounted)."
+        )
+
+
+class TestFix8NoShimDuplicates:
+    """FIX-8 (P2): the no-op image-compat shim is gone; env-var names must be unique."""
+
+    def test_manifest_env_names_unique(self, monkeypatch: pytest.MonkeyPatch):
+        """Build a manifest and verify there are no duplicate env-var names.
+
+        The old shim re-prepended OPENRESEARCH_ to every OPENRESEARCH_* env var,
+        producing exact duplicates. After removal, all names must be unique.
+        """
+        manifest = _build_manifest_for_guard_tests(monkeypatch=monkeypatch)
+        env_list = _get_env_list(manifest)
+        names = [e["name"] for e in env_list]
+
+        assert len(names) == len(set(names)), (
+            f"FIX-8: duplicate env-var names found in manifest (shim not fully removed?): "
+            f"{[n for n in names if names.count(n) > 1]!r}"
+        )
+
+
+class TestFix7PendingTimeoutDefault:
+    """FIX-7 (P2): both pending-timeout fallback literals must be 1500, matching config.py."""
+
+    def test_settings_defaults_pending_timeout_is_1500(self):
+        assert kjcr._SETTINGS_DEFAULTS["azure_pending_timeout_seconds"] == 1500, (
+            "FIX-7: _SETTINGS_DEFAULTS['azure_pending_timeout_seconds'] must be 1500 "
+            "(config.py default, raised from 900 to accommodate AKS GPU cold-start scale-up)"
         )

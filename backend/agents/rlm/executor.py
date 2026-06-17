@@ -9,6 +9,13 @@ Selection (``OPENRESEARCH_EXECUTOR``):
   - ``qwen`` / ``local`` / ``vllm``   → OpenAI runtime on a local OpenAI-compatible
                                         endpoint (vLLM-served Qwen)
   - ``endpoint``                      → same, against ``OPENRESEARCH_EXECUTOR_BASE_URL``
+  - ``azure`` / ``azure-openai`` /
+    ``azure_openai`` / ``aoai``       → Azure OpenAI deployment
+                                        (creds: ``AZURE_OPENAI_API_KEY``,
+                                        ``AZURE_OPENAI_ENDPOINT``,
+                                        ``AZURE_OPENAI_DEPLOYMENT``; no health-probe —
+                                        Azure is a managed endpoint, credential presence
+                                        is the gate; default stays Sonnet; EXPERIMENTAL)
 
 Env: ``OPENRESEARCH_EXECUTOR_BASE_URL`` (default ``http://127.0.0.1:8001/v1``),
 ``OPENRESEARCH_EXECUTOR_MODEL`` (default ``Qwen/Qwen2.5-Coder-32B-Instruct``),
@@ -29,6 +36,7 @@ _DEFAULT_BASE_URL = "http://127.0.0.1:8001/v1"
 _DEFAULT_MODEL = "Qwen/Qwen2.5-Coder-32B-Instruct"
 _DEFAULT_KEY = "local"
 _DEFAULT_MODES = {"", "sonnet", "claude", "off", "default", "anthropic"}
+_AZURE_MODES = {"azure", "azure-openai", "azure_openai", "aoai"}
 _VLLM_MODES = {"qwen", "local", "vllm", "endpoint", "openai-endpoint", "on"}
 
 
@@ -65,6 +73,29 @@ def resolve_executor() -> ExecutorPlan | None:
     mode = (os.environ.get("OPENRESEARCH_EXECUTOR") or "").strip().lower()
     if mode in _DEFAULT_MODES:
         return None
+
+    if mode in _AZURE_MODES:
+        from backend.agents.runtime.factory import _has_azure_openai_credentials
+        if not _has_azure_openai_credentials():
+            logger.warning(
+                "OPENRESEARCH_EXECUTOR=%r but AZURE_OPENAI_API_KEY/AZURE_OPENAI_ENDPOINT missing"
+                " — falling back to the default Sonnet executor",
+                mode,
+            )
+            return None
+        deployment = (os.environ.get("AZURE_OPENAI_DEPLOYMENT") or "").strip()
+        if not deployment:
+            logger.warning(
+                "OPENRESEARCH_EXECUTOR=%r but AZURE_OPENAI_DEPLOYMENT is unset"
+                " — falling back to the default Sonnet executor",
+                mode,
+            )
+            return None
+        from backend.agents.runtime.azure_openai_runtime import AzureOpenAiAgentRuntime
+        runtime = AzureOpenAiAgentRuntime()
+        logger.info("executor tier active: azure-openai → deployment=%s", deployment)
+        return ExecutorPlan(runtime=runtime, model=deployment, label=f"azure:{deployment}")
+
     if mode not in _VLLM_MODES:
         logger.warning("unknown OPENRESEARCH_EXECUTOR=%r; using the default Sonnet executor", mode)
         return None

@@ -88,3 +88,24 @@ def test_docker_tag_makes_strip_and_pin_both_noop():
     kept, dropped = env_pin.harden_requirements(reqs, base_tag=tag)
     assert kept == reqs and dropped == []          # nothing stripped
     assert env_pin.pin_install_specs(tag) == []    # nothing pinned
+
+
+def test_core_install_command_probes_before_installing():
+    specs = ["torch==2.5.1", "torchvision==0.20.1", "torchaudio==2.5.1"]
+    cmd = env_pin.core_install_command(specs, "https://download.pytorch.org/whl/cu121")
+    # the host-torch probe must precede the install (install is the `||` fallback)
+    assert cmd.index("import torch") < cmd.index("pip install")
+    # the install carries every pinned spec + the cu121 index
+    for s in specs:
+        assert s in cmd
+    assert "--index-url https://download.pytorch.org/whl/cu121" in cmd
+    # floor is the cu121 CUDA version; probe is stderr-quiet and the line is fail-soft
+    assert "(12, 1)" in cmd
+    assert "2>/dev/null" in cmd
+    assert cmd.rstrip().endswith("|| true")
+
+
+def test_core_install_command_is_single_fail_soft_shell_line():
+    cmd = env_pin.core_install_command(["torch==2.5.1"], "https://idx")
+    assert "\n" not in cmd          # one shell line
+    assert cmd.count("||") == 2     # probe || install || true

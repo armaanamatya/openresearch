@@ -89,7 +89,7 @@ _RUN_EXPERIMENT_FATAL_FAILURES = {
 def _local_core_bootstrap_commands(requirements_path: "Path", torch_index: str) -> list[str]:
     """pip-install commands for the local-sandbox bootstrap, hardened by env_pin.
 
-    Installs the harness-owned cu121 core pins (torch/vision/audio) FIRST, then the
+    Installs the harness-owned cu121 core pins (torch/vision/audio) FIRST **unless the venv already carries a coherent CUDA-≥12.1 torch** (a modern Deep-Learning-VM image is kept, not downgraded), then the
     agent's requirements with any conflicting core re-pin stripped (writing
     ``requirements.hardened.txt`` next to ``requirements.txt``). This is the fix for the
     2026-06-07 All-Conv-Net collapse, where the agent's ``torch==2.2.0`` re-pin
@@ -121,10 +121,7 @@ def _local_core_bootstrap_commands(requirements_path: "Path", torch_index: str) 
             # later as missing_module. Strip such lines and keep the rest.
             kept, invalid = env_pin.sanitize_requirements(kept)
             if specs:
-                core_install_cmd = (
-                    f"python -m pip install {' '.join(specs)} "
-                    f"--index-url {torch_index} || true"
-                )
+                core_install_cmd = env_pin.core_install_command(specs, torch_index)
             if dropped or invalid:
                 hardened = requirements_path.with_name("requirements.hardened.txt")
                 header = [
@@ -1236,18 +1233,25 @@ def resolve_gpu_requirements(
     except (ValueError, TypeError):
         _sb_enum = None
     _is_azure = _sb_enum is _SandboxMode.azure
+    _is_gcp = _sb_enum is _SandboxMode.gcp
 
-    # ``provisioned_skus`` restricts the azure resolver to the GPU pools that are
-    # actually provisioned (Terraform ``var.gpu_skus`` ⇒ ``settings.azure_gpu_skus``),
-    # so the primary pick + OOM escalation ladder can never name a pool that does
-    # not exist (which would otherwise hang the cell Pending until the
-    # capacity-exhausted timeout). ``None`` for non-azure leaves the runpod path
+    # ``provisioned_skus`` restricts the azure/gcp resolver to the GPU pools that are
+    # actually provisioned (Terraform ``var.gpu_skus`` ⇒ ``settings.azure_gpu_skus`` /
+    # ``settings.gcp_gpu_skus``), so the primary pick + OOM escalation ladder can never
+    # name a pool that does not exist (which would otherwise hang the cell Pending until
+    # the capacity-exhausted timeout). ``None`` for non-azure/gcp leaves the runpod path
     # byte-for-byte unchanged.
     if _is_azure:
         _provider = "azure"
         cloud_types: tuple[str, ...] = ("ONDEMAND",)
         _provisioned_skus: tuple[str, ...] | None = tuple(
             getattr(settings, "azure_gpu_skus", None) or ()
+        ) or None
+    elif _is_gcp:
+        _provider = "gcp"
+        cloud_types = ("ONDEMAND",)
+        _provisioned_skus = tuple(
+            getattr(settings, "gcp_gpu_skus", None) or ()
         ) or None
     else:
         _provider = "runpod"
@@ -1397,6 +1401,14 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
             "attempts": 0,
             "skipped": True,
             "note": "azure sandbox: image is pre-baked in ACR; build_environment is a no-op",
+        }, PrimitiveOutcome.ok)
+    if _sb_key == "gcp":
+        return _with_outcome({
+            "ok": True,
+            "image_tag": "",
+            "attempts": 0,
+            "skipped": True,
+            "note": "gcp sandbox: image is pre-baked in Artifact Registry (gcp_base_image); build_environment is a no-op",
         }, PrimitiveOutcome.ok)
     # C6 (2026-06-16): under runpod the locally-built image is NEVER used — the
     # pod boots OPENRESEARCH_RUNPOD_IMAGE and runs over SSH in a per-run venv
@@ -2726,6 +2738,13 @@ def _backend_for_sandbox_mode(
 
         _runtime.ensure_azure_available()
         return AksJobBackend(run_budget=run_budget, gpu_plan=gpu_plan)
+
+    if mode is SandboxMode.gcp:
+        import backend.services.runtime as _runtime
+        from backend.services.runtime.gke_job_backend import GkeJobBackend
+
+        _runtime.ensure_gcp_available()
+        return GkeJobBackend(run_budget=run_budget, gpu_plan=gpu_plan)
 
     # All other modes (auto, brev, simulate) are not yet wired
     # for the RLM path.  Fall back with a loud WARNING so the operator knows.
@@ -5499,7 +5518,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         from backend.agents.rlm import execution_smoke as _execution_smoke_cm
         if (
             _execution_smoke_cm.is_enabled()
-            and _sb_key_ecm != "azure"
+            and _sb_key_ecm not in ("azure", "gcp")
             and gpus
             and len(kept) > 1
         ):
@@ -5520,7 +5539,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     # failure). Shape-gated + local/docker only; no `search` key → the legacy
     # single-phase dispatch below runs byte-for-byte unchanged.
     matrix_result = None
-    if _sb_key_ecm != "azure":
+    if _sb_key_ecm not in ("azure", "gcp"):
         _staged_groups = []
         try:
             from backend.agents.rlm import staged_search as _ss
@@ -5589,10 +5608,11 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
             matrix_result = _staged_out.get("results") or {}
             kept = _staged_out.get("kept_cells") or []
 
-    if matrix_result is None and _sb_key_ecm == "azure":
-        with k8s_job_cell_runner.bind_run_context(
-            run_budget=_run_budget_ecm, event_sink=_event_sink_ecm, gpu_plan=_ecm_gpu_plan
-        ):
+    if matrix_result is None and _sb_key_ecm in ("azure", "gcp"):
+        with k8s_job_cell_runner._bind_settings_prefix(_sb_key_ecm), \
+             k8s_job_cell_runner.bind_run_context(
+                 run_budget=_run_budget_ecm, event_sink=_event_sink_ecm, gpu_plan=_ecm_gpu_plan,
+             ):
             matrix_result = k8s_job_cell_runner.run_matrix(
                 kept, str(code / "train_cell.py"),
                 output_root=str(artifact_root),
@@ -5707,6 +5727,22 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
                         f"(stuck-Pending past timeout) — quota or stock unavailable; "
                         f"try reducing azure_max_nodes or requesting a quota increase")
             return _terminal("capacity_exhausted", _cap_msg, metrics, logs)
+        # budget_exhausted promotion (mirror of the capacity branch): the K8s runner
+        # refuses a cell with a "budget_exhausted:"-prefixed error once the per-run GPU
+        # spend (max_run_gpu_usd) or pod-seconds cap would be exceeded. When EVERY errored
+        # cell carries that prefix (no ok, no OOM), the bottleneck is the budget, not the
+        # code — promote to a terminal stop so the run reports instead of re-burning the
+        # already-exceeded budget on a pointless repair loop. K8s-path-only (local/runpod
+        # error strings never carry the prefix), so other backends are unchanged.
+        _all_budget_exhausted = all(
+            str((r.get("error") or "")).startswith("budget_exhausted:")
+            for r in _err_cells
+        )
+        if _all_budget_exhausted:
+            _budget_msg = (f"all {n_err} run cell(s) refused: per-run GPU budget would be "
+                           f"exceeded (max_run_gpu_usd / max_pod_seconds) — raise --max-usd "
+                           f"or reduce scope; spot pricing lowers the bill ~3x")
+            return _terminal("budget_exhausted", _budget_msg, metrics, logs)
 
     # All-timeout classification (audit 2026-06-11): when the time-budget cap
     # (cap_overall_budget) floors the matrix budget below even one cell's
@@ -5849,16 +5885,17 @@ def run_experiment(
         env_id = build["image_tag"] or ("__local__" if build.get("skipped") else "")
 
     # A2-H2: guard empty env_id (reachable only when no Dockerfile was on disk
-    # to rebuild from AND the build was not skipped for local-sandbox mode).
-    # We exempt the local-sandbox path: build_environment deliberately returns
-    # image_tag="" there (see build_environment local-short-circuit above), and
-    # _execute_in_sandbox routes to LocalProcessBackend via sandbox_mode, making
-    # env_id irrelevant.
-    _is_local_sb = (
-        str(getattr(getattr(ctx, "sandbox_mode", None), "value",
-                    getattr(ctx, "sandbox_mode", None) or "")).lower() == "local"
-    )
-    if not _is_local_sb and (not env_id or not str(env_id).strip()):
+    # to rebuild from AND the build was not skipped for an imageless sandbox).
+    # We exempt the local AND azure sandboxes: build_environment deliberately
+    # returns image_tag="" for both (local has no Docker daemon; azure's image is
+    # pre-baked in ACR), and both route on sandbox_mode — LocalProcessBackend /
+    # AksJobBackend + the cells route's azure_base_image — never on env_id. An
+    # empty env_id must not hard-block them, or the azure cells route would be
+    # refused before it is ever reached.
+    _sb_mode_str = str(getattr(getattr(ctx, "sandbox_mode", None), "value",
+                               getattr(ctx, "sandbox_mode", None) or "")).lower()
+    _is_local_sb = (_sb_mode_str == "local")
+    if _sb_mode_str not in ("local", "azure", "gcp") and (not env_id or not str(env_id).strip()):
         return _persist_experiment_result(ctx, {
             "success": False,
             "metrics": {},
@@ -5980,7 +6017,17 @@ def run_experiment(
     # Bound before the branch so the post-loop rubric-contract check (which reads
     # outputs/<run_id>) is valid on BOTH paths; the legacy loop reassigns it per
     # iteration, the cell route uses this value as its artifact root.
-    run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
+    # run_id keys the per-run artifact + object-store prefix (runs/<run_id>/cells/...).
+    # Default: a fresh random suffix per run_experiment call (distinct prefixes, no
+    # cross-attempt collision). When OPENRESEARCH_STABLE_RUN_ID is set (the unattended
+    # in-cluster orchestrator sets it so a rescheduled pod re-attaches to the SAME blob
+    # prefix and the K8s runner's Blob-resume skips already-completed cells), pin the
+    # run_id to the deterministic project_id (already paper+arm-derived). Unset → today's
+    # behavior, byte-identical.
+    if os.environ.get("OPENRESEARCH_STABLE_RUN_ID", "").strip():
+        run_id = ctx.project_id
+    else:
+        run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
     _cell_route_taken = False
     _hybrid_grid_result: dict | None = None  # set when the hybrid route stashes a grid result
     # Progress→SSE tailer (local only): emit a sanitized experiment_progress event from the
@@ -6015,6 +6062,10 @@ def run_experiment(
             "1", "true", "yes", "on"
         ):
             _cell_route_kinds.append("azure")
+        if os.environ.get("OPENRESEARCH_GCP_CELL_ROUTE", "1").strip().lower() in (
+            "1", "true", "yes", "on"
+        ):
+            _cell_route_kinds.append("gcp")
         if (
             _caps.backend_kind in _cell_route_kinds
             and not _caps.is_empty
@@ -7691,11 +7742,6 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
 }
 
 PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
-    "read_context_map": "read_context_map() -> dict — the intra-run orientation "
-        "cache: the union of your prior understand_section / extract_hyperparameters "
-        "/ detect_environment outputs (datasets, metrics, hyperparameters, env "
-        "clues). Consult it before re-deriving a slice. Navigation aid only — never "
-        "a report source. Empty {} when the context-map flag is off.",
     "understand_section": "understand_section(text_slice) -> dict — datasets, "
         "metrics, training recipe, hardware clues, ambiguities from a text slice. "
         "A PARTIAL PaperClaimMap (no core_contribution/claims/architecture).",

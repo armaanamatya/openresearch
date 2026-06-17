@@ -44,6 +44,40 @@ class OpenAiAgentRuntime:
     def provider_name(self) -> ProviderName:
         return "openai"
 
+    def _configure_sdk_client(self, agents_module: Any) -> tuple[Any, Any]:
+        """Return ``(custom_client, chat_model_cls)`` for use in ``run_agent``.
+
+        The base implementation mirrors the pre-refactor inline logic exactly:
+        when ``self._base_url`` is set, build a custom ``AsyncOpenAI`` client
+        (vLLM / custom endpoint) and disable SDK tracing; otherwise configure
+        the SDK for the stock OpenAI API and return ``(None, None)``.
+
+        Subclasses override this to swap in a different client (e.g. Azure).
+        """
+        if self._base_url:
+            from openai import AsyncOpenAI
+
+            custom_client = AsyncOpenAI(base_url=self._base_url, api_key=self._api_key or "local")
+            chat_model_cls = getattr(agents_module, "OpenAIChatCompletionsModel", None)
+            # The SDK would POST traces to api.openai.com with the local key → 401 noise.
+            _set_td = getattr(agents_module, "set_tracing_disabled", None)
+            if _set_td is not None:
+                _set_td(True)
+            return custom_client, chat_model_cls
+        configure_openai_agents_sdk_credentials(
+            getattr(agents_module, "set_default_openai_key", None)
+        )
+        return None, None
+
+    def _model_override(self) -> str | None:
+        """Return a model id that should override the spec's model, or ``None``.
+
+        The base implementation returns ``None`` (use ``spec.model`` as-is).
+        Subclasses such as ``AzureOpenAiAgentRuntime`` return the deployment
+        name, which is what Azure routes by.
+        """
+        return None
+
     async def run_agent(
         self,
         *,
@@ -63,28 +97,14 @@ class OpenAiAgentRuntime:
         WebSearchTool = getattr(agents_module, "WebSearchTool", None)
         function_tool = agents_module.function_tool
 
-        custom_client = None
-        chat_model_cls = None
-        if self._base_url:
-            from openai import AsyncOpenAI
-
-            custom_client = AsyncOpenAI(base_url=self._base_url, api_key=self._api_key or "local")
-            chat_model_cls = getattr(agents_module, "OpenAIChatCompletionsModel", None)
-            # The SDK would POST traces to api.openai.com with the local key → 401 noise.
-            _set_td = getattr(agents_module, "set_tracing_disabled", None)
-            if _set_td is not None:
-                _set_td(True)
-        else:
-            configure_openai_agents_sdk_credentials(
-                getattr(agents_module, "set_default_openai_key", None)
-            )
+        custom_client, chat_model_cls = self._configure_sdk_client(agents_module)
 
         def _model_for(spec: AgentRuntimeSpec) -> Any:
-            # Bind the model to the custom (vLLM) client via OpenAIChatCompletionsModel —
+            # Bind the model to the custom (vLLM/Azure) client via OpenAIChatCompletionsModel —
             # this bypasses the SDK's "<prefix>/<model>" string parsing, which otherwise
             # rejects ids like "Qwen/Qwen2.5-Coder-…" with "Unknown prefix: Qwen".
             if chat_model_cls is not None and custom_client is not None:
-                return chat_model_cls(model=spec.model, openai_client=custom_client)
+                return chat_model_cls(model=(self._model_override() or spec.model), openai_client=custom_client)
             return spec.model or None
 
         root = (agent.working_directory or Path.cwd()).resolve()

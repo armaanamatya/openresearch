@@ -1,0 +1,84 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Helm L2 values for the DeepInvent environment (GCP / GKE).
+#
+# Fill placeholders from `terraform output` after L1 apply, then:
+#   cp helm-values.yaml.example helm-values.yaml
+#   helm upgrade --install reprolab-gke infra/gcp/helm/ \
+#     -f infra/gcp/envs/deepinvent/helm-values.yaml
+#
+# NEVER commit helm-values.yaml (contains project-specific IDs and emails).
+#
+# Key names here MUST match infra/gcp/helm/values.yaml exactly.
+# Sources marked [TF: <output>] come from `terraform output -raw <output>`.
+# Sources marked [tfvar: <var>] come directly from main.tfvars.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── Namespace & ServiceAccount ───────────────────────────────────────────────
+# [tfvar: workload_identity_namespace]  Must match main.tfvars and the Workload
+# Identity member subject in the identity module.
+namespace: reprolab
+
+# [tfvar: workload_identity_service_account]  Must match main.tfvars and the
+# WI member `<project>.svc.id.goog[<namespace>/<serviceAccountName>]`.
+serviceAccountName: reprolab-sa
+
+# ── Workload Identity ────────────────────────────────────────────────────────
+workloadIdentity:
+  # [TF: workload_identity_gcp_service_account]
+  # Populate from: terraform output -raw workload_identity_gcp_service_account
+  gcpServiceAccount: "your-prefix-workload@your-gcp-project.iam.gserviceaccount.com"
+
+# ── GCP storage ──────────────────────────────────────────────────────────────
+storage:
+  # [TF: gcs_bucket_name]
+  # Populate from: terraform output -raw gcs_bucket_name
+  bucket: "your-prefix-reprolab-artifacts"
+
+  # Filestore RWX cache — leave the share/ip empty to SKIP the cache PVC entirely
+  # (matches filestore_enabled = false in Terraform).
+  # When Filestore is enabled:
+  #   [TF: filestore_share]  terraform output -raw filestore_share
+  #   [TF: filestore_ip]     terraform output -raw filestore_ip
+  filestoreShare: ""
+  filestoreIp: ""
+
+  pvcSize: "1024Gi"
+  reclaimPolicy: Retain
+
+# ── GPU node pools ────────────────────────────────────────────────────────────
+# Every GPU pool shares the taint key (nvidia.com/gpu) and the GKE-managed device
+# plugin (installed via the node-pool driver config). Job nodeSelector uses the
+# reprolab/sku label to target a specific pool.
+#
+# [TF: gpu_pools output]  Use `terraform output -json gpu_pools` to list pools.
+# defaultSku must match a short_name provisioned in var.gpu_skus (main.tfvars).
+gpu:
+  skuLabelKey: reprolab/sku    # constant — primary Job nodeSelector key
+  taintKey: nvidia.com/gpu     # constant — same on all GPU pools
+  defaultSku: gcp_a100_80      # must match a gpu_skus short_name in main.tfvars
+
+# ── RBAC ──────────────────────────────────────────────────────────────────────
+rbac:
+  # [tfvar: operator_iam_members]  Not a TF output — copy directly from main.tfvars.
+  # Each entry is "user:<email>" or "group:<email>".
+  operatorMembers:
+    - "user:your-operator@example.com"
+    # - "group:reprolab-operators@example.com"
+
+# ── Artifact Registry / image ───────────────────────────────────────────────────
+image:
+  # [TF: artifact_registry_url] + "/gke-cell-base:<PINNED-tag>"
+  # Populate the base from: terraform output -raw artifact_registry_url
+  gkeCellBase: "REGION-docker.pkg.dev/your-gcp-project/reprolab/gke-cell-base:0.1.0"
+
+# ── ResourceQuota ─────────────────────────────────────────────────────────────
+# Set maxGpu = sum of (gpu_count × max_nodes) across all gpu_skus entries.
+# For the default single A100-80 pool with max_nodes=1: maxGpu = 1.
+resourceQuota:
+  maxGpu: 1           # set to sum(gpu_count * max_nodes) across gpu_skus entries
+  maxGpuLimits: 1     # same as maxGpu
+  maxJobs: 64
+
+# ── Device plugin — GKE-managed; keep disabled. ───────────────────────────────
+devicePlugin:
+  enabled: false

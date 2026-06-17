@@ -1,7 +1,6 @@
 <!-- doc-meta: status=generated-artifact; captured=2026-06-08 -->
 # Best runs
 
-End-to-end reproductions from the OpenResearch agent — clean single runs (All-CNN, Adam, ResNet, VAE) and one multi-attempt campaign on the hard SDAR stress paper. PDF in, scored reproduction out, no human in the loop on the coding side.
 > **Generated artifacts — point-in-time showcase, not current docs.** These are
 > reproductions captured **2026-05-26 → 2026-06-10**; the numbers reflect the
 > agent and rubric as of those commits, not necessarily today's behavior. They are
@@ -9,14 +8,13 @@ End-to-end reproductions from the OpenResearch agent — clean single runs (All-
 > reproductions on a GPU). For live results use the `/leaderboard`. Provenance
 > for each run is in its own `final_report.json` + sidecar files.
 
-End-to-end reproductions from the OpenResearch agent — three clean single runs (Adam, All-CNN, VAE) and one multi-attempt campaign on the hard SDAR stress paper. PDF in, scored reproduction out, no human in the loop on the coding side.
+End-to-end reproductions from the OpenResearch agent — clean single runs (All-CNN, Adam, ResNet, VAE) and one multi-attempt campaign on the hard SDAR stress paper. PDF in, scored reproduction out, no human in the loop on the coding side.
 
 | Paper | Verdict | Rubric | Iter | Wall |
 |---|---|---:|---:|---:|
 | [Striving for Simplicity: The All Convolutional Net (Springenberg et al., 2014)](allcnn/) | reproduced | **0.744** | 14 | 7h25m |
 | [Adam: A Method for Stochastic Optimization (Kingma & Ba, 2014)](adam/) | reproduced | **0.831** | 4 | 2h36m |
 | [ResNet: Deep Residual Learning for Image Recognition (He et al., 2015)](resnet/) | reproduced | 0.620 | 4 | 1h55m |
-| Adam: A Method for Stochastic Optimization (Kingma & Ba, 2014) | reproduced | 0.831 | 1 | 65m |
 | Auto-Encoding Variational Bayes (Kingma & Welling, 2013) | partial | 0.646 | 3 | 30m |
 | [SDAR: Self-Distilled Agentic RL (2605.15155)](sdar/) — 4-attempt campaign | partial | 0.363 | 10 | 197m |
 | [All-CNN — with/without-BES A/B, 2 paired runs (2026-06-11)](allcnn_ab/) | A/B | **+0.085 BES** | 10+10 | ~13.4h ×2 |

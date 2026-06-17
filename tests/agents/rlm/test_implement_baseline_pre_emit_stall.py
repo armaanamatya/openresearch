@@ -113,7 +113,10 @@ def test_pre_emit_stall_returns_repairable_after_threshold(
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
-        t.join(timeout=20)
+        # 60s wait budget (threshold is still 1s) — the stall-detection poll loop
+        # is CPU-starved under -n auto, so it needs generous wall-clock to fire +
+        # return; a real failure-to-escalate still leaves result_holder empty.
+        t.join(timeout=60)
 
     assert not exc_holder, f"implement_baseline raised: {exc_holder[0]}"
     assert result_holder, "implement_baseline did not return within 20 s"
@@ -245,7 +248,10 @@ def test_pre_emit_env_override(
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
-        t.join(timeout=20)
+        # 60s wait budget (threshold is still 1s) — the stall-detection poll loop
+        # is CPU-starved under -n auto, so it needs generous wall-clock to fire +
+        # return; a real failure-to-escalate still leaves result_holder empty.
+        t.join(timeout=60)
 
     assert not exc_holder, f"implement_baseline raised: {exc_holder[0]}"
     assert result_holder, "implement_baseline did not escalate within 20 s"

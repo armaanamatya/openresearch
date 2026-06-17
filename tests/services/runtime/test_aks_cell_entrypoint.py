@@ -844,3 +844,60 @@ class TestDownloadPrefixPathSafety:
         # Nothing escaped local_dir.
         assert not (tmp_path.parent / "evil.py").exists()
         assert not Path("/tmp/evil.py").exists() or Path("/tmp/evil.py").read_bytes() != b"pwned"
+
+
+# ---------------------------------------------------------------------------
+# _run_trainer_subprocess — argv parity with local gpu_cell_runner (P1-fix)
+# ---------------------------------------------------------------------------
+
+
+class TestRunTrainerSubprocessArgv:
+    """_run_trainer_subprocess must pass --cell-id and --output-dir as argv.
+
+    The local gpu_cell_runner launches train_cell.py with both env vars AND
+    argparse argv (``--cell-id=<id> --output-dir=<dir>``).  Without matching
+    argv on the AKS path, a spec-compliant train_cell.py that reads argparse
+    flags dies with SystemExit(2) on Azure only.
+    """
+
+    def test_trainer_subprocess_passes_cell_id_and_output_dir_argv(
+        self, ep, tmp_path, monkeypatch
+    ):
+        """Popen argv must contain --cell-id=<id> and --output-dir=<dir>."""
+        cell_id = "cell-argv-test-001"
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        train_cell = tmp_path / "train_cell.py"
+        train_cell.write_text("# fake")
+        attempt_log = tmp_path / "logs" / "attempt-0.log"
+
+        # Set OPENRESEARCH_CELL_ID so _run_trainer_subprocess can read it.
+        monkeypatch.setenv("OPENRESEARCH_CELL_ID", cell_id)
+
+        captured_argv: list[str] = []
+
+        class _FakeProc:
+            returncode = 0
+            stdout = iter([])  # no output lines
+
+            def wait(self):
+                return 0
+
+        def _fake_popen(argv, **kwargs):
+            captured_argv.extend(argv)
+            return _FakeProc()
+
+        with patch("subprocess.Popen", side_effect=_fake_popen):
+            ep._run_trainer_subprocess(
+                train_cell_path=train_cell,
+                output_dir=output_dir,
+                env_overrides={},
+                attempt_log_path=attempt_log,
+            )
+
+        assert f"--cell-id={cell_id}" in captured_argv, (
+            f"argv missing --cell-id={cell_id!r}; got {captured_argv}"
+        )
+        assert f"--output-dir={output_dir}" in captured_argv, (
+            f"argv missing --output-dir={output_dir}; got {captured_argv}"
+        )

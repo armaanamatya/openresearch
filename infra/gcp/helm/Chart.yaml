@@ -1,0 +1,22 @@
+apiVersion: v2
+name: reprolab-gke
+description: |
+  In-cluster scaffold (L2) for the ReproLab GCP GKE GPU execution backend.
+  Installs: Namespace, Workload-Identity ServiceAccount (annotated with the GCP
+  service-account email), an optional Filestore CSI StorageClass + RWX PVC,
+  orchestrator RBAC, and a ResourceQuota.  GKE manages the NVIDIA device plugin
+  via the node-pool driver install, so NO device-plugin DaemonSet is shipped.
+  Ephemeral training Jobs (L3) are NOT managed by this chart — they are emitted
+  by the k8s job cell runner at run time.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - reprolab
+  - gcp
+  - gke
+  - gpu
+  - deepinvent
+maintainers:
+  - name: ReproLab / DeepInvent
+    email: sww35@txstate.edu

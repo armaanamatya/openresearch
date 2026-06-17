@@ -1,6 +1,6 @@
 # Azure AKS GPU backend — standup runbook & handoff
 
-- **Date:** 2026-06-03
+- **Date:** 2026-06-03 · IaC update: 2026-06-12 (Bicep sole IaC)
 - **Pairs with:** `docs/superpowers/specs/2026-06-03-azure-aks-gpu-backend-design.md` (the *why* and the decision table). This doc is the *how* — stand it up, run it, debug it.
 - **Status:** Design locked, implementation not started. This runbook is written ahead of the code so the **quota request (the critical-path blocker) can start immediately**.
 
@@ -8,10 +8,10 @@
 
 ## 0. Prerequisites
 
-**Tools (local box):** `az` CLI (logged in: `az login`), `terraform` ≥ 1.6, `kubectl`, `helm` ≥ 3.12, the repo venv (`.venv/bin/python`).
+**Tools (local box):** `az` CLI (logged in: `az login`), `kubectl`, `helm` ≥ 3.12, the repo venv (`.venv/bin/python`).
 
 **Access (from DeepInvent):**
-- Subscription ID + a role that can create RG/AKS/ACR/storage + **assign roles** (Owner or Contributor+User Access Administrator — workload identity needs role assignments).
+- Subscription ID + a role that can create RG/AKS/ACR/storage + **assign roles** (Owner for L0 one-time bootstrap, then Contributor+User Access Administrator on the RG for L1 day-to-day).
 - Confirmation that a **public AKS API server with authorized-IP-ranges is permitted** (see spec §9).
 - A **per-run / monthly cost ceiling** (sets `max_run_gpu_usd` and node-pool `max`).
 
@@ -43,25 +43,46 @@ az vm list-usage --location "$REGION" -o table | grep -i "NCADS\|A100"
 
 ---
 
-## 2. Phase 0 — remote-state bootstrap (chicken-and-egg)
+## 2. Phase 0 — L0 access bootstrap (one-time, subscription Owner)
 
-The Terraform state backend storage account must exist before `terraform init` can use it.
+Run this once to create the resource group and grant the operator the RG-scoped roles needed for L1.
 
 ```bash
-cd infra/azure/bootstrap
-terraform init && terraform apply      # creates RG + storage account + "tfstate" container
-# note the outputs (storage account name, container) → infra/azure/backend.tf
+cp infra/azure/bicep/main.bicepparam.example infra/azure/bicep/main.bicepparam
+# Fill in every <PLACEHOLDER> — see comments in the file
+
+az deployment sub create \
+  --location <AZURE_REGION> \
+  --template-file infra/azure/bicep/main.bicep \
+  --parameters infra/azure/bicep/main.bicepparam
 ```
+
+See `infra/azure/bicep/README.md` for the full L0 reference. If the operator already holds Contributor on an existing RG (AIONIC path), use `bootstrap/pipeline-identity.bicep` instead (see the Adoption path section in that README).
 
 ---
 
 ## 3. Phase 1a — provision infra (L1) + scaffold (L2), then smoke
 
 ```bash
-cd infra/azure
-terraform init -backend-config=envs/deepinvent/backend.hcl
-terraform plan  -var-file=envs/deepinvent/main.tfvars
-terraform apply -var-file=envs/deepinvent/main.tfvars     # AKS + GPU pool(min=0) + ACR + storage + identity
+# Configure L1 parameters
+cp infra/azure/bicep/infra.bicepparam.example infra/azure/bicep/infra.bicepparam
+# Fill in every <PLACEHOLDER>
+
+# Deploy L1
+az stack group create \
+  --name openresearch-infra \
+  --resource-group <RESOURCE_GROUP_NAME> \
+  --template-file infra/azure/bicep/infra.bicep \
+  --parameters infra/azure/bicep/infra.bicepparam \
+  --deny-settings-mode none \
+  --action-on-unmanage detachAll
+
+# Read outputs for use in Helm values
+az stack group show \
+  --name openresearch-infra \
+  --resource-group <RESOURCE_GROUP_NAME> \
+  --query outputs
+# Or: scripts/azure_wire_env.sh (exports the block for .env pasting)
 
 az aks get-credentials --resource-group <rg> --name <aks-name>
 kubectl get nodes                                          # system pool only; GPU pool shows 0 nodes
@@ -74,7 +95,7 @@ kubectl -n reprolab get sa,pvc,resourcequota
 
 **Build & push the base image:**
 ```bash
-az acr build -r <acr-name> -t aks-cell-base:latest docker/aks-cell-base/
+scripts/azure_build_cell_image.sh
 ```
 
 **GATE — hello-GPU smoke** (proves: pool scales 0→1, GPU visible, Blob writable via workload identity, pool scales back to 0):
@@ -143,7 +164,7 @@ Prove L1/L2/1b plumbing on CPU: point the cell Job at a CPU node pool with a **f
 
 ## 9. Next-session resume prompt
 
-> Implementing the Azure AKS GPU backend per `docs/superpowers/specs/2026-06-03-azure-aks-gpu-backend-design.md`. Design is locked (decision table §1). Start by confirming the change-map (§4) against the live tree, then implement in phase order (§11): Phase 1a Terraform/Helm (`infra/azure/`) + base image, gated on the hello-GPU smoke; then Phase 1b the `k8s_job_cell_runner.run_matrix` drop-in (identical signature/return to `gpu_cell_runner.run_matrix`, §5) + the four wiring edits (`SandboxMode`, `cli.py:1605` choices, `config.py` Literals+`azure_*` block, `_backend_for_sandbox_mode`, `_execute_cell_matrix` runner-select, `_describe_azure` fill, `build_environment` no-op). Keep `local`/`runpod` byte-for-byte unchanged — that's the acceptance bar. ⚠️ Check GPU quota status first (§1); if still pending, validate wiring on the CPU stub (§6) and leave the real-GPU gate open. Commit as `lolout1`, no co-author trailer.
+> Implementing the Azure AKS GPU backend per `docs/superpowers/specs/2026-06-03-azure-aks-gpu-backend-design.md`. Design is locked (decision table §1). Start by confirming the change-map (§4) against the live tree, then implement in phase order (§11): Phase 1a Bicep/Helm (`infra/azure/bicep/infra.bicep`, `infra/azure/helm/`) + base image (via `scripts/azure_build_cell_image.sh`), gated on the hello-GPU smoke; then Phase 1b the `k8s_job_cell_runner.run_matrix` drop-in (identical signature/return to `gpu_cell_runner.run_matrix`, §5) + the four wiring edits (`SandboxMode`, `cli.py:1605` choices, `config.py` Literals+`azure_*` block, `_backend_for_sandbox_mode`, `_execute_cell_matrix` runner-select, `_describe_azure` fill, `build_environment` no-op). Keep `local`/`runpod` byte-for-byte unchanged — that's the acceptance bar. ⚠️ Check GPU quota status first (§1); if still pending, validate wiring on the CPU stub (§6) and leave the real-GPU gate open. Commit as `lolout1`, no co-author trailer.
 
 ---
 

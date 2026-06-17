@@ -7,7 +7,7 @@ const PROVIDER_KEY = "reprolab.lab.providerSelection";
 
 export interface UserPrefs {
   model?: string;
-  sandbox?: "auto" | "local" | "docker" | "runpod";
+  sandbox?: "auto" | "local" | "docker" | "runpod" | "azure" | "gcp";
   executionMode?: "efficient" | "max";
   splitRatio?: number;
 }

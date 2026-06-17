@@ -16,8 +16,6 @@
 // and operator IPs — no secrets — and the deploy workflow reads it from the
 // repo (the gated deploy job is a no-op until it exists on main).
 //
-// Mirrors envs/deepinvent/main.tfvars.example — all param names correspond to
-// the Terraform variable names (camelCase here, snake_case in TF).
 // ──────────────────────────────────────────────────────────────────────────────
 
 using 'infra.bicep'

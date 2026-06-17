@@ -1,3 +1,4 @@
+{{- if .Values.storage.filesCache.enabled }}
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
@@ -44,3 +45,4 @@ mountOptions:
   - cache=strict
   - actimeo=30
   - nosharesock
+{{- end }}

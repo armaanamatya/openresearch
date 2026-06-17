@@ -44,6 +44,26 @@ class GpuResolutionError(RuntimeError):
     """Raised when no SKU can satisfy (VRAM + $/hr cap + cloud_type) constraints."""
 
 
+def _azure_default_sku(provisioned_skus: tuple[str, ...] | None) -> "GpuSku":
+    """Default azure SKU for the no-/low-confidence fallback, honoring provisioning.
+
+    When provisioned_skus is set, return the CHEAPEST provisioned SKU (so the
+    fallback Job targets a node pool that actually exists); otherwise the global
+    azure fallback. Fixes the unschedulable-pool hang when only a larger SKU is
+    provisioned.
+    """
+    if provisioned_skus:
+        candidates: list[GpuSku] = []
+        for name in provisioned_skus:
+            try:
+                candidates.append(_by_short_name(name, provider="azure"))
+            except GpuResolutionError:
+                pass
+        if candidates:
+            return min(candidates, key=lambda s: (s.approx_usd_per_hr, s.short_name))
+    return _by_short_name(_AZURE_FALLBACK_SHORT_NAME, provider="azure")
+
+
 def resolve(
     requirements: GpuRequirements,
     *,

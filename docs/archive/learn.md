@@ -19,6 +19,18 @@ in **Cross-cutting principles** below.
 
 ---
 
+## 2026-06-14 — `--sandbox azure` silently ran the monolithic legacy path: the cells-route dispatch gate enumerated `("local","docker")` and omitted `azure`, while the inner branch it guarded was a ready-to-use azure→K8s path
+
+**Symptom.** The entire SDAR-on-Azure one-Job-per-cell machinery (`k8s_job_cell_runner`, the AKS entrypoint, the blob bus) was "built, reviewed, committed" — yet a real `--sandbox azure` run would never have dispatched a single cell Job. It would have degraded to `AksJobBackend.exec` running `commands.json` monolithically.
+
+**Root cause.** Two sibling backend-enum gates in `run_experiment` (`primitives.py`) hard-coded only the backends that existed when they were written: the cells-route gate `_caps.backend_kind in ("local","docker")` (line ~5676) and the empty-`env_id` guard that exempted only `sandbox_mode=="local"` (line ~5533). `_execute_cell_matrix` already had a fully-wired `if _sb_key_ecm == "azure":` branch — dead code, because no caller reached it. The test suite missed it because EVERY gate test built `_caps(backend="local")`; the azure path was only ever exercised at the inner `run_matrix` level, below the gate.
+
+**Fix.** Add `"azure"` to the gate tuple; exempt azure from the env_id guard (azure, like local, selects its image from `sandbox_mode`+`azure_base_image`, never `env_id`). Guard tests now drive `run_experiment(sandbox_mode="azure", env_id="")` through the gate.
+
+**Rule (instance of cross-cutting #11).** A backend/mode-enum dispatch gate needs a guard test that drives the FULL gate for EACH enumerated value — not just the inner branch. An inner `if mode == X` branch proves nothing if no test reaches it through the gate. When you add a backend, grep for every `kind in (...)` / `mode == "local"` gate and add it (or a test will not catch the omission).
+
+**Regression test.** `tests/agents/rlm/test_run_experiment_cell_route.py::test_run_experiment_takes_cell_route_for_azure` (+ `::test_execute_cell_matrix_azure_dispatches_k8s_runner`), `tests/agents/rlm/test_azure_cell_integration.py::TestBlobOnlyManifestDispatch`.
+
 ## 2026-06-07 — A faithful run scored an honest 0.0 because the agent's `torch` re-pin downgraded the harness cu121 build → `libcupti` wouldn't load → every experiment died at import
 
 **Symptom.** The All-Conv-Net run scored 0.0/`partial`. Both experiments died at import-preflight with `libcupti.so.12: cannot open shared object file` before training a single step — no metrics, so an honest zero, NOT a scorer bug (the opposite of the Adam-0.69 stinginess problem).

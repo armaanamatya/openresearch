@@ -167,14 +167,14 @@ class Settings(BaseSettings):
     # defaults remain controlled separately by argparse flags. Local launchers
     # set this to runpod for GPU-backed dev runs; deployments can set it to
     # docker or local in env.
-    default_sandbox: Literal["auto", "local", "docker", "runpod", "azure"] = "runpod"
+    default_sandbox: Literal["auto", "local", "docker", "runpod", "azure", "gcp"] = "runpod"
 
     # Optional hard override for every run's sandbox mode, regardless of what
     # the client requested. Empty means "honor the request/default_sandbox".
     # Deployments that must forbid RunPod should set OPENRESEARCH_FORCE_SANDBOX to
     # "docker" or "local" explicitly; the code default must stay empty so a
     # missing/commented .env line does not silently rewrite sandbox=runpod.
-    force_sandbox: Literal["", "auto", "local", "docker", "runpod", "azure"] = ""
+    force_sandbox: Literal["", "auto", "local", "docker", "runpod", "azure", "gcp"] = ""
 
     # Force the LLM provider for every run regardless of what the client
     # requested — analogous to force_sandbox. The UI hard-codes provider=
@@ -235,6 +235,16 @@ class Settings(BaseSettings):
     azure_storage_account: str = Field(default="", description="Azure storage account name (Blob + Files)")
     azure_blob_container: str = Field(default="reprolab-artifacts", description="Blob container for run artifacts")
     azure_files_share: str = Field(default="reprolab-cache", description="Azure Files share for HF_HOME + pip cache")
+    azure_files_cache_enabled: bool = Field(
+        default=True,
+        description=(
+            "When True (default), AKS cell Jobs mount the Azure Files PVC "
+            "(<namespace>-files-pvc) at azure_cache_mount_path as the HF/pip "
+            "cache. When False — or when azure_files_share is empty — the cell "
+            "Job uses an ephemeral emptyDir instead, so no Files share / "
+            "Storage Account Key Operator grant is required (blob-only path)."
+        ),
+    )
     azure_acr_login_server: str = Field(default="", description="ACR login server (e.g. myregistry.azurecr.io)")
     azure_aks_cluster: str = Field(default="", description="AKS cluster name")
     azure_namespace: str = Field(default="reprolab", description="Kubernetes namespace for Job submission")
@@ -284,6 +294,19 @@ class Settings(BaseSettings):
         ge=0,
         description="Job.spec.backoffLimit (Pod-level retries); keep at 0 — OOM retry is delegated to the in-Job wrapper + podFailurePolicy",
     )
+    # Spot/preemptible data plane (opt-in). Must be paired with the IaC `useSpot`
+    # node-pool flag: this knob makes the runtime add the spot-taint toleration to the
+    # cell Pod and (when job_backoff_limit is 0) reschedule a preempted cell onto a fresh
+    # spot node. Default false → on-demand behavior, no manifest change.
+    azure_use_spot: bool = Field(
+        default=False,
+        description="Provision/treat the AKS GPU pool as Spot — adds the spot-taint toleration to cell Pods (pair with the Bicep useSpot param)",
+    )
+    azure_spot_backoff_limit: int = Field(
+        default=3,
+        ge=0,
+        description="Job.spec.backoffLimit used ONLY when use_spot is on and job_backoff_limit is 0 — lets a preempted cell Job reschedule onto a new spot node",
+    )
     # Path inside the Job Pod where the Azure Files share (HF_HOME + pip cache)
     # is mounted. Must match the volume mount in the Job template and the
     # HF_HOME / pip cache env vars injected by the runner.
@@ -322,6 +345,168 @@ class Settings(BaseSettings):
         default=600,
         ge=1,
         description="Timeout (seconds) for pip install in the Job bootstrap script",
+    )
+
+    # --- GCP GKE backend settings (OPENRESEARCH_GCP_*) ---
+    gcp_project: str = Field(default="", description="GCP project ID for the GKE cluster")
+    gcp_region: str = Field(default="us-central1", description="GCP region (e.g. us-central1, us-east1)")
+    gcp_gcs_bucket: str = Field(default="", description="GCS bucket name for run artifacts (replaces Azure storage account + container)")
+    gcp_filestore_share: str = Field(default="reprolab-cache", description="Filestore share name for HF_HOME + pip cache")
+    gcp_files_cache_enabled: bool = Field(
+        default=False,
+        description=(
+            "Mount the Filestore PVC (reprolab-cache) as the cell cache. GCP "
+            "Filestore is OPTIONAL and off by default, so this defaults False — "
+            "cells then use an ephemeral emptyDir and never block on a missing "
+            "PVC. Set True only when the optional Filestore is provisioned."
+        ),
+    )
+    gcp_artifact_registry: str = Field(default="", description="Artifact Registry host (e.g. us-central1-docker.pkg.dev/myproject/reprolab)")
+    gcp_gke_cluster: str = Field(default="", description="GKE cluster name")
+    gcp_namespace: str = Field(default="reprolab", description="Kubernetes namespace for Job submission")
+    gcp_service_account: str = Field(default="reprolab-sa", description="K8s ServiceAccount annotated for Workload Identity (must match the IAM binding subject)")
+    gcp_node_pool_name: str = Field(default="gpua100", description="GPU node pool name (scale-to-zero)")
+    gcp_per_gpu_vram_gb: float = Field(default=80.0, ge=1.0, description="VRAM per GPU in the node pool (A100=80)")
+    gcp_max_nodes: int = Field(default=4, ge=1, description="Node pool max-nodes (orchestrator-side concurrency cap)")
+    # Empty means the operator MUST set OPENRESEARCH_GCP_BASE_IMAGE to a PINNED
+    # Artifact Registry tag. The runner errors clearly on empty rather than
+    # defaulting to a floating :latest tag.
+    gcp_base_image: str = Field(default="", description="Pre-baked Artifact Registry base image (build_environment no-op); operator must set to a PINNED tag — never :latest")
+    gcp_gpu_usd_per_hour: float = Field(default=3.93, ge=0.0, description="Per-GPU $/hr for budget tracking (default = A100-80 on-demand list price; set your negotiated rate). 0 disables the run-USD cost cap.")
+    gcp_boot_timeout_seconds: int = Field(default=900, ge=1, description="Seconds to wait for a Job pod to leave Pending")
+    gcp_pending_timeout_seconds: int = Field(default=1500, ge=1, description="Seconds before a stuck-Pending cell is failed as capacity_exhausted (GKE GPU cold-start from zero can take 10-12 min; 900s killed legitimate scale-up)")
+    # Catalog short_names of the GCP GPU SKUs that are actually provisioned
+    # as GKE node pools. The SKU resolver only selects from this list; the OOM
+    # escalation ladder only advances within it.
+    # INVARIANT: this list must name exactly the reprolab/sku labels your tfvars
+    # `gpu_skus` variable provisions. The cell scheduler places Jobs via
+    # nodeSelector {reprolab/sku: <short_name>}; a short_name with no matching
+    # provisioned pool resolves to a label that exists on no node, so every cell
+    # stays Pending → capacity_exhausted. Keep config ⊇ TF pool labels.
+    # pydantic-settings 2.x parses this from a JSON array env var:
+    #   OPENRESEARCH_GCP_GPU_SKUS='["gcp_a100_80x8"]'
+    # or from a comma-separated string via the built-in list coercion.
+    # Default = the single 8×A100-80 pool (gcp_a100_80x8) that infra/gcp
+    # variables.tf `gpu_skus` provisions by default — needs gpu_count(8) ×
+    # max_nodes A100-80 GPUs of quota in the matching region.
+    # Lean smallest-two validation run: override to ["gcp_a100_80"] AND give
+    # tfvars a single 1-GPU gcp_a100_80 (a2-ultragpu-1g) pool — only
+    # gpu_count(1) × max_nodes A100-80 GPUs of quota.
+    gcp_gpu_skus: list[str] = Field(
+        default_factory=lambda: ["gcp_a100_80x8"],
+        description=(
+            "Catalog short_names of the GCP GPU SKUs that are actually provisioned "
+            "as node pools. Must equal the reprolab/sku labels tfvars `gpu_skus` "
+            "provisions (config ⊇ TF pools). The resolver only selects from these; "
+            "the OOM ladder only escalates within these. "
+            "Default = the single 8×A100-80 pool (gcp_a100_80x8) from the TF default."
+        ),
+    )
+    # TTL added to the Job spec's ttlSecondsAfterFinished; Kubernetes deletes
+    # the Job + Pod objects this many seconds after they reach a terminal state.
+    gcp_ttl_seconds_after_finished: int = Field(
+        default=3600,
+        ge=1,
+        description="Job.spec.ttlSecondsAfterFinished — Kubernetes auto-deletes finished Jobs after this many seconds",
+    )
+    # Number of times Kubernetes will restart the Job's Pod on failure.
+    # Set to 0 because OOM retry is handled in-process; Kubernetes restarts
+    # would bypass that logic and double-count failures.
+    gcp_job_backoff_limit: int = Field(
+        default=0,
+        ge=0,
+        description="Job.spec.backoffLimit (Pod-level retries); keep at 0 — OOM retry is delegated to the in-Job wrapper",
+    )
+    # Spot/preemptible data plane (opt-in). Pair with the Terraform `use_spot` node-pool
+    # flag: adds the GKE spot-taint toleration to cell Pods and (when job_backoff_limit is
+    # 0) reschedules a preempted cell onto a fresh spot node. Default false → unchanged.
+    gcp_use_spot: bool = Field(
+        default=False,
+        description="Provision/treat the GKE GPU pool as Spot — adds the cloud.google.com/gke-spot toleration to cell Pods (pair with the TF use_spot var)",
+    )
+    gcp_spot_backoff_limit: int = Field(
+        default=3,
+        ge=0,
+        description="Job.spec.backoffLimit used ONLY when use_spot is on and job_backoff_limit is 0 — lets a preempted cell Job reschedule onto a new spot node",
+    )
+    # Path inside the Job Pod where the Filestore share (HF_HOME + pip cache)
+    # is mounted. Must match the volume mount in the Job template.
+    gcp_cache_mount_path: str = Field(
+        default="/mnt/reprolab-cache",
+        description="Mount path for the Filestore share (HF_HOME + pip cache) inside Job Pods",
+    )
+    # How often the Job watcher polls the Kubernetes API for Pod phase changes.
+    gcp_watch_poll_interval_s: float = Field(
+        default=5.0,
+        gt=0,
+        description="Polling interval (seconds) for the Job/Pod phase watcher",
+    )
+    # Batch-size scale factors for the two-step OOM shrink retry.
+    gcp_oom_batch_scale_step1: float = Field(
+        default=0.5,
+        gt=0,
+        le=1,
+        description="Batch-size scale factor applied on the first OOM retry (step 1 of 2)",
+    )
+    gcp_oom_batch_scale_floor: float = Field(
+        default=0.25,
+        gt=0,
+        le=1,
+        description="Minimum batch-size scale factor for OOM shrink retries (floor; never go below this)",
+    )
+    # Timeout (seconds) for `pip install -r requirements.txt` inside the Job
+    # bootstrap script.
+    gcp_bootstrap_pip_timeout_s: int = Field(
+        default=600,
+        ge=1,
+        description="Timeout (seconds) for pip install in the Job bootstrap script",
+    )
+    # GCP orchestrator / secret-store knobs (Stream A parity with azure_* block)
+    # These are settings-only — no behaviour change when the new flags are off.
+    gcp_orchestrator_image: str = Field(
+        default="",
+        description=(
+            "Container image for the in-cluster GCP orchestrator (Deployment + CronJob). "
+            "Must be a PINNED Artifact Registry tag; must include the claude CLI + Node. "
+            "Operator sets this in the Helm --set or values override. "
+            "Read by helm/values.yaml, not directly by backend code."
+        ),
+    )
+    gcp_csi_mount_path: str = Field(
+        default="/mnt/sm-secrets",
+        description=(
+            "Mount path inside the orchestrator pod where the Secrets Store CSI driver "
+            "projects Secret Manager secret files. Must match orchestrator-deployment.yaml "
+            "volumeMount.mountPath."
+        ),
+    )
+    # Stream B — long-lived Claude OAuth token (headless/unattended root)
+    # CLAUDE_CODE_OAUTH_TOKEN is read natively by the claude CLI and the
+    # claude-agent-sdk (which shells out to the claude binary).  When set, it
+    # satisfies the claude-oauth credential check WITHOUT requiring a local
+    # ~/.claude/.credentials.json file, making --model claude-oauth viable in
+    # unattended environments (pods, CI) that cannot run `claude login`.
+    #
+    # This field is read-only from Settings — the actual env var is consumed
+    # directly by the claude binary.  We surface it here so:
+    #   1. The _has_claude_subscription_oauth() helper can detect it (it reads
+    #      the CLAUDE_CODE_OAUTH_TOKEN env var directly).
+    #   2. The shell-vs-.env override validator knows it is NOT a suspect key
+    #      (an operator intentionally sets it in-cluster; it should not warn).
+    claude_code_oauth_token: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "OPENRESEARCH_CLAUDE_CODE_OAUTH_TOKEN",
+        ),
+        description=(
+            "Long-lived Claude OAuth token minted by `claude setup-token`. "
+            "When set, satisfies the claude-oauth credential check for headless / "
+            "unattended in-cluster runs without requiring ~/.claude/.credentials.json. "
+            "Value sourced from the secret store (Key Vault / Secret Manager) by the "
+            "orchestrator pod. Never set this in .env for local dev — use `claude login` "
+            "instead (the interactive flow writes ~/.claude/.credentials.json)."
+        ),
     )
 
     # --- Forced-iteration policy (Lane H, spec 2026-05-24) ---
