@@ -75,6 +75,65 @@ import backend.services.ingestion.discovery.events  # noqa: F401
 import backend.services.ingestion.intake.events  # noqa: F401
 import backend.services.ingestion.parser.events  # noqa: F401
 
+from backend.agents.rlm.models import resolve_root_model
+from backend.agents.rlm.root_validation import (
+    RISK_DEGENERATE_LOOP,
+    classify_root_model,
+)
+
+
+def _root_validation_gate(model: str | None) -> tuple[int | None, str | None, str | None]:
+    """Predict the degenerate-loop failure for the RLM root BEFORE a long run.
+
+    Returns ``(exit_code, warn_text, error_text)``:
+
+    * ``warn_text`` (or ``None``) — a LOUD ``[warn]`` block for ``claude-oauth``
+      (the documented FINAL_VAR refusal-loop risk). Surfaces regardless of the
+      flag — that is the point of the warning.
+    * ``error_text`` (or ``None``) — a ``[error]`` block printed when the
+      fail-fast fires.
+    * ``exit_code`` — ``1`` when ``OPENRESEARCH_REQUIRE_VALIDATED_ROOT`` is
+      truthy AND the resolved root is NOT paper-validated (abort before the
+      run); ``None`` otherwise (proceed).
+
+    FAIL-SOFT: if the root cannot be resolved/classified (unknown model, cred
+    probe failure), the gate is SKIPPED entirely — the real run will surface
+    the actual error. Default-OFF: a validated root or an unset flag never
+    blocks; the claude-oauth warning is the only effect when the flag is unset.
+
+    oauth-root-reliability plan, P2.
+    """
+    try:
+        validation = classify_root_model(resolve_root_model(model))
+    except Exception:  # noqa: BLE001 — fail-soft; never block on a probe failure
+        return None, None, None
+
+    warn_text: str | None = None
+    if validation.risk == RISK_DEGENERATE_LOOP:
+        warn_text = (
+            f"\n[warn] root model {validation.model_key!r} is an UNRELIABLE RLM root: "
+            "it degenerates into a FINAL_VAR refusal loop that never reaches "
+            "implement_baseline. The degenerate-loop detector now aborts the run "
+            "fast, but it may still produce no result. Recommended: --model gpt-5. "
+            "Set OPENRESEARCH_REQUIRE_VALIDATED_ROOT=1 to hard-block unvalidated "
+            "roots before the run starts.\n"
+        )
+
+    require = (
+        os.environ.get("OPENRESEARCH_REQUIRE_VALIDATED_ROOT", "").strip().lower()
+        in ("1", "on", "true", "yes")
+    )
+    if require and not validation.validated:
+        error_text = (
+            f"\n[error] root model {validation.model_key!r} is NOT paper-validated "
+            "as an RLM root and OPENRESEARCH_REQUIRE_VALIDATED_ROOT is set — "
+            "aborting before the run. Use --model gpt-5 (paper-validated) or unset "
+            "OPENRESEARCH_REQUIRE_VALIDATED_ROOT to override.\n"
+        )
+        return 1, warn_text, error_text
+
+    return None, warn_text, None
+
 
 def _warn_on_shell_env_override() -> None:
     """BUG-LR-014: warn when shell-exported API keys differ from .env values.
@@ -1660,6 +1719,20 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     # treated as a bundle paper_id (or absolute path), not a PDF/arXiv/DOI.
     if args.mode == "rdr":
         return _cmd_reproduce_rdr(args, runs_root)
+
+    # Root-validation gate (oauth-root-reliability plan, P2): predict the
+    # degenerate-loop failure BEFORE any ingest / services / GPU run. Default-OFF
+    # + fail-soft: a validated root / unset flag never blocks; the claude-oauth
+    # warning still prints. Placed here so BOTH RLM run paths — the PaperBench
+    # bundle dispatch below AND the arXiv/PDF ingest path — are covered, and no
+    # event store is open yet (so the fail-fast needs no cleanup).
+    _rv_exit, _rv_warn, _rv_error = _root_validation_gate(args.model)
+    if _rv_warn:
+        print(_rv_warn, file=sys.stderr)
+    if _rv_exit is not None:
+        if _rv_error:
+            print(_rv_error, file=sys.stderr)
+        return _rv_exit
 
     # rlm (default hybrid) or rlm-pure with a PaperBench bundle ID:
     # bypass ingest, load the bundle directly.

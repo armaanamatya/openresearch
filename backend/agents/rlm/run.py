@@ -86,6 +86,7 @@ from backend.agents.rlm.forced_iteration import (
     forced_iteration_policy,
 )
 from backend.agents.rlm.root_progress import infer_required_stage
+from backend.agents.rlm.root_validation import classify_root_model
 # BUG-LR-011: restore globals()/locals() inside rlm's LocalREPL sandbox
 # (upstream blacklists them alongside eval/exec/compile/input — incorrect).
 from backend.agents.rlm import safe_builtins_patch as _safe_builtins_patch  # noqa: F401
@@ -692,6 +693,8 @@ def _write_demo_status(
     process_status: str | None = None,
     verdict: str | None = None,
     warnings: list[str] | None = None,
+    root_model_validated: bool | None = None,
+    root_model_risk: str | None = None,
 ) -> None:
     """Write (merge) ``runs/<id>/demo_status.json`` so the run is REST-retrievable.
 
@@ -744,6 +747,13 @@ def _write_demo_status(
     # terminal write; only replaced when this call explicitly supplies one.
     if warnings:
         payload["warnings"] = list(warnings)
+    # Root-validation gate stamp (oauth-root-reliability plan, P2). Written only
+    # when supplied so existing call sites stay byte-for-byte unchanged; the
+    # ``**existing`` merge carries them forward across later status writes.
+    if root_model_validated is not None:
+        payload["root_model_validated"] = bool(root_model_validated)
+    if root_model_risk is not None:
+        payload["root_model_risk"] = root_model_risk
     payload["primitiveProvider"] = primitive_provider  # T21 / review I8
     payload["process_status"] = process_status
     payload["verdict"] = verdict
@@ -1962,6 +1972,20 @@ async def run_pipeline_rlm(
             "(root_model_unvalidated) — results may not match paper expectations",
             root_model.key,
         )
+    # Root-validation gate stamp (oauth-root-reliability plan, P2): record the
+    # validated/risk verdict into demo_status.json so an operator can predict
+    # the degenerate-loop failure for this run. Fail-soft — a stamp failure
+    # must never abort the run; the merge forward-fills onto the running file.
+    try:
+        _root_validation = classify_root_model(root_model)
+        _write_demo_status(
+            project_dir,
+            "running",
+            root_model_validated=_root_validation.validated,
+            root_model_risk=_root_validation.risk,
+        )
+    except Exception:  # noqa: BLE001 — stamping must never block a run
+        logger.debug("run_pipeline_rlm: root-validation stamp skipped", exc_info=True)
 
     # 3. Primitive LLM client (see _build_llm_client on the usage caveat).
     llm_client, llm_model = _build_llm_client(provider, root_model)
