@@ -61,7 +61,13 @@ _WALL_CLOCK_FLOOR_S = 60.0
 # capacity-exhausted stop cannot be fixed by re-running the same config — the
 # only honest move is to stop and ship the structured stop report.  Refusing
 # FINAL_VAR here just re-OOMs the next iteration (the 2026-05-31 death spiral).
-_TERMINAL_FAILURE_CLASSES = frozenset({"oom_shrink_exhausted", "capacity_exhausted"})
+# ``root_degenerate_loop`` is the analogous root-side terminal: the root has
+# called FINAL_VAR repeatedly with NO lifecycle progress (the degenerate
+# refusal loop, Task 4) — continuing to refuse only churns to the 16-refusal
+# cap / wall clock, so we accept the next FINAL_VAR and ship the report.
+_TERMINAL_FAILURE_CLASSES = frozenset(
+    {"oom_shrink_exhausted", "capacity_exhausted", "root_degenerate_loop"}
+)
 
 
 def _default_degenerate_threshold() -> int:
@@ -334,17 +340,20 @@ class ForcedIterationPolicy:
         if remaining is not None and remaining <= _WALL_CLOCK_FLOOR_S:
             return (False, None)
 
-        # 0.4. Terminal capacity exhaustion — a shrink-exhausted OOM (or an
-        # explicit capacity-exhausted stop) is NOT repairable by re-running the
-        # same config; refusing only re-OOMs. Accept FINAL_VAR so the run stops
-        # cleanly and ships its structured stop report (2026-05-31 remediation).
+        # 0.4. Terminal stop — accept FINAL_VAR, ship report, no re-loop. A
+        # shrink-exhausted OOM / capacity-exhausted stop is NOT repairable by
+        # re-running the same config (refusing only re-OOMs), and a
+        # root_degenerate_loop is a root that keeps calling FINAL_VAR with no
+        # lifecycle progress (refusing only churns to the 16-refusal cap).
+        # Either way the honest move is to stop and ship the structured stop
+        # report (2026-05-31 OOM remediation + Task 4 degenerate-loop early-abort).
         # Robust to both wiring styles: note_terminal_failure() OR a terminal
         # class threaded through record_repair_attempt().
         _terminal = self._terminal_failure_class or self._last_repair_failure_class
         if _terminal in _TERMINAL_FAILURE_CLASSES:
             logger.info(
-                "forced_iteration: terminal failure '%s' — accepting FINAL_VAR "
-                "(stop + report, no re-OOM loop)", _terminal,
+                "forced_iteration: terminal stop '%s' — accepting FINAL_VAR "
+                "(stop + report, no re-loop)", _terminal,
             )
             return (False, None)
 

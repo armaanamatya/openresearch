@@ -32,7 +32,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from rlm import RLM
 
@@ -81,10 +81,12 @@ from backend.agents.rlm._oauth_backend_patch import (
 )
 from backend.agents.rlm.forced_iteration import (
     _TERMINAL_FAILURE_CLASSES,
+    _WALL_CLOCK_FLOOR_S,
     ForcedIterationPolicy,
     apply_forced_iteration_patch,
     forced_iteration_policy,
 )
+from backend.agents.rlm.root_progress import infer_required_stage
 # BUG-LR-011: restore globals()/locals() inside rlm's LocalREPL sandbox
 # (upstream blacklists them alongside eval/exec/compile/input — incorrect).
 from backend.agents.rlm import safe_builtins_patch as _safe_builtins_patch  # noqa: F401
@@ -781,6 +783,108 @@ def _outcome_value(value: object) -> str:
     return str(getattr(value, "value", value or ""))
 
 
+def _autodrive_enabled() -> bool:
+    """Whether the OAuth auto-drive behaviour is enabled (Task 6).
+
+    Reads ``OPENRESEARCH_OAUTH_AUTODRIVE`` (truthy ``1``/``true``/``yes``);
+    default OFF.  When ON, the degenerate-loop callback only emits the warning
+    and does NOT early-abort — Task 6 fills the auto-drive recovery branch.
+    """
+    return os.environ.get("OPENRESEARCH_OAUTH_AUTODRIVE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _make_degenerate_loop_callback(
+    *,
+    emit: "Callable[[dict], None]",
+    ctx: "RunContext",
+    policy: "ForcedIterationPolicy",
+    autodrive_enabled: bool,
+):
+    """Return the ``on_degenerate_refusal_loop`` callback.
+
+    Default (autodrive OFF): emit a ``root_degenerate_refusal_loop``
+    run_warning + mark a terminal stop so the run finalizes fast (the next
+    FINAL_VAR is accepted via the ``root_degenerate_loop`` terminal class)
+    instead of churning to the 16-refusal cap / wall clock.  Wall-clock floor
+    and a pre-existing terminal stop take precedence.  The AUTODRIVE ON path
+    (Task 6) only emits — it does NOT early-abort.
+    """
+
+    def _on_degenerate(payload: dict) -> None:
+        signature = payload.get("signature")
+        count = payload.get("count")
+        stage = payload.get("required_stage")
+        try:
+            emit(
+                build_run_warning_event(
+                    level="warn",
+                    code="root_degenerate_refusal_loop",
+                    message=(
+                        f"Degenerate refusal loop: {count} no-progress FINAL_VAR "
+                        f"refusals (signature={signature}, required_stage={stage}). "
+                        "The root is looping without making lifecycle progress."
+                    ),
+                    data={
+                        "signature": signature,
+                        "count": count,
+                        # `required_stage` is the canonical payload key (Tasks 2/4);
+                        # `stage` is the alias the plan's Task 3 "payload.stage"
+                        # names — both carry the same inferred lifecycle stage.
+                        "required_stage": stage,
+                        "stage": stage,
+                    },
+                )
+            )
+        except Exception:  # noqa: BLE001 — emit must never block the policy
+            logger.exception(
+                "run_pipeline_rlm: degenerate-loop warning emit failed"
+            )
+
+        if autodrive_enabled:
+            # Task 6 fills the auto-drive recovery branch; for now do NOT
+            # early-abort — only the warning above is emitted.
+            return
+
+        # Precedence guard: never override a near-wall-clock or an
+        # already-terminal stop.
+        remaining = None
+        try:
+            remaining = ctx.remaining_s()
+        except Exception:  # noqa: BLE001
+            remaining = None
+        if remaining is not None and remaining <= _WALL_CLOCK_FLOOR_S:
+            return
+        if getattr(ctx, "_terminal_stop_reason", None):
+            return
+
+        # Early-abort: mark terminal so the next FINAL_VAR is accepted and the
+        # run finalizes via the existing hard-stop path with a clear reason.
+        try:
+            ctx._terminal_stop_reason = {
+                "kind": "root_degenerate_loop",
+                "failure_class": "root_degenerate_loop",
+                "signature": signature,
+                "count": count,
+                "required_stage": stage,
+            }
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "run_pipeline_rlm: could not stamp degenerate terminal stop"
+            )
+        try:
+            policy.note_terminal_failure("root_degenerate_loop")
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "run_pipeline_rlm: note_terminal_failure(root_degenerate_loop) failed"
+            )
+
+    return _on_degenerate
+
+
 def _record_last_primitive_result_tools(
     custom_tools: dict,
     ctx: RunContext,
@@ -803,6 +907,21 @@ def _record_last_primitive_result_tools(
     def _wrap_tool(name: str, tool: Any) -> Any:
         def _wrapped(*args: Any, **kwargs: Any) -> Any:
             result = tool(*args, **kwargs)
+            # Task 4: implement_baseline / build_environment are state-changing
+            # primitives — calling either is genuine lifecycle progress, so reset
+            # the no-progress refusal counter (the plan treats implement_baseline /
+            # build_environment / run_experiment all as progress; run_experiment
+            # resets via record_run_experiment()). This prevents a root that does
+            # real work between premature FINAL_VARs from falsely tripping the
+            # degenerate-loop detector. These two primitives do not carry an
+            # "outcome" key, so this sits ABOVE the outcome gate below.
+            if name in ("implement_baseline", "build_environment") and repair_policy_holder:
+                try:
+                    repair_policy_holder[0].record_state_change()
+                except Exception:  # noqa: BLE001 — never crash a tool wrapper
+                    logger.exception(
+                        "_record_last_primitive_result_tools: record_state_change failed"
+                    )
             if isinstance(result, dict) and "outcome" in result:
                 setattr(ctx, "_last_primitive_name", name)
                 setattr(ctx, "_last_primitive_result", result)
@@ -2144,6 +2263,70 @@ async def run_pipeline_rlm(
             return 0
         return count
 
+    def _code_path_exists() -> bool:
+        """Whether a usable baseline implementation exists on disk.
+
+        Minimal predicate (the degenerate case has NO code so this returns
+        False then): a non-empty ``code/commands.json`` JSON list AND ≥1
+        runnable source file under ``code/``.  Inlined rather than importing
+        the heavier ``primitives._harvest_baseline_artifacts`` to keep this
+        closure import-light and side-effect-free.
+        """
+        import json as _json
+
+        code_dir = ctx.project_dir / "code"
+        commands_path = code_dir / "commands.json"
+        try:
+            commands = _json.loads(commands_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        if not isinstance(commands, list) or not commands:
+            return False
+        runnable_suffixes = {".py", ".sh", ".bash", ".ps1"}
+        for file in code_dir.rglob("*"):
+            if not file.is_file() or file.name == "commands.json":
+                continue
+            if file.suffix.lower() in runnable_suffixes or file.name in {
+                "Dockerfile",
+                "Makefile",
+            }:
+                return True
+        return False
+
+    def _env_built() -> bool:
+        """Whether the environment build has succeeded for this run.
+
+        For ``docker``/``auto`` an explicit ``build_environment`` ok-row is
+        required; for ``local``/``runpod``/``azure``/``gcp`` env-build is a
+        no-op success → treat as built.
+        """
+        mode = getattr(ctx.sandbox_mode, "value", str(ctx.sandbox_mode or "")).lower()
+        if mode in ("docker", "auto"):
+            try:
+                return ctx.cost_ledger.session_call_count("build_environment") > 0
+            except Exception:  # noqa: BLE001
+                return False
+        return True
+
+    def _required_stage() -> str:
+        """Infer the next mandatory lifecycle stage (fail-soft).
+
+        Any error → ``"need_baseline"`` (the safe default — the degenerate
+        case has no code).
+        """
+        try:
+            return infer_required_stage(
+                primitives=[],
+                code_path_exists=_code_path_exists(),
+                env_built=_env_built(),
+                total_run_experiments=run_experiment_call_count(ctx),
+                total_verifications=1 if ctx.latest_rubric_score is not None else 0,
+            )
+        except Exception:  # noqa: BLE001 — never crash the policy
+            return "need_baseline"
+
+    oauth_root = root_model.rlm_backend == "anthropic-oauth"
+
     iteration_policy = ForcedIterationPolicy(
         min_iterations=min_iterations,
         rubric_snapshot=lambda: (
@@ -2158,6 +2341,18 @@ async def run_pipeline_rlm(
         on_repair_refusal=_emit_forced_repair_warning,
         max_rlm_iterations=_max_rlm_iterations,
         on_budget_exceeded=_emit_iteration_budget_exceeded,
+        required_stage=_required_stage,
+        oauth_root=oauth_root,
+    )
+    # Task 4 — register the degenerate-refusal-loop callback. Built after the
+    # policy exists so it can close over it (note_terminal_failure). Default
+    # (autodrive OFF): emit the warning + mark a terminal stop so the run
+    # finalizes fast instead of churning to the 16-refusal cap.
+    iteration_policy.on_degenerate_refusal_loop = _make_degenerate_loop_callback(
+        emit=emit,
+        ctx=ctx,
+        policy=iteration_policy,
+        autodrive_enabled=_autodrive_enabled(),
     )
     # PR-α followup: populate the late-binding holder so the tool wrapper
     # can call policy.record_repair_attempt() when run_experiment returns
