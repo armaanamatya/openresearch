@@ -60,3 +60,15 @@ variable "azure_openai_api_key_secret_id" {
   type        = string
   default     = ""
 }
+
+variable "azure_foundry_api_key_secret_id" {
+  description = "Fully-qualified resource name of the 'azure-foundry-api-key' secret (output of the secret_manager module). Optional OAuth-free grok credential; the IAM grant is created only when this is non-empty AND secret_manager_module_enabled = true."
+  type        = string
+  default     = ""
+}
+
+variable "openai_api_key_secret_id" {
+  description = "Fully-qualified resource name of the 'openai-api-key' secret (output of the secret_manager module). Optional OAuth-free OpenAI sub-agent credential; the IAM grant is created only when this is non-empty AND secret_manager_module_enabled = true."
+  type        = string
+  default     = ""
+}

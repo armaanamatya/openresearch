@@ -58,12 +58,28 @@ PROVIDER_ANTHROPIC_OAUTH = "anthropic-oauth"
 PROVIDER_ANTHROPIC = "anthropic"
 PROVIDER_OPENAI = "openai"
 PROVIDER_AZURE = "azure"
+# Azure AI Foundry OpenAI-compatible custom endpoint (e.g. Grok). A real
+# sub-role provider — executor/grader/verifier can all run on it, key-only (no
+# OAuth) — so a fully OAuth-free run is possible. Distinct from PROVIDER_AZURE
+# (classic Azure OpenAI /openai/deployments path).
+PROVIDER_AZURE_FOUNDRY = "azure-foundry"
+# Passthrough stamp for a planner token that is a root-only registry key
+# (qwen3-coder, kimi-k2.5, qwen3-coder-featherless, azure-foundry, …):
+# resolve_root_model already validated it, so we stamp it as-is rather than
+# rejecting it as an unknown sub-role token.
+PROVIDER_ROOT = "root"
 
 # Providers a sub-agent ROLE (executor/verifier/grader) can actually be built
 # for. The planner may additionally be openrouter/featherless (root-only); those
 # parse fine for stamping but are rejected if assigned to a sub-role.
 SUBROLE_PROVIDERS: frozenset[str] = frozenset(
-    {PROVIDER_ANTHROPIC_OAUTH, PROVIDER_ANTHROPIC, PROVIDER_OPENAI, PROVIDER_AZURE}
+    {
+        PROVIDER_ANTHROPIC_OAUTH,
+        PROVIDER_ANTHROPIC,
+        PROVIDER_OPENAI,
+        PROVIDER_AZURE,
+        PROVIDER_AZURE_FOUNDRY,
+    }
 )
 
 # Claude family is the validated baseline for every role; anything else on a
@@ -108,6 +124,13 @@ _ROLE_VOCAB: dict[str, tuple[str, str | None]] = {
     "azure-openai": (PROVIDER_AZURE, None),
     "gpt-4o-azure": (PROVIDER_AZURE, "gpt-4o"),
     "azure-gpt-4o": (PROVIDER_AZURE, "gpt-4o"),
+    # --- Azure AI Foundry (OpenAI-compatible custom endpoint, e.g. Grok) ---
+    # model None = use AZURE_FOUNDRY_DEPLOYMENT (dynamic, swappable via .env);
+    # a real sub-role provider so executor/grader/verifier = grok all work.
+    "azure-foundry": (PROVIDER_AZURE_FOUNDRY, None),
+    "foundry": (PROVIDER_AZURE_FOUNDRY, None),
+    "grok": (PROVIDER_AZURE_FOUNDRY, None),
+    "grok-4.3": (PROVIDER_AZURE_FOUNDRY, None),
 }
 
 
@@ -216,10 +239,19 @@ def parse_model_spec(token: str, *, role: str) -> RoleSpec:
         raise RoleModelError(f"empty model token for role '{role}'")
     entry = _ROLE_VOCAB.get(key)
     if entry is None:
-        raise RoleModelError(
-            f"unknown model token {token!r} for role '{role}'. "
-            f"Supported: {', '.join(supported_tokens())}"
-        )
+        # Sub-roles must resolve to a buildable provider — strict.
+        if role in _SUBROLES:
+            raise RoleModelError(
+                f"unknown model token {token!r} for role '{role}'. "
+                f"Supported: {', '.join(supported_tokens())}"
+            )
+        # Planner: the token is the already-resolved root-model key
+        # (resolve_root_model validated it upstream). Root-only keys —
+        # qwen3-coder, kimi-k2.5, qwen3-coder-featherless, azure-foundry — are
+        # absent from the sub-role vocab but parse fine here as a passthrough
+        # for stamping (the real provider/model live in the RootModel; the
+        # final report stamps planner from the resolved root label anyway).
+        return RoleSpec(role=role, token=key, provider=PROVIDER_ROOT, model=key)
     provider, model = entry
     if role in _SUBROLES and provider not in SUBROLE_PROVIDERS:
         raise RoleModelError(

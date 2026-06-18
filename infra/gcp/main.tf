@@ -120,6 +120,8 @@ module "identity" {
   claude_code_oauth_token_secret_id   = var.secret_manager_enabled ? module.secret_manager[0].claude_code_oauth_token_secret_id : ""
   anthropic_api_key_secret_id         = var.secret_manager_enabled ? module.secret_manager[0].anthropic_api_key_secret_id : ""
   azure_openai_api_key_secret_id      = var.secret_manager_enabled ? module.secret_manager[0].azure_openai_api_key_secret_id : ""
+  azure_foundry_api_key_secret_id     = var.secret_manager_enabled ? module.secret_manager[0].azure_foundry_api_key_secret_id : ""
+  openai_api_key_secret_id            = var.secret_manager_enabled ? module.secret_manager[0].openai_api_key_secret_id : ""
 }
 
 # ─── Secret Manager (orchestrator API-key store) ─────────────────────────────

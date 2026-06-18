@@ -374,3 +374,75 @@ def test_has_provider_credentials_openai_returns_false_when_unset(monkeypatch) -
 
 def test_has_provider_credentials_invalid_provider_returns_false() -> None:
     assert has_provider_credentials("local") is False
+
+
+# ---------------------------------------------------------------------------
+# Azure AI Foundry branch (OpenAI-compatible custom endpoint, e.g. Grok).
+# make_runtime("grok") / ("azure-foundry") returns the Foundry runtime directly,
+# key-only (no OAuth). All creds resolve through the single canonical
+# foundry_endpoint.resolve_foundry_credentials. The missing-case test also
+# neutralises Settings since the real .env carries Foundry creds.
+# ---------------------------------------------------------------------------
+
+import types  # noqa: E402
+
+
+def _no_foundry_settings(monkeypatch) -> None:
+    """Pin all three AZURE_FOUNDRY_* absent in env AND Settings (real .env has them)."""
+    monkeypatch.delenv("AZURE_FOUNDRY_ENDPOINT", raising=False)
+    monkeypatch.delenv("AZURE_FOUNDRY_API_KEY", raising=False)
+    monkeypatch.delenv("AZURE_FOUNDRY_DEPLOYMENT", raising=False)
+    monkeypatch.setattr(
+        "backend.config.get_settings", lambda *a, **k: types.SimpleNamespace()
+    )
+
+
+def _set_foundry_env(monkeypatch) -> None:
+    monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", "https://x.services.ai.azure.com")
+    monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "foundry-key")
+    monkeypatch.setenv("AZURE_FOUNDRY_DEPLOYMENT", "grok-4.3")
+
+
+def test_make_runtime_foundry_instantiates_without_credentials(monkeypatch) -> None:
+    from backend.agents.runtime.azure_foundry_runtime import AzureFoundryAgentRuntime
+
+    # No creds needed when require_api_key is False (offline import path).
+    _no_foundry_settings(monkeypatch)
+
+    for alias in ("azure-foundry", "foundry", "grok"):
+        runtime = make_runtime(alias)
+        assert isinstance(runtime, AzureFoundryAgentRuntime)
+        # provider_name stays "openai" — Foundry rides the OpenAI SDK.
+        assert runtime.provider_name == "openai"
+
+
+def test_make_runtime_foundry_requires_credentials_when_asked(monkeypatch) -> None:
+    _no_foundry_settings(monkeypatch)
+
+    with pytest.raises(ProviderConfigurationError) as exc_info:
+        make_runtime("grok", require_api_key=True)
+    assert exc_info.value.provider == "azure-foundry"
+
+
+def test_make_runtime_foundry_with_credentials(monkeypatch) -> None:
+    from backend.agents.runtime.azure_foundry_runtime import AzureFoundryAgentRuntime
+
+    _set_foundry_env(monkeypatch)
+
+    runtime = make_runtime("azure-foundry", require_api_key=True)
+    assert isinstance(runtime, AzureFoundryAgentRuntime)
+
+
+def test_foundry_runtime_resolves_base_url_deployment_and_model_override(
+    monkeypatch,
+) -> None:
+    from backend.agents.runtime.azure_foundry_runtime import AzureFoundryAgentRuntime
+
+    _set_foundry_env(monkeypatch)
+
+    runtime = AzureFoundryAgentRuntime()
+    # base_url normalised to the …/openai/v1 surface the OpenAI SDK appends to.
+    assert runtime._base_url == "https://x.services.ai.azure.com/openai/v1"
+    assert runtime._deployment == "grok-4.3"
+    # Foundry routes by deployment name as the model id.
+    assert runtime._model_override() == "grok-4.3"

@@ -80,6 +80,43 @@ spec:
                       name: reprolab-orchestrator-secrets
                       key: ANTHROPIC_API_KEY
 
+                {{- /*
+                  OAuth-free providers: Azure AI Foundry (grok) + OpenAI.  Every
+                  block below is gated on its values toggle (default
+                  false/empty) and the comments live INSIDE the gate, so the
+                  DEFAULT render is byte-identical to HEAD.  The secretKeyRef
+                  pairs with the SecretProviderClass gate (it would fail if the
+                  key is absent from the synced Secret).
+                */}}
+                {{- if .Values.orchestrator.azureFoundry.apiKey.enabled }}
+                # AZURE_FOUNDRY_API_KEY — grok root/sub-agent auth (synced KV
+                # secret 'azure-foundry-api-key').
+                - name: AZURE_FOUNDRY_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: reprolab-orchestrator-secrets
+                      key: AZURE_FOUNDRY_API_KEY
+                {{- end }}
+                {{- if .Values.orchestrator.openaiApiKey.enabled }}
+                # OPENAI_API_KEY — OpenAI sub-agent auth (synced KV secret
+                # 'openai-api-key').
+                - name: OPENAI_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: reprolab-orchestrator-secrets
+                      key: OPENAI_API_KEY
+                {{- end }}
+                {{- if .Values.orchestrator.azureFoundry.endpoint }}
+                # AZURE_FOUNDRY_ENDPOINT/_DEPLOYMENT — NON-SECRET resource coords
+                # for the `azure-foundry` (grok) models (backend/config.py).
+                - name: AZURE_FOUNDRY_ENDPOINT
+                  value: {{ .Values.orchestrator.azureFoundry.endpoint | quote }}
+                {{- end }}
+                {{- if .Values.orchestrator.azureFoundry.deployment }}
+                - name: AZURE_FOUNDRY_DEPLOYMENT
+                  value: {{ .Values.orchestrator.azureFoundry.deployment | quote }}
+                {{- end }}
+
                 # ── Long-lived Claude OAuth token (opt-in, Stream B) ──────────
                 # CRITICAL: gated on .Values.orchestrator.claudeOauthToken.enabled
                 # (default false) so the DEFAULT render is byte-identical to HEAD.
@@ -89,6 +126,22 @@ spec:
                     secretKeyRef:
                       name: reprolab-orchestrator-secrets
                       key: CLAUDE_CODE_OAUTH_TOKEN
+                {{- end }}
+
+                {{- /*
+                  Per-role model selection + auth strategy (OAuth-free runs).
+                  Lets an operator run fully OAuth-free, e.g. model=azure-foundry
+                  + roleModels="executor=grok,grader=grok" + authStrategy=api_only.
+                  Both NON-SECRET; gated on a non-empty value so the DEFAULT
+                  render (both empty) is byte-identical.
+                */}}
+                {{- if .Values.orchestrator.roleModels }}
+                - name: OPENRESEARCH_ROLE_MODELS
+                  value: {{ .Values.orchestrator.roleModels | quote }}
+                {{- end }}
+                {{- if .Values.orchestrator.authStrategy }}
+                - name: OPENRESEARCH_LLM_AUTH_STRATEGY
+                  value: {{ .Values.orchestrator.authStrategy | quote }}
                 {{- end }}
 
                 # ── Azure backend config (OPENRESEARCH_AZURE_* block) ─────────

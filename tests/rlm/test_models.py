@@ -168,7 +168,7 @@ class TestRegistryContract:
     def test_all_registry_entries_present(self):
         from backend.agents.rlm.models import ROOT_MODELS
 
-        assert set(ROOT_MODELS) == {"gpt-5", "qwen3-coder", "kimi-k2.5", "claude", "claude-oauth", "qwen3-coder-featherless", "azure-gpt-4o"}
+        assert set(ROOT_MODELS) == {"gpt-5", "qwen3-coder", "kimi-k2.5", "claude", "claude-oauth", "qwen3-coder-featherless", "azure-gpt-4o", "azure-foundry"}
 
     def test_all_backends_are_valid_rlm_literals(self):
         from backend.agents.rlm.models import ROOT_MODELS
@@ -210,6 +210,11 @@ class TestRegistryContract:
         from backend.agents.rlm.models import ROOT_MODELS
 
         for key, model in ROOT_MODELS.items():
+            # azure-foundry resolves model_name dynamically from
+            # AZURE_FOUNDRY_DEPLOYMENT at resolve time (see TestAzureFoundryRoot),
+            # so its static registry entry legitimately carries none.
+            if key == "azure-foundry":
+                continue
             assert "model_name" in model.backend_kwargs, (
                 f"{key}: backend_kwargs must contain 'model_name'"
             )
@@ -362,3 +367,129 @@ class TestFeatherlessContextLimit:
 
         assert get_context_limit(FEATHERLESS_ROOT_MODEL) == FEATHERLESS_PLAN_CONTEXT_LIMIT
         assert get_context_limit(FEATHERLESS_SUBCALL_MODEL) == FEATHERLESS_PLAN_CONTEXT_LIMIT
+
+
+# ---------------------------------------------------------------------------
+# Azure AI Foundry — dynamic OpenAI-compatible root (e.g. Grok)
+# ---------------------------------------------------------------------------
+
+
+def _blank_settings(monkeypatch):
+    """Force get_settings() to expose empty foundry fields.
+
+    The real .env may carry AZURE_FOUNDRY_*; resolution falls back to Settings
+    when os.environ is unset, so a 'missing-cred' test must neutralise that
+    fallback to stay hermetic regardless of the developer's .env.
+    """
+    import types
+
+    monkeypatch.setattr(
+        "backend.config.get_settings",
+        lambda *a, **k: types.SimpleNamespace(),
+    )
+
+
+class TestAzureFoundryRoot:
+    """The env-driven azure-foundry root (base_url + model swappable via .env)."""
+
+    def _set_env(self, monkeypatch, *, endpoint, deployment, key):
+        # os.environ wins over .env, so setting all three keeps the test
+        # hermetic even when the developer's real .env has foundry creds.
+        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", endpoint)
+        monkeypatch.setenv("AZURE_FOUNDRY_DEPLOYMENT", deployment)
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", key)
+
+    def test_resolves_dynamically_from_env(self, monkeypatch):
+        self._set_env(
+            monkeypatch,
+            endpoint="https://r.services.ai.azure.com/openai/v1/",
+            deployment="grok-4.3",
+            key="sk-foundry-test",
+        )
+        from backend.agents.rlm.models import resolve_root_model
+
+        rm = resolve_root_model("azure-foundry")
+        assert rm.key == "azure-foundry"
+        assert rm.rlm_backend == "openai"
+        # base_url normalised (trailing slash stripped); model_name = deployment.
+        assert rm.backend_kwargs["base_url"] == "https://r.services.ai.azure.com/openai/v1"
+        assert rm.backend_kwargs["model_name"] == "grok-4.3"
+        assert rm.backend_kwargs["api_key"] == "sk-foundry-test"
+        # sub-call backend mirrors the root (same host).
+        assert rm.sub_backend_kwargs["base_url"] == "https://r.services.ai.azure.com/openai/v1"
+        assert rm.sub_backend_kwargs["model_name"] == "grok-4.3"
+
+    @pytest.mark.parametrize("alias", ["grok", "grok-4.3", "foundry", "azure-foundry-openai"])
+    def test_aliases_resolve_to_foundry(self, monkeypatch, alias):
+        self._set_env(
+            monkeypatch,
+            endpoint="https://r.services.ai.azure.com/openai/v1",
+            deployment="grok-4.3",
+            key="sk-foundry-test",
+        )
+        from backend.agents.rlm.models import resolve_root_model
+
+        assert resolve_root_model(alias).key == "azure-foundry"
+
+    def test_deployment_is_swappable_via_env(self, monkeypatch):
+        # The whole point of "dynamic": change the deployment, no code edit.
+        self._set_env(
+            monkeypatch,
+            endpoint="https://r.services.ai.azure.com/openai/v1",
+            deployment="llama-3.3-70b",
+            key="sk-foundry-test",
+        )
+        from backend.agents.rlm.models import resolve_root_model
+
+        assert resolve_root_model("azure-foundry").backend_kwargs["model_name"] == "llama-3.3-70b"
+
+    def test_missing_endpoint_fails_fast(self, monkeypatch):
+        monkeypatch.delenv("AZURE_FOUNDRY_ENDPOINT", raising=False)
+        monkeypatch.delenv("AZURE_FOUNDRY_DEPLOYMENT", raising=False)
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "sk-foundry-test")
+        _blank_settings(monkeypatch)
+        from backend.agents.rlm.models import resolve_root_model
+
+        with pytest.raises(ValueError, match="AZURE_FOUNDRY_ENDPOINT"):
+            resolve_root_model("azure-foundry")
+
+    def test_missing_api_key_fails_fast(self, monkeypatch):
+        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", "https://r.services.ai.azure.com/openai/v1")
+        monkeypatch.setenv("AZURE_FOUNDRY_DEPLOYMENT", "grok-4.3")
+        monkeypatch.delenv("AZURE_FOUNDRY_API_KEY", raising=False)
+        _blank_settings(monkeypatch)
+        from backend.agents.rlm.models import resolve_root_model
+
+        with pytest.raises(ValueError, match="AZURE_FOUNDRY_API_KEY"):
+            resolve_root_model("azure-foundry")
+
+    def test_in_registry_and_labelled(self):
+        from backend.agents.rlm.models import ROOT_MODELS, _MODEL_LABELS
+
+        assert "azure-foundry" in ROOT_MODELS
+        assert ROOT_MODELS["azure-foundry"].rlm_backend == "openai"
+        assert ROOT_MODELS["azure-foundry"].paper_validated is False
+        assert "azure-foundry" in _MODEL_LABELS
+
+
+class TestNormalizeFoundryBaseUrl:
+    """_normalize_foundry_base_url accepts whatever the operator pastes."""
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("https://r.services.ai.azure.com", "https://r.services.ai.azure.com/openai/v1"),
+            ("https://r.services.ai.azure.com/", "https://r.services.ai.azure.com/openai/v1"),
+            ("https://r.services.ai.azure.com/openai", "https://r.services.ai.azure.com/openai/v1"),
+            ("https://r.services.ai.azure.com/openai/v1", "https://r.services.ai.azure.com/openai/v1"),
+            ("https://r.services.ai.azure.com/openai/v1/", "https://r.services.ai.azure.com/openai/v1"),
+            (
+                "https://r.services.ai.azure.com/openai/v1/chat/completions",
+                "https://r.services.ai.azure.com/openai/v1",
+            ),
+        ],
+    )
+    def test_normalisation(self, raw, expected):
+        from backend.agents.rlm.models import _normalize_foundry_base_url
+
+        assert _normalize_foundry_base_url(raw) == expected

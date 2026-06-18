@@ -16,7 +16,6 @@ from backend.agents.rlm.role_models import (
     PROVIDER_ANTHROPIC_OAUTH,
     PROVIDER_AZURE,
     PROVIDER_OPENAI,
-    ROLES,
     SUBROLE_PROVIDERS,
     RoleModelError,
     RoleSelection,
@@ -284,12 +283,17 @@ def test_fidelity_warnings_empty_when_no_explicit_subroles():
 # 8. Errors — unknown token, root-only-on-subrole, unsupported tokens.
 # ---------------------------------------------------------------------------
 def test_unknown_token_raises_with_supported_hint():
+    # Sub-roles stay strict; the planner is lenient by design (resolve_root_model
+    # owns root validation), so the helpful "Supported: …" hint is asserted on a
+    # sub-role where an unknown token must still be rejected.
     with pytest.raises(RoleModelError, match="Supported"):
-        parse_model_spec("llama-70b", role="planner")
+        parse_model_spec("llama-70b", role="executor")
 
 
-def test_qwen_not_supported_for_any_role():
-    for role in ROLES:
+def test_qwen_not_supported_for_subroles():
+    # qwen is a root-only model: it parses for the planner as a passthrough
+    # (resolve_root_model owns root validation) but is rejected for sub-roles.
+    for role in ("executor", "verifier", "grader"):
         with pytest.raises(RoleModelError):
             parse_model_spec("qwen", role=role)
     assert "qwen" not in supported_tokens()
@@ -317,9 +321,12 @@ def test_empty_token_raises():
         parse_model_spec("   ", role="executor")
 
 
-def test_resolve_unknown_planner_token_raises():
-    with pytest.raises(RoleModelError):
-        resolve_role_models(planner_token="llama-70b")
+def test_resolve_root_only_planner_token_passes_through():
+    # The planner token is the already-validated root key (resolve_root_model
+    # owns validation); resolve_role_models stamps it as a passthrough rather
+    # than re-rejecting root-only keys (the qwen/kimi/foundry regression fix).
+    sel = resolve_role_models(planner_token="llama-70b")
+    assert sel.planner.stamp == "root:llama-70b"
 
 
 # ---------------------------------------------------------------------------
@@ -397,3 +404,99 @@ def test_provider_constants_are_expected_strings():
     assert PROVIDER_ANTHROPIC == "anthropic"
     assert PROVIDER_OPENAI == "openai"
     assert PROVIDER_AZURE == "azure"
+
+
+# ---------------------------------------------------------------------------
+# Planner leniency — root-only keys parse for stamping (qwen/kimi/foundry)
+# ---------------------------------------------------------------------------
+
+
+class TestPlannerLeniencyForRootOnlyKeys:
+    """A planner token that is a root-only registry key must NOT raise.
+
+    resolve_root_model validates the root upstream; resolve_role_models is then
+    called with the resolved key. Root-only keys (qwen3-coder, kimi-k2.5,
+    qwen3-coder-featherless, azure-foundry) are absent from the sub-role vocab,
+    so without leniency they crashed the whole run (regression repro).
+    """
+
+    @pytest.mark.parametrize(
+        "root_key",
+        # Root-only keys absent from the sub-role vocab. (azure-foundry IS now a
+        # vocab token — a real sub-role provider — so it stamps via the vocab,
+        # not the passthrough; covered by the foundry sub-role tests instead.)
+        ["qwen3-coder", "kimi-k2.5", "qwen3-coder-featherless"],
+    )
+    def test_planner_passthrough_does_not_raise(self, root_key):
+        from backend.agents.rlm.role_models import (
+            PROVIDER_ROOT,
+            parse_model_spec,
+            resolve_role_models,
+        )
+
+        spec = parse_model_spec(root_key, role="planner")
+        assert spec.provider == PROVIDER_ROOT
+        assert spec.model == root_key
+        assert spec.stamp == f"root:{root_key}"
+
+        sel = resolve_role_models(planner_token=root_key)
+        assert sel.planner.stamp == f"root:{root_key}"
+
+    def test_known_planner_token_still_maps_via_vocab(self):
+        from backend.agents.rlm.role_models import (
+            PROVIDER_ANTHROPIC_OAUTH,
+            parse_model_spec,
+        )
+
+        spec = parse_model_spec("opus", role="planner")
+        assert spec.provider == PROVIDER_ANTHROPIC_OAUTH
+        assert spec.model == "claude-opus-4-7"
+
+    @pytest.mark.parametrize("role", ["executor", "verifier", "grader"])
+    def test_subroles_stay_strict_on_unknown_token(self, role):
+        from backend.agents.rlm.role_models import RoleModelError, parse_model_spec
+
+        with pytest.raises(RoleModelError):
+            parse_model_spec("qwen3-coder", role=role)
+
+
+# ---------------------------------------------------------------------------
+# Azure AI Foundry (grok) as a real sub-role provider — executor/grader/verifier
+# can all run on it (model None ⇒ AZURE_FOUNDRY_DEPLOYMENT at build time), so a
+# fully OAuth-free run is possible and any role is interchangeable grok⇄…
+# ---------------------------------------------------------------------------
+
+
+class TestAzureFoundrySubrole:
+    @pytest.mark.parametrize("role", ["executor", "verifier", "grader"])
+    @pytest.mark.parametrize("token", ["grok", "azure-foundry", "foundry", "grok-4.3"])
+    def test_grok_token_resolves_to_foundry_provider_model_none(self, role, token):
+        from backend.agents.rlm.role_models import (
+            PROVIDER_AZURE_FOUNDRY,
+            parse_model_spec,
+        )
+
+        spec = parse_model_spec(token, role=role)
+        assert spec.provider == PROVIDER_AZURE_FOUNDRY
+        assert spec.model is None  # None ⇒ use AZURE_FOUNDRY_DEPLOYMENT at build
+        assert spec.stamp == "azure-foundry:<deployment>"
+
+    def test_resolve_role_models_executor_and_grader_grok(self):
+        from backend.agents.rlm.role_models import (
+            PROVIDER_AZURE_FOUNDRY,
+            resolve_role_models,
+        )
+
+        sel = resolve_role_models(
+            planner_token="claude-oauth",
+            cli_models="executor=grok,grader=grok",
+        )
+        assert sel.executor is not None
+        assert sel.executor.provider == PROVIDER_AZURE_FOUNDRY
+        assert sel.executor.model is None
+        assert sel.grader is not None
+        assert sel.grader.provider == PROVIDER_AZURE_FOUNDRY
+        assert sel.grader.model is None
+        # foundry is a non-Claude sub-role → not the validated baseline.
+        assert sel.executor.is_claude is False
+        assert sel.grader.is_claude is False

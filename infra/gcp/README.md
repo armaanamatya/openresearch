@@ -159,6 +159,47 @@ kubectl apply -f infra/gcp/helm/smoke/hello-gpu-job.yaml
 
 ---
 
+## Run OAuth-free with grok / OpenAI
+
+The orchestrator can run a cloud reproduction with **no OAuth surface at all** — a
+grok (Azure AI Foundry) root model plus grok/OpenAI sub-agents — instead of the
+default `claude-oauth` headless token. This is opt-in and fully additive: the
+default render injects none of these env vars.
+
+**1. Add the secret values out-of-band** (the secret NAMES are created by the
+`secret_manager` Terraform module — along with a read-only
+`secretmanager.secretAccessor` grant to the orchestrator GSA, wired
+automatically when `secret_manager_enabled = true`; values are never in IaC):
+
+```bash
+gcloud secrets versions add azure-foundry-api-key \
+  --data-file=<(echo -n "$AZURE_FOUNDRY_API_KEY")
+gcloud secrets versions add openai-api-key \
+  --data-file=<(echo -n "$OPENAI_API_KEY")        # only if OpenAI sub-agents are used
+```
+
+**2. Enable the gated wiring on `helm upgrade`** (add to the step-7 command):
+
+```bash
+  --set orchestrator.model=azure-foundry \
+  --set orchestrator.azureFoundry.enabled=true \
+  --set orchestrator.azureFoundry.endpoint=https://<resource>.services.ai.azure.com \
+  --set orchestrator.azureFoundry.deployment=<grok-deployment-name> \
+  --set orchestrator.azureFoundry.apiKey.enabled=true \
+  --set orchestrator.openaiApiKey.enabled=true \
+  --set orchestrator.roleModels="executor=grok,grader=grok" \
+  --set orchestrator.authStrategy=api_only
+```
+
+`azureFoundry.endpoint`/`deployment` render the NON-SECRET `AZURE_FOUNDRY_ENDPOINT`/
+`AZURE_FOUNDRY_DEPLOYMENT`; `azureFoundry.apiKey.enabled` and `openaiApiKey.enabled`
+surface `azure-foundry-api-key` → `AZURE_FOUNDRY_API_KEY` and `openai-api-key` →
+`OPENAI_API_KEY` via the Secrets Store CSI sync. `authStrategy=api_only` keeps a
+present-but-unused `ANTHROPIC_API_KEY` from hijacking the run. Drop the
+`claudeOauthToken`/`claude-code-oauth-token` setup entirely on this path.
+
+---
+
 ## Output → Helm / env mapping
 
 | Output | Helm `--set` / env var | Purpose |

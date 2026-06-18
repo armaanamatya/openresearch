@@ -220,6 +220,46 @@ orchestrator:
   # Obtain with: az account show --query tenantId -o tsv
   tenantId: ""
 
+  # ── Azure AI Foundry / grok (OAuth-free root + sub-agents; opt-in) ──────────
+  # Enables a fully OAuth-free cloud run: a grok root model + grok/OpenAI
+  # sub-agents.  endpoint/deployment are NON-SECRET resource coordinates (read
+  # by the backend as AZURE_FOUNDRY_ENDPOINT/AZURE_FOUNDRY_DEPLOYMENT); the
+  # apiKey toggle surfaces the 'azure-foundry-api-key' Key Vault secret as
+  # AZURE_FOUNDRY_API_KEY.  CRITICAL INVARIANT: all default empty/false so the
+  # DEFAULT render is byte-identical to HEAD.  Use with model=azure-foundry and
+  # roleModels/authStrategy below.
+  azureFoundry:
+    # Set to true purely for parity; the endpoint/deployment/apiKey gates below
+    # are what actually render env vars.
+    enabled: false
+    # Azure AI Foundry resource URL for the grok deployment.
+    endpoint: ""
+    # Azure AI Foundry deployment name (the deployed grok model).
+    deployment: ""
+    apiKey:
+      # Set to true to inject AZURE_FOUNDRY_API_KEY from the Key Vault secret
+      # 'azure-foundry-api-key'.  Requires the secret to exist (set out-of-band):
+      #   az keyvault secret set --vault-name <kv> --name azure-foundry-api-key \
+      #     --value "$AZURE_FOUNDRY_API_KEY"
+      enabled: false
+
+  # ── OpenAI API key (OAuth-free OpenAI sub-agents; opt-in) ───────────────────
+  # Set to true to inject OPENAI_API_KEY from the Key Vault secret
+  # 'openai-api-key'.  Requires the secret to exist (set out-of-band):
+  #   az keyvault secret set --vault-name <kv> --name openai-api-key \
+  #     --value "$OPENAI_API_KEY"
+  # Default false → no env var in the default render.
+  openaiApiKey:
+    enabled: false
+
+  # ── Per-role model selection + auth strategy (NON-SECRET; OAuth-free runs) ──
+  # roleModels → OPENRESEARCH_ROLE_MODELS (e.g. "executor=grok,grader=grok" or a
+  # JSON object) points each role at a provider.  authStrategy →
+  # OPENRESEARCH_LLM_AUTH_STRATEGY (auto|api_only|oauth_only); set api_only for a
+  # fully OAuth-free run.  Both default empty → no env var in the default render.
+  roleModels: ""
+  authStrategy: ""
+
   # ── Long-lived Claude OAuth token (Stream B, opt-in) ────────────────────────
   # CRITICAL INVARIANT: this block is DEFAULT FALSE so that the DEFAULT
   # `helm template infra/azure/helm` render is byte-identical before and after

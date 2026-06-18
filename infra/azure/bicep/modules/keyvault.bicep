@@ -1,11 +1,14 @@
 // ─── Key Vault module — hardened secrets store for orchestrator credentials ──
 //
-// Creates a Key Vault that holds the three API-key secrets the orchestrator needs:
+// Creates a Key Vault that holds the API-key secrets the orchestrator needs:
 //   • azure-openai-api-key   (AZURE_OPENAI_API_KEY / OPENRESEARCH_AZURE_OPENAI_API_KEY)
 //   • anthropic-api-key      (ANTHROPIC_API_KEY)
 //   • claude-code-oauth-token (CLAUDE_CODE_OAUTH_TOKEN — Stream B, long-lived headless
 //                              OAuth token minted by `claude setup-token`; enables
 //                              unattended --model claude-oauth runs inside AKS at $0/token)
+//   • azure-foundry-api-key  (AZURE_FOUNDRY_API_KEY — grok root/sub-agent; opt-in,
+//                              enables a fully OAuth-free run with model=azure-foundry)
+//   • openai-api-key         (OPENAI_API_KEY — OpenAI sub-agent; opt-in)
 //
 // Secret VALUES are NEVER stored in this file or any params file.  They must be
 // injected out-of-band by an operator with Key Vault Administrator/Officer rights:
@@ -18,6 +21,17 @@
 //   az keyvault secret set \
 //     --vault-name <keyVaultName> \
 //     --name anthropic-api-key \
+//     --value "$(op read op://…)"
+//
+//   # OAuth-free providers (opt-in; see orchestrator-deployment.yaml
+//   # .Values.orchestrator.azureFoundry.apiKey.enabled / .openaiApiKey.enabled):
+//   az keyvault secret set \
+//     --vault-name <keyVaultName> \
+//     --name azure-foundry-api-key \
+//     --value "$(op read op://…)"
+//   az keyvault secret set \
+//     --vault-name <keyVaultName> \
+//     --name openai-api-key \
 //     --value "$(op read op://…)"
 //
 //   # Stream B — long-lived OAuth token (opt-in; see orchestrator-deployment.yaml
@@ -131,6 +145,8 @@ resource kvSecretsUserAssignment 'Microsoft.Authorization/roleAssignments@2022-0
 //   azure-openai-api-key   →  env AZURE_OPENAI_API_KEY / OPENRESEARCH_AZURE_OPENAI_API_KEY
 //   anthropic-api-key      →  env ANTHROPIC_API_KEY
 //   claude-code-oauth-token →  env CLAUDE_CODE_OAUTH_TOKEN (Stream B; opt-in headless OAuth)
+//   azure-foundry-api-key  →  env AZURE_FOUNDRY_API_KEY (grok root/sub-agent; opt-in OAuth-free)
+//   openai-api-key         →  env OPENAI_API_KEY (OpenAI sub-agent; opt-in OAuth-free)
 
 @description('Name of the Key Vault. Pass to SecretProviderClass.parameters.keyvaultName and to `az keyvault secret set`.')
 output keyVaultName string = keyVault.name

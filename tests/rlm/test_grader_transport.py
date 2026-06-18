@@ -436,6 +436,90 @@ def test_build_transport_client_unknown_backend_falls_back():
     assert label == "fb"
 
 
+# ---------------------------------------------------------------------------
+# build_transport_client — Azure AI Foundry backend (OpenAI-compatible, e.g.
+# Grok). Routes onto OpenAILlmClient via the canonical foundry resolver; with
+# creds → a client + "azure-foundry:<deployment>" label, without → fallback
+# (NEVER raises). The missing-case neutralises Settings (real .env has creds).
+# ---------------------------------------------------------------------------
+
+import types  # noqa: E402
+
+
+def test_build_transport_client_azure_foundry_with_creds(monkeypatch):
+    monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", "https://x.services.ai.azure.com")
+    monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "foundry-key")
+    monkeypatch.setenv("AZURE_FOUNDRY_DEPLOYMENT", "grok-4.3")
+
+    import backend.services.context.workspace.tools.openai_client as oac
+
+    class _FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(oac, "OpenAILlmClient", _FakeOpenAI)
+
+    # model=None (a grok sub-role has model=None → use the deployment).
+    client, label = build_transport_client(
+        backend="azure-foundry",
+        model=None,
+        fallback_client=object(),
+        fallback_label="fb",
+        role_label="grader",
+    )
+    assert isinstance(client, _FakeOpenAI)
+    assert client.kwargs["model"] == "grok-4.3"
+    assert client.kwargs["api_key"] == "foundry-key"
+    assert client.kwargs["base_url"] == "https://x.services.ai.azure.com/openai/v1"
+    assert label == "grader:azure-foundry:grok-4.3"
+
+
+def test_build_transport_client_azure_foundry_aliases(monkeypatch):
+    monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", "https://x.services.ai.azure.com")
+    monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "foundry-key")
+    monkeypatch.setenv("AZURE_FOUNDRY_DEPLOYMENT", "grok-4.3")
+
+    import backend.services.context.workspace.tools.openai_client as oac
+
+    class _FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(oac, "OpenAILlmClient", _FakeOpenAI)
+
+    for alias in ("foundry", "grok"):
+        client, label = build_transport_client(
+            backend=alias,
+            model=None,
+            fallback_client=object(),
+            fallback_label="fb",
+            role_label="verifier",
+        )
+        assert isinstance(client, _FakeOpenAI)
+        assert label == "verifier:azure-foundry:grok-4.3"
+
+
+def test_build_transport_client_azure_foundry_missing_creds_falls_back(monkeypatch):
+    # No env creds AND neutralised Settings — the real .env carries Foundry creds.
+    monkeypatch.delenv("AZURE_FOUNDRY_ENDPOINT", raising=False)
+    monkeypatch.delenv("AZURE_FOUNDRY_API_KEY", raising=False)
+    monkeypatch.delenv("AZURE_FOUNDRY_DEPLOYMENT", raising=False)
+    monkeypatch.setattr(
+        "backend.config.get_settings", lambda *a, **k: types.SimpleNamespace()
+    )
+
+    sentinel = object()
+    client, label = build_transport_client(
+        backend="azure-foundry",
+        model=None,
+        fallback_client=sentinel,
+        fallback_label="fb",
+        role_label="grader",
+    )
+    assert client is sentinel  # missing creds → fallback, NO raise
+    assert label == "fb"
+
+
 def test_build_grader_client_still_passthrough_when_grader_env_unset(monkeypatch):
     # Back-compat: build_grader_client (the thin env wrapper) must still return
     # the fallback unchanged when both GRADER env vars are unset.

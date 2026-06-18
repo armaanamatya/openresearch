@@ -123,6 +123,70 @@ class Settings(BaseSettings):
             "REPROLAB_OPENAI_ADMIN_KEY",
         ),
     )
+    # Azure OpenAI credentials. Mirrors the openai/anthropic key fields above:
+    # read both the bare ``AZURE_OPENAI_*`` names the Azure SDK uses and the
+    # Azure portal's "KEY 1" / "KEY 2" labels. Azure issues two interchangeable
+    # keys for zero-downtime rotation — KEY 1 is primary, KEY 2 the fallback.
+    # First match wins, so an explicit AZURE_OPENAI_API_KEY beats KEY1, which
+    # beats KEY2. configure_azure_openai_credentials() bridges these into the
+    # canonical AZURE_OPENAI_* process env the runtime/grader/accelerator read.
+    azure_openai_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "AZURE_OPENAI_API_KEY",
+            "AZURE_OPENAI_KEY1",
+            "AZURE_OPENAI_KEY2",
+            "OPENRESEARCH_AZURE_OPENAI_API_KEY",
+        ),
+    )
+    azure_openai_endpoint: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "AZURE_OPENAI_ENDPOINT",
+            "OPENRESEARCH_AZURE_OPENAI_ENDPOINT",
+        ),
+    )
+    azure_openai_deployment: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "AZURE_OPENAI_DEPLOYMENT",
+            "OPENRESEARCH_AZURE_OPENAI_DEPLOYMENT",
+        ),
+    )
+    azure_openai_api_version: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "AZURE_OPENAI_API_VERSION",
+            "OPENRESEARCH_AZURE_OPENAI_API_VERSION",
+        ),
+    )
+    # Azure AI Foundry — a generic OpenAI-compatible custom endpoint
+    # (``https://<resource>.services.ai.azure.com/openai/v1``) serving any
+    # deployed model (e.g. Grok). Distinct from the classic Azure OpenAI surface
+    # above: this is the v1 OpenAI-compatible path the standard OpenAI SDK speaks
+    # to with a Bearer key. The ``azure-foundry`` root model reads these at
+    # resolve time, so swapping the deployed model is a .env change, not code.
+    azure_foundry_endpoint: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "AZURE_FOUNDRY_ENDPOINT",
+            "OPENRESEARCH_AZURE_FOUNDRY_ENDPOINT",
+        ),
+    )
+    azure_foundry_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "AZURE_FOUNDRY_API_KEY",
+            "OPENRESEARCH_AZURE_FOUNDRY_API_KEY",
+        ),
+    )
+    azure_foundry_deployment: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "AZURE_FOUNDRY_DEPLOYMENT",
+            "OPENRESEARCH_AZURE_FOUNDRY_DEPLOYMENT",
+        ),
+    )
     codex_cli_path: str = ""
     codex_auth_path: str = ""
 

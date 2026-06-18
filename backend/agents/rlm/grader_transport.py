@@ -216,9 +216,35 @@ def build_transport_client(
             )
             return client, f"{role_label}:azure:{model}"
 
+        if backend in ("azure-foundry", "foundry", "grok"):
+            # Azure AI Foundry OpenAI-compatible v1 endpoint (e.g. Grok): Bearer
+            # auth, base_url=…/openai/v1, model=deployment — rides the plain
+            # OpenAI SDK (OpenAILlmClient), not AzureOpenAILlmClient. All creds
+            # come from the single canonical resolver. Missing creds → fall back
+            # to the caller's client (this function NEVER raises).
+            from backend.agents.runtime.foundry_endpoint import (
+                resolve_foundry_credentials,
+            )
+            from backend.services.context.workspace.tools.openai_client import (
+                OpenAILlmClient,
+            )
+
+            base_url, deployment, api_key = resolve_foundry_credentials()
+            if not (base_url and api_key):
+                logger.warning(
+                    "grader_transport: %s backend=%r requires AZURE_FOUNDRY_ENDPOINT "
+                    "+ AZURE_FOUNDRY_API_KEY — falling back to the caller's client.",
+                    role_label,
+                    backend,
+                )
+                return fallback_client, fallback_label
+            model = model_override or deployment
+            client = OpenAILlmClient(model=model, api_key=api_key, base_url=base_url)
+            return client, f"{role_label}:azure-foundry:{model}"
+
         logger.warning(
-            "grader_transport: unknown %s backend=%r — falling back "
-            "to the caller's client. Supported: anthropic, openai, azure.",
+            "grader_transport: unknown %s backend=%r — falling back to the "
+            "caller's client. Supported: anthropic, openai, azure, azure-foundry.",
             role_label,
             backend,
         )

@@ -221,6 +221,47 @@ orchestrator:
     # (DEFAULT_AZURE_OPENAI_API_VERSION) is used by the backend.
     apiVersion: ""
 
+  # ── Azure AI Foundry / grok (OAuth-free root + sub-agents; opt-in) ──────────
+  # Enables a fully OAuth-free cloud run: a grok root model + grok/OpenAI
+  # sub-agents.  endpoint/deployment are NON-SECRET resource coordinates (read
+  # by the backend as AZURE_FOUNDRY_ENDPOINT/AZURE_FOUNDRY_DEPLOYMENT); the
+  # apiKey toggle surfaces the 'azure-foundry-api-key' Secret Manager secret as
+  # AZURE_FOUNDRY_API_KEY.  CRITICAL INVARIANT: all default empty/false so the
+  # DEFAULT render is byte-identical to HEAD.  Use with model=azure-foundry and
+  # roleModels/authStrategy below.
+  azureFoundry:
+    # Set to true purely for parity with azureOpenai; the endpoint/deployment/
+    # apiKey gates below are what actually render env vars.
+    enabled: false
+    # Azure AI Foundry resource URL for the grok deployment.
+    endpoint: ""
+    # Azure AI Foundry deployment name (the deployed grok model).
+    deployment: ""
+    apiKey:
+      # Set to true to inject AZURE_FOUNDRY_API_KEY from the Secret Manager
+      # secret 'azure-foundry-api-key'.  Requires the secret to exist with a
+      # version set:
+      #   gcloud secrets versions add azure-foundry-api-key \
+      #     --data-file=<(echo -n "$AZURE_FOUNDRY_API_KEY")
+      enabled: false
+
+  # ── OpenAI API key (OAuth-free OpenAI sub-agents; opt-in) ───────────────────
+  # Set to true to inject OPENAI_API_KEY from the Secret Manager secret
+  # 'openai-api-key'.  Requires the secret to exist with a version set:
+  #   gcloud secrets versions add openai-api-key \
+  #     --data-file=<(echo -n "$OPENAI_API_KEY")
+  # Default false → no env var in the default render.
+  openaiApiKey:
+    enabled: false
+
+  # ── Per-role model selection + auth strategy (NON-SECRET; OAuth-free runs) ──
+  # roleModels → OPENRESEARCH_ROLE_MODELS (e.g. "executor=grok,grader=grok" or a
+  # JSON object) points each role at a provider.  authStrategy →
+  # OPENRESEARCH_LLM_AUTH_STRATEGY (auto|api_only|oauth_only); set api_only for a
+  # fully OAuth-free run.  Both default empty → no env var in the default render.
+  roleModels: ""
+  authStrategy: ""
+
   # GCP project ID (or number) that owns the Secret Manager secrets.
   # Used by the SecretProviderClass to build secret resource names.
   # Obtain: gcloud config get-value project

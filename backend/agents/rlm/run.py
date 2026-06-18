@@ -383,6 +383,7 @@ def _resolve_agent_runtime(
         _exec_provider = {
             "anthropic-oauth": "anthropic", "anthropic": "anthropic",
             "openai": "openai", "azure": "azure",
+            "azure-foundry": "azure-foundry",
         }[_exec_spec.provider]
         return (
             _make_runtime(_exec_provider, require_api_key=True),
@@ -1586,6 +1587,12 @@ async def run_pipeline_rlm(
     # not buried behind a new partial run. Uses the default from Settings
     # (allow_lossy_paper_text=True) so all existing callers proceed unchanged.
     _settings_for_gate = get_settings()
+    # Bridge Azure OpenAI creds (canonical names + the portal KEY1/KEY2 aliases +
+    # .env) into the process env before any Azure consumer reads os.environ
+    # directly: the executor's make_runtime("azure"), the navigation accelerator,
+    # and grader_transport. No-op (byte-identical) when no AZURE_OPENAI_* is set.
+    from backend.agents.runtime.factory import configure_azure_openai_credentials
+    configure_azure_openai_credentials(_settings_for_gate)
     _allow_lossy = getattr(_settings_for_gate, "allow_lossy_paper_text", True)
     _paper_degraded_reason = _assert_paper_text_precondition(project_dir, allow_lossy=_allow_lossy)
 

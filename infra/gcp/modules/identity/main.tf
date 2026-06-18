@@ -57,9 +57,11 @@ resource "google_service_account" "orchestrator" {
   display_name = "${var.prefix} GKE orchestrator service account"
 }
 
-# ─── secretmanager.secretAccessor → three orchestrator secrets ─────────────────
+# ─── secretmanager.secretAccessor → orchestrator secrets ──────────────────────
 # Read-only access to secret VALUES — no list, no write, no create.
 # Scoped to individual secrets (least-privilege; not project-wide accessor).
+# The three always-on secrets (oauth token, anthropic, azure-openai) plus the
+# two opt-in OAuth-free secrets (azure-foundry, openai) below.
 
 resource "google_secret_manager_secret_iam_member" "orchestrator_oauth_token" {
   count     = var.secret_manager_module_enabled ? 1 : 0
@@ -81,6 +83,25 @@ resource "google_secret_manager_secret_iam_member" "orchestrator_azure_openai_ke
   count     = var.secret_manager_module_enabled ? 1 : 0
   project   = var.project_id
   secret_id = var.azure_openai_api_key_secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.orchestrator[0].email}"
+}
+
+# OAuth-free grok/OpenAI secrets (opt-in).  Gated on a non-empty secret_id so an
+# existing apply that does not pass these (older tfvars) creates NO new resource
+# — the grant materializes only once the root wires the secret_manager outputs.
+resource "google_secret_manager_secret_iam_member" "orchestrator_azure_foundry_key" {
+  count     = var.secret_manager_module_enabled && var.azure_foundry_api_key_secret_id != "" ? 1 : 0
+  project   = var.project_id
+  secret_id = var.azure_foundry_api_key_secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.orchestrator[0].email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "orchestrator_openai_key" {
+  count     = var.secret_manager_module_enabled && var.openai_api_key_secret_id != "" ? 1 : 0
+  project   = var.project_id
+  secret_id = var.openai_api_key_secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.orchestrator[0].email}"
 }
