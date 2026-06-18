@@ -30,6 +30,14 @@ class _FakeRoot:
 
 def test_gate_flag_unset_oauth_warns_but_does_not_block(monkeypatch) -> None:
     monkeypatch.delenv("OPENRESEARCH_REQUIRE_VALIDATED_ROOT", raising=False)
+    # Inject a resolvable oauth root: real resolve_root_model("claude-oauth")
+    # raises without anthropic creds (keyless CI), which the gate fail-softly
+    # skips — defeating the assertion. The classifier still does the real work.
+    monkeypatch.setattr(
+        "backend.cli.resolve_root_model",
+        lambda _name: _FakeRoot("claude-oauth", "anthropic-oauth", False),
+        raising=False,
+    )
     exit_code, warn, error = _root_validation_gate("claude-oauth")
     assert exit_code is None  # never blocks when flag unset
     assert error is None
@@ -53,6 +61,11 @@ def test_gate_flag_unset_validated_no_warning_no_block(monkeypatch) -> None:
 
 def test_gate_flag_set_oauth_blocks(monkeypatch) -> None:
     monkeypatch.setenv("OPENRESEARCH_REQUIRE_VALIDATED_ROOT", "1")
+    monkeypatch.setattr(
+        "backend.cli.resolve_root_model",
+        lambda _name: _FakeRoot("claude-oauth", "anthropic-oauth", False),
+        raising=False,
+    )
     exit_code, warn, error = _root_validation_gate("claude-oauth")
     assert exit_code == 1
     assert error is not None
@@ -90,6 +103,11 @@ def test_gate_flag_set_unvalidated_non_oauth_blocks(monkeypatch) -> None:
 @pytest.mark.parametrize("flag", ["1", "on", "true", "yes", "TRUE", "On"])
 def test_gate_truthy_variants(monkeypatch, flag) -> None:
     monkeypatch.setenv("OPENRESEARCH_REQUIRE_VALIDATED_ROOT", flag)
+    monkeypatch.setattr(
+        "backend.cli.resolve_root_model",
+        lambda _name: _FakeRoot("claude-oauth", "anthropic-oauth", False),
+        raising=False,
+    )
     exit_code, _warn, error = _root_validation_gate("claude-oauth")
     assert exit_code == 1 and error is not None
 

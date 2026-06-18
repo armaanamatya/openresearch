@@ -80,11 +80,14 @@ def test_degenerate_loop_risk_wins_even_if_validated() -> None:
 
 
 def test_classify_real_registry_models() -> None:
-    # Hermetic: resolve_root_model on explicit names does not probe credentials.
-    from backend.agents.rlm.models import resolve_root_model
+    # Hermetic: classify the registry RootModel entries DIRECTLY. resolve_root_model
+    # validates credentials (anthropic OAuth / OPENAI_API_KEY) which keyless CI
+    # lacks; the classifier is pure and only needs the registry metadata, and the
+    # entry it would resolve to IS ROOT_MODELS[name].
+    from backend.agents.rlm.models import ROOT_MODELS
 
-    gpt5 = classify_root_model(resolve_root_model("gpt-5"))
+    gpt5 = classify_root_model(ROOT_MODELS["gpt-5"])
     assert gpt5.validated is True and gpt5.risk == RISK_NONE
 
-    oauth = classify_root_model(resolve_root_model("claude-oauth"))
+    oauth = classify_root_model(ROOT_MODELS["claude-oauth"])
     assert oauth.validated is False and oauth.risk == RISK_DEGENERATE_LOOP

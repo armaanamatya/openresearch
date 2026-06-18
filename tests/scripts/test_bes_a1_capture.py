@@ -53,7 +53,6 @@ def test_regrade_candidates_fail_soft_on_scorer_error(tmp_path):
     def always_fail(code_dir, rubric_tree):
         raise RuntimeError("simulated scorer failure")
 
-    import warnings
     regrades = regrade_candidates(tmp_path, k=2, score_one=always_fail)
     # K rounds still returned even when all candidates error
     assert len(regrades) == 2

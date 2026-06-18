@@ -569,10 +569,10 @@ def actuate(
         # L5 — budget-gated seed plan for a variance-demanding leaf (GPU sub-gate).
         if seeds_enabled() and weak_leaves:
             wants = any(
-                isinstance(l, dict)
-                and float(l.get("score") or 0.0) < 0.6
-                and _wants_variance(str(l.get("justification") or l.get("requirement") or ""))
-                for l in weak_leaves
+                isinstance(lf, dict)
+                and float(lf.get("score") or 0.0) < 0.6
+                and _wants_variance(str(lf.get("justification") or lf.get("requirement") or ""))
+                for lf in weak_leaves
             )
             if wants:
                 sp = plan_seed_expansion(

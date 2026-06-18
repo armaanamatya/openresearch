@@ -204,7 +204,14 @@ def test_estimate_route_is_mounted(monkeypatch, tmp_path):
     runs_root.mkdir()
     app = _fresh_app(monkeypatch, runs_root)
 
-    estimate_paths = [r.path for r in app.routes if "estimate" in r.path]
+    # getattr guard: newer Starlette (CI may pip-resolve a version newer than the
+    # local pin) exposes non-Route entries (mounts / included routers) on
+    # app.routes that have no `.path`; skip them instead of raising AttributeError.
+    estimate_paths = [
+        getattr(r, "path", "")
+        for r in app.routes
+        if "estimate" in getattr(r, "path", "")
+    ]
     assert estimate_paths, (
         "POST /paper/estimate must be mounted in create_app(). "
         f"Routes with 'estimate' in path: {estimate_paths}"

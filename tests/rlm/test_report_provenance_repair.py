@@ -5,7 +5,6 @@ a populated code/metrics.json gets its baseline_metrics repopulated, and that
 already-coherent reports are left untouched (no-op).
 """
 import json
-from backend.agents.rlm.conversion_guard import detect_projection_incoherence
 from backend.agents.rlm.report import repair_projection_from_disk
 
 

@@ -5237,7 +5237,7 @@ def _read_prior_weak_leaves(project_dir) -> list[dict]:
         doc = json.loads(
             (Path(project_dir) / "rubric_evaluation.json").read_text(encoding="utf-8"))
         wl = doc.get("weak_leaves")
-        return [l for l in wl if isinstance(l, dict)] if isinstance(wl, list) else []
+        return [lf for lf in wl if isinstance(lf, dict)] if isinstance(wl, list) else []
     except Exception:  # noqa: BLE001
         return []
 
@@ -7721,11 +7721,6 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
 }
 
 PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
-    "read_context_map": "read_context_map() -> dict — the intra-run orientation "
-        "cache: the union of your prior understand_section / extract_hyperparameters "
-        "/ detect_environment outputs (datasets, metrics, hyperparameters, env "
-        "clues). Consult it before re-deriving a slice. Navigation aid only — never "
-        "a report source. Empty {} when the context-map flag is off.",
     "understand_section": "understand_section(text_slice) -> dict — datasets, "
         "metrics, training recipe, hardware clues, ambiguities from a text slice. "
         "A PARTIAL PaperClaimMap (no core_contribution/claims/architecture).",
