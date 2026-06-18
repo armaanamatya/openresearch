@@ -188,7 +188,7 @@ launch_run() {
   "${ssh_base[@]}" "cd $REMOTE_DIR \
     && chmod +x scripts/sdar_gcp_run.sh \
     && { [ -f runs/.cache/sdar_gcp.env ] || { echo 'ERROR: runs/.cache/sdar_gcp.env missing — run prepare to [GREEN] first' >&2; exit 1; }; } \
-    && { ! pgrep -f 'backend.cli reproduce 2605.15155' >/dev/null || { echo 'ERROR: a reproduce process for 2605.15155 is already running' >&2; exit 1; }; } \
+    && { ! pgrep -f '[b]ackend.cli reproduce 2605.15155' >/dev/null || { echo 'ERROR: a reproduce process for 2605.15155 is already running' >&2; exit 1; }; } \
     && ( setsid nohup bash scripts/sdar_gcp_run.sh > runs/sdar_gcp_run.out 2>&1 < /dev/null & ) \
     && sleep 4 \
     && echo '--- launch tail (runs/sdar_gcp_run.out) ---' \
