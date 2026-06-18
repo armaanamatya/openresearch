@@ -283,6 +283,56 @@ def _load_metrics(output_dir: Path) -> dict[str, Any] | None:
 # Single-cell subprocess launcher
 # ---------------------------------------------------------------------------
 
+def _antifab_guard_enabled() -> bool:
+    """Part-2 gate: OPENRESEARCH_ANTIFAB_GUARD (default on). Mirrors Part-1 gate in preflight_ast."""
+    return os.environ.get("OPENRESEARCH_ANTIFAB_GUARD", "1").strip() not in ("0", "false", "off", "no")
+
+
+def _antifab_min_vram_gb() -> float:
+    """Return the minimum VRAM threshold (GiB) below which a successful cell is suspected fabrication."""
+    try:
+        return float(os.environ.get("OPENRESEARCH_ANTIFAB_MIN_VRAM_GB", "1.5"))
+    except (ValueError, TypeError):
+        return 1.5
+
+
+def _sample_vram_mib(gpu_id: str) -> float | None:
+    """Return a single nvidia-smi memory.used reading in MiB, or None on any failure."""
+    cmd = [
+        "nvidia-smi",
+        "--query-gpu=memory.used",
+        "--format=csv,noheader,nounits",
+        "-i", gpu_id,
+    ]
+    try:
+        out = subprocess.check_output(cmd, timeout=5, stderr=subprocess.DEVNULL, text=True)
+        for line in out.splitlines():
+            stripped = line.strip()
+            if stripped:
+                return float(stripped)
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _poll_peak_vram_daemon(
+    gpu_id: str, interval_s: float, stop_flag: threading.Event, readings: list
+) -> None:
+    """Daemon thread body: poll nvidia-smi every ``interval_s`` seconds while ``stop_flag`` is clear.
+
+    Appends observed MiB values into ``readings`` (a mutable list passed in).
+    The physical ``gpu_id`` here is a single id string (e.g. "0", "2").
+
+    Fail-soft: any nvidia-smi error → just skip that reading. If nvidia-smi is absent,
+    ``readings`` stays empty and the caller treats ``peak_vram_gb`` as None (no flagging).
+    """
+    while not stop_flag.is_set():
+        val = _sample_vram_mib(gpu_id)
+        if val is not None:
+            readings.append(val)
+        stop_flag.wait(timeout=interval_s)
+
+
 def _run_cell_subprocess(
     *,
     cell: dict[str, Any],
@@ -626,6 +676,11 @@ def run_matrix(
 
     results: dict[str, CellResult] = {}
     results_lock = threading.Lock()
+    # Extras keyed by cell_id: {peak_vram_gb, fabrication_suspected} — merged into
+    # to_dict() output at the end.  Written only by _worker; read only in the final
+    # comprehension after all workers finish (no lock needed there).
+    _cell_extras: dict[str, dict[str, Any]] = {}
+    _extras_lock = threading.Lock()
 
     # Queue of (cell, retry_index) — retry_index 0 = first attempt.
     work_queue: Queue[tuple[dict[str, Any], int]] = Queue()
@@ -712,16 +767,55 @@ def run_matrix(
                 # Clamp this cell's timeout to the time left in the overall budget.
                 eff_timeout = clamp_cell_timeout(per_cell_timeout_s, overall_deadline)
 
-                returncode, output = _run_cell_subprocess(
-                    cell=cell,
-                    cell_script=cell_script,
-                    gpu_id=slot,
-                    output_dir=output_dir,
-                    batch_scale=batch_scale,
-                    grad_checkpoint=grad_checkpoint,
-                    timeout_s=eff_timeout,
-                    log_path=log_path,
-                )
+                # Part-2 VRAM poller: measure the cell's PEAK net GPU memory use as
+                # (peak_during - baseline_before) so background GPU processes don't
+                # falsely trigger the threshold.  Active only when the antifab guard
+                # is on; fail-soft (any measurement failure → peak_vram_gb=None → no flag).
+                _vram_stop_flag = threading.Event()
+                _vram_mib: list[float] = []
+                _vram_poll_thread: threading.Thread | None = None
+                _vram_baseline_mib: float | None = None
+                if _antifab_guard_enabled():
+                    # When slot = "0,1" (multi-GPU), poll only the first card — a stub
+                    # (Linear(1,1)) uses near-zero VRAM on every card, so one is enough.
+                    _phys_gpu = slot.split(",")[0].strip()
+                    # Sample baseline BEFORE launching (fail-soft, one-shot).
+                    _vram_baseline_mib = _sample_vram_mib(_phys_gpu)
+                    _vram_poll_thread = threading.Thread(
+                        target=_poll_peak_vram_daemon,
+                        args=(_phys_gpu, 2.0, _vram_stop_flag, _vram_mib),
+                        daemon=True,
+                    )
+                    _vram_poll_thread.start()
+
+                try:
+                    returncode, output = _run_cell_subprocess(
+                        cell=cell,
+                        cell_script=cell_script,
+                        gpu_id=slot,
+                        output_dir=output_dir,
+                        batch_scale=batch_scale,
+                        grad_checkpoint=grad_checkpoint,
+                        timeout_s=eff_timeout,
+                        log_path=log_path,
+                    )
+                finally:
+                    _vram_stop_flag.set()
+                    if _vram_poll_thread is not None:
+                        _vram_poll_thread.join(timeout=5.0)
+
+                # Net cell VRAM = peak_during - baseline_before.
+                # Requirements for reliable measurement:
+                #   * baseline_before must be known (nvidia-smi present)
+                #   * at least 2 during-run samples (so the subprocess was long enough
+                #     to poll twice — prevents a zero-delta false positive for short
+                #     mock/synthetic runs where the only sample equals the baseline)
+                # If any requirement is unmet, peak_vram_gb=None → no flagging (fail-soft).
+                if len(_vram_mib) >= 2 and _vram_baseline_mib is not None:
+                    _peak_mib = max(_vram_mib)
+                    peak_vram_gb: float | None = max(0.0, _peak_mib - _vram_baseline_mib) / 1024.0
+                else:
+                    peak_vram_gb = None
             finally:
                 # ALWAYS release GPUs — even if _run_cell_subprocess raises.
                 _release_gpus(assigned)
@@ -732,21 +826,60 @@ def run_matrix(
 
             if returncode == 0:
                 metrics = _load_metrics(output_dir)
+
+                # Part-2 VRAM fabrication check: a successful cell that used
+                # near-zero GPU memory cannot have trained a real LLM — flag it.
+                # Gate on OPENRESEARCH_ANTIFAB_GUARD; fail-soft (never crash on this).
+                _fab_suspected = False
+                _min_vram = _antifab_min_vram_gb()
+                if (
+                    _antifab_guard_enabled()
+                    and peak_vram_gb is not None
+                    and peak_vram_gb < _min_vram
+                ):
+                    _fab_suspected = True
+                    logger.warning(
+                        "gpu_cell_runner: cell=%s fabrication_suspected: "
+                        "peak_vram_gb=%.3f < threshold=%.3f — degrading to 'failed'",
+                        cell_id, peak_vram_gb, _min_vram,
+                    )
+
+                _cell_status = "failed" if _fab_suspected else "ok"
+                _cell_error = (
+                    f"fabrication_suspected: peak VRAM {peak_vram_gb:.3f} GiB < "
+                    f"threshold {_min_vram:.3f} GiB — stub model detected, not a "
+                    f"real LLM training run"
+                    if _fab_suspected else None
+                )
+
                 with results_lock:
                     results[cell_id] = CellResult(
                         cell_id=cell_id,
-                        status="ok",
+                        status=_cell_status,
                         metrics=metrics,
                         gpu=slot,
                         retries=retry_idx,
-                        error=None,
+                        error=_cell_error,
                     )
+                with _extras_lock:
+                    _cell_extras[cell_id] = {
+                        "peak_vram_gb": peak_vram_gb,
+                        "fabrication_suspected": _fab_suspected,
+                    }
+                _manifest_status = _cell_status
                 write_cell_manifest(
-                    output_dir, caller="gpu_cell_runner", cell_id=cell_id, status="ok",
+                    output_dir, caller="gpu_cell_runner", cell_id=cell_id, status=_manifest_status,
                     fingerprint=_fingerprints.get(cell_id), metrics=metrics,
                     retries=retry_idx, now_iso=now_iso,
                 )
-                logger.info("gpu_cell_runner: cell=%s DONE ok (gpu=%s)", cell_id, slot)
+                if _fab_suspected:
+                    logger.warning(
+                        "gpu_cell_runner: cell=%s FABRICATION SUSPECTED — "
+                        "status degraded to 'failed' (peak_vram_gb=%.3f)",
+                        cell_id, peak_vram_gb,
+                    )
+                else:
+                    logger.info("gpu_cell_runner: cell=%s DONE ok (gpu=%s)", cell_id, slot)
             elif _is_oom(output) and retry_idx < max_oom_retries and not deadline_hit:
                 next_retry = retry_idx + 1
                 logger.warning(
@@ -844,4 +977,11 @@ def run_matrix(
                 error="worker exited without recording a result",
             )
 
-    return {cid: r.to_dict() for cid, r in results.items()}
+    out: dict[str, dict[str, Any]] = {}
+    for cid, r in results.items():
+        d = r.to_dict()
+        extras = _cell_extras.get(cid)
+        if extras:
+            d.update(extras)
+        out[cid] = d
+    return out

@@ -38,8 +38,16 @@ ssh_base=(gcloud compute ssh "$REMOTE_USER@$INSTANCE" --zone "$ZONE" --project "
 # and re-fires on every LATER function return — dereferencing an out-of-scope
 # `$stage` and aborting an already-SUCCESSFUL prepare under `set -u`. Null-safe via
 # the `[@]:-` expansion so an empty array doesn't trip `set -u` either.
+#
+# `return 0` is REQUIRED: when _CLEANUP_DIRS is empty, `${arr[@]:-}` yields one
+# empty string, so the loop's only iteration runs `[[ -n "" ]] && rm` — a false
+# test (status 1) as the trap's last command. bash 5.2 lets a non-zero EXIT-trap
+# last-command status override the script's 0 exit, so without this every action
+# that stages no temp dir (status/start/stop/monitor/launch) spuriously exits 1 on
+# success — which silently breaks `start && … prepare` chaining. A 0-status trap
+# never masks a real failure: errexit's non-zero exit code is preserved.
 _CLEANUP_DIRS=()
-_cleanup() { local d; for d in "${_CLEANUP_DIRS[@]:-}"; do [[ -n "$d" ]] && rm -rf "$d"; done; }
+_cleanup() { local d; for d in "${_CLEANUP_DIRS[@]:-}"; do [[ -n "$d" ]] && rm -rf "$d"; done; return 0; }
 trap _cleanup EXIT
 
 status_only() {

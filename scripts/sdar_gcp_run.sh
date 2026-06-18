@@ -34,13 +34,40 @@ PROJECT_ID="${OPENRESEARCH_SDAR_PROJECT_ID:-sdar_gcp_20260618}"
 # 2026-06-18 handoff). Override the deployment via AZURE_FOUNDRY_DEPLOYMENT.
 export AZURE_FOUNDRY_DEPLOYMENT="${AZURE_FOUNDRY_DEPLOYMENT:-grok-4.3}"
 export OPENRESEARCH_GRADER_SAMPLES="${OPENRESEARCH_GRADER_SAMPLES:-3}"
-export OPENRESEARCH_BASELINE_EXTRA_GUIDANCE="${OPENRESEARCH_BASELINE_EXTRA_GUIDANCE:-$(cat <<'G'
-FULL 3-MODEL SCOPE for this run: include ALL of Qwen/Qwen3-1.7B, Qwen/Qwen2.5-3B-Instruct,
-AND Qwen/Qwen2.5-7B-Instruct (seed 0). Emit cells.json for all three across the paper's envs
-(ALFWorld, WebShop, Search-QA). The 7B does NOT fit one 40GB card: set "gpus": 2 on every 7B cell
-and shard it with device_map="auto" (the harness gives that cell 2 dedicated cards). Keep the 1.7B
-and 3B cells at gpus:1. Set honest est_vram_gb per cell (~14 for 3B, ~32 for 7B). Do NOT descope the 7B.
-G
+export OPENRESEARCH_BASELINE_EXTRA_GUIDANCE="${OPENRESEARCH_BASELINE_EXTRA_GUIDANCE:-$(cat <<'SDAR_GUIDANCE_EOF'
+REAL REPRODUCTION - NO FABRICATION. The harness now DETECTS and REJECTS stub models, random
+log-probs, hardcoded metrics, and zero-VRAM "training" (at preflight AND at run time):
+- Load the REAL models with AutoModelForCausalLM.from_pretrained: Qwen/Qwen3-1.7B,
+  Qwen/Qwen2.5-3B-Instruct, Qwen/Qwen2.5-7B-Instruct. NEVER an nn.Linear/Identity stub.
+- Generate REAL rollouts (model.generate) on the REAL env episodes; compute REAL token
+  log-probs from a model forward pass. NEVER torch.randn as log-probs.
+- Report MEASURED success_rate/accuracy from actual evaluation. NEVER hardcode the paper's
+  Table-1 numbers (e.g. 0.844). A cell that uses ~0 GPU memory is REJECTED as fabricated.
+
+HYPERPARAMETERS (paper Section 3): lambda_SDAR=0.01, beta=5.0 for the main runs.
+
+METHOD (Section 2, in train.py): OPSD surrogate Delta_t = logP_T - logP_theta with reverse-KL;
+gated auxiliary loss g_t*loss with a STOP-GRADIENT sigmoid gate; full GRPO loss (group sampling
+G=8, importance ratio, clip). Implement ALL THREE selectable gates: Entropy g=sigmoid(beta*h_t),
+Gap g=sigmoid(beta*Delta_t), Soft-OR g=sigmoid(beta*[1-(1-h_t)(1-Delta_t)]).
+
+MATRIX: emit cells.json for the FULL 3x3 - every model x every env (ALFWorld, Search-QA; add
+WebShop only if its server is up), seed 0, 150 REAL training steps each. The 7B shards over 2
+cards (gpus:2, device_map="auto"); 1.7B/3B at gpus:1. Honest est_vram_gb (~14 for 3B, ~32 for 7B).
+
+DATA: Search-QA uses NQ + HotpotQA with an E5 retriever (batch 128, max_prompt 4096); ALFWorld
+batch 16, 8 rollouts, max_prompt 2048.
+
+COMPLETENESS (write the code; run what the wall-clock allows): baseline trainers (GRPO, GRPO+OPSD,
+Skill-SD, RLSD, Skill-GRPO, Skill-GRPO*); the four retrieval strategies (UCB score=rbar+c*sqrt(lnN/n),
+Keyword-Matching, Full, Random) loading the SkillBank; a beta/lambda ablation sweep script on ONE
+representative cell; per-step teacher-student gap-mean + gate-activation-ratio logging (Figure 5).
+Name the trainer train.py and emit an evaluation script that produces the Table-1/Table-2 numbers.
+
+PRIORITY if time-constrained: REAL training of the SDAR method on the full 3x3 matrix with correct
+hyperparameters + gap logging FIRST (a real partial beats a fabricated whole), then add
+baselines/retrieval/sweeps. Do NOT fake any result to increase coverage.
+SDAR_GUIDANCE_EOF
 )}"
 
 # Per-role models. Default: pure grok (OAuth-free). To put a reliable ChatGPT/

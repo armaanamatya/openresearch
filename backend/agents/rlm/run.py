@@ -109,6 +109,10 @@ from backend.agents.rlm import rlm_query_misuse_patch as _rlm_query_misuse_patch
 # 2026-05-29 lost two sub-RLMs to this. (The branch's BUG-NEW-033
 # rlm_query_misuse_patch is ported too — imported above, 2026-06-10.)
 from backend.agents.rlm import safe_subcall_traceback_patch as _safe_subcall_traceback_patch  # noqa: F401
+# 2026-06-18: accept ```python / ```py fences (not only ```repl) in root
+# responses — the upstream parser dropped grok-4.3's ```python blocks, so nothing
+# executed and the empty-code-block degenerate detector killed the run at iter 3.
+from backend.agents.rlm import code_fence_patch as _code_fence_patch  # noqa: F401
 # BUG-NEW-043 (belt+braces): the default recursion limit is 1000; the
 # mech-understanding paper's LaTeX-dense prompt blew it via some unknown deep
 # recursion path in the rlms stack. 10000 is defensive against the same kind
