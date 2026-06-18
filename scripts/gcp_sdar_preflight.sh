@@ -7,12 +7,14 @@
 #   scripts/gcp_sdar_preflight.sh sync
 #   scripts/gcp_sdar_preflight.sh check
 #   scripts/gcp_sdar_preflight.sh prepare
+#   scripts/gcp_sdar_preflight.sh launch
 #   scripts/gcp_sdar_preflight.sh stop
 #
 # `prepare` starts the VM, syncs the repo, installs SDAR deps, warms datasets and
 # model caches, provisions ALFWorld/WebShop/Search-QA, then leaves the VM running
-# for an immediate run. Use `scripts/cancel_gcp_sdar_run.sh --stop-vm` or `stop`
-# when done.
+# for an immediate run. `launch` starts the reproduction detached on the VM (gate
+# on a GREEN prepare first). Use `scripts/cancel_gcp_sdar_run.sh --stop-vm` or
+# `stop` when done.
 set -euo pipefail
 
 ACTION="${1:-check}"
@@ -161,6 +163,25 @@ remote_prepare() {
   "${ssh_base[@]}" "export PATH=\"\$HOME/.local/bin:\$PATH\" && cd $REMOTE_DIR && if [ ! -x .venv/bin/python ] || ! .venv/bin/python --version 2>&1 | grep -q '3\\.10'; then rm -rf .venv && uv venv --python 3.10 .venv; fi && .venv/bin/python -m pip install -r backend/requirements.txt && .venv/bin/python scripts/sdar_gcp_assets.py --prepare --check --require-gpu --min-gpus 8"
 }
 
+launch_run() {
+  start_vm
+  # Push the latest run script (it may post-date the last prepare sync).
+  gcloud compute scp --zone "$ZONE" --project "$PROJECT" --quiet \
+    scripts/sdar_gcp_run.sh "$REMOTE_USER@$INSTANCE:$REMOTE_DIR/scripts/sdar_gcp_run.sh"
+  # Refuse to double-launch the same paper; require a GREEN-prepared env file;
+  # then start the reproduction fully detached (setsid+nohup, stdin from
+  # /dev/null) so it survives this SSH session closing. The run logs to
+  # runs/sdar_gcp_run.out and streams to runs/<project_id>/dashboard_events.jsonl.
+  "${ssh_base[@]}" "cd $REMOTE_DIR \
+    && chmod +x scripts/sdar_gcp_run.sh \
+    && { [ -f runs/.cache/sdar_gcp.env ] || { echo 'ERROR: runs/.cache/sdar_gcp.env missing — run prepare to [GREEN] first' >&2; exit 1; }; } \
+    && { ! pgrep -f 'backend.cli reproduce 2605.15155' >/dev/null || { echo 'ERROR: a reproduce process for 2605.15155 is already running' >&2; exit 1; }; } \
+    && ( setsid nohup bash scripts/sdar_gcp_run.sh > runs/sdar_gcp_run.out 2>&1 < /dev/null & ) \
+    && sleep 4 \
+    && echo '--- launch tail (runs/sdar_gcp_run.out) ---' \
+    && tail -n 20 runs/sdar_gcp_run.out"
+}
+
 case "$ACTION" in
   status) describe_instance ;;
   start) start_vm ;;
@@ -168,6 +189,7 @@ case "$ACTION" in
   sync) sync_repo ;;
   check) remote_check ;;
   prepare) remote_prepare ;;
+  launch) launch_run ;;
   *)
     echo "unknown action: $ACTION" >&2
     exit 2
