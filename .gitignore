@@ -78,6 +78,10 @@ Thumbs.db
 !/runs/*/tokens_total.json
 # (dashboard_events.jsonl is the full SSE firehose — can be large; track it
 #  per-run on demand with `git add -f runs/<id>/dashboard_events.jsonl`.)
+# Throwaway BES A1 SELECT-stability capture dirs — re-ignore wholesale (these
+# override the per-run whitelist above) so the safe-capture wrapper's scratch
+# runs never sweep their whitelisted JSON into a commit.
+/runs/bes_a1_*/
 runs/_archive/
 # Launcher / per-run logs (OPENRESEARCH_RUNS_ROOT diagnostics, _no_runs_root, etc.)
 /logs/
@@ -185,3 +189,9 @@ frontend/next-env.d.ts
 
 # Local architecture tutorials (not committed)
 /docs/local/
+
+# DeepInvent GCP VM provisioners — local-only operator scripts for the deferred
+# SDAR smoke run; off-topic for this branch. Kept local so a `git add -A` can't
+# sweep them into an unrelated PR. Force-add (`git add -f`) onto a proper branch
+# when they're ready to ship.
+/scripts/deepinvent_vm_*.sh
