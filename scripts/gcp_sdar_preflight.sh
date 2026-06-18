@@ -141,6 +141,11 @@ remote_check() {
 remote_prepare() {
   start_vm
   sync_repo
+  # System build prerequisites for source-built Python deps. Ubuntu 24.04 ships
+  # only `python3`, but some sdists shell out to bare `python` and build native
+  # code (e.g. fast-downward-textworld -> cmake; alfworld/textworld -> C exts).
+  # Idempotent; needs passwordless sudo (GCP default for the creating user).
+  "${ssh_base[@]}" "sudo bash -c 'export DEBIAN_FRONTEND=noninteractive && apt-get update -qq && apt-get install -y python-is-python3 cmake ninja-build build-essential libffi-dev'"
   "${ssh_base[@]}" "cd $REMOTE_DIR && if [ ! -x .venv/bin/python ]; then python3 -m venv .venv; fi && .venv/bin/python -m pip install -r backend/requirements.txt && .venv/bin/python scripts/sdar_gcp_assets.py --prepare --check --require-gpu --min-gpus 8"
 }
 

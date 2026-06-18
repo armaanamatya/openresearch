@@ -26,6 +26,12 @@ from typing import Iterable
 
 
 REPO = Path(__file__).resolve().parents[1]
+# Make the repo root importable when this file is run as a standalone script
+# (e.g. `.venv/bin/python scripts/sdar_gcp_assets.py` on a VM where the repo is
+# NOT pip-installed): Python puts scripts/ on sys.path[0], never the repo root,
+# so the lazy `from backend... import` calls below would raise ModuleNotFoundError.
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
 DEFAULT_CACHE_DIR = REPO / "runs" / ".cache" / "envs"
 DEFAULT_HF_HOME = REPO / "runs" / ".cache" / "hf"
 DEFAULT_PIP_CACHE = REPO / "runs" / ".cache" / "pip"
