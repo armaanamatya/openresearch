@@ -31,6 +31,15 @@ export CLOUDSDK_CONFIG
 gcloud_base=(gcloud --project "$PROJECT")
 ssh_base=(gcloud compute ssh "$REMOTE_USER@$INSTANCE" --zone "$ZONE" --project "$PROJECT" --quiet --command)
 
+# Single EXIT-time temp-dir cleanup. One EXIT trap (not a per-function RETURN
+# trap) avoids the bash pitfall where a RETURN trap set inside a function persists
+# and re-fires on every LATER function return — dereferencing an out-of-scope
+# `$stage` and aborting an already-SUCCESSFUL prepare under `set -u`. Null-safe via
+# the `[@]:-` expansion so an empty array doesn't trip `set -u` either.
+_CLEANUP_DIRS=()
+_cleanup() { local d; for d in "${_CLEANUP_DIRS[@]:-}"; do [[ -n "$d" ]] && rm -rf "$d"; done; }
+trap _cleanup EXIT
+
 status_only() {
   "${gcloud_base[@]}" compute instances describe "$INSTANCE" \
     --zone "$ZONE" --format='value(status)'
@@ -111,7 +120,7 @@ sync_repo() {
   "${ssh_base[@]}" "mkdir -p $REMOTE_DIR"
   local stage
   stage="$(mktemp -d)"
-  trap 'rm -rf "$stage"' RETURN
+  _CLEANUP_DIRS+=("$stage")
   local files=(
     requirements.txt pyproject.toml CHANGELOG.md CLAUDE.md gcp_info.md issues.md
   )
@@ -153,9 +162,9 @@ remote_prepare() {
   # javac". WebShop is best-effort, so this only improves its odds of coming up.
   # Idempotent; needs passwordless sudo (GCP default for the creating user).
   "${ssh_base[@]}" "sudo bash -c 'export DEBIAN_FRONTEND=noninteractive && apt-get update -qq && apt-get install -y python-is-python3 cmake ninja-build build-essential libffi-dev openjdk-17-jdk-headless'"
-  # Ensure uv is available for creating Python-version-pinned venvs. The run venv
-  # is created at Python 3.10 so WebShop's dedicated venv (also 3.10) can share
-  # the same interpreter; uv resolves the exact minor-version binary automatically.
+  # Ensure uv is available for creating Python-version-pinned venvs (the run venv
+  # at 3.12, WebShop's dedicated venv at 3.10); uv resolves the exact minor-version
+  # interpreter automatically.
   "${ssh_base[@]}" "command -v uv || (curl -LsSf https://astral.sh/uv/install.sh | sh) && export PATH=\"\$HOME/.local/bin:\$PATH\""
   # Ensure the run venv is Python 3.12 — recreate it when MISSING or below the
   # harness floor. The harness requires >=3.11 (it does `from typing import Self`,

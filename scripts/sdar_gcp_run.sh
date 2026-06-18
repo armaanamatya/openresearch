@@ -18,6 +18,10 @@ if [ ! -f "$ENV_FILE" ]; then
   echo "ERROR: $ENV_FILE missing — run 'gcp_sdar_preflight.sh prepare' to [GREEN] first" >&2
   exit 1
 fi
+if [ ! -x .venv/bin/python ]; then
+  echo "ERROR: .venv/bin/python missing — run 'gcp_sdar_preflight.sh prepare' to [GREEN] first" >&2
+  exit 1
+fi
 # Shell wins over .env in the harness, so these exports pin the run.
 set -a
 # shellcheck disable=SC1090
