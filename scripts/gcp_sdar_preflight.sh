@@ -158,9 +158,10 @@ remote_prepare() {
   # Ensure the run venv is Python 3.10 — recreate it when MISSING or the WRONG
   # minor (e.g. a stale 3.12 venv from an earlier attempt). The run venv holds the
   # in-process ALFWorld/textworld stack (textworld's C extensions don't build on
-  # 3.12) and must match the dedicated WebShop interpreter. Idempotent: a correct
-  # 3.10 venv is reused as-is, no rebuild.
-  "${ssh_base[@]}" "export PATH=\"\$HOME/.local/bin:\$PATH\" && cd $REMOTE_DIR && if [ ! -x .venv/bin/python ] || ! .venv/bin/python --version 2>&1 | grep -q '3\\.10'; then rm -rf .venv && uv venv --python 3.10 .venv; fi && .venv/bin/python -m pip install -r backend/requirements.txt && .venv/bin/python scripts/sdar_gcp_assets.py --prepare --check --require-gpu --min-gpus 8"
+  # 3.12) and must match the dedicated WebShop interpreter. `sudo rm` because a
+  # prior `sudo pip` can leave root-owned files inside an abheekp-owned venv that
+  # a plain rm can't clear. Idempotent: a correct 3.10 venv is reused, no rebuild.
+  "${ssh_base[@]}" "export PATH=\"\$HOME/.local/bin:\$PATH\" && cd $REMOTE_DIR && if [ ! -x .venv/bin/python ] || ! .venv/bin/python --version 2>&1 | grep -q '3\\.10'; then sudo rm -rf .venv && uv venv --python 3.10 .venv; fi && .venv/bin/python -m pip install -r backend/requirements.txt && .venv/bin/python scripts/sdar_gcp_assets.py --prepare --check --require-gpu --min-gpus 8"
 }
 
 launch_run() {
