@@ -834,7 +834,11 @@ def _apply_champion_artifact(rubric: dict, project_dir: "Path") -> dict:
     if not _champion_artifact_enabled():
         return rubric
     try:
-        from backend.agents.rlm.champion_artifact import best_champion, restore_snapshot
+        from backend.agents.rlm.champion_artifact import (
+            best_champion,
+            restore_rubric,
+            restore_snapshot,
+        )
         champ = best_champion(Path(project_dir) / "rlm_state" / "champions.json")
         if not champ:
             return rubric
@@ -852,7 +856,21 @@ def _apply_champion_artifact(rubric: dict, project_dir: "Path") -> dict:
         if snap and (cur_f is None or champ_score >= cur_f):
             restore_snapshot(Path(snap), Path(project_dir) / "code")
             out["overall_score"] = champ_score
+            # Restore the champion's own rubric block so score ≡ its leaf evidence.
+            # snap is the *code* dir; its parent is the entry dir holding rubric_block.json.
+            champ_rubric = restore_rubric(Path(snap).parent) or {}
+            for _k in (
+                "leaf_scores",
+                "weak_leaves",
+                "leaf_count",
+                "meets_target",
+                "target_score",
+                "compute_adjusted_score",
+            ):
+                if champ_rubric.get(_k) is not None:
+                    out[_k] = champ_rubric[_k]
             out["champion_restored"] = True
+            out["champion_sample_count"] = int(champ.get("sample_count", 1))
         return out
     except Exception:  # noqa: BLE001 — champion-artifact restore is best-effort, never fatal
         logger.exception("report: champion-artifact restore failed (non-fatal)")
@@ -1190,6 +1208,19 @@ def build_final_report(
         kwargs["overall_score"] = _final_rubric.get("overall_score")
         kwargs["meets_target"] = _final_rubric.get("meets_target")
 
+    # Conversion-guard repair (Task 6): if provenance is empty but the grader
+    # scored a populated code/metrics.json, repopulate baseline_metrics from disk.
+    # Evidence-tightening only — no-op on already-coherent reports.
+    # detect_projection_incoherence has a score-based fallback
+    # (overall_score not in (None,0) AND metrics_on_disk) so no explicit
+    # evidence_cites_metrics flag is needed — setting it on every report was an
+    # unconditional output change (fix: strict parity).
+    _rubric_block = kwargs.get("rubric") or {}
+    repair_projection_from_disk(kwargs, _rubric_block, ctx.project_dir)
+    # The sentinel key must be stripped before passing to the pydantic model
+    # (RLMFinalReport has no provenance_repaired field and no extra="allow").
+    kwargs.pop("provenance_repaired", None)
+
     return RLMFinalReport(**kwargs)
 
 
@@ -1257,6 +1288,38 @@ def _metric_provenance_enabled() -> bool:
         "no",
         "off",
     )
+
+
+def repair_projection_from_disk(kwargs_report: dict, rubric: dict, project_dir: "Path") -> dict:
+    """If provenance is empty but the grader scored code/metrics.json, repopulate
+    baseline_metrics from that file.  Evidence-tightening only; no-op when coherent.
+
+    Returns the (mutated) kwargs_report dict.  The ``provenance_repaired`` sentinel
+    key is set to True on the dict when a repair was made — callers that pass this
+    to ``RLMFinalReport(**kwargs)`` must pop it first (the model has no such field).
+    """
+    from backend.agents.rlm.conversion_guard import detect_projection_incoherence
+
+    try:
+        mpath = Path(project_dir) / "code" / "metrics.json"
+        metrics = json.loads(mpath.read_text(encoding="utf-8")) if mpath.is_file() else None
+    except (OSError, ValueError, TypeError):
+        metrics = None
+
+    probe = {
+        "baseline_metrics": kwargs_report.get("baseline_metrics"),
+        "experiment_run_id": kwargs_report.get("experiment_run_id"),
+        "primitive_trace": kwargs_report.get("primitive_trace"),
+    }
+    if detect_projection_incoherence(probe, rubric, metrics) is None:
+        return kwargs_report
+
+    kwargs_report["baseline_metrics"] = metrics
+    kwargs_report["provenance_repaired"] = True
+    logger.warning(
+        "report: repaired empty provenance from code/metrics.json (conversion guard)"
+    )
+    return kwargs_report
 
 
 # ---------------------------------------------------------------------------

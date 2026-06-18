@@ -549,6 +549,7 @@ def run_staged_search(
         "winners": {grp: str(w.get("id") or "") for grp, w in winners.items()},
         "full_cells": [str(c.get("id") or "") for c in kept],
         "dropped_cells": [str(c.get("id") or "") for c in dropped],
+        "dropped_cells_full": [dict(c) for c in dropped],  # full dicts for scope.gaps
         "candidate_wall_s": cand_wall,
         "rate_s_per_epoch": rate,
     }

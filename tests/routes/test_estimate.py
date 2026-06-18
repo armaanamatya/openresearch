@@ -204,8 +204,14 @@ def test_estimate_route_is_mounted(monkeypatch, tmp_path):
     runs_root.mkdir()
     app = _fresh_app(monkeypatch, runs_root)
 
-    estimate_paths = [r.path for r in app.routes if "estimate" in r.path]
+    # Assert via the OpenAPI schema (the public route contract), not by walking
+    # app.routes: newer Starlette (CI may pip-resolve a version newer than the
+    # local pin) nests included-router routes under a Mount, so the estimate path
+    # no longer appears as a flat app.routes[*].path (the POST tests above still
+    # pass — the route is reachable, just not flat-introspectable). openapi()
+    # reflects all mounted routes regardless of nesting.
+    estimate_paths = [p for p in app.openapi().get("paths", {}) if "estimate" in p]
     assert estimate_paths, (
         "POST /paper/estimate must be mounted in create_app(). "
-        f"Routes with 'estimate' in path: {estimate_paths}"
+        f"OpenAPI paths with 'estimate': {estimate_paths}"
     )

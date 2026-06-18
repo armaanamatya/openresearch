@@ -62,9 +62,29 @@ _WALL_CLOCK_FLOOR_S = 60.0
 # re-running the same config — the only honest move is to stop and ship the
 # structured stop report.  Refusing FINAL_VAR here just re-OOMs (or re-burns the
 # already-exceeded budget on) the next iteration (the 2026-05-31 death spiral).
+# ``root_degenerate_loop`` is the analogous root-side terminal: the root has
+# called FINAL_VAR repeatedly with NO lifecycle progress (the degenerate
+# refusal loop, Task 4) — continuing to refuse only churns to the 16-refusal
+# cap / wall clock, so we accept the next FINAL_VAR and ship the report.
 _TERMINAL_FAILURE_CLASSES = frozenset(
-    {"oom_shrink_exhausted", "capacity_exhausted", "budget_exhausted"}
+    {
+        "oom_shrink_exhausted",
+        "capacity_exhausted",
+        "budget_exhausted",
+        "root_degenerate_loop",
+    }
 )
+
+
+def _default_degenerate_threshold() -> int:
+    """Read OPENRESEARCH_DEGENERATE_REFUSAL_THRESHOLD (default 3).
+
+    Defensive parse (mirrors the iteration-budget ``.isdigit()`` guard): a
+    non-numeric / non-positive value falls back to the default 3 rather than
+    raising at import.
+    """
+    raw = os.environ.get("OPENRESEARCH_DEGENERATE_REFUSAL_THRESHOLD", "").strip()
+    return int(raw) if raw.isdigit() and int(raw) > 0 else 3
 
 
 @dataclass
@@ -130,9 +150,35 @@ class ForcedIterationPolicy:
     # can carry code="forced_repair_iteration" distinct from "forced_iteration".
     # Defaults to None; when None the existing on_refusal is used as fallback.
     on_repair_refusal: Callable[[str], None] | None = None
+    # Task 2 — no-progress refusal-loop detection.  ``degenerate_threshold`` is
+    # the number of consecutive same-signature refusals with NO intervening
+    # state-changing primitive that constitutes a degenerate loop (default from
+    # OPENRESEARCH_DEGENERATE_REFUSAL_THRESHOLD, else 3).  When the counter
+    # first reaches it, ``on_degenerate_refusal_loop`` fires once with
+    # ``{signature, count, required_stage}``.  ``required_stage`` returns the
+    # current required lifecycle stage (Task 1 enum value), injected by run.py
+    # in Task 4; None until then → payload required_stage is None.  All
+    # additive + inert when on_degenerate_refusal_loop is None (the default).
+    degenerate_threshold: int = field(default_factory=_default_degenerate_threshold)
+    on_degenerate_refusal_loop: Callable[[dict], None] | None = None
+    required_stage: Callable[[], str] | None = None
+    # Task 3 — set by run.py (Task 4) when the root model is claude-oauth.
+    # Sonnet recovers better with fewer degrees of freedom, so the escalated
+    # degenerate-loop message appends a one-line command skeleton for it.
+    # Default False keeps non-oauth / unset runs skeleton-free.
+    oauth_root: bool = False
     # Internal: set by should_refuse() to signal which SSE event code the
     # interceptor should use when calling on_refusal / on_repair_refusal.
     _pending_refusal_code: str = field(default="forced_iteration", compare=False, repr=False)
+    # Task 2 — no-progress refusal-loop state.  ``_pending_refusal_signature``
+    # is stamped by every refusing return of should_refuse()/_build_repair_refusal()
+    # and read by the interceptor when calling register_refusal().  The counter
+    # is deliberately CROSS-turn: it resets only on a real state-changing
+    # primitive (record_state_change), never in on_iteration_advance().
+    _noprogress_refusals: int = field(default=0, compare=False, repr=False)
+    _last_refusal_signature: str | None = field(default=None, compare=False, repr=False)
+    _degenerate_fired: bool = field(default=False, compare=False, repr=False)
+    _pending_refusal_signature: str | None = field(default=None, compare=False, repr=False)
     # PR-μ Solution C — per-iteration run_experiment outcome sequence.
     # Tracks outcomes of all run_experiment calls in the current root turn;
     # reset by on_iteration_advance() at each turn boundary.
@@ -149,6 +195,100 @@ class ForcedIterationPolicy:
     target_score: float | None = field(default=None, compare=False, repr=False)
     run_id: str | None = field(default=None, compare=False, repr=False)
     ctx: Any | None = field(default=None, compare=False, repr=False)
+
+    # Task 3 — map an inferred lifecycle stage (root_progress.infer_required_stage
+    # enum value) to the concrete next-call directive the refusal text should name.
+    # An unmapped / None stage (e.g. ``can_finalize``) falls back to the legacy text.
+    _STAGE_DIRECTIVES = {
+        "need_baseline": "call plan_reproduction, then implement_baseline(plan)",
+        "need_environment": "call build_environment",
+        "need_experiment": "call run_experiment(code_path, env_id)",
+        "need_verification": "call verify_against_rubric on your latest run_experiment result",
+    }
+
+    def _safe_required_stage(self) -> str | None:
+        """Return the current required lifecycle stage, or None (fail-soft).
+
+        Wraps the injected ``required_stage`` callable; a missing callable or a
+        raising one degrades to None so the refusal text falls back to the
+        legacy form rather than crashing the policy.
+        """
+        if self.required_stage is None:
+            return None
+        try:
+            return self.required_stage()
+        except Exception:  # noqa: BLE001 — never crash the policy
+            return None
+
+    def _no_experiment_message(self, cur: int) -> str:
+        """Build the no-experiment refusal text, stage-specific when a stage is known.
+
+        When ``required_stage`` resolves to a mapped stage, the message NAMES
+        that stage's concrete next call (so ``need_baseline`` mentions
+        ``implement_baseline``, not just ``run_experiment``).  When the stage is
+        None or unmapped, returns the legacy text byte-for-byte — the single
+        source of truth for that string.
+        """
+        stage = self._safe_required_stage()
+        directive = self._STAGE_DIRECTIVES.get(stage or "") if stage else None
+        if directive is not None:
+            return (
+                f"FINAL_VAR refused at iteration {cur}: run_experiment has never "
+                "been called and there is no executed evidence to report. Your "
+                f"next step in the reproduction lifecycle is to {directive}, then "
+                "run_experiment to execute the code, then verify_against_rubric to "
+                "score it, then FINAL_VAR."
+            )
+        # Legacy text — preserved byte-for-byte (required_stage None / unmapped).
+        return (
+            f"FINAL_VAR refused at iteration {cur}: run_experiment has never "
+            "been called. You must execute the baseline code at least once "
+            "before terminating. Next steps: call build_environment (if the "
+            "image is not built yet), then run_experiment(code_path, env_id) "
+            "to execute the code, then verify_against_rubric to score it, "
+            "then FINAL_VAR."
+        )
+
+    def escalate_refusal_message(self, signature: str) -> str:
+        """Strong loop-naming message once the no-progress counter hit the threshold.
+
+        Called by the interceptor AFTER ``register_refusal`` so
+        ``_noprogress_refusals`` is the true post-registration count.  This
+        REPLACES (does not append to) the base refusal text — a weak root
+        recovers better from one unambiguous directive.  For ``claude-oauth``
+        roots a one-line recovery skeleton is appended.
+        """
+        stage = self._safe_required_stage()
+        action = self._STAGE_DIRECTIVES.get(
+            stage or "", "call plan_reproduction, then implement_baseline(plan), then run_experiment"
+        )
+        msg = (
+            f"You have called FINAL_VAR {self._noprogress_refusals}× with zero progress "
+            f"(signature={signature}). STOP reading and analyzing — your only valid "
+            f"next call is to {action}."
+        )
+        if self.oauth_root:
+            msg += " " + self._oauth_command_skeleton(stage)
+        return msg
+
+    @staticmethod
+    def _oauth_command_skeleton(stage: str | None) -> str:
+        """A ONE-LINE stage-appropriate command skeleton for claude-oauth recovery."""
+        skeletons = {
+            "need_baseline": (
+                "Recovery: plan = plan_reproduction(); "
+                "impl = implement_baseline(plan); "
+                "run_experiment(impl['code_path'], env_id)"
+            ),
+            "need_environment": "Recovery: env = build_environment(); run_experiment(code_path, env['env_id'])",
+            "need_experiment": "Recovery: run_experiment(code_path, env_id)",
+            "need_verification": "Recovery: verify_against_rubric(metrics_path)",
+        }
+        return skeletons.get(
+            stage or "",
+            "Recovery: plan = plan_reproduction(); impl = implement_baseline(plan); "
+            "run_experiment(impl['code_path'], env_id)",
+        )
 
     def record_repair_attempt(self, failure_class: str) -> None:
         """Record that run_experiment returned a repairable outcome.
@@ -191,23 +331,35 @@ class ForcedIterationPolicy:
         The message returned on refuse=True is a single-line, plain-English
         sentence the root model can act on directly.
         """
+        # Clear the per-decision signature handoff up front: every refusing
+        # branch below MUST re-stamp self._pending_refusal_signature. Resetting
+        # here makes a future un-stamped refusal degrade gracefully to None ->
+        # the interceptor's generic "forced_iteration" bucket, rather than
+        # silently inheriting the previous decision's signature (which could
+        # mask or fabricate a degenerate-loop trip — the field now feeds the
+        # no-progress counter, not just an SSE label).
+        self._pending_refusal_signature = None
+
         # 0. Wall-clock floor — always honored. Better to ship partial than
         # to time out with nothing.
         remaining = self.remaining_s() if self.remaining_s is not None else None
         if remaining is not None and remaining <= _WALL_CLOCK_FLOOR_S:
             return (False, None)
 
-        # 0.4. Terminal capacity exhaustion — a shrink-exhausted OOM (or an
-        # explicit capacity-exhausted stop) is NOT repairable by re-running the
-        # same config; refusing only re-OOMs. Accept FINAL_VAR so the run stops
-        # cleanly and ships its structured stop report (2026-05-31 remediation).
+        # 0.4. Terminal stop — accept FINAL_VAR, ship report, no re-loop. A
+        # shrink-exhausted OOM / capacity-exhausted stop is NOT repairable by
+        # re-running the same config (refusing only re-OOMs), and a
+        # root_degenerate_loop is a root that keeps calling FINAL_VAR with no
+        # lifecycle progress (refusing only churns to the 16-refusal cap).
+        # Either way the honest move is to stop and ship the structured stop
+        # report (2026-05-31 OOM remediation + Task 4 degenerate-loop early-abort).
         # Robust to both wiring styles: note_terminal_failure() OR a terminal
         # class threaded through record_repair_attempt().
         _terminal = self._terminal_failure_class or self._last_repair_failure_class
         if _terminal in _TERMINAL_FAILURE_CLASSES:
             logger.info(
-                "forced_iteration: terminal failure '%s' — accepting FINAL_VAR "
-                "(stop + report, no re-OOM loop)", _terminal,
+                "forced_iteration: terminal stop '%s' — accepting FINAL_VAR "
+                "(stop + report, no re-loop)", _terminal,
             )
             return (False, None)
 
@@ -249,15 +401,8 @@ class ForcedIterationPolicy:
         # regardless of how many iterations it consumed on planning/implementing.
         if self._total_run_experiments == 0:
             cur = self.current_iteration() if self.current_iteration is not None else 0
-            msg = (
-                f"FINAL_VAR refused at iteration {cur}: run_experiment has never "
-                "been called. You must execute the baseline code at least once "
-                "before terminating. Next steps: call build_environment (if the "
-                "image is not built yet), then run_experiment(code_path, env_id) "
-                "to execute the code, then verify_against_rubric to score it, "
-                "then FINAL_VAR."
-            )
-            return (True, msg)
+            self._pending_refusal_signature = "no_experiment"
+            return (True, self._no_experiment_message(cur))
 
         # Compute repair-iteration refusal eagerly — this check is independent
         # of min_iterations (rubric floor) so it fires even when the rubric
@@ -297,6 +442,7 @@ class ForcedIterationPolicy:
                     "or call run_experiment if you have not run the baseline yet. "
                     "Do NOT call FINAL_VAR until verify_against_rubric has returned a score."
                 )
+                self._pending_refusal_signature = "no_rubric"
                 return (True, msg)
             # 2.1 Hard-floor mode also closes the no-verify exit (2026-06-12
             # OmniZip attempt 3): a root that NEVER calls verify_against_rubric
@@ -316,6 +462,7 @@ class ForcedIterationPolicy:
                     "experiments that actually ran."
                 )
                 self._pending_refusal_code = "floor_hard"
+                self._pending_refusal_signature = "no_rubric"
                 return (True, msg)
             return (False, None)
 
@@ -334,6 +481,7 @@ class ForcedIterationPolicy:
                 "again — do NOT call FINAL_VAR until the rubric is satisfied or the "
                 "iteration floor is reached."
             )
+            self._pending_refusal_signature = "below_target"
             return (True, msg)
 
         # 4.5. Lane O — iteration floor reached AND rubric below target AND
@@ -356,6 +504,7 @@ class ForcedIterationPolicy:
                     "it didn't). Blanket-declining all candidates without running any is "
                     "observer bias and FINAL_VAR remains refused."
                 )
+                self._pending_refusal_signature = "below_target"
                 return (True, msg)
 
         # 4.6. PR-α followup — repair iteration floor.  Even when the rubric
@@ -386,6 +535,7 @@ class ForcedIterationPolicy:
                 "score reaches the floor or wall clock runs out."
             )
             self._pending_refusal_code = "floor_hard"
+            self._pending_refusal_signature = "below_target"
             return (True, msg)
 
         # 5. Iteration floor reached — accept the partial result.
@@ -402,6 +552,7 @@ class ForcedIterationPolicy:
             "floor is reached or the rubric is satisfied."
         )
         self._pending_refusal_code = "forced_repair_iteration"
+        self._pending_refusal_signature = "repair_floor"
         return (True, msg)
 
     # PR-μ Solution C — per-iteration run_experiment tracking.
@@ -413,9 +564,71 @@ class ForcedIterationPolicy:
         Called from the run_experiment primitive after computing its outcome."""
         self._experiments_in_iteration.append(outcome)
         self._total_run_experiments += 1
+        # run_experiment is a state-changing primitive — clear the no-progress
+        # refusal counter so a subsequent refusal does not accumulate toward the
+        # degenerate-loop trip (Task 2).
+        self.record_state_change()
+
+    def record_state_change(self) -> None:
+        """Reset the no-progress refusal counter — a state-changing primitive ran.
+
+        Called by ``record_run_experiment`` and (Task 4) by run.py for
+        ``implement_baseline`` / ``build_environment``.  Re-arms the
+        degenerate-loop detector so a healthy root that does real work between
+        refusals never trips it.
+        """
+        self._noprogress_refusals = 0
+        self._last_refusal_signature = None
+        self._degenerate_fired = False
+
+    def register_refusal(self, signature: str) -> None:
+        """Update the no-progress refusal counter after a refusal was issued.
+
+        Increments only while consecutive refusals share a signature with no
+        intervening state-changing primitive; a new signature resets the run to
+        1; a state-changing primitive (record_state_change) resets to 0. Fires
+        ``on_degenerate_refusal_loop`` exactly once when the counter first
+        reaches ``degenerate_threshold``.  Inert (counter-only, no callback)
+        when ``on_degenerate_refusal_loop`` is None.
+        """
+        if signature == self._last_refusal_signature:
+            self._noprogress_refusals += 1
+        else:
+            self._last_refusal_signature = signature
+            self._noprogress_refusals = 1
+        if (
+            self.on_degenerate_refusal_loop is not None
+            and not self._degenerate_fired
+            and self._noprogress_refusals >= self.degenerate_threshold
+        ):
+            self._degenerate_fired = True
+            stage: str | None = None
+            if self.required_stage is not None:
+                try:
+                    stage = self.required_stage()
+                except Exception:  # noqa: BLE001 — never crash the policy
+                    stage = None
+            try:
+                self.on_degenerate_refusal_loop(
+                    {
+                        "signature": signature,
+                        "count": self._noprogress_refusals,
+                        "required_stage": stage,
+                    }
+                )
+            except Exception:  # noqa: BLE001 — emit must never block the policy
+                logger.exception(
+                    "forced_iteration: on_degenerate_refusal_loop raised"
+                )
 
     def on_iteration_advance(self) -> None:
-        """Reset per-iteration trackers when a new REPL turn starts."""
+        """Reset per-iteration trackers when a new REPL turn starts.
+
+        NOTE: deliberately does NOT touch the no-progress refusal counter — that
+        counter is cross-turn and resets only on a real state-changing primitive
+        (``record_state_change``).  on_iteration_advance fires after EVERY
+        refusal, so resetting here would defeat the degenerate-loop detector.
+        """
         self._experiments_in_iteration = []
 
     def should_refuse_final_var(self, current_score: float, iteration_count: int) -> PolicyDecision:
@@ -538,13 +751,19 @@ def apply_forced_iteration_patch() -> None:
             two_exp_decision = policy.should_refuse_final_var(current_score, current_iter)
             if two_exp_decision.refuse:
                 policy.refusal_count += 1
+                policy.register_refusal("two_experiment_same_iteration")
+                message = two_exp_decision.reason
+                if policy._noprogress_refusals >= policy.degenerate_threshold:
+                    message = policy.escalate_refusal_message(
+                        "two_experiment_same_iteration"
+                    )
                 if policy.on_refusal is not None:
                     try:
-                        policy.on_refusal(two_exp_decision.reason)
+                        policy.on_refusal(message)
                     except Exception:
                         logger.exception("forced_iteration: on_refusal (two-exp) raised")
                 policy.on_iteration_advance()
-                return _build_block_message(variable_name, two_exp_decision.reason)
+                return _build_block_message(variable_name, message)
 
             refuse, message = policy.should_refuse()
             if not refuse:
@@ -552,6 +771,15 @@ def apply_forced_iteration_patch() -> None:
 
             assert message is not None  # invariant from should_refuse contract
             policy.refusal_count += 1
+            _signature = policy._pending_refusal_signature or "forced_iteration"
+            policy.register_refusal(_signature)
+
+            # Task 3 — escalate once the no-progress counter has reached the
+            # degenerate threshold (must be AFTER register_refusal so the count
+            # is the true post-registration value). Healthy runs (1-2 refusals)
+            # never reach it; no accept/refuse decision changes.
+            if policy._noprogress_refusals >= policy.degenerate_threshold:
+                message = policy.escalate_refusal_message(_signature)
 
             # Notify the policy's callback so the orchestrator can surface a
             # run_warning SSE event. Route to on_repair_refusal when the
@@ -603,5 +831,4 @@ __all__ = [
     "PolicyDecision",
     "apply_forced_iteration_patch",
     "forced_iteration_policy",
-    "_WALL_CLOCK_FLOOR_S",
 ]

@@ -2002,7 +2002,7 @@ def score_reproduction(
                 except (OSError, json.JSONDecodeError, ValueError):
                     _eg_metrics = {}
             _eg_det_ids = {str(r.get("id", "")) for r in _deterministic_records}
-            _eg_leaf_by_id = {str(l.get("id", "")): l for l in leaves}
+            _eg_leaf_by_id = {str(lf.get("id", "")): lf for lf in leaves}
             for _eg_rec in leaf_score_records:
                 _eg_lid = str(_eg_rec.get("id", ""))
                 # Skip the data-unavailable records (score=None, appended below) and
