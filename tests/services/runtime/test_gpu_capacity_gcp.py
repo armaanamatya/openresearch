@@ -232,3 +232,34 @@ def test_no_project_dir_on_ctx_falls_back_to_settings(monkeypatch):
     ctx = _gcp_ctx()  # no project_dir attribute
     result = _describe_gcp(ctx)
     assert result.per_gpu_vram_gb == pytest.approx(80.0)
+
+
+# ---------------------------------------------------------------------------
+# gpus_per_node — total schedulable GPUs = max_nodes × gpus_per_node
+# ---------------------------------------------------------------------------
+
+def test_default_gpus_per_node_is_byte_identical_to_node_count(monkeypatch):
+    """Default gcp_gpus_per_node=1 ⇒ num_gpus == gcp_max_nodes (unchanged)."""
+    monkeypatch.setenv("OPENRESEARCH_GCP_MAX_NODES", "4")
+    monkeypatch.delenv("OPENRESEARCH_GCP_GPUS_PER_NODE", raising=False)
+    _reset_settings_cache()
+    result = _describe_gcp(_gcp_ctx())
+    assert result.num_gpus == 4  # == gcp_max_nodes
+
+
+def test_gpus_per_node_multiplies_schedulable_gpus(monkeypatch):
+    """gcp_gpus_per_node=8 with gcp_max_nodes=1 ⇒ num_gpus == 8."""
+    monkeypatch.setenv("OPENRESEARCH_GCP_MAX_NODES", "1")
+    monkeypatch.setenv("OPENRESEARCH_GCP_GPUS_PER_NODE", "8")
+    _reset_settings_cache()
+    result = _describe_gcp(_gcp_ctx())
+    assert result.num_gpus == 8
+    assert result.free_gpu_ids == tuple(str(i) for i in range(8))
+
+
+def test_gpus_per_node_default_is_one(monkeypatch):
+    """Settings default for gcp_gpus_per_node must be 1."""
+    monkeypatch.delenv("OPENRESEARCH_GCP_GPUS_PER_NODE", raising=False)
+    _reset_settings_cache()
+    s = Settings(_env_file=None)
+    assert s.gcp_gpus_per_node == 1

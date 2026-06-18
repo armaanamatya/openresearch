@@ -1,0 +1,25 @@
+# SDAR/GCP full-scope runtime dependencies.
+#
+# This is intentionally separate from backend/requirements.txt. The core backend
+# should stay lightweight; SDAR full-scope runs need a large ML/environment stack
+# that is prepared once on the GPU VM or baked into a cell image.
+
+# HuggingFace / Qwen stack. Qwen3 needs transformers >= 4.51.
+transformers>=4.51.0,<4.58
+accelerate>=1.7,<2
+datasets>=2.19,<4
+huggingface-hub>=0.23,<1
+sentence-transformers>=3,<6
+tokenizers>=0.19,<0.22
+
+# Retrieval / metrics.
+rank-bm25>=0.2.2,<0.3
+faiss-cpu>=1.8,<2
+scikit-learn>=1.4,<2
+matplotlib>=3.9,<4
+tqdm>=4.66,<5
+
+# Agentic environments.
+alfworld>=0.4.2,<0.5
+textworld>=1.6,<2
+requests>=2.32,<3

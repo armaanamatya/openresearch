@@ -1748,3 +1748,26 @@ run. Plan merges accordingly.
 - Always include a regression test path.
 - If a principle is violated more than twice, promote it from a per-bug
   lesson to a numbered item under **Cross-cutting principles**.
+
+## 2026-06-17 — Paid GPU runs need an asset gate, not best-effort env setup.
+
+**Symptom.** The GCP `sdar-a100-8g` Grok/Foundry run started, spent LLM calls, then
+failed before useful GPU training. ALFWorld lacked `alfworld-download`, WebShop's
+`web_agent_site` server was not importable/running, and generated cells hit missing
+or broken `transformers` imports while the A100s sat idle.
+
+**Root cause.** Full-scope SDAR had an implicit asset contract. `EnvCacheManager`
+could fail-soft inside the run, but there was no operator-level RED/GREEN gate that
+proved the VM had the SDAR Python stack, HF weights, HF datasets, ALFWorld data,
+WebShop server, cache env vars, and visible GPUs before launch.
+
+**Fix.** Added `backend/requirements-sdar.txt`, `scripts/sdar_gcp_assets.py`, and
+`scripts/gcp_sdar_preflight.sh`. The new workflow has a fast `check` and a
+networked `prepare`; `prepare` installs SDAR deps, warms shared caches, provisions
+the three environments through `EnvCacheManager`, writes `runs/.cache/sdar_gcp.env`,
+and requires 8 visible GPUs on the VM. The wrapper now stages source without
+generated caches/venvs and refuses non-spot GPU VMs by default.
+
+**Guardrail.** `python scripts/sdar_gcp_assets.py --help` and
+`bash -n scripts/gcp_sdar_preflight.sh`; the live gate is
+`scripts/gcp_sdar_preflight.sh prepare` returning GREEN before any full SDAR run.

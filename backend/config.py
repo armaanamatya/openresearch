@@ -316,6 +316,7 @@ class Settings(BaseSettings):
     azure_node_pool_name: str = Field(default="gpua100", description="GPU node pool name (scale-to-zero)")
     azure_per_gpu_vram_gb: float = Field(default=80.0, ge=1.0, description="VRAM per GPU in the node pool (A100=80)")
     azure_max_nodes: int = Field(default=4, ge=1, description="Node pool max-nodes (orchestrator-side concurrency cap)")
+    azure_gpus_per_node: int = Field(default=1, ge=1, description="GPUs per AKS GPU node — see gcp_gpus_per_node.")
     # Empty means the operator MUST set OPENRESEARCH_AZURE_BASE_IMAGE to a PINNED
     # ACR tag (e.g. myregistry.azurecr.io/reprolab:20260603-abc1234). The runner
     # errors clearly on empty rather than defaulting to a floating :latest tag.
@@ -432,6 +433,7 @@ class Settings(BaseSettings):
     gcp_node_pool_name: str = Field(default="gpua100", description="GPU node pool name (scale-to-zero)")
     gcp_per_gpu_vram_gb: float = Field(default=80.0, ge=1.0, description="VRAM per GPU in the node pool (A100=80)")
     gcp_max_nodes: int = Field(default=4, ge=1, description="Node pool max-nodes (orchestrator-side concurrency cap)")
+    gcp_gpus_per_node: int = Field(default=1, ge=1, description="GPUs per GKE GPU node — set to the node SKU's GPU count (e.g. 8 for a2-highgpu-8g) so that many single-GPU cells run concurrently per node. Default 1 = today's one-cell-per-node behaviour.")
     # Empty means the operator MUST set OPENRESEARCH_GCP_BASE_IMAGE to a PINNED
     # Artifact Registry tag. The runner errors clearly on empty rather than
     # defaulting to a floating :latest tag.

@@ -223,6 +223,37 @@ def test_num_gpus_always_comes_from_azure_max_nodes(tmp_path, monkeypatch):
     assert result.free_gpu_ids == ("0", "1", "2", "3")
 
 
+# ---------------------------------------------------------------------------
+# gpus_per_node — total schedulable GPUs = max_nodes × gpus_per_node
+# ---------------------------------------------------------------------------
+
+def test_default_gpus_per_node_is_byte_identical_to_node_count(monkeypatch):
+    """Default azure_gpus_per_node=1 ⇒ num_gpus == azure_max_nodes (unchanged)."""
+    monkeypatch.setenv("OPENRESEARCH_AZURE_MAX_NODES", "4")
+    monkeypatch.delenv("OPENRESEARCH_AZURE_GPUS_PER_NODE", raising=False)
+    _reset_settings_cache()
+    result = _describe_azure(_azure_ctx())
+    assert result.num_gpus == 4  # == azure_max_nodes
+
+
+def test_gpus_per_node_multiplies_schedulable_gpus(monkeypatch):
+    """azure_gpus_per_node=8 with azure_max_nodes=1 ⇒ num_gpus == 8."""
+    monkeypatch.setenv("OPENRESEARCH_AZURE_MAX_NODES", "1")
+    monkeypatch.setenv("OPENRESEARCH_AZURE_GPUS_PER_NODE", "8")
+    _reset_settings_cache()
+    result = _describe_azure(_azure_ctx())
+    assert result.num_gpus == 8
+    assert result.free_gpu_ids == tuple(str(i) for i in range(8))
+
+
+def test_gpus_per_node_default_is_one(monkeypatch):
+    """Settings default for azure_gpus_per_node must be 1."""
+    monkeypatch.delenv("OPENRESEARCH_AZURE_GPUS_PER_NODE", raising=False)
+    _reset_settings_cache()
+    s = Settings(_env_file=None)
+    assert s.azure_gpus_per_node == 1
+
+
 def test_no_project_dir_on_ctx_falls_back_to_settings(monkeypatch):
     """ctx without project_dir attr → settings path taken (no AttributeError)."""
     monkeypatch.setenv("OPENRESEARCH_AZURE_PER_GPU_VRAM_GB", "80.0")

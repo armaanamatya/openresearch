@@ -156,6 +156,13 @@ infra/azure/bootstrap/terraform.tfstate
 *.tfstate.backup
 infra/azure/**/.terraform/
 infra/gcp/**/.terraform/
+# Operator env config — project ids, operator emails, egress IPs, bucket names.
+# NEVER commit; the *.example templates stay tracked (different filename).
+infra/gcp/envs/**/main.tfvars
+infra/gcp/envs/**/backend.hcl
+infra/gcp/envs/**/helm-values.yaml
+infra/azure/envs/**/main.tfvars
+infra/azure/envs/**/backend.hcl
 
 # DeepEval runtime cache (deepeval is a real dep — cache repopulates as needed)
 .deepeval

@@ -17,6 +17,21 @@ version + date and start a new `[Unreleased]` block above it.
 
 ## [Unreleased]
 
+### Added (2026-06-17 — SDAR/GCP asset preflight and VM-safe preparation)
+- `backend/requirements-sdar.txt` declares the heavy SDAR-only runtime stack
+  (`transformers>=4.51`, `accelerate`, `datasets`, retrieval libs, `alfworld`,
+  TextWorld, WebShop transport deps) separately from the core backend deps.
+- `scripts/sdar_gcp_assets.py` installs and validates the SDAR stack, warms Qwen
+  model snapshots and Search-QA datasets into shared caches, provisions
+  ALFWorld/WebShop/Search-QA through `EnvCacheManager`, and writes
+  `runs/.cache/sdar_gcp.env` for direct launches.
+- `scripts/gcp_sdar_preflight.sh` wraps the GCP VM workflow (`status/start/sync/check/prepare/stop`)
+  so operators can gate the full paper run before A100 billing is spent on
+  missing packages, datasets, or server assets. It stages source with cache/venv
+  exclusions and refuses non-spot GPU VMs by default via `OPENRESEARCH_REQUIRE_SPOT=true`.
+- Documentation: the GCP SDAR runbook now makes the preflight mandatory; `issues.md`
+  records the failed Grok/Foundry VM attempt and the mitigation.
+
 ### Fixed (2026-06-17 — Stream F: GCP production-hardening; runtime/IaC split + 3 BLOCKERs + MAJORs; all IaC additions flag-gated, default helm render byte-identical)
 A production-readiness audit found the GCP GPU runtime wired but the Terraform/Helm
 layer not caught up, plus correctness bugs in the spot/budget/resume code.

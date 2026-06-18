@@ -187,9 +187,12 @@ def _describe_azure(ctx: Any) -> GpuCapacity:
     settings defaults are used so capacity queries made before
     ``resolve_gpu_requirements`` runs are still valid.
 
-    ``num_gpus`` always comes from ``azure_max_nodes`` (the AKS node-pool
-    concurrency cap) — the plan's ``gpu_count`` is a per-node count and the
-    azure runner scales horizontally, not per-GPU.
+    ``num_gpus`` is ``azure_max_nodes × azure_gpus_per_node`` (the total
+    schedulable GPUs across the AKS node pool) — the plan's ``gpu_count`` is the
+    per-cell request, not the pool size, and the azure runner scales
+    horizontally.  With the default ``azure_gpus_per_node=1`` this reduces to the
+    node count, unchanged from before; raise it to the node SKU's GPU count so a
+    multi-GPU node runs that many single-GPU cells concurrently.
 
     ``can_escalate=False``: the field specifically guards the *run_experiment
     monolithic SKU-ladder escalation loop* (the per-cell OOM retry path that
@@ -209,7 +212,7 @@ def _describe_azure(ctx: Any) -> GpuCapacity:
     from backend.config import get_settings
 
     s = get_settings()
-    num_gpus = max(1, int(s.azure_max_nodes))
+    num_gpus = max(1, int(s.azure_max_nodes) * int(getattr(s, "azure_gpus_per_node", 1)))
     per_gpu_vram_gb = float(s.azure_per_gpu_vram_gb)
 
     # Try to load the resolved gpu_plan and refine per_gpu_vram_gb from it.
@@ -255,9 +258,12 @@ def _describe_gcp(ctx: Any) -> GpuCapacity:
     Both Azure and GCP plans use ``cloud_type == "ONDEMAND"``; using
     ``short_name`` prefix is the only unambiguous discriminator.
 
-    ``num_gpus`` always comes from ``gcp_max_nodes`` (the GKE node-pool
-    concurrency cap) — the plan's ``gpu_count`` is per-node and GKE scales
-    horizontally.
+    ``num_gpus`` is ``gcp_max_nodes × gcp_gpus_per_node`` (the total schedulable
+    GPUs across the GKE node pool) — the plan's ``gpu_count`` is the per-cell
+    request, not the pool size, and GKE scales horizontally.  With the default
+    ``gcp_gpus_per_node=1`` this reduces to the node count, unchanged from
+    before; raise it to the node SKU's GPU count so a multi-GPU node runs that
+    many single-GPU cells concurrently.
 
     ``can_escalate=False``: GKE dispatches Kubernetes Jobs with node-pool SKU
     selection at dispatch time; the RunPod ladder escalation loop does not apply.
@@ -268,7 +274,7 @@ def _describe_gcp(ctx: Any) -> GpuCapacity:
     from backend.config import get_settings
 
     s = get_settings()
-    num_gpus = max(1, int(s.gcp_max_nodes))
+    num_gpus = max(1, int(s.gcp_max_nodes) * int(getattr(s, "gcp_gpus_per_node", 1)))
     per_gpu_vram_gb = float(s.gcp_per_gpu_vram_gb)
 
     # Try to load the resolved gpu_plan and refine per_gpu_vram_gb from it.
