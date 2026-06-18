@@ -175,8 +175,10 @@ def install_webshop_dedicated(cache_root: Path, *, python_version: str = "3.10")
         venv_dir.parent.mkdir(parents=True, exist_ok=True)
         created = False
         if shutil.which("uv") is not None:
+            # --seed installs pip/setuptools into the venv (uv omits them by
+            # default), so the `venv_python -m pip install` below can run.
             result = subprocess.run(
-                ["uv", "venv", "--python", python_version, str(venv_dir)],
+                ["uv", "venv", "--python", python_version, "--seed", str(venv_dir)],
                 check=False,
             )
             if result.returncode == 0:
