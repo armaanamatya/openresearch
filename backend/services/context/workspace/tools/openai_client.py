@@ -159,14 +159,26 @@ class OpenAILlmClient:
                 seed=seed,
                 **self._token_temp_kwargs(eff_temp),
             )
+            self._last_usage = _usage_from_response(getattr(resp, "usage", None))
+            return [(c.message.content or "") for c in resp.choices]
         except TypeError:
-            # SDK signature rejected n/seed — fall back to N sequential calls.
-            return [
-                self._complete_once(system=system, user=user, temperature=eff_temp)
-                for _ in range(n)
-            ]
-        self._last_usage = _usage_from_response(getattr(resp, "usage", None))
-        return [(c.message.content or "") for c in resp.choices]
+            # SDK signature rejected n/seed (older SDK) — fall through to sequential.
+            pass
+        except Exception:
+            # Some OpenAI-COMPATIBLE endpoints (Azure AI Foundry / grok) reject the
+            # multi-completion (n>1) request itself — e.g. an Azure ML 422
+            # "bootstrap_host" routing error — even though single completions
+            # succeed. Fall back to n sequential single-completion calls for n>1.
+            # For n<=1 the failure is a genuine API/transport error, so re-raise it
+            # rather than masking it behind an identical retry.
+            if n <= 1:
+                raise
+        # Fallback: n SEQUENTIAL single-completion calls — universally supported,
+        # including on endpoints without native multi-completion (n>1).
+        return [
+            self._complete_once(system=system, user=user, temperature=eff_temp)
+            for _ in range(n)
+        ]
 
     def _complete_once(self, *, system: str, user: str, temperature: float) -> str:
         """One single-choice completion at an explicit temperature (fallback path)."""

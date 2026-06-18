@@ -29,9 +29,10 @@ set -a
 set +a
 
 PROJECT_ID="${OPENRESEARCH_SDAR_PROJECT_ID:-sdar_gcp_20260618}"
-# Default to ChatGPT-latest (reasoning-class) as root+executor+grader+verifier;
-# override via AZURE_FOUNDRY_DEPLOYMENT=grok-4.3 for the grok alternative.
-export AZURE_FOUNDRY_DEPLOYMENT="${AZURE_FOUNDRY_DEPLOYMENT:-gpt-chat-latest}"
+# Default to grok-4.3 as root+executor (the PROVEN RLM root — chat-only
+# deployments like gpt-chat-latest REFUSE to drive the REPL loop; see the
+# 2026-06-18 handoff). Override the deployment via AZURE_FOUNDRY_DEPLOYMENT.
+export AZURE_FOUNDRY_DEPLOYMENT="${AZURE_FOUNDRY_DEPLOYMENT:-grok-4.3}"
 export OPENRESEARCH_GRADER_SAMPLES="${OPENRESEARCH_GRADER_SAMPLES:-3}"
 export OPENRESEARCH_BASELINE_EXTRA_GUIDANCE="${OPENRESEARCH_BASELINE_EXTRA_GUIDANCE:-$(cat <<'G'
 FULL 3-MODEL SCOPE for this run: include ALL of Qwen/Qwen3-1.7B, Qwen/Qwen2.5-3B-Instruct,
@@ -42,10 +43,16 @@ and 3B cells at gpus:1. Set honest est_vram_gb per cell (~14 for 3B, ~32 for 7B)
 G
 )}"
 
-echo "[sdar_gcp_run] project_id=$PROJECT_ID deployment=$AZURE_FOUNDRY_DEPLOYMENT grader_samples=$OPENRESEARCH_GRADER_SAMPLES"
+# Per-role models. Default: pure grok (OAuth-free). To put a reliable ChatGPT/
+# gpt-5 grader+verifier behind the grok agent (more trustworthy grading), set —
+# REQUIRES a LIVE OPENAI_API_KEY in .env (the bundled one is currently dead):
+#   OPENRESEARCH_SDAR_MODELS=executor=grok,grader=gpt-5,verifier=gpt-5
+export OPENRESEARCH_SDAR_MODELS="${OPENRESEARCH_SDAR_MODELS:-executor=grok,grader=grok,verifier=grok}"
+
+echo "[sdar_gcp_run] project_id=$PROJECT_ID deployment=$AZURE_FOUNDRY_DEPLOYMENT models=$OPENRESEARCH_SDAR_MODELS grader_samples=$OPENRESEARCH_GRADER_SAMPLES"
 exec env -u ANTHROPIC_API_KEY .venv/bin/python -m backend.cli reproduce 2605.15155 \
   --mode rlm --sandbox local --model grok \
-  --models executor=grok,grader=grok,verifier=grok \
+  --models "$OPENRESEARCH_SDAR_MODELS" \
   --paper-hint 2605.15155 \
   --gpu-mode max --gpu-parallelism multi --vram-gb 40 \
   --no-force-single-gpu --max-wall-clock 86400 \

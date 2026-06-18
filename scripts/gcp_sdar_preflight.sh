@@ -8,6 +8,7 @@
 #   scripts/gcp_sdar_preflight.sh check
 #   scripts/gcp_sdar_preflight.sh prepare
 #   scripts/gcp_sdar_preflight.sh launch
+#   scripts/gcp_sdar_preflight.sh monitor
 #   scripts/gcp_sdar_preflight.sh stop
 #
 # `prepare` starts the VM, syncs the repo, installs SDAR deps, warms datasets and
@@ -25,6 +26,7 @@ REMOTE_DIR="${OPENRESEARCH_REMOTE_DIR:-/home/abheekp/openresearch}"
 CLOUDSDK_CONFIG="${CLOUDSDK_CONFIG:-/home/abheekp/.config/gcloud}"
 REMOTE_USER="${OPENRESEARCH_GCP_SSH_USER:-abheekp}"
 REQUIRE_SPOT="${OPENRESEARCH_REQUIRE_SPOT:-true}"
+MIN_GPUS="${OPENRESEARCH_SDAR_MIN_GPUS:-8}"
 
 export CLOUDSDK_CONFIG
 
@@ -148,7 +150,7 @@ remote_check() {
   start_vm
   # Source the env file written by `prepare` so the standalone check sees the
   # dedicated WebShop interpreter (OPENRESEARCH_WEBSHOP_PYTHON) and cache paths.
-  "${ssh_base[@]}" "cd $REMOTE_DIR && { [ -f runs/.cache/sdar_gcp.env ] && . runs/.cache/sdar_gcp.env || true; } && .venv/bin/python scripts/sdar_gcp_assets.py --check --require-gpu --min-gpus 8"
+  "${ssh_base[@]}" "cd $REMOTE_DIR && { [ -f runs/.cache/sdar_gcp.env ] && . runs/.cache/sdar_gcp.env || true; } && .venv/bin/python scripts/sdar_gcp_assets.py --check --require-gpu --min-gpus $MIN_GPUS"
 }
 
 remote_prepare() {
@@ -173,14 +175,47 @@ remote_prepare() {
   # dedicated venv. `--seed` gives the uv venv pip/setuptools (uv omits them by
   # default). `sudo rm` clears any root-owned files a prior `sudo pip` left behind.
   # Idempotent: an existing 3.12 venv is reused as-is.
-  "${ssh_base[@]}" "export PATH=\"\$HOME/.local/bin:\$PATH\" && cd $REMOTE_DIR && if [ ! -x .venv/bin/python ] || ! .venv/bin/python --version 2>&1 | grep -q '3\\.12'; then sudo rm -rf .venv && uv venv --python 3.12 --seed .venv; fi && .venv/bin/python -m pip install -r backend/requirements.txt && .venv/bin/python scripts/sdar_gcp_assets.py --prepare --check --require-gpu --min-gpus 8"
+  "${ssh_base[@]}" "export PATH=\"\$HOME/.local/bin:\$PATH\" && cd $REMOTE_DIR && if [ ! -x .venv/bin/python ] || ! .venv/bin/python --version 2>&1 | grep -q '3\\.12'; then sudo rm -rf .venv && uv venv --python 3.12 --seed .venv; fi && .venv/bin/python -m pip install -r backend/requirements.txt && .venv/bin/python scripts/sdar_gcp_assets.py --prepare --check --require-gpu --min-gpus $MIN_GPUS"
+}
+
+assert_running() {
+  local s
+  s="$(status_only 2>/dev/null || true)"
+  if [[ "$s" != "RUNNING" ]]; then
+    echo "ERROR: VM $INSTANCE is '${s:-unknown}'; run 'start' or 'prepare' first" >&2
+    exit 1
+  fi
+}
+
+monitor_run() {
+  assert_running
+  local pid_proj="${OPENRESEARCH_SDAR_PROJECT_ID:-sdar_gcp_20260618}"
+  "${ssh_base[@]}" "cd $REMOTE_DIR && echo '--- run.out ---' && tail -n 40 runs/sdar_gcp_run.out 2>/dev/null; echo '--- dashboard_events ---' && tail -n 20 runs/$pid_proj/dashboard_events.jsonl 2>/dev/null; echo '--- gpu ---' && nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total --format=csv,noheader 2>/dev/null"
 }
 
 launch_run() {
   start_vm
+  # GPU-COST GATE: never start a GPU run until env + data + GPUs are verified
+  # installed. Re-runs the asset readiness check (datasets, model snapshots,
+  # ALFWorld/Search-QA, visible GPUs); a [RED] result aborts BEFORE any GPU work,
+  # so a half-provisioned env can never burn GPU hours. Bypass for a deliberate
+  # dry run via OPENRESEARCH_SDAR_SKIP_LAUNCH_CHECK=1.
+  if [[ "${OPENRESEARCH_SDAR_SKIP_LAUNCH_CHECK:-0}" != "1" ]]; then
+    echo "[gate] verifying env/data/GPU readiness before any GPU work..."
+    if ! "${ssh_base[@]}" "cd $REMOTE_DIR && { [ -f runs/.cache/sdar_gcp.env ] && . runs/.cache/sdar_gcp.env || true; } && .venv/bin/python scripts/sdar_gcp_assets.py --check --require-gpu --min-gpus $MIN_GPUS"; then
+      echo "ERROR: env/data not ready ([RED]) — run 'prepare' to [GREEN] first; refusing to start the GPU run" >&2
+      exit 1
+    fi
+  fi
   # Push the latest run script (it may post-date the last prepare sync).
   gcloud compute scp --zone "$ZONE" --project "$PROJECT" --quiet \
     scripts/sdar_gcp_run.sh "$REMOTE_USER@$INSTANCE:$REMOTE_DIR/scripts/sdar_gcp_run.sh"
+  # Build a whitelist of run-shaping env vars to forward to the remote side.
+  # printf %q produces shell-safe quoting that survives one layer of SSH word-splitting.
+  REMOTE_ENV=""
+  for v in AZURE_FOUNDRY_DEPLOYMENT OPENRESEARCH_SDAR_PROJECT_ID OPENRESEARCH_GRADER_SAMPLES OPENRESEARCH_SDAR_MODELS; do
+    [ -n "${!v:-}" ] && REMOTE_ENV+="$v=$(printf %q "${!v}") "
+  done
   # Refuse to double-launch the same paper; require a GREEN-prepared env file;
   # then start the reproduction fully detached (setsid+nohup, stdin from
   # /dev/null) so it survives this SSH session closing. The run logs to
@@ -189,7 +224,7 @@ launch_run() {
     && chmod +x scripts/sdar_gcp_run.sh \
     && { [ -f runs/.cache/sdar_gcp.env ] || { echo 'ERROR: runs/.cache/sdar_gcp.env missing — run prepare to [GREEN] first' >&2; exit 1; }; } \
     && { ! pgrep -f '[b]ackend.cli reproduce 2605.15155' >/dev/null || { echo 'ERROR: a reproduce process for 2605.15155 is already running' >&2; exit 1; }; } \
-    && ( setsid nohup bash scripts/sdar_gcp_run.sh > runs/sdar_gcp_run.out 2>&1 < /dev/null & ) \
+    && ( setsid nohup env $REMOTE_ENV bash scripts/sdar_gcp_run.sh > runs/sdar_gcp_run.out 2>&1 < /dev/null & ) \
     && sleep 4 \
     && echo '--- launch tail (runs/sdar_gcp_run.out) ---' \
     && tail -n 20 runs/sdar_gcp_run.out"
@@ -203,6 +238,7 @@ case "$ACTION" in
   check) remote_check ;;
   prepare) remote_prepare ;;
   launch) launch_run ;;
+  monitor) monitor_run ;;
   *)
     echo "unknown action: $ACTION" >&2
     exit 2

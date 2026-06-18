@@ -82,6 +82,8 @@ from backend.agents.rlm.forced_iteration import (
     _TERMINAL_FAILURE_CLASSES,
     _WALL_CLOCK_FLOOR_S,
     ForcedIterationPolicy,
+    _current_policy,
+    _default_degenerate_threshold,
     apply_forced_iteration_patch,
     forced_iteration_policy,
 )
@@ -1201,6 +1203,7 @@ class _FatalBackendGateLogger(OpenResearchRLMLogger):
 
     def log(self, iteration: Any) -> None:
         super().log(iteration)
+        self._register_iteration_progress(bool(getattr(iteration, "code_blocks", None)))
         fatal = _fatal_primitive_result(getattr(self, "_ctx", None))
         if fatal is not None:
             primitive_name, result = fatal
@@ -1208,6 +1211,45 @@ class _FatalBackendGateLogger(OpenResearchRLMLogger):
                 primitive_name=primitive_name,
                 result=result,
             )
+
+    def _register_iteration_progress(self, has_code_block: bool) -> None:
+        """Abort a degenerate no-code-block loop (a root not driving the REPL).
+
+        A root that emits only prose (no ```repl``` block) for
+        OPENRESEARCH_DEGENERATE_REFUSAL_THRESHOLD consecutive iterations is not
+        making progress and would otherwise churn to the rlm iteration cap. Any
+        iteration with a code block resets the streak, so healthy runs are
+        byte-identical.
+        """
+        if has_code_block:
+            self._empty_iter_streak = 0
+            return
+        streak = getattr(self, "_empty_iter_streak", 0) + 1
+        self._empty_iter_streak = streak
+        if streak < _default_degenerate_threshold():
+            return
+        # best-effort: reuse the existing degenerate-loop run_warning emission
+        policy = _current_policy()
+        cb = getattr(policy, "on_degenerate_refusal_loop", None) if policy else None
+        if cb is not None:
+            try:
+                cb({"signature": "empty_code_block", "count": streak, "required_stage": None})
+            except Exception:  # noqa: BLE001 — emit must never block the abort
+                logger.exception("empty-iteration degenerate callback raised")
+        raise _FatalPrimitiveAbort(
+            primitive_name="root_degenerate_loop",
+            result={
+                "error": (
+                    f"root emitted {streak} consecutive iterations with no code "
+                    "block (pure prose) — it is not driving the RLM REPL loop"
+                ),
+                "failure_class": "root_degenerate_loop",
+                "suggested_fix": (
+                    "Use a validated agentic root (gpt-5 / claude / grok-4.3). "
+                    "Chat-only models (e.g. ChatGPT-latest) refuse the RLM REPL premise."
+                ),
+            },
+        )
 
 
 def _fatal_error_payload(abort: _FatalPrimitiveAbort) -> dict[str, Any]:
