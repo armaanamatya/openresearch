@@ -14,13 +14,66 @@ The guard runs the script the way the VM does and asserts the import resolves.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = REPO_ROOT / "scripts" / "sdar_gcp_assets.py"
+
+
+def _load_script_module():
+    """Load scripts/sdar_gcp_assets.py as a module (it is not a package)."""
+    spec = importlib.util.spec_from_file_location("sdar_gcp_assets_mod", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    # @dataclass resolves cls.__module__ via sys.modules during exec; register first.
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class _Excl:
+    def __init__(self, item: str, reason: str):
+        self.item, self.reason = item, reason
+
+
+class _Result:
+    def __init__(self, exclusions, env_vars):
+        self.exclusions, self.env_vars = exclusions, env_vars
+        self.released = False
+
+    def release(self):
+        self.released = True
+
+
+def test_provision_envs_best_effort_skips_webshop_but_gates_required():
+    """A best-effort env exclusion is skipped (run proceeds); a required one raises."""
+    mod = _load_script_module()
+
+    # Best-effort WebShop excluded → no raise, returns the envs that came up.
+    good = _Result([_Excl("WebShop", "server did not become ready")], {"ALFWORLD_DATA": "/x"})
+    with (
+        patch("backend.services.runtime.env_cache.provision_scope", return_value=good),
+        patch("backend.services.runtime.env_cache.EnvCacheManager", MagicMock()),
+    ):
+        out = mod.provision_envs(["ALFWorld", "WebShop"], best_effort={"webshop"})
+    assert out == {"ALFWORLD_DATA": "/x"}
+    assert good.released, "the scope lease must always be released"
+
+    # Required ALFWorld excluded → raises (it gates the run).
+    bad = _Result([_Excl("ALFWorld", "data download failed")], {})
+    with (
+        patch("backend.services.runtime.env_cache.provision_scope", return_value=bad),
+        patch("backend.services.runtime.env_cache.EnvCacheManager", MagicMock()),
+        pytest.raises(RuntimeError, match="required environment provisioning failed"),
+    ):
+        mod.provision_envs(["ALFWorld", "WebShop"], best_effort={"webshop"})
+    assert bad.released
 
 
 def test_cli_runs_standalone_without_backend_import_error(tmp_path):

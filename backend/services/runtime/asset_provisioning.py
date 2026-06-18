@@ -214,6 +214,18 @@ def install_webshop_dedicated(cache_root: Path, *, python_version: str = "3.10")
             raise AssetProvisionError(
                 f"pip install into dedicated WebShop venv failed (exit {result.returncode})"
             )
+        # WebShop pins Flask==2.1.2 but leaves Werkzeug unpinned, so a fresh
+        # resolve grabs Werkzeug 3.x whose removed `url_quote` breaks Flask 2.1's
+        # import (`ImportError: cannot import name 'url_quote'`). Pin Werkzeug to
+        # the Flask-2.1-compatible 2.0.x line — a known WebShop bit-rot fix.
+        pin = subprocess.run(
+            [str(venv_python), "-m", "pip", "install", "werkzeug<2.1"],
+            check=False,
+        )
+        if pin.returncode != 0:
+            raise AssetProvisionError(
+                f"pinning werkzeug<2.1 in dedicated WebShop venv failed (exit {pin.returncode})"
+            )
 
     # --- Make web_agent_site importable via a .pth file in the dedicated venv ---
     site_result = subprocess.run(
@@ -358,16 +370,24 @@ def ensure_assets(
             )
         report.ensured.append(label)
 
-    # (b) WebShop — REQUIRED when requested
+    # (b) WebShop — BEST-EFFORT on the dedicated path, REQUIRED on the legacy path.
     if spec.webshop:
         if webshop_python_version is not None:
             # Dedicated venv path: install WebShop into its own Python environment
             # to avoid version conflicts with the run venv's modern torch stack.
-            venv_python = install_webshop_dedicated(
-                cache_root, python_version=webshop_python_version
-            )  # raises AssetProvisionError on failure
-            os.environ["OPENRESEARCH_WEBSHOP_PYTHON"] = str(venv_python)
-            report.ensured.append("webshop:dedicated-venv")
+            # Best-effort: WebShop's 2022 frozen stack + JVM + data corpus are
+            # fragile, and env_cache already degrades a missing WebShop to an
+            # exclusion at provision time, so an install failure here must NOT
+            # block the run — record it and continue. The env var is left unset on
+            # failure so the launcher won't point at a broken interpreter.
+            try:
+                venv_python = install_webshop_dedicated(
+                    cache_root, python_version=webshop_python_version
+                )
+                os.environ["OPENRESEARCH_WEBSHOP_PYTHON"] = str(venv_python)
+                report.ensured.append("webshop:dedicated-venv")
+            except AssetProvisionError as exc:
+                report.failed.append(f"webshop:dedicated-venv ({exc})")
         else:
             label = "webshop:web_agent_site"
             if _module_exists("web_agent_site"):

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,6 +46,9 @@ DEFAULT_MODELS = (
 )
 DEFAULT_DATASETS = ("nq_open", "hotpot_qa")
 DEFAULT_ENVS = ("Search-QA", "ALFWorld", "WebShop")
+# Envs allowed to fail without blocking the run (operator-overridable). WebShop's
+# 2022 frozen stack + JVM + data corpus are fragile; ALFWorld/Search-QA are not.
+DEFAULT_BEST_EFFORT_ENVS = ("WebShop",)
 
 
 @dataclass
@@ -65,14 +69,30 @@ def _split_csv(raw: str | None, default: Iterable[str]) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
-def provision_envs(env_names: list[str]) -> dict[str, str]:
+def provision_envs(
+    env_names: list[str], *, best_effort: set[str] | None = None
+) -> dict[str, str]:
+    """Provision the named envs and return the env_vars of those that came up.
+
+    Exclusion of a REQUIRED env raises (it gates the run). Exclusion of a
+    BEST-EFFORT env (e.g. WebShop, whose 2022 frozen stack + JVM + data corpus are
+    fragile) warns and is skipped — mirroring ``env_cache``'s own graceful
+    degradation so one finicky env never blocks a multi-hour GPU run.
+    """
     from backend.services.runtime.env_cache import EnvCacheManager, provision_scope
 
+    best = {e.strip().lower() for e in (best_effort or set())}
     result = provision_scope(env_names, EnvCacheManager())
     try:
-        if result.exclusions:
-            details = ", ".join(f"{e.item}: {e.reason}" for e in result.exclusions)
-            raise RuntimeError(f"environment provisioning exclusions: {details}")
+        required_failures = []
+        for e in result.exclusions:
+            if e.item.strip().lower() in best:
+                print(f"[WARN] env {e.item} unavailable (best-effort, skipped): {e.reason}")
+            else:
+                required_failures.append(e)
+        if required_failures:
+            details = ", ".join(f"{e.item}: {e.reason}" for e in required_failures)
+            raise RuntimeError(f"required environment provisioning failed: {details}")
         return dict(result.env_vars)
     finally:
         result.release()
@@ -116,6 +136,19 @@ def run_checks(args: argparse.Namespace, env_vars: dict[str, str] | None = None)
         Check("python", sys.version_info >= (3, 11), sys.version.split()[0]),
         Check("requirements file", SDAR_REQUIREMENTS.exists(), str(SDAR_REQUIREMENTS)),
     ]
+    # System binaries — aggregated so a missing toolchain dep surfaces in THIS one
+    # preflight pass instead of serially mid-build. cmake/ninja/gcc build
+    # textworld's C extensions (REQUIRED); java/javac back WebShop's pyserini JVM
+    # (best-effort, since WebShop is best-effort).
+    for binname, required in (
+        ("cmake", True),
+        ("ninja", True),
+        ("gcc", True),
+        ("java", False),
+        ("javac", False),
+    ):
+        found = shutil.which(binname)
+        checks.append(Check(f"binary {binname}", found is not None, found or "not on PATH", required=required))
     for mod in (
         "torch",
         "transformers",
@@ -131,11 +164,13 @@ def run_checks(args: argparse.Namespace, env_vars: dict[str, str] | None = None)
     checks.append(Check("console alfworld-download", _console_script_exists("alfworld-download")))
     # Probe the WebShop interpreter, not the run venv: under the dedicated-venv
     # split web_agent_site lives in OPENRESEARCH_WEBSHOP_PYTHON, never here.
+    # Best-effort by default (WebShop is a best-effort env) — reports status but
+    # does not gate; --allow-missing-webshop is kept for explicit operator intent.
     checks.append(Check(
         "import web_agent_site",
         webshop_importable(),
         os.environ.get("OPENRESEARCH_WEBSHOP_PYTHON") or "run venv",
-        required=not args.allow_missing_webshop,
+        required=False,
     ))
 
     alf_raw = (env_vars or {}).get("ALFWORLD_DATA") or os.environ.get("ALFWORLD_DATA", "")
@@ -250,7 +285,15 @@ def main() -> int:
             print(f"[FAIL] asset provisioning: {exc}", file=sys.stderr)
             return 1
 
-        env_vars = provision_envs(_split_csv(os.environ.get("OPENRESEARCH_SDAR_ENVS"), DEFAULT_ENVS))
+        env_vars = provision_envs(
+            _split_csv(os.environ.get("OPENRESEARCH_SDAR_ENVS"), DEFAULT_ENVS),
+            best_effort=set(
+                _split_csv(
+                    os.environ.get("OPENRESEARCH_SDAR_BEST_EFFORT_ENVS"),
+                    DEFAULT_BEST_EFFORT_ENVS,
+                )
+            ),
+        )
         write_env_file(args, env_vars)
 
     if args.check or args.prepare:

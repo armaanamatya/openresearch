@@ -148,9 +148,11 @@ remote_prepare() {
   # System build prerequisites for source-built Python deps. Ubuntu 24.04 ships
   # only `python3`, but some sdists shell out to bare `python` and build native
   # code (e.g. fast-downward-textworld -> cmake; alfworld/textworld -> C exts).
-  # openjdk-17-jre-headless is required by pyserini/anserini (WebShop search indexing).
+  # openjdk-17-jdk-headless (JDK, not just JRE) is required by pyserini's jnius,
+  # which locates JAVA_HOME via `javac` — the JRE alone fails with "Unable to find
+  # javac". WebShop is best-effort, so this only improves its odds of coming up.
   # Idempotent; needs passwordless sudo (GCP default for the creating user).
-  "${ssh_base[@]}" "sudo bash -c 'export DEBIAN_FRONTEND=noninteractive && apt-get update -qq && apt-get install -y python-is-python3 cmake ninja-build build-essential libffi-dev openjdk-17-jre-headless'"
+  "${ssh_base[@]}" "sudo bash -c 'export DEBIAN_FRONTEND=noninteractive && apt-get update -qq && apt-get install -y python-is-python3 cmake ninja-build build-essential libffi-dev openjdk-17-jdk-headless'"
   # Ensure uv is available for creating Python-version-pinned venvs. The run venv
   # is created at Python 3.10 so WebShop's dedicated venv (also 3.10) can share
   # the same interpreter; uv resolves the exact minor-version binary automatically.

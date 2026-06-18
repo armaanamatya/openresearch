@@ -310,3 +310,35 @@ def test_webshop_importable_delegates_to_module_exists_for_run_venv(
     ) as m:
         assert webshop_importable() is True
         m.assert_called_once_with("web_agent_site")
+
+
+# ---------------------------------------------------------------------------
+# 5. Dedicated WebShop install is best-effort — a failure must not block the run.
+# ---------------------------------------------------------------------------
+
+def test_ensure_assets_dedicated_webshop_is_best_effort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A dedicated WebShop install failure is recorded and skipped, not raised.
+
+    WebShop's 2022 stack + JVM + data are fragile; env_cache already degrades a
+    missing WebShop to an exclusion, so ensure_assets must not let an install
+    failure abort a multi-hour run. The env var stays unset so the launcher won't
+    point at a broken interpreter.
+    """
+    from backend.services.runtime.asset_provisioning import AssetProvisionError
+
+    monkeypatch.delenv("OPENRESEARCH_WEBSHOP_PYTHON", raising=False)
+
+    def _boom(cache_root, *, python_version="3.10"):
+        raise AssetProvisionError("simulated dedicated WebShop venv failure")
+
+    with patch(
+        "backend.services.runtime.asset_provisioning.install_webshop_dedicated",
+        side_effect=_boom,
+    ):
+        report = ensure_assets(_make_spec(), cache_root=tmp_path, webshop_python_version="3.10")
+
+    assert any("webshop:dedicated-venv" in f for f in report.failed), report.failed
+    assert "webshop:dedicated-venv" not in report.ensured
+    assert "OPENRESEARCH_WEBSHOP_PYTHON" not in os.environ
