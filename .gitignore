@@ -202,3 +202,6 @@ frontend/next-env.d.ts
 # sweep them into an unrelated PR. Force-add (`git add -f`) onto a proper branch
 # when they're ready to ship.
 /scripts/deepinvent_vm_*.sh
+
+# Local-only GCP project notes — keep on disk, never publish (history purged 2026-06-18)
+/gcp_info.md
