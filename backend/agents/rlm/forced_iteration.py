@@ -194,7 +194,7 @@ class ForcedIterationPolicy:
     # enum value) to the concrete next-call directive the refusal text should name.
     # An unmapped / None stage (e.g. ``can_finalize``) falls back to the legacy text.
     _STAGE_DIRECTIVES = {
-        "need_baseline": "call plan_reproduction, then implement_baseline(plan); do NOT call FINAL_VAR again",
+        "need_baseline": "call plan_reproduction, then implement_baseline(plan)",
         "need_environment": "call build_environment",
         "need_experiment": "call run_experiment(code_path, env_id)",
         "need_verification": "call verify_against_rubric on your latest run_experiment result",
@@ -825,5 +825,4 @@ __all__ = [
     "PolicyDecision",
     "apply_forced_iteration_patch",
     "forced_iteration_policy",
-    "_WALL_CLOCK_FLOOR_S",
 ]

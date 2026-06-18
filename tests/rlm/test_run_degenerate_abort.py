@@ -114,8 +114,15 @@ def test_callback_wall_clock_precedence() -> None:
     assert policy._terminal_failure_class is None
 
 
-def test_callback_autodrive_on_does_not_abort() -> None:
-    """AUTODRIVE ON → emit the warning but do NOT early-abort (Task 6 fills drive)."""
+def test_callback_autodrive_on_but_undrivable_still_aborts() -> None:
+    """AUTODRIVE ON but NO drivable setup (default non-oauth root, no tools) →
+    emit the warning AND fall through to the Task-4 early-abort.
+
+    autodrive=ON must never be LESS safe than autodrive=OFF: a drive-gate failure
+    must not strand the latched detector (which used to churn to the refusal cap).
+    The genuine "autodrive drives one step, does NOT abort" path is covered by
+    ``test_run_autodrive.test_flag_on_need_baseline_drives_one_step``.
+    """
     emitted: list[dict] = []
     ctx = _fake_ctx()
     policy = ForcedIterationPolicy(min_iterations=2)
@@ -126,8 +133,9 @@ def test_callback_autodrive_on_does_not_abort() -> None:
     cb(_degenerate_payload())
 
     assert any(e.get("code") == "root_degenerate_refusal_loop" for e in emitted)
-    assert ctx._terminal_stop_reason is None
-    assert policy._terminal_failure_class is None
+    assert ctx._terminal_stop_reason is not None
+    assert ctx._terminal_stop_reason["failure_class"] == "root_degenerate_loop"
+    assert policy._terminal_failure_class == "root_degenerate_loop"
 
 
 def test_callback_emit_failure_is_failsoft() -> None:

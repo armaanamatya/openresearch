@@ -9,7 +9,9 @@ and drives exactly ONE missing step (``implement_baseline`` /
 the root.
 
 Default-OFF MUST be byte-for-byte the Task-4 early-abort behaviour; the flag-ON
-path must be inert for NON-oauth roots and NON-drivable stages (emit-only).
+path must NOT DRIVE for NON-oauth roots or NON-drivable stages — but it still
+falls through to the Task-4 early-abort there, so autodrive=ON is never LESS
+safe than autodrive=OFF (a guard-fail must not strand the latched detector).
 
 These tests use FAKE tools (a dict of ``{"name": {"tool": <recorder>}}``) so NO
 real primitive executes — the recorder only records its name/args.  The real
@@ -246,12 +248,13 @@ def test_non_oauth_root_flag_on_emit_only(tmp_path) -> None:
     )
     cb(_payload())
 
-    # No drive, no marker — flag-ON is inert for a non-oauth root. (And no
-    # early-abort either: the AUTODRIVE-ON branch never falls into Task-4's
-    # terminal-stop path.)
+    # Flag-ON does NOT drive a non-oauth root (no autodrive call, no marker) —
+    # but it MUST still early-abort: a drive-gate failure falls through to the
+    # Task-4 terminal-stop path. autodrive=ON is never less safe than OFF.
     assert calls == []
     assert not (tmp_path / "rlm_state" / "root_autodrive.json").exists()
-    assert ctx._terminal_stop_reason is None
+    assert ctx._terminal_stop_reason is not None
+    assert ctx._terminal_stop_reason["failure_class"] == "root_degenerate_loop"
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +281,12 @@ def test_non_drivable_stage_flag_on_emit_only(tmp_path) -> None:
 
         assert calls == [], stage
         assert not (tmp_path / "rlm_state" / "root_autodrive.json").exists(), stage
+        # A non-drivable stage under flag-ON does not drive, but MUST still
+        # early-abort (fall through to Task-4) rather than strand the detector.
+        assert ctx._terminal_stop_reason is not None, stage
+        assert (
+            ctx._terminal_stop_reason["failure_class"] == "root_degenerate_loop"
+        ), stage
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +310,9 @@ def test_no_tools_flag_on_emit_only(tmp_path) -> None:
     cb(_payload())
 
     assert not (tmp_path / "rlm_state" / "root_autodrive.json").exists()
-    assert ctx._terminal_stop_reason is None
+    # No tools to drive with → fall through to the Task-4 early-abort (safe).
+    assert ctx._terminal_stop_reason is not None
+    assert ctx._terminal_stop_reason["failure_class"] == "root_degenerate_loop"
 
 
 # ---------------------------------------------------------------------------

@@ -852,10 +852,13 @@ def _autodrive_one_step(
     why the harness issues a directive rather than executing
     implement_baseline / build_environment / run_experiment itself.
 
-    Fires at most ONCE per run: the policy's ``_degenerate_fired`` latch is reset
-    only by a state-changing primitive (implement_baseline / build_environment /
-    run_experiment), and ``recommend_next_tool`` is NOT one — so issuing a
-    directive does not re-arm the detector and the marker is written once.
+    Fires at most once per no-progress streak: the policy's ``_degenerate_fired``
+    latch is reset only by a state-changing primitive (implement_baseline /
+    build_environment / run_experiment), and ``recommend_next_tool`` is NOT one —
+    so issuing a directive does not itself re-arm the detector. (If the root
+    subsequently does real work and then degenerates again, that state-change
+    re-arms the latch and a fresh streak can fire a second directive — by
+    design.)
 
     Every side effect (marker write, emit, directive dispatch) is independently
     fail-soft: a backstop that crashes the run is worse than no backstop.  The
@@ -988,37 +991,46 @@ def _make_degenerate_loop_callback(
                 "run_pipeline_rlm: degenerate-loop warning emit failed"
             )
 
-        if autodrive_enabled:
-            # Task 6 — flag-gated OAuth auto-drive backstop. Drive ONE missing
-            # lifecycle step (then hand control back to the root) ONLY when ALL
-            # gates hold; otherwise this branch is emit-only (NO early-abort,
-            # NO drive). DEFAULT-OFF keeps the Task-4 path below byte-for-byte.
-            if not oauth_root:
-                return  # only the unreliable oauth root is auto-driven
-            if stage not in _AUTODRIVE_DRIVABLE_STAGES:
-                return  # stage the harness cannot drive itself
-            if tools is None:
-                return  # no wrapped primitives to dispatch
-            # Same precedence as Task 4: never drive near the wall clock or over
-            # an already-terminal stop.
+        # Task 6 — flag-gated OAuth auto-drive backstop. Drive ONE missing
+        # lifecycle step (then hand control back to the root) ONLY when the flag
+        # is ON *and every drive-gate holds* (oauth root, a harness-drivable
+        # stage, wrapped tools present, not near the wall clock, no existing
+        # terminal stop). In EVERY other case control MUST fall through to the
+        # Task-4 early-abort below — autodrive=ON must never be LESS safe than
+        # autodrive=OFF. (A guard-fail used to ``return`` here, leaving the
+        # latched ``_degenerate_fired`` detector unable to re-fire, so the run
+        # churned on to the refusal cap: the exact degenerate behaviour this
+        # feature fixes.)
+        if (
+            autodrive_enabled
+            and oauth_root
+            and stage in _AUTODRIVE_DRIVABLE_STAGES
+            and tools is not None
+        ):
             remaining = None
             try:
                 remaining = ctx.remaining_s()
             except Exception:  # noqa: BLE001
                 remaining = None
-            if remaining is not None and remaining <= _WALL_CLOCK_FLOOR_S:
-                return
-            if getattr(ctx, "_terminal_stop_reason", None):
-                return
-            _autodrive_one_step(
-                stage=stage,
-                tools=tools,
-                ctx=ctx,
-                emit=emit,
-                payload=payload,
+            near_wall_clock = (
+                remaining is not None and remaining <= _WALL_CLOCK_FLOOR_S
             )
-            return
+            already_terminal = bool(getattr(ctx, "_terminal_stop_reason", None))
+            if not near_wall_clock and not already_terminal:
+                _autodrive_one_step(
+                    stage=stage,
+                    tools=tools,
+                    ctx=ctx,
+                    emit=emit,
+                    payload=payload,
+                )
+                return
+            # Near the wall clock or already terminal → do NOT drive; fall
+            # through to the early-abort (it no-ops on those same conditions).
 
+        # Task-4 early-abort — reached when autodrive is OFF, OR autodrive is ON
+        # but a drive-gate failed (non-oauth root, un-drivable stage, no tools,
+        # near wall clock, or already terminal).
         # Precedence guard: never override a near-wall-clock or an
         # already-terminal stop.
         remaining = None
