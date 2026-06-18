@@ -23,6 +23,7 @@ from __future__ import annotations
 import re
 
 from backend.agents.schemas import (
+    AssetSpec,
     DatasetSlice,
     InvariantSpec,
     PaperHint,
@@ -148,6 +149,16 @@ PAPER_HINTS: dict[str, PaperHint] = {
             # other framework deps are deliberately NOT listed.
             "https://github.com/BartekCupial/finetuning-RL-as-CL",
         ],
+        assets=AssetSpec(
+            requirements_files=["backend/requirements-sdar.txt"],
+            models=[
+                "Qwen/Qwen3-1.7B",
+                "Qwen/Qwen2.5-3B-Instruct",
+                "Qwen/Qwen2.5-7B-Instruct",
+            ],
+            datasets=["nq_open", "hotpot_qa"],
+            webshop=True,
+        ),
     ),
     # Adam (Kingma & Ba, 2014) — five experiment families. Four are cheap
     # (MNIST-MLP, MNIST logistic regression, IMDB BoW logistic, CIFAR-10 CNN);

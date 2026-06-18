@@ -1818,6 +1818,36 @@ def _ensure_local_data_root(sandbox_mode: object, runs_root: Path) -> None:
     )
 
 
+def _maybe_auto_arm_cell_resume(project_dir: Path) -> bool:
+    """Auto-arm cell-resume on a re-invoke of an UNFINISHED project (spot-restart safe).
+
+    On a spot VM a preemption stops the run; restarting + re-invoking with the
+    SAME --project-id should SKIP already-completed cells instead of redoing
+    them. ``gpu_cell_runner.run_matrix`` already does that when
+    ``OPENRESEARCH_RESUME_CELLS`` is truthy (it only skips a cell whose prior
+    ``cell_manifest.json`` is ``status=ok`` AND fingerprint-matches — so a
+    changed cells.json safely re-runs). This fills the gap: when a prior attempt
+    left state under *project_dir* but never produced ``final_report.json``,
+    arm resume automatically.
+
+    An explicit ``OPENRESEARCH_RESUME_CELLS`` (set to ANY value, incl. "0")
+    always wins — operator intent is never overridden. Returns True iff it
+    armed (set the env var to "1") this call.
+    """
+    if os.environ.get("OPENRESEARCH_RESUME_CELLS") is not None:
+        return False  # explicit operator setting wins (including "0")
+    if (project_dir / "final_report.json").exists():
+        return False  # already finished — nothing to resume
+    prior_attempt = (
+        (project_dir / "rlm_state").exists()
+        or (project_dir / "experiment_runs.jsonl").exists()
+    )
+    if not prior_attempt:
+        return False  # first attempt — no completed cells to skip
+    os.environ["OPENRESEARCH_RESUME_CELLS"] = "1"
+    return True
+
+
 def _load_reusable_rubric(project_dir: Path) -> dict | None:
     """OPENRESEARCH_REUSE_RUBRIC=1 → the pre-seeded generated_rubric.json, else None.
 
@@ -2240,6 +2270,103 @@ async def run_pipeline_rlm(
         fidelity_critical=bool(getattr(ctx, "paper_hint_invariants", None))
     ):
         emit(build_run_warning_event(level="warn", code="role_model_fidelity", message=_msg))
+
+    # 4a. Asset pre-provisioning (2026-06-18). For papers that declare heavy ML
+    # assets (pip stack, HF weights, datasets, WebShop), ensure they are warm in
+    # the shared cache BEFORE any GPU work. Gated on: local sandbox only, the
+    # paper hint carries an AssetSpec, and OPENRESEARCH_PRELOAD_ASSETS != "0".
+    # Required assets (requirements_files, models, webshop) abort the run on
+    # failure; datasets are best-effort and only logged. Complete no-op for every
+    # non-SDAR paper and every non-local sandbox.
+    _preload_hint = None
+    if (
+        getattr(ctx, "arxiv_id", None)
+        and getattr(ctx.sandbox_mode, "value", str(ctx.sandbox_mode or "")).lower() == "local"
+        and os.environ.get("OPENRESEARCH_PRELOAD_ASSETS", "1") != "0"
+    ):
+        try:
+            from backend.agents.prompts.paper_hints import lookup_paper_hint as _lookup_hint
+            _preload_hint = _lookup_hint(ctx.arxiv_id)
+        except Exception:  # noqa: BLE001 — hint lookup must never crash a run
+            logger.debug("run_pipeline_rlm: paper hint lookup failed", exc_info=True)
+            _preload_hint = None
+
+    if _preload_hint is not None and getattr(_preload_hint, "assets", None) is not None:
+        _asset_cache_root = runs_root / ".cache"
+        from backend.services.runtime.asset_provisioning import (
+            AssetProvisionError as _AssetProvisionError,
+            ensure_assets as _ensure_assets,
+        )
+        try:
+            _asset_report = _ensure_assets(
+                _preload_hint.assets,
+                cache_root=_asset_cache_root,
+            )
+            emit(build_run_warning_event(
+                level="info",
+                code="asset_preload",
+                message=(
+                    f"asset pre-provisioning complete: "
+                    f"ensured={_asset_report.ensured}, "
+                    f"skipped={_asset_report.skipped}, "
+                    f"failed={_asset_report.failed}"
+                ),
+            ))
+            logger.info(
+                "run_pipeline_rlm[%s]: asset preload — ensured=%s skipped=%s failed=%s",
+                project_id,
+                _asset_report.ensured,
+                _asset_report.skipped,
+                _asset_report.failed,
+            )
+        except _AssetProvisionError as _ape:
+            # A missing required asset is fatal: abort before GPU work starts.
+            logger.error(
+                "run_pipeline_rlm[%s]: asset preload FAILED (fatal): %s",
+                project_id,
+                _ape,
+                exc_info=True,
+            )
+            emit(build_run_warning_event(
+                level="error",
+                code="asset_preload_failed",
+                message=f"Required asset could not be provisioned: {_ape}",
+            ))
+            _write_demo_status(project_dir, "failed", error={"error": str(_ape)})
+            return RLMRunResult(
+                project_id=project_id,
+                status="failed",
+                iterations=0,
+                rubric_score=None,
+                cost_usd=None,
+                final_report_path=None,
+            )
+        except Exception:  # noqa: BLE001
+            # Unexpected errors are logged but must not abort (conservative fallback).
+            logger.warning(
+                "run_pipeline_rlm[%s]: asset preload raised unexpectedly (non-fatal)",
+                project_id,
+                exc_info=True,
+            )
+
+    # 4a-bis. Cell-resume auto-arm (2026-06-18, T1). On a spot-restart re-invoke
+    # with the same --project-id, skip already-completed cells instead of redoing
+    # them. Correctness-safe (resume only skips fingerprint-matched ok cells);
+    # an explicit OPENRESEARCH_RESUME_CELLS always wins. No-op on a first run.
+    if _maybe_auto_arm_cell_resume(project_dir):
+        emit(build_run_warning_event(
+            level="info",
+            code="resume_auto_armed",
+            message=(
+                "prior incomplete attempt detected for this project_id — auto-armed "
+                "OPENRESEARCH_RESUME_CELLS=1 so fingerprint-matched completed cells are "
+                "skipped on this resume"
+            ),
+        ))
+        logger.info(
+            "run_pipeline_rlm[%s]: cell-resume auto-armed (spot-restart resume)",
+            project_id,
+        )
 
     # 4b. Full-scope environment provisioning (2026-06-01). When the scope names
     # heavy RL envs (ALFWorld / WebShop) or Search-QA, stand them up ONCE in the

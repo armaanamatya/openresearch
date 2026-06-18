@@ -5391,13 +5391,15 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         except Exception:  # noqa: BLE001 — replication must never break the run
             logger.debug("run_experiment: seed replication failed (non-fatal)", exc_info=True)
 
-    # Multi-GPU cells: a slot of `gpus_per_cell` cards device_map-shards ONE (large)
-    # model, so the capacity-gate VRAM budget is the slot's COMBINED VRAM, not one card.
+    # Multi-GPU cells: a cell may declare "gpus": k to shard a large model across k
+    # cards.  `_gpus_per_cell` is the UNIFORM default (used when a cell omits "gpus").
+    # capacity_gate now computes the per-cell budget as per_gpu_vram_gb × cell["gpus"]
+    # internally — pass the single-card VRAM and the default, not the pre-multiplied slot.
     _gpus_per_cell = max(1, int(os.environ.get("OPENRESEARCH_GPUS_PER_CELL", "1") or "1"))
-    # PREVENT — clamp to the per-slot budget, drop confirmed-dead datasets (fail-soft).
+    # PREVENT — drop cells that exceed their per-cell GPU budget; drop confirmed-dead datasets.
     headroom = _dynamic_gpu_headroom()
     kept, cap_gaps, models_skipped = cell_matrix.capacity_gate(
-        all_cells, caps.per_gpu_vram_gb * _gpus_per_cell, headroom=headroom)
+        all_cells, caps.per_gpu_vram_gb, headroom=headroom, default_gpus_per_cell=_gpus_per_cell)
     kept, ds_gaps, envs_skipped = cell_matrix.dataset_url_preflight(kept)
 
     # Headline-coverage honesty (2026-06-16): a paper-headline model the agent
@@ -5455,8 +5457,20 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     # past the first wave to status=timeout (adversarial-review C1, 2026-06-02). The
     # run-level watchdog is the ultimate hang guard; this just lets the root score a
     # partial sooner than the watchdog's hard-exit if the matrix genuinely overruns.
-    _n_slots = max(1, len(gpus) // _gpus_per_cell)
-    _waves = (len(kept) + _n_slots - 1) // _n_slots  # ceil(cells / slots)
+    # Heterogeneity-aware wave estimate: sum the GPU demand of every kept cell,
+    # then divide by total available GPUs (ceiling division).  This gives a
+    # conservative (over-estimated) wave count so the matrix timeout is always
+    # generous enough — under-budgeting would silently truncate tail cells.
+    _total_demand = sum(
+        max(1, min(
+            int(c.get("gpus", _gpus_per_cell))
+            if str(c.get("gpus", _gpus_per_cell)).lstrip("-").isdigit()
+            else _gpus_per_cell,
+            len(gpus)
+        ))
+        for c in kept
+    )
+    _waves = max(1, (_total_demand + len(gpus) - 1) // max(1, len(gpus)))
     # Time-budget gate (2026-06-10): the matrix budget must FIT the run's
     # remaining wall clock (minus a verify+report reserve). Adam v6's 100-epoch
     # VAE re-grid got `per_cell × waves` of budget with 4h of run left, sailed

@@ -1283,6 +1283,16 @@ _CELL_CONTRACT_BLOCK = (
     "    The harness nests it at per_model.<model_key>.<env>.<baseline> and aggregates the grid;\n"
     "    do NOT write the per_model nesting yourself in a cell — emit only this cell's leaf.\n"
     "\n"
+    "SPOT-PREEMPTION RESILIENCE — checkpoint + resume: the harness sets\n"
+    "  OPENRESEARCH_CELL_CHECKPOINT_DIR (a stable per-cell dir on a persistent disk) and\n"
+    "  OPENRESEARCH_CELL_CHECKPOINT_INTERVAL_S (seconds, default 600).\n"
+    "In train_cell.py: (1) at startup, if OPENRESEARCH_CELL_CHECKPOINT_DIR holds a checkpoint,\n"
+    "  RESUME from the latest (model + optimizer + step/epoch); (2) during training, SAVE a\n"
+    "  checkpoint there at least every OPENRESEARCH_CELL_CHECKPOINT_INTERVAL_S seconds (and/or\n"
+    "  every K steps) — atomically (write to a temp file then rename) so a kill mid-write can't\n"
+    "  corrupt it; (3) keep writing metrics.json as you go (partial-timeout scoring reads whatever\n"
+    "  is flushed). This makes a preemption lose only the steps since the last checkpoint.\n"
+    "\n"
     "cells.json (a top-level file in code/) enumerates EVERY cell — it is the ONLY place the\n"
     "baseline axis is declared (the harness scope is model x dataset x seed, with no baseline\n"
     "axis), so the matrix is invisible to the harness without it:\n"
@@ -1306,22 +1316,33 @@ def _gpu_budget_brief_block(num_gpus: int, per_gpu_vram_gb: float) -> str:
 
     Emits a concrete numeric budget only when VRAM is known (>0); otherwise a
     conservative note so the agent still scopes deliberately.
+    When multiple GPUs are available, also explains how to shard a model across
+    K cards using the ``"gpus": K`` cell field.
     """
     if per_gpu_vram_gb and per_gpu_vram_gb > 0:
-        return (
-            f"\n\nGPU BUDGET — the harness owns placement (one cell per GPU, never shared/sharded):\n"
-            f"You have {num_gpus} GPU(s) x {per_gpu_vram_gb:.0f} GB. The per-cell budget is ONE GPU = "
-            f"{per_gpu_vram_gb:.0f} GB.\n"
-            f"A model that cannot FULL-fine-tune within {per_gpu_vram_gb:.0f} GB is OUT OF SCOPE: do not put\n"
-            f"it in cells.json; record it in scope.models_skipped + scope.gaps. On a ~24 GB card that\n"
-            f"means the smallest-two only (e.g. Qwen3-1.7B + Qwen2.5-3B) — NEVER the 7B (its optimizer\n"
-            f"state alone exceeds 24 GB). Scope it yourself so the rubric grades only what you intended;\n"
-            f"the harness's auto-drop is a backstop, not the plan.\n"
+        single_card_block = (
+            f"\n\nGPU BUDGET — the harness owns placement:\n"
+            f"You have {num_gpus} GPU(s) x {per_gpu_vram_gb:.0f} GB each.\n"
+            f"Default: each cell runs on ONE GPU ({per_gpu_vram_gb:.0f} GB budget). A model that cannot\n"
+            f"full-fine-tune within {per_gpu_vram_gb:.0f} GB is out of scope for single-GPU cells: record\n"
+            f"it in scope.models_skipped + scope.gaps. Prefer models that fit one card so more\n"
+            f"cells run in parallel; scope deliberately — the harness auto-drop is a backstop, not\n"
+            f"the plan.\n"
         )
+        if num_gpus > 1:
+            single_card_block += (
+                f"\nA model too large for one card MAY be sharded across K cards: set "
+                f"\"gpus\": K on that cell in cells.json (the harness sets CUDA_VISIBLE_DEVICES "
+                f"to K physical ids; shard the model with `device_map=\"auto\"`). That cell's VRAM "
+                f"budget is then K x {per_gpu_vram_gb:.0f} GB. Use this ONLY for models that genuinely "
+                f"need it; keep models that fit one card at gpus:1 (default) so more cells run in "
+                f"parallel. Record a model that won't fit even on K cards in scope.models_skipped.\n"
+            )
+        return single_card_block
     return (
-        f"\n\nGPU BUDGET — the harness owns placement (one cell per GPU):\n"
-        f"You have {num_gpus} GPU(s) (per-card VRAM unknown). Size each cell to fit ONE card; prefer the\n"
-        f"smallest model variants the paper tests and record larger ones in scope.models_skipped +\n"
+        f"\n\nGPU BUDGET — the harness owns placement (one cell per GPU by default):\n"
+        f"You have {num_gpus} GPU(s) (per-card VRAM unknown). Size each cell to fit ONE card; prefer\n"
+        f"the smallest model variants the paper tests and record larger ones in scope.models_skipped +\n"
         f"scope.gaps rather than risking an OOM that zeros the whole matrix.\n"
     )
 
@@ -2528,13 +2549,16 @@ def _compute_constraint_guidance(
     if _cell_path_active:
         guidance += (
             "\nPARALLELISM POLICY — harness-owned cell matrix (one GPU per cell):\n"
-            "  The harness runs your matrix as one subprocess PER CELL, each pinned to a single\n"
-            "  GPU (CUDA_VISIBLE_DEVICES=<one id>), min(free_gpus, num_cells) in parallel. So\n"
-            "  train_cell.py is SINGLE-GPU: train on cuda:0 only. Do NOT use torchrun / DDP /\n"
-            "  FSDP / tensor-parallel / a device loop / 'cuda:1' — cross-card sharding fights the\n"
-            "  per-cell pinning and re-creates the cuda:0 stacking that OOM'd the 2026-05-31 run.\n"
-            "  Multi-GPU throughput comes from many cells running concurrently, not from sharding\n"
-            "  one cell across cards.\n"
+            "  The harness runs your matrix as one subprocess PER CELL, min(free_gpus, num_cells)\n"
+            "  in parallel. By DEFAULT each cell is pinned to a SINGLE GPU (CUDA_VISIBLE_DEVICES=\n"
+            "  <one id>): train_cell.py trains on cuda:0 only — do NOT use torchrun / DDP / FSDP /\n"
+            "  a multi-process launcher, which re-creates the cuda:0 matrix-stacking that OOM'd the\n"
+            "  2026-05-31 run.\n"
+            "  EXCEPTION — a cell too large for one card MAY set \"gpus\": K in cells.json: the\n"
+            "  harness then gives THAT cell K DEDICATED cards (CUDA_VISIBLE_DEVICES=\"0,1\",...) and\n"
+            "  you shard the ONE model across them with device_map=\"auto\" (HF model-parallel — NOT\n"
+            "  torchrun/DDP). That is safe because the cell owns its cards exclusively; keep cells\n"
+            "  that fit one card at gpus:1 so more cells run concurrently.\n"
         )
     elif _par == "single" or (_n is not None and _n <= 1):
         guidance += (

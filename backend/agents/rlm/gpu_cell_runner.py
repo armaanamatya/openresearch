@@ -166,7 +166,8 @@ def _orphan_deregister(pid: int) -> None:
     except Exception:  # noqa: BLE001
         pass
 
-__all__ = ["CELL_MANIFEST_NAME", "CellResult", "discover_visible_gpus", "run_matrix"]
+__all__ = ["CELL_MANIFEST_NAME", "CellResult", "discover_visible_gpus", "run_matrix",
+           "_cell_gpu_count"]
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +184,21 @@ __all__ = ["CELL_MANIFEST_NAME", "CellResult", "discover_visible_gpus", "run_mat
 # ---------------------------------------------------------------------------
 # GPU discovery
 # ---------------------------------------------------------------------------
+
+def _cell_gpu_count(cell: Any, default_per_cell: int, total_gpus: int) -> int:
+    """How many GPUs a cell wants: cell['gpus'] or the uniform default, clamped to [1, total_gpus].
+
+    When ``cell`` is not a dict, or ``cell['gpus']`` is absent/non-numeric, falls
+    back to ``default_per_cell``.  The result is clamped so a cell declaring more
+    GPUs than exist still runs (degraded to all available cards) and never hangs.
+    """
+    raw = cell.get("gpus", default_per_cell) if isinstance(cell, dict) else default_per_cell
+    try:
+        k = int(raw)
+    except (TypeError, ValueError):
+        k = default_per_cell
+    return max(1, min(k, max(1, total_gpus)))
+
 
 def discover_visible_gpus() -> list[str]:
     """Return the list of physical GPU ids visible to this process.
@@ -304,6 +320,17 @@ def _run_cell_subprocess(
     ``OPENRESEARCH_CELL_PARAMS=<json>``
         Full cell dict serialised as JSON, so the cell script can read its
         own parameters without parsing argv.
+
+    ``OPENRESEARCH_CELL_CHECKPOINT_DIR=<output_dir>/checkpoints``
+        Stable per-cell directory on the persistent output disk.  The
+        trainer creates and writes it; the harness only names it.  Keyed
+        by ``output_dir`` (which is keyed by ``cell_id``), so the path
+        is identical across OOM retries and VM stop/restart — enabling
+        spot-preemption resume.
+
+    ``OPENRESEARCH_CELL_CHECKPOINT_INTERVAL_S=<seconds>``
+        Advisory checkpoint interval in seconds.  Defaults to 600 (10 min).
+        Override with the same env-var in the parent environment.
     """
     child_env = {**os.environ}
     # Put the running interpreter's bin/ on PATH so console scripts a cell may shell
@@ -318,6 +345,15 @@ def _run_cell_subprocess(
     child_env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     child_env["OPENRESEARCH_CELL_OUTPUT_DIR"] = str(output_dir)
     child_env["OPENRESEARCH_CELL_PARAMS"] = json.dumps(cell)
+    # T2 intra-cell checkpoint (2026-06-18): a STABLE per-cell dir on the
+    # persistent output disk so a spot preemption mid-cell resumes from the
+    # latest checkpoint instead of restarting the cell. Stable across retries and
+    # VM stop/restart (keyed by cell_id, which keys output_dir). The trainer
+    # creates/writes it; the harness only names it.
+    child_env["OPENRESEARCH_CELL_CHECKPOINT_DIR"] = str(output_dir / "checkpoints")
+    child_env["OPENRESEARCH_CELL_CHECKPOINT_INTERVAL_S"] = os.environ.get(
+        "OPENRESEARCH_CELL_CHECKPOINT_INTERVAL_S", "600"
+    )
 
     if batch_scale is not None:
         child_env["OPENRESEARCH_CELL_BATCH_SCALE"] = str(batch_scale)
@@ -452,10 +488,16 @@ def run_matrix(
 ) -> dict[str, dict[str, Any]]:
     """Schedule and run all cells across the GPU pool.
 
-    Each cell is an independent training job that runs on **exactly one** GPU.
-    The scheduler keeps up to ``max_parallel`` (default: ``len(gpus)``) cells
-    running concurrently.  As each subprocess exits, the freed GPU immediately
-    accepts the next queued cell.
+    Each cell is an independent training job.  By default each cell runs on
+    **exactly one** GPU; a cell may declare ``"gpus": k`` to claim k cards for
+    model-parallel sharding (e.g. ``device_map="auto"`` across 2 A100s for a 7B
+    model).  When no cell declares ``"gpus"``, scheduling is byte-equivalent to
+    the prior uniform-slot design.
+
+    The scheduler keeps up to ``max_parallel`` (default: ``len(gpus)``) workers
+    active.  Each worker waits for enough free GPUs (atomically k-acquires), runs
+    one cell attempt, then releases the GPUs immediately so the next waiter can
+    proceed.  This is deadlock-free: a worker holds zero GPUs while waiting.
 
     Args:
         cells:               List of cell-description dicts.  Each must have an
@@ -546,17 +588,36 @@ def run_matrix(
     if not resolved_gpus:
         resolved_gpus = ["0"]
 
-    # Multi-GPU cells (2026-06-02): group GPUs into SLOTS of `gpus_per_cell` so a
-    # cell that shards a large model (device_map='auto') sees several GPUs at once.
-    # Each slot is a CSV of physical ids → CUDA_VISIBLE_DEVICES for that cell.
-    n_per = max(1, int(gpus_per_cell))
-    gpu_slots = [",".join(resolved_gpus[i:i + n_per])
-                 for i in range(0, len(resolved_gpus) - n_per + 1, n_per)]
-    if not gpu_slots:                       # fewer GPUs than n_per → one slot of all
-        gpu_slots = [",".join(resolved_gpus)]
+    # Heterogeneous per-cell GPU counts (2026-06-18): each cell may carry an optional
+    # integer "gpus" field declaring how many cards it needs (e.g. a 7B model sharded
+    # over 2 cards).  When no cell uses "gpus", `gpus_per_cell` is the uniform default
+    # and scheduling is byte-equivalent to the prior slot-pool design.
+    #
+    # Implementation: individual-GPU free-pool + Condition-guarded atomic k-acquire.
+    # A worker holds ZERO GPUs while waiting, then takes all k at once (no hold-and-wait
+    # → deadlock-free).  GPUs are always released in a `finally` block (no leak on crash).
+    # A cell that asks for more GPUs than exist is clamped to total_gpus and still runs.
+    total_gpus = len(resolved_gpus)
+    n_per = max(1, int(gpus_per_cell))  # default per-cell GPU count
 
-    parallelism = max_parallel if max_parallel is not None else len(gpu_slots)
-    parallelism = max(1, min(parallelism, len(gpu_slots)))
+    free_gpus: list[str] = list(resolved_gpus)
+    gpu_cond = threading.Condition()
+
+    def _acquire_gpus(k: int) -> list[str]:
+        """Block until k GPUs are free, then take them atomically."""
+        with gpu_cond:
+            while len(free_gpus) < k:
+                gpu_cond.wait()
+            return [free_gpus.pop() for _ in range(k)]  # take any k (cards are identical)
+
+    def _release_gpus(assigned: list[str]) -> None:
+        """Return GPUs to the pool and wake waiting workers."""
+        with gpu_cond:
+            free_gpus.extend(assigned)
+            gpu_cond.notify_all()
+
+    # Worker count: cap at total_gpus (can't run more cells than we have GPUs).
+    worker_count = max(1, min(max_parallel if max_parallel is not None else total_gpus, total_gpus))
 
     output_root = Path(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
@@ -571,42 +632,25 @@ def run_matrix(
     for cell in cells:
         work_queue.put((cell, 0))
 
-    # GPU pool — a queue of free GPU SLOTS (each a CSV of `gpus_per_cell` ids,
-    # set as CUDA_VISIBLE_DEVICES so a cell can device_map-shard across them).
-    gpu_pool: Queue[str] = Queue()
-    for slot in gpu_slots[:parallelism]:
-        gpu_pool.put(slot)
-
     active_threads: list[threading.Thread] = []
     active_lock = threading.Lock()
 
     def _worker() -> None:
-        """One worker thread: grab a GPU, run one cell attempt, release the GPU."""
+        """One worker thread: cell-first loop — grab work, acquire GPUs, run, release."""
         while True:
-            # Acquire a free GPU (blocks until one is available).
+            # Get the next work item first — hold ZERO GPUs while waiting for work.
             try:
-                gpu_id = gpu_pool.get(timeout=120)
-            except Empty:
-                # No GPU became available within 2 minutes — something is stuck.
-                logger.warning("gpu_cell_runner: timed out waiting for a free GPU")
-                break
-
-            try:
-                # Get next work item — non-blocking (workers only run when there is work).
                 cell, retry_idx = work_queue.get_nowait()
             except Empty:
-                # Queue drained; return the GPU and exit this worker.
-                gpu_pool.put(gpu_id)
-                break
+                break  # no work; exit without holding any GPU
 
             cell_id: str = cell.get("id", f"cell_{id(cell)}")
             output_dir = output_root / cell_id
             log_path = output_root / f"{cell_id}.log"
 
-            # Resume skip pre-filter (Track B): on the FIRST attempt of a cell,
-            # when resume is armed, a prior ok+fingerprint-matched+not-forced cell
-            # is reused WITHOUT launching a subprocess. retry_idx>0 means an OOM
-            # retry already in flight — never skip those.
+            # Resume skip pre-filter (Track B): on the FIRST attempt, when resume is
+            # armed, a prior ok+fingerprint-matched+not-forced cell is reused WITHOUT
+            # launching a subprocess — BEFORE acquiring any GPUs.
             if _resume_armed and retry_idx == 0 and should_skip_cell(
                 cell_id, output_dir, _fingerprints, _force_cells
             ):
@@ -615,7 +659,7 @@ def run_matrix(
                         cell_id=cell_id,
                         status="skipped",
                         metrics=_load_metrics(output_dir),
-                        gpu=gpu_id,
+                        gpu="skipped",
                         retries=0,
                         error=None,
                     )
@@ -623,12 +667,10 @@ def run_matrix(
                     "gpu_cell_runner: cell=%s SKIPPED (resume: prior ok + fingerprint match)",
                     cell_id,
                 )
-                gpu_pool.put(gpu_id)
                 continue
 
-            # Overall-matrix deadline (2026-06-01): once the matrix budget is
-            # spent, do NOT launch further cells — record them as ``timeout`` and
-            # keep draining the queue so every cell still gets a result entry.
+            # Overall-matrix deadline — checked BEFORE acquiring GPUs so we don't
+            # starve the pool for a cell we'd immediately time-out anyway.
             if overall_deadline is not None and time.monotonic() >= overall_deadline:
                 _tmo_metrics = _load_metrics(output_dir)
                 with results_lock:
@@ -636,7 +678,7 @@ def run_matrix(
                         cell_id=cell_id,
                         status="timeout",
                         metrics=_tmo_metrics,
-                        gpu=gpu_id,
+                        gpu="unassigned",
                         retries=retry_idx,
                         error="overall matrix timeout — cell not launched",
                     )
@@ -645,40 +687,45 @@ def run_matrix(
                     fingerprint=_fingerprints.get(cell_id), metrics=_tmo_metrics,
                     retries=retry_idx, now_iso=now_iso,
                 )
-                gpu_pool.put(gpu_id)
                 continue
 
-            # Determine OOM-mitigation parameters for this attempt.
-            batch_scale: float | None = None
-            grad_checkpoint = False
-            if retry_idx > 0:
-                scale_idx = retry_idx - 1  # 0 → 0.5, 1 → 0.25
-                if scale_idx < len(_OOM_BATCH_SCALES):
-                    batch_scale = _OOM_BATCH_SCALES[scale_idx]
-                grad_checkpoint = True
+            # Determine how many GPUs this cell needs (per-cell "gpus" field, or default).
+            k = _cell_gpu_count(cell, n_per, total_gpus)
+            assigned = _acquire_gpus(k)  # blocks until k cards are free
+            slot = ",".join(assigned)    # CUDA_VISIBLE_DEVICES value for this cell
 
-            logger.info(
-                "gpu_cell_runner: starting cell=%s gpu=%s retry=%d batch_scale=%s",
-                cell_id, gpu_id, retry_idx, batch_scale,
-            )
+            try:
+                # Determine OOM-mitigation parameters for this attempt.
+                batch_scale: float | None = None
+                grad_checkpoint = False
+                if retry_idx > 0:
+                    scale_idx = retry_idx - 1  # 0 → 0.5, 1 → 0.25
+                    if scale_idx < len(_OOM_BATCH_SCALES):
+                        batch_scale = _OOM_BATCH_SCALES[scale_idx]
+                    grad_checkpoint = True
 
-            # Clamp this cell's timeout to the time left in the overall budget so a
-            # single in-flight cell can't overrun the matrix deadline either.
-            eff_timeout = clamp_cell_timeout(per_cell_timeout_s, overall_deadline)
+                logger.info(
+                    "gpu_cell_runner: starting cell=%s gpus=%s retry=%d batch_scale=%s",
+                    cell_id, slot, retry_idx, batch_scale,
+                )
 
-            returncode, output = _run_cell_subprocess(
-                cell=cell,
-                cell_script=cell_script,
-                gpu_id=gpu_id,
-                output_dir=output_dir,
-                batch_scale=batch_scale,
-                grad_checkpoint=grad_checkpoint,
-                timeout_s=eff_timeout,
-                log_path=log_path,
-            )
+                # Clamp this cell's timeout to the time left in the overall budget.
+                eff_timeout = clamp_cell_timeout(per_cell_timeout_s, overall_deadline)
 
-            # Return GPU to pool immediately after subprocess exits.
-            gpu_pool.put(gpu_id)
+                returncode, output = _run_cell_subprocess(
+                    cell=cell,
+                    cell_script=cell_script,
+                    gpu_id=slot,
+                    output_dir=output_dir,
+                    batch_scale=batch_scale,
+                    grad_checkpoint=grad_checkpoint,
+                    timeout_s=eff_timeout,
+                    log_path=log_path,
+                )
+            finally:
+                # ALWAYS release GPUs — even if _run_cell_subprocess raises.
+                _release_gpus(assigned)
+
             deadline_hit = (
                 overall_deadline is not None and time.monotonic() >= overall_deadline
             )
@@ -690,7 +737,7 @@ def run_matrix(
                         cell_id=cell_id,
                         status="ok",
                         metrics=metrics,
-                        gpu=gpu_id,
+                        gpu=slot,
                         retries=retry_idx,
                         error=None,
                     )
@@ -699,12 +746,12 @@ def run_matrix(
                     fingerprint=_fingerprints.get(cell_id), metrics=metrics,
                     retries=retry_idx, now_iso=now_iso,
                 )
-                logger.info("gpu_cell_runner: cell=%s DONE ok (gpu=%s)", cell_id, gpu_id)
+                logger.info("gpu_cell_runner: cell=%s DONE ok (gpu=%s)", cell_id, slot)
             elif _is_oom(output) and retry_idx < max_oom_retries and not deadline_hit:
                 next_retry = retry_idx + 1
                 logger.warning(
                     "gpu_cell_runner: cell=%s OOM on gpu=%s, scheduling retry %d/%d",
-                    cell_id, gpu_id, next_retry, max_oom_retries,
+                    cell_id, slot, next_retry, max_oom_retries,
                 )
                 work_queue.put((cell, next_retry))
                 # Spawn a new worker to handle the queued retry (the current
@@ -722,7 +769,7 @@ def run_matrix(
                         cell_id=cell_id,
                         status="training_diverged",
                         metrics=_div_metrics,
-                        gpu=gpu_id,
+                        gpu=slot,
                         retries=retry_idx,
                         error=(output[-2000:] if output else "training diverged"),
                     )
@@ -734,7 +781,7 @@ def run_matrix(
                 )
                 logger.warning(
                     "gpu_cell_runner: cell=%s TRAINING_DIVERGED (early-stop) gpu=%s",
-                    cell_id, gpu_id,
+                    cell_id, slot,
                 )
             else:
                 if deadline_hit:
@@ -750,7 +797,7 @@ def run_matrix(
                         cell_id=cell_id,
                         status=status,
                         metrics=_fail_metrics,
-                        gpu=gpu_id,
+                        gpu=slot,
                         retries=retry_idx,
                         error=error_snippet,
                     )
@@ -761,7 +808,7 @@ def run_matrix(
                 )
                 logger.warning(
                     "gpu_cell_runner: cell=%s FAILED status=%s gpu=%s retries=%d",
-                    cell_id, status, gpu_id, retry_idx,
+                    cell_id, status, slot, retry_idx,
                 )
 
     def _spawn_worker() -> None:
@@ -770,8 +817,8 @@ def run_matrix(
             active_threads.append(t)
         t.start()
 
-    # Spawn initial pool of workers — one per parallel slot.
-    for _ in range(parallelism):
+    # Spawn initial pool of workers.
+    for _ in range(worker_count):
         _spawn_worker()
 
     # Wait for all workers to finish.
