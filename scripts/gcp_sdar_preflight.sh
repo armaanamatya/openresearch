@@ -135,7 +135,9 @@ sync_repo() {
 
 remote_check() {
   start_vm
-  "${ssh_base[@]}" "cd $REMOTE_DIR && .venv/bin/python scripts/sdar_gcp_assets.py --check --require-gpu --min-gpus 8"
+  # Source the env file written by `prepare` so the standalone check sees the
+  # dedicated WebShop interpreter (OPENRESEARCH_WEBSHOP_PYTHON) and cache paths.
+  "${ssh_base[@]}" "cd $REMOTE_DIR && { [ -f runs/.cache/sdar_gcp.env ] && . runs/.cache/sdar_gcp.env || true; } && .venv/bin/python scripts/sdar_gcp_assets.py --check --require-gpu --min-gpus 8"
 }
 
 remote_prepare() {
@@ -144,9 +146,16 @@ remote_prepare() {
   # System build prerequisites for source-built Python deps. Ubuntu 24.04 ships
   # only `python3`, but some sdists shell out to bare `python` and build native
   # code (e.g. fast-downward-textworld -> cmake; alfworld/textworld -> C exts).
+  # openjdk-17-jre-headless is required by pyserini/anserini (WebShop search indexing).
   # Idempotent; needs passwordless sudo (GCP default for the creating user).
-  "${ssh_base[@]}" "sudo bash -c 'export DEBIAN_FRONTEND=noninteractive && apt-get update -qq && apt-get install -y python-is-python3 cmake ninja-build build-essential libffi-dev'"
-  "${ssh_base[@]}" "cd $REMOTE_DIR && if [ ! -x .venv/bin/python ]; then python3 -m venv .venv; fi && .venv/bin/python -m pip install -r backend/requirements.txt && .venv/bin/python scripts/sdar_gcp_assets.py --prepare --check --require-gpu --min-gpus 8"
+  "${ssh_base[@]}" "sudo bash -c 'export DEBIAN_FRONTEND=noninteractive && apt-get update -qq && apt-get install -y python-is-python3 cmake ninja-build build-essential libffi-dev openjdk-17-jre-headless'"
+  # Ensure uv is available for creating Python-version-pinned venvs. The run venv
+  # is created at Python 3.10 so WebShop's dedicated venv (also 3.10) can share
+  # the same interpreter; uv resolves the exact minor-version binary automatically.
+  "${ssh_base[@]}" "command -v uv || (curl -LsSf https://astral.sh/uv/install.sh | sh) && export PATH=\"\$HOME/.local/bin:\$PATH\""
+  # Create the run venv at Python 3.10 (only if missing). This matches the Python
+  # version used for the WebShop dedicated venv so both share one interpreter.
+  "${ssh_base[@]}" "export PATH=\"\$HOME/.local/bin:\$PATH\" && cd $REMOTE_DIR && if [ ! -x .venv/bin/python ]; then uv venv --python 3.10 .venv; fi && .venv/bin/python -m pip install -r backend/requirements.txt && .venv/bin/python scripts/sdar_gcp_assets.py --prepare --check --require-gpu --min-gpus 8"
 }
 
 case "$ACTION" in

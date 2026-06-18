@@ -91,8 +91,15 @@ def write_env_file(args: argparse.Namespace, values: dict[str, str]) -> None:
         "OPENRESEARCH_PROVISION_ENVS": ",".join(DEFAULT_ENVS),
         "OPENRESEARCH_FORCE_SANDBOX": "local",
         "OPENRESEARCH_DEFAULT_SANDBOX": "local",
+        # Preflight already provisioned all assets; the run must not re-provision.
+        "OPENRESEARCH_PRELOAD_ASSETS": "0",
         **stable_values,
     }
+    # Propagate the dedicated WebShop interpreter path when the dedicated-venv
+    # install path was used (set by install_webshop_dedicated via ensure_assets).
+    webshop_python = os.environ.get("OPENRESEARCH_WEBSHOP_PYTHON", "")
+    if webshop_python:
+        merged["OPENRESEARCH_WEBSHOP_PYTHON"] = webshop_python
     text = "\n".join(f'export {key}="{value}"' for key, value in sorted(merged.items()))
     path.write_text(text + "\n", encoding="utf-8")
     print(f"[OK] wrote {path}")
@@ -102,6 +109,7 @@ def run_checks(args: argparse.Namespace, env_vars: dict[str, str] | None = None)
     from backend.services.runtime.asset_provisioning import (
         _console_script_exists,
         _module_exists,
+        webshop_importable,
     )
 
     checks = [
@@ -121,9 +129,12 @@ def run_checks(args: argparse.Namespace, env_vars: dict[str, str] | None = None)
     ):
         checks.append(Check(f"import {mod}", _module_exists(mod)))
     checks.append(Check("console alfworld-download", _console_script_exists("alfworld-download")))
+    # Probe the WebShop interpreter, not the run venv: under the dedicated-venv
+    # split web_agent_site lives in OPENRESEARCH_WEBSHOP_PYTHON, never here.
     checks.append(Check(
         "import web_agent_site",
-        _module_exists("web_agent_site"),
+        webshop_importable(),
+        os.environ.get("OPENRESEARCH_WEBSHOP_PYTHON") or "run venv",
         required=not args.allow_missing_webshop,
     ))
 
@@ -234,7 +245,7 @@ def main() -> int:
         )
         cache_root = args.pip_cache_dir.parent  # runs/.cache
         try:
-            ensure_assets(spec, cache_root=cache_root)
+            ensure_assets(spec, cache_root=cache_root, webshop_python_version="3.10")
         except AssetProvisionError as exc:
             print(f"[FAIL] asset provisioning: {exc}", file=sys.stderr)
             return 1

@@ -61,6 +61,40 @@ def _console_script_exists(name: str) -> bool:
     return Path(sys.executable).with_name(name).exists() or shutil.which(name) is not None
 
 
+def _resolve_webshop_python() -> str:
+    """The interpreter that runs the WebShop server.
+
+    Mirrors ``env_cache._default_webshop_launcher`` EXACTLY: the dedicated venv
+    when :func:`install_webshop_dedicated` set ``OPENRESEARCH_WEBSHOP_PYTHON``,
+    else the current interpreter. One canonical resolution shared by the
+    launcher and the preflight check so they can never disagree.
+    """
+    return os.environ.get("OPENRESEARCH_WEBSHOP_PYTHON") or sys.executable
+
+
+def webshop_importable() -> bool:
+    """True when ``web_agent_site`` imports in the WebShop interpreter.
+
+    Under the dedicated-venv split the package lives in
+    ``OPENRESEARCH_WEBSHOP_PYTHON``'s site-packages, NOT the run venv — so a
+    plain :func:`_module_exists` (current-interpreter) probe would wrongly
+    report it missing and RED the preflight. Probe the actual interpreter.
+    """
+    python = _resolve_webshop_python()
+    if python == sys.executable:
+        return _module_exists("web_agent_site")
+    try:
+        result = subprocess.run(
+            [python, "-c", "import web_agent_site"],
+            check=False,
+            capture_output=True,
+            timeout=60,
+        )
+        return result.returncode == 0
+    except Exception:  # noqa: BLE001 — a missing/broken interpreter == not importable
+        return False
+
+
 def _site_package_dirs() -> list[Path]:
     dirs: list[Path] = []
     for raw in site.getsitepackages() + [site.getusersitepackages()]:
@@ -128,6 +162,83 @@ def install_webshop(pip_cache_dir: Path, cache_root: Path) -> None:
         )
 
 
+def install_webshop_dedicated(cache_root: Path, *, python_version: str = "3.10") -> Path:
+    """Create a dedicated venv (its own `python_version`) holding WebShop's frozen
+    requirements, so WebShop's old torch/transformers can't collide with the run
+    venv's modern stack. Returns the venv's python executable path. Raises
+    AssetProvisionError on failure. Idempotent (reuses an existing venv + re-checks import)."""
+    venv_dir = cache_root / "webshop" / ".venv-webshop"
+    venv_python = venv_dir / "bin" / "python"
+
+    # --- Create the dedicated venv (idempotent) ---
+    if not venv_python.exists():
+        venv_dir.parent.mkdir(parents=True, exist_ok=True)
+        created = False
+        if shutil.which("uv") is not None:
+            result = subprocess.run(
+                ["uv", "venv", "--python", python_version, str(venv_dir)],
+                check=False,
+            )
+            if result.returncode == 0:
+                created = True
+        if not created:
+            # Fall back to stdlib venv with the versioned interpreter
+            subprocess.run(
+                [f"python{python_version}", "-m", "venv", str(venv_dir)],
+                check=True,
+            )
+
+    # --- Clone WebShop if missing (reuse same URL as install_webshop) ---
+    repo_dir = cache_root / "webshop" / "WebShop"
+    repo_url = os.environ.get(
+        "OPENRESEARCH_WEBSHOP_REPO_URL",
+        "https://github.com/princeton-nlp/WebShop.git",
+    )
+    if not repo_dir.exists():
+        repo_dir.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "clone", "--depth", "1", repo_url, str(repo_dir)],
+            check=True,
+        )
+
+    # --- Install WebShop's requirements into the dedicated venv ---
+    req = repo_dir / "requirements.txt"
+    if req.exists():
+        result = subprocess.run(
+            [str(venv_python), "-m", "pip", "install", "-r", str(req)],
+            check=False,
+        )
+        if result.returncode != 0:
+            raise AssetProvisionError(
+                f"pip install into dedicated WebShop venv failed (exit {result.returncode})"
+            )
+
+    # --- Make web_agent_site importable via a .pth file in the dedicated venv ---
+    site_result = subprocess.run(
+        [str(venv_python), "-c", "import site,sys; sys.stdout.write(site.getsitepackages()[0])"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    dedicated_site = Path(site_result.stdout.strip())
+    (dedicated_site / "openresearch_webshop.pth").write_text(
+        str(repo_dir.resolve()) + "\n", encoding="utf-8"
+    )
+
+    # --- Verify import ---
+    verify = subprocess.run(
+        [str(venv_python), "-c", "import web_agent_site"],
+        check=False,
+    )
+    if verify.returncode != 0:
+        raise AssetProvisionError(
+            f"web_agent_site not importable in dedicated WebShop venv; "
+            f"inspect the repo layout under {repo_dir}"
+        )
+
+    return venv_python
+
+
 def warm_hf_models(models: list[str]) -> None:
     """Download model weights into HF_HOME (idempotent; HF skips cached files)."""
     from huggingface_hub import snapshot_download  # lazy
@@ -179,6 +290,7 @@ def ensure_assets(
     *,
     cache_root: Path,
     prepare: bool = True,
+    webshop_python_version: str | None = None,
 ) -> AssetReport:
     """Ensure all assets declared in *spec* are warm under *cache_root*.
 
@@ -193,6 +305,13 @@ def ensure_assets(
     Required assets (requirements_files, webshop, models) raise
     ``AssetProvisionError`` on failure.  Datasets are best-effort and only
     recorded in ``report.failed``.
+
+    When ``webshop_python_version`` is set (e.g. ``"3.10"``), WebShop is
+    installed into a dedicated venv at that Python version (via
+    :func:`install_webshop_dedicated`) and ``OPENRESEARCH_WEBSHOP_PYTHON`` is
+    set in ``os.environ`` so the env-cache launcher uses that interpreter.
+    When ``None`` (the default), the legacy :func:`install_webshop` path is
+    used — behavior is byte-identical to before this parameter was added.
     """
     pip_cache = cache_root / "pip"
     hf_home = cache_root / "hf"
@@ -239,12 +358,21 @@ def ensure_assets(
 
     # (b) WebShop — REQUIRED when requested
     if spec.webshop:
-        label = "webshop:web_agent_site"
-        if _module_exists("web_agent_site"):
-            report.skipped.append(label)
+        if webshop_python_version is not None:
+            # Dedicated venv path: install WebShop into its own Python environment
+            # to avoid version conflicts with the run venv's modern torch stack.
+            venv_python = install_webshop_dedicated(
+                cache_root, python_version=webshop_python_version
+            )  # raises AssetProvisionError on failure
+            os.environ["OPENRESEARCH_WEBSHOP_PYTHON"] = str(venv_python)
+            report.ensured.append("webshop:dedicated-venv")
         else:
-            install_webshop(pip_cache, cache_root)  # raises AssetProvisionError on failure
-            report.ensured.append(label)
+            label = "webshop:web_agent_site"
+            if _module_exists("web_agent_site"):
+                report.skipped.append(label)
+            else:
+                install_webshop(pip_cache, cache_root)  # raises AssetProvisionError on failure
+                report.ensured.append(label)
 
     # (c) HF model weights — REQUIRED
     for model_id in spec.models:
