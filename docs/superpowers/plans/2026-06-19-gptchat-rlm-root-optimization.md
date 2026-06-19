@@ -1,9 +1,45 @@
 # Investigation Plan — Optimizing gpt-chat-latest as the RLM Root (system prompt + guardrailing + orchestration)
 
-> **Status:** OPEN investigation (handoff for a future session). Authored 2026-06-19.
+> **Status:** IMPLEMENTED 2026-06-19 (flag-gated, default-OFF). Authored 2026-06-19.
 > **Owner hint:** Opus designs the prompt/guardrail surface + reviews; delegate mechanical
 > edits + the CPU validation harness to Sonnet. Most of this is **CPU-only and cheap** — the
 > orchestration defects are all *pre-GPU*. Only the final A/B validation needs a GPU run.
+>
+> ### What landed (this session, all default-OFF + model-agnostic)
+> - **G1 `OPENRESEARCH_ARG_CONTRACTS`** — argument pre-validation in `binding.wrap_primitive`
+>   (`backend/agents/rlm/arg_contracts.py`): a declarative per-primitive table blocks placeholder/
+>   sentinel arg values before the primitive runs, returning a crisp `failure_class="arg_contract"`
+>   repair dict. Closes the non-blocking `paper_grounding_failed` gap (defects #1/#2).
+> - **G2 `OPENRESEARCH_STUB_METRICS_GUARD`** — route-agnostic stub detection in `run_experiment`
+>   (`backend/agents/rlm/stub_detection.py`): a `success=True` result with only placeholder metric
+>   keys (no real-metric key) → repairable `fabrication_suspected` + re-drive directive. Complements
+>   the VRAM antifab verdict (which only fires on gpu-training-CLAIMING metrics — the exact gap the
+>   2026-06-19 monolithic stub slipped through). Defect #4.
+> - **P1-P3** — the shared `azure-foundry` `prompt_addendum` (`models.py`) now carries argument
+>   grounding (null-not-guess + exact types), full-paper persistence + honest-failure, and
+>   run_experiment result-quality (stub → re-drive). Brace-free (escape round-trip verified). Defects
+>   #1/#3/#4/#5 reinforcement.
+> - **G3** (degenerate detector) — verified already implements the June-2026 best-practice pattern
+>   (signature counter + reset-on-state-change + feed-back-then-escalate); **no change** (threshold
+>   stays default-3 pending WS4-B data; semantics A/B-gated).
+> - **A1** (base-prompt audit) — **no genuine contradiction / over-strict contract** found; **no
+>   change** (the prompt already self-guards brevity-vs-correctness + has graceful escapes).
+> - **WS4** — Tier-A CI guard tests (`tests/rlm/test_{arg_contracts,stub_detection,guard_integration}.py`)
+>   + Tier-B operator-run A/B harness `scripts/rlm_root_ab.py` (pure parser unit-tested in
+>   `tests/test_rlm_root_ab.py`).
+> - **Full suite green: 3600 passed.** Enable on the gpt-chat deployment with
+>   `OPENRESEARCH_ARG_CONTRACTS=1 OPENRESEARCH_STUB_METRICS_GUARD=1`.
+>
+> ### Key finding (supersedes WS-executor speculation)
+> The non-Claude executor ALREADY runs on the **OpenAI Agents SDK** (`openai-agents`,
+> `backend/agents/runtime/openai_runtime.py`) with full Read/Write/Edit/Bash tool parity to
+> `claude-agent-sdk`. So gpt-chat-latest stubbing is **model coding-ability, not a harness limit** —
+> no SDK swap is warranted, and Sonnet/gpt-5 remain the recommended validated executor. The guardrails
+> raise the floor (a stub is non-shippable → re-driven, or the run fails honestly) for every model.
+>
+> ### Remaining (operator, GPU/creds)
+> Run `scripts/rlm_root_ab.py --paper <id>` (needs `AZURE_FOUNDRY_*`) for the Tier-B before/after
+> rates, then the spec's ≥3-paired-SDAR-run A/B before flipping any guard default ON.
 
 ---
 

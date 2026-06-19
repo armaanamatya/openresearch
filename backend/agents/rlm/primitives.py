@@ -6432,6 +6432,37 @@ def run_experiment(
         except Exception:  # noqa: BLE001 — the antifab degradation must never crash the run
             logger.debug("run_experiment: antifab VRAM degradation failed", exc_info=True)
 
+    # G2 route-agnostic stub-metrics guard (flag-gated, default OFF): the VRAM verdict
+    # above only fires when metrics CLAIM gpu training; a stub that emits placeholder
+    # keys (total_length/chunk_count) never claims gpu training, so it slips past VRAM
+    # on every backend. Degrade such a "success" to the already-repairable
+    # fabrication_suspected so the root re-implements. Conservative (only fires when NO
+    # real-metric key is present). Re-check success: the antifab block above may already
+    # have flipped it. Fail-soft. (Future: cross-check against rubric-expected keys.)
+    if result.get("success"):
+        try:
+            from backend.agents.rlm.stub_detection import (
+                looks_like_stub_metrics,
+                stub_metrics_guard_enabled,
+                stub_repair_message,
+            )
+            if stub_metrics_guard_enabled() and looks_like_stub_metrics(result.get("metrics")):
+                _stub_msg = stub_repair_message(result.get("metrics"))
+                result = {
+                    **result,
+                    "success": False,
+                    "failure_class": "fabrication_suspected",
+                    "error": _stub_msg,
+                }
+                _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                    "code": "fabrication_suspected", "message": _stub_msg,
+                })
+                logger.warning(
+                    "run_experiment[%s]: %s", getattr(ctx, "run_id", "?"), _stub_msg,
+                )
+        except Exception:  # noqa: BLE001 — the stub-metrics guard must never crash the run
+            logger.debug("run_experiment: stub-metrics guard failed", exc_info=True)
+
     # Finalize-on-timeout (2026-06-08): a timed-out / stalled experiment must SCORE its
     # completed work, not zero it (the Adam failure: 4/5 families trained, the timeout fired
     # mid-VAE, every rubric leaf scored 0). Both the inner exec_timeout/exec_stalled return

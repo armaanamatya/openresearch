@@ -17,6 +17,27 @@ version + date and start a new `[Unreleased]` block above it.
 
 ## [Unreleased]
 
+### Added (2026-06-19 — reasoning-chat-root orchestration guardrails, all default-OFF, model-agnostic)
+- **G1 `OPENRESEARCH_ARG_CONTRACTS`** — generic argument pre-validation in `binding.wrap_primitive`
+  (mirrors `_run_experiment_contract_guard`) blocks placeholder/sentinel args (`unknown`/`tbd`/…) in
+  declared fields (`plan_reproduction`→`method_spec`/`paper_claim_map`) BEFORE the primitive runs,
+  returning a crisp `failure_class="arg_contract"` repair dict — closes the non-blocking
+  `paper_grounding_failed` gap. `backend/agents/rlm/arg_contracts.py`.
+- **G2 `OPENRESEARCH_STUB_METRICS_GUARD`** — route-agnostic stub detection in `run_experiment`: a
+  `success=True` result whose metric keys are ALL placeholders (e.g. `total_length`/`chunk_count`) with
+  no real-metric key is degraded to the already-repairable `fabrication_suspected` (complements the VRAM
+  antifab verdict, which only fires on gpu-training-claiming metrics). Conservative; fail-soft.
+  `backend/agents/rlm/stub_detection.py`.
+- **P1-P3** — the shared `azure-foundry` `prompt_addendum` gains argument-grounding (null-not-guess +
+  exact types), full-paper persistence + honest-failure, and run_experiment result-quality (stub →
+  re-drive) guidance (brace-free, verified round-trip).
+- **Validation** — `tests/rlm/test_{arg_contracts,stub_detection,guard_integration}.py` (deterministic
+  CI guard tests, 57 cases) + `scripts/rlm_root_ab.py` (operator-run A/B harness; pure metrics-parser
+  unit-tested in `tests/test_rlm_root_ab.py`). Full suite green (3600 passed).
+- All guards default-OFF (byte-for-byte unchanged until enabled). Decision: the non-Claude executor
+  already runs on the OpenAI Agents SDK (no swap); stubbing is model-bound, so Sonnet/gpt-5 remain the
+  recommended validated executor. Plan: `docs/superpowers/plans/2026-06-19-gptchat-rlm-root-optimization.md`.
+
 ### Changed (2026-06-19 — gpt-chat-latest enabled as Foundry root + all sub-roles)
 - **gpt-chat-latest now drives the full RLM loop OAuth-free.** Empirically verified
   (2026-06-19, live endpoint smoke): with the exact shape the `rlms` root client

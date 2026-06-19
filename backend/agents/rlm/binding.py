@@ -23,6 +23,7 @@ import threading
 from concurrent.futures import Future, TimeoutError as FuturesTimeoutError
 from typing import Any, Callable
 
+from backend.agents.rlm.arg_contracts import validate_primitive_args
 from backend.agents.rlm.context import RunContext
 
 logger = logging.getLogger(__name__)
@@ -509,6 +510,8 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                 guard_result = None
                 if name == "run_experiment":
                     args, guard_result = _run_experiment_contract_guard(args)
+                if guard_result is None:
+                    guard_result = validate_primitive_args(name, fn, args, kwargs)
 
                 if guard_result is not None:
                     result = guard_result
