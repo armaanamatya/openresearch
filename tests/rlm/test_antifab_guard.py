@@ -221,6 +221,101 @@ metrics = {"accuracy": accuracy}
         fab = _hard_fab(violations)
         assert len(fab) == 0, f"Expected 0 fab violations for clean trainer, got: {fab}"
 
+    def test_dict_literal_hardcoded_metric_is_flagged(self, tmp_path: Path, monkeypatch) -> None:
+        """GAP-2: a metric literal INSIDE a dict literal — the grok-4.3 evasion that
+        the per-target ``metric = 0.844`` / ``results["metric"] = 0.844`` shapes miss."""
+        monkeypatch.setenv("OPENRESEARCH_ANTIFAB_GUARD", "1")
+        _write(tmp_path, "train_cell.py", """\
+metrics = {"success_rate": 0.844, "accuracy": 0.448}
+""")
+        from backend.agents.rlm.preflight_ast import scan_code_dir
+        violations = scan_code_dir(tmp_path)
+        fab = _hard_fab(violations)
+        assert len(fab) >= 1, f"Expected dict-literal hardcoded metric flagged, got: {violations}"
+
+    def test_return_dict_literal_hardcoded_metric_is_flagged(self, tmp_path: Path, monkeypatch) -> None:
+        """GAP-2: the same fabrication via ``return {...}`` (no assignment target)."""
+        monkeypatch.setenv("OPENRESEARCH_ANTIFAB_GUARD", "1")
+        _write(tmp_path, "train_cell.py", """\
+def run():
+    return {"accuracy": 0.844}
+""")
+        from backend.agents.rlm.preflight_ast import scan_code_dir
+        violations = scan_code_dir(tmp_path)
+        fab = _hard_fab(violations)
+        assert len(fab) >= 1, f"Expected returned dict-literal hardcoded metric flagged, got: {violations}"
+
+    def test_dict_literal_metric_init_not_flagged(self, tmp_path: Path, monkeypatch) -> None:
+        """A zero/round init inside a dict literal is NOT a fabricated result."""
+        monkeypatch.setenv("OPENRESEARCH_ANTIFAB_GUARD", "1")
+        _write(tmp_path, "train_cell.py", """\
+metrics = {"success_rate": 0.0, "accuracy": 1.0}
+""")
+        from backend.agents.rlm.preflight_ast import scan_code_dir
+        violations = scan_code_dir(tmp_path)
+        fab = _hard_fab(violations)
+        assert len(fab) == 0, f"Init dict literal should not be flagged, got: {fab}"
+
+
+class TestVramEvidenceHelpers:
+    """GAP-1: the shared VRAM-evidence decision + the GPU-training-claim predicate,
+    used by BOTH the cells route and the monolithic run_experiment path."""
+
+    def test_verdict_low_vram_with_claim_is_fabrication(self, monkeypatch) -> None:
+        monkeypatch.setenv("OPENRESEARCH_ANTIFAB_GUARD", "1")
+        from backend.agents.rlm.gpu_cell_runner import vram_evidence_verdict
+        assert vram_evidence_verdict(0.01, claims_gpu_training=True) is True
+
+    def test_verdict_real_gpu_run_not_fabrication(self, monkeypatch) -> None:
+        monkeypatch.setenv("OPENRESEARCH_ANTIFAB_GUARD", "1")
+        from backend.agents.rlm.gpu_cell_runner import vram_evidence_verdict
+        assert vram_evidence_verdict(8.0, claims_gpu_training=True) is False
+
+    def test_verdict_unmeasured_vram_never_flags(self, monkeypatch) -> None:
+        monkeypatch.setenv("OPENRESEARCH_ANTIFAB_GUARD", "1")
+        from backend.agents.rlm.gpu_cell_runner import vram_evidence_verdict
+        assert vram_evidence_verdict(None, claims_gpu_training=True) is False
+
+    def test_verdict_no_gpu_claim_never_flags(self, monkeypatch) -> None:
+        monkeypatch.setenv("OPENRESEARCH_ANTIFAB_GUARD", "1")
+        from backend.agents.rlm.gpu_cell_runner import vram_evidence_verdict
+        assert vram_evidence_verdict(0.01, claims_gpu_training=False) is False
+
+    def test_verdict_guard_disabled_never_flags(self, monkeypatch) -> None:
+        monkeypatch.setenv("OPENRESEARCH_ANTIFAB_GUARD", "0")
+        from backend.agents.rlm.gpu_cell_runner import vram_evidence_verdict
+        assert vram_evidence_verdict(0.01, claims_gpu_training=True) is False
+
+    def test_claim_device_cuda(self) -> None:
+        from backend.agents.rlm.gpu_cell_runner import metrics_claim_gpu_training
+        assert metrics_claim_gpu_training({"success_rate": 0.844, "device": "cuda"}) is True
+
+    def test_claim_model_id_under_model_key(self) -> None:
+        from backend.agents.rlm.gpu_cell_runner import metrics_claim_gpu_training
+        assert metrics_claim_gpu_training({"model": "Qwen/Qwen2.5-3B-Instruct"}) is True
+
+    def test_claim_nested_device(self) -> None:
+        from backend.agents.rlm.gpu_cell_runner import metrics_claim_gpu_training
+        assert metrics_claim_gpu_training({"per_model": {"qwen3": {"device": "GPU"}}}) is True
+
+    def test_cpu_metrics_not_claimed(self) -> None:
+        """A CPU-only run reporting accuracy/loss with device=cpu is NOT a GPU claim."""
+        from backend.agents.rlm.gpu_cell_runner import metrics_claim_gpu_training
+        assert metrics_claim_gpu_training({"accuracy": 0.91, "loss": 0.3, "device": "cpu"}) is False
+
+    def test_path_date_fraction_not_misread_as_model(self) -> None:
+        """A '/'-bearing value NOT under a model key (path/date/fraction) must not be
+        read as a model claim — the false-positive guard for CPU-only papers."""
+        from backend.agents.rlm.gpu_cell_runner import metrics_claim_gpu_training
+        assert metrics_claim_gpu_training(
+            {"output_dir": "outputs/run_123", "timestamp": "2026/06/18", "ratio": "3/4"}
+        ) is False
+
+    def test_non_dict_metrics_fail_soft(self) -> None:
+        from backend.agents.rlm.gpu_cell_runner import metrics_claim_gpu_training
+        assert metrics_claim_gpu_training(None) is False
+        assert metrics_claim_gpu_training("just a string") is False
+
 
 class TestAstGuardDisabled:
     """Respects OPENRESEARCH_ANTIFAB_GUARD=0."""

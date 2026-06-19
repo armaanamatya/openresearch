@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -167,7 +168,7 @@ def _orphan_deregister(pid: int) -> None:
         pass
 
 __all__ = ["CELL_MANIFEST_NAME", "CellResult", "discover_visible_gpus", "run_matrix",
-           "_cell_gpu_count"]
+           "_cell_gpu_count", "vram_evidence_verdict", "metrics_claim_gpu_training"]
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +314,90 @@ def _sample_vram_mib(gpu_id: str) -> float | None:
     except Exception:  # noqa: BLE001
         pass
     return None
+
+
+def vram_evidence_verdict(
+    peak_vram_gb: float | None, *, claims_gpu_training: bool
+) -> bool:
+    """Shared VRAM-evidence decision — True iff fabrication is suspected.
+
+    The single decision function for BOTH the cells route (``run_matrix``) and the
+    monolithic ``run_experiment`` path, so the two never drift. Returns True ONLY
+    when ALL of these hold:
+
+      * the antifab guard is enabled (``OPENRESEARCH_ANTIFAB_GUARD``, default on),
+      * ``peak_vram_gb is not None`` — a measurement was actually taken
+        (None ⇒ nvidia-smi absent / sampling failed ⇒ fail-soft, never flag),
+      * ``claims_gpu_training`` — the run's own evidence claims a GPU/training
+        result (a CPU-only run with no such claim is never flagged), AND
+      * the measured net-peak is below the floor (``OPENRESEARCH_ANTIFAB_MIN_VRAM_GB``,
+        default 1.5 GiB) — even a tiny real GPU run (Qwen-1.7B ≈ 3.4 GB) clears it.
+
+    Fail-soft + conservative by construction: any "I don't know" input
+    (peak=None, or no GPU-training claim, or guard off) returns False.
+    """
+    if not _antifab_guard_enabled():
+        return False
+    if peak_vram_gb is None:
+        return False
+    if not claims_gpu_training:
+        return False
+    return peak_vram_gb < _antifab_min_vram_gb()
+
+
+# device values that claim GPU execution.
+_GPU_DEVICE_VALUES: frozenset[str] = frozenset({"cuda", "gpu"})
+# A HF-style model id as a metric VALUE ("Qwen/Qwen2.5-3B-Instruct") claims a real
+# model load. Strict org/model shape (>=2 chars each side) so a bare "/" path, a
+# date "2026/06/18", or a fraction "3/4" never matches.
+_MODEL_ID_RE = re.compile(r"[A-Za-z0-9._-]{2,}/[A-Za-z0-9._-]{2,}")
+
+
+def metrics_claim_gpu_training(metrics: object) -> bool:
+    """Return True if ``metrics`` carries a GPU/training signal — i.e. the run's
+    OWN evidence claims it trained/evaluated a model on a GPU.
+
+    Two precise, GPU-SPECIFIC signals (either is enough), read from the run's own
+    emitted metrics so a genuinely CPU-only paper is NEVER matched. Generic
+    training-metric keys (accuracy/loss/reward/…) are deliberately NOT used — they
+    appear in CPU runs too and would false-positive a CPU-only paper that happens to
+    run on a GPU host:
+
+      * a ``device`` field equal to ``"cuda"`` / ``"gpu"`` (case-insensitive), OR
+      * a value under a model-ish key (``model`` / ``model_id`` / ``model_name`` …)
+        matching a strict HF model-id shape (``org/model``, >=2 chars each side —
+        e.g. ``"Qwen/Qwen2.5-3B-Instruct"``). Anchoring to a model key means an
+        output path (``output_dir="outputs/run_123"``), a date, or a fraction is
+        never misread as a model claim.
+
+    Fail-soft: a non-dict or any traversal error returns False (never flag).
+    """
+    try:
+        return _scan_metrics_for_gpu_claim(metrics, _depth=0)
+    except Exception:  # noqa: BLE001 — predicate must never raise into the run
+        return False
+
+
+def _scan_metrics_for_gpu_claim(obj: object, *, _depth: int) -> bool:
+    if _depth > 6:  # cheap recursion guard for pathological nesting
+        return False
+    if isinstance(obj, dict):
+        for key, val in obj.items():
+            ks = str(key).strip().lower()
+            # device == cuda/gpu — an explicit, unambiguous GPU claim.
+            if ks == "device" and isinstance(val, str) and val.strip().lower() in _GPU_DEVICE_VALUES:
+                return True
+            # A model-id (org/model) ONLY when it sits under a model-ish key, so an
+            # output path like ``output_dir="outputs/run_123"`` is never misread as a
+            # model claim.
+            if "model" in ks and isinstance(val, str) and _MODEL_ID_RE.search(val):
+                return True
+            if _scan_metrics_for_gpu_claim(val, _depth=_depth + 1):
+                return True
+        return False
+    if isinstance(obj, (list, tuple)):
+        return any(_scan_metrics_for_gpu_claim(v, _depth=_depth + 1) for v in obj)
+    return False
 
 
 def _poll_peak_vram_daemon(
@@ -829,15 +914,16 @@ def run_matrix(
 
                 # Part-2 VRAM fabrication check: a successful cell that used
                 # near-zero GPU memory cannot have trained a real LLM — flag it.
-                # Gate on OPENRESEARCH_ANTIFAB_GUARD; fail-soft (never crash on this).
-                _fab_suspected = False
+                # A returncode-0 cell IS claiming it ran its training (the cells route
+                # only ever trains real models), so claims_gpu_training=True here.
+                # Routed through the SHARED vram_evidence_verdict so the cells route and
+                # the monolithic run_experiment path can never drift apart.
+                # Gate + fail-soft live inside the helper.
                 _min_vram = _antifab_min_vram_gb()
-                if (
-                    _antifab_guard_enabled()
-                    and peak_vram_gb is not None
-                    and peak_vram_gb < _min_vram
-                ):
-                    _fab_suspected = True
+                _fab_suspected = vram_evidence_verdict(
+                    peak_vram_gb, claims_gpu_training=True
+                )
+                if _fab_suspected:
                     logger.warning(
                         "gpu_cell_runner: cell=%s fabrication_suspected: "
                         "peak_vram_gb=%.3f < threshold=%.3f — degrading to 'failed'",

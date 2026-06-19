@@ -968,6 +968,32 @@ def _node_is_literal_conditional(node: ast.expr) -> bool:
     return False
 
 
+def _dict_literal_hardcoded_metric(node: ast.expr) -> str | None:
+    """Return the metric key string if ``node`` is an ``ast.Dict`` literal that maps a
+    metric-substring key (``_METRIC_DICT_KEYS``) to a result-like literal value, else None.
+
+    Catches the dict-literal fabrication ``metrics = {"success_rate": 0.844}`` /
+    ``return {"success_rate": 0.844}`` that the per-target ``metric = 0.844`` and
+    ``results["metric"] = 0.844`` shapes miss.
+
+    Conservative — reuses ``_node_is_literal_conditional`` for the value test, so it
+    flags ONLY a result-like literal (a float in (0,1) with >2 decimals, or a
+    model-keyed ``IfExp`` of literals). It does NOT flag ``{"success_rate": 0.0}``
+    (init) or a computed value ``{"success_rate": acc}`` (the value is a Name, not a
+    literal). Returns the FIRST offending key (one violation per dict literal).
+    """
+    if not isinstance(node, ast.Dict):
+        return None
+    for key, value in zip(node.keys, node.values):
+        if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+            continue
+        if not any(k in key.value.lower() for k in _METRIC_DICT_KEYS):
+            continue
+        if _node_is_literal_conditional(value):
+            return key.value
+    return None
+
+
 def _check_no_fabrication(
     tree: ast.AST,
     path: Path,
@@ -1082,9 +1108,9 @@ def _check_no_fabrication(
     # -----------------------------------------------------------------------
     for node in ast.walk(tree):
         # Shape 1: plain assignment ``metric = 0.844`` or ``final_metric = 0.844 if ... else 0.539``
-        if isinstance(node, ast.Assign):
-            if not _node_is_literal_conditional(node.value):
-                continue
+        # (guarded — NOT `continue`d — so an Assign with a dict-literal RHS still reaches
+        # Shape 1b below; the RHS of a metric DICT literal is an ast.Dict, not a literal).
+        if isinstance(node, ast.Assign) and _node_is_literal_conditional(node.value):
             for tgt in node.targets:
                 # Direct metric variable name
                 name = _target_name(tgt)
@@ -1137,6 +1163,39 @@ def _check_no_fabrication(
                         ),
                     ))
                     break
+
+        # Shape 1b: a metric-keyed DICT LITERAL with a result-like value, either
+        # assigned (``metrics = {"success_rate": 0.844}``) or returned
+        # (``return {"success_rate": 0.844}``). The per-target shapes above miss this
+        # because the RHS is an ``ast.Dict``, not a bare literal/IfExp. Conservative:
+        # ``_dict_literal_hardcoded_metric`` flags ONLY a result-like literal value, so
+        # ``{"success_rate": 0.0}`` (init) and ``{"success_rate": acc}`` (computed) pass.
+        _dict_node: ast.expr | None = None
+        if isinstance(node, ast.Assign):
+            _dict_node = node.value
+        elif isinstance(node, ast.Return):
+            _dict_node = node.value
+        if _dict_node is not None:
+            key_str = _dict_literal_hardcoded_metric(_dict_node)
+            if key_str is not None:
+                lineno = getattr(node, "lineno", 0)
+                out.append(PreflightViolation(
+                    file=path.name,
+                    line=lineno,
+                    class_name=None,
+                    missing_attr=None,
+                    suggested_fix=(
+                        f"Dict entry `{key_str!r}` in `{path.name}` line {lineno} is set "
+                        f"from a hardcoded literal inside a dict literal. Compute the "
+                        f"metric from real model evaluation, then build the metrics dict."
+                    ),
+                    severity="hard",
+                    detail=(
+                        f"{path.name}:{lineno}: metrics dict key `{key_str!r}` set from a "
+                        f"numeric literal or literal-conditional inside a dict literal "
+                        f"— hardcoded result, not a measured value{hint_note}."
+                    ),
+                ))
 
         # Shape 2: augmented assign ``results["metric"] += 0.0`` — rare, skip (low value)
 

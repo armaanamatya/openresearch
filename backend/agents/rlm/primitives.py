@@ -65,6 +65,7 @@ _RUN_EXPERIMENT_REPAIRABLE_FAILURES = {
     "syntax_error",
     "scope_shape_violation",
     "dockerfile_invalid",
+    "fabrication_suspected",   # GAP-1: VRAM-evidence fabrication → agent must re-implement
     "unknown",
 }
 _RUN_EXPERIMENT_RETRYABLE_FAILURES = {
@@ -166,6 +167,12 @@ def _local_core_bootstrap_commands(requirements_path: "Path", torch_index: str) 
 # the n_ok==0, n_err>0 branch of the cell matrix (primitives.py ~:3789).
 _METRICS_BEARING_REPAIRABLE_FAILURES = {
     "cell_execution_error",
+    # GAP-1 (2026-06-18): a VRAM-evidence fabrication ALSO ships a populated metrics
+    # dict (the fabricated numbers), so the metrics-first short-circuit below would
+    # otherwise mis-type it ``partial_evidence`` and let the fake results count as
+    # evidence. The whole point is that ZERO real GPU work happened — fully
+    # repairable, never partial. Set on BOTH paths (cells route + monolithic).
+    "fabrication_suspected",
 }
 
 _CODEX_HARD_ALLOWED_TASKS = {
@@ -6108,6 +6115,50 @@ def run_experiment(
         logger.exception("run_experiment: cell-matrix route raised; falling back to legacy path")
         _cell_route_taken = False
 
+    # GAP-1 anti-fabrication (2026-06-18): the cells route measures net-peak VRAM and
+    # degrades a near-zero-GPU "success" (the only place the VRAM guard lived). grok
+    # fabricated SDAR via the MONOLITHIC path below — returning Table-1 numbers in 14 s
+    # on 0 GPU memory — which never measured GPU work. Sample baseline VRAM here and poll
+    # peak across the monolithic execution, then (after the loop) route through the
+    # SHARED gpu_cell_runner.vram_evidence_verdict so the two paths can never drift.
+    #
+    # LOCAL-ONLY by construction: the subprocess runs on THIS host's GPUs only under the
+    # local sandbox, so nvidia-smi here can see its allocation. On runpod/docker/azure the
+    # training runs remotely / in a container — _antifab_peak_vram_gb stays None → never
+    # flagged (fail-soft). Any error in the whole block is swallowed so it can never crash
+    # run_experiment.
+    _antifab_peak_vram_gb: float | None = None
+    _antifab_vram_stop = _threading.Event()
+    _antifab_vram_thread = None
+    _antifab_vram_baseline_mib: float | None = None
+    _antifab_vram_readings: list[float] = []
+    try:
+        from backend.agents.rlm import gpu_cell_runner as _gcr_antifab
+        if (
+            _is_local_sb
+            and not _cell_route_taken
+            and _gcr_antifab._antifab_guard_enabled()
+        ):
+            # Resolve ONE physical GPU id to watch (the run's pinned card, else the
+            # first visible card) — same resolution chain the cells route uses.
+            _antifab_gpu_ids = [
+                str(g) for g in (
+                    tuple(getattr(ctx, "gpu_device_ids", ()) or ())
+                    or _gcr_antifab.discover_visible_gpus()
+                )
+            ]
+            _antifab_phys_gpu = _antifab_gpu_ids[0] if _antifab_gpu_ids else None
+            if _antifab_phys_gpu is not None:
+                _antifab_vram_baseline_mib = _gcr_antifab._sample_vram_mib(_antifab_phys_gpu)
+                _antifab_vram_thread = _threading.Thread(
+                    target=_gcr_antifab._poll_peak_vram_daemon,
+                    args=(_antifab_phys_gpu, 2.0, _antifab_vram_stop, _antifab_vram_readings),
+                    daemon=True,
+                )
+                _antifab_vram_thread.start()
+    except Exception:  # noqa: BLE001 — the antifab VRAM probe must never crash the run
+        logger.debug("run_experiment: antifab VRAM probe setup failed", exc_info=True)
+
     # Escalation loop (spec 2026-05-23 §OOM + §Capacity): on CUDA OOM OR
     # RunPod capacity exhaustion, pop the next SKU from GpuPlan.ladder_remaining,
     # persist the updated plan atomically, emit gpu_escalated, and retry.
@@ -6310,6 +6361,25 @@ def run_experiment(
     if _progress_thread is not None:
         _progress_thread.join(timeout=2)
 
+    # GAP-1: stop the antifab VRAM poller and compute the net peak (peak - baseline),
+    # mirroring the cells route's reliability requirements: a known baseline AND >= 2
+    # during-run samples (so a single zero-delta reading on a short mock run can't
+    # false-positive). Any unmet requirement → None → never flagged (fail-soft).
+    _antifab_vram_stop.set()
+    if _antifab_vram_thread is not None:
+        try:
+            _antifab_vram_thread.join(timeout=5.0)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        if len(_antifab_vram_readings) >= 2 and _antifab_vram_baseline_mib is not None:
+            _antifab_peak_mib = max(_antifab_vram_readings)
+            _antifab_peak_vram_gb = max(
+                0.0, _antifab_peak_mib - _antifab_vram_baseline_mib
+            ) / 1024.0
+    except Exception:  # noqa: BLE001
+        _antifab_peak_vram_gb = None
+
     # P2 manifest: the escalation loop has produced its final result — stamp the
     # identifiers the persist chokepoint records. run_id/env_id/commands are in
     # scope (the while-True ran ≥1 time, so run_id is bound to the last attempt).
@@ -6324,6 +6394,43 @@ def run_experiment(
     # the grid half bypass all guards).
     if _hybrid_grid_result is not None:
         result = _merge_hybrid_results(_hybrid_grid_result, result, code_path)
+
+    # GAP-1 anti-fabrication degradation (2026-06-18): a monolithic run that exited 0
+    # but produced GPU-training-claiming metrics on near-zero net VRAM cannot have
+    # trained/evaluated a real model — degrade it to a repairable failure mirroring the
+    # cells-route message. The SHARED gpu_cell_runner.vram_evidence_verdict makes the
+    # decision (guard-gate + fail-soft inside): True ONLY when the guard is on, a peak
+    # was measured (None ⇒ no GPU visible / sampling failed ⇒ never flagged), the
+    # metrics claim GPU training, AND the net peak is below the floor. A CPU-only paper
+    # (no device/model/training-metric claim) is never flagged. Whole block fail-soft.
+    if result.get("success"):
+        try:
+            _antifab_claims_gpu = _gcr_antifab.metrics_claim_gpu_training(result.get("metrics"))
+            if _gcr_antifab.vram_evidence_verdict(
+                _antifab_peak_vram_gb, claims_gpu_training=_antifab_claims_gpu
+            ):
+                _antifab_min = _gcr_antifab._antifab_min_vram_gb()
+                _antifab_msg = (
+                    f"fabrication_suspected: peak VRAM {_antifab_peak_vram_gb:.3f} GiB < "
+                    f"threshold {_antifab_min:.3f} GiB — claimed GPU training produced no "
+                    f"GPU work (a real model train/eval cannot run on near-zero VRAM)"
+                )
+                result = {
+                    **result, "success": False,
+                    "failure_class": "fabrication_suspected",
+                    "error": _antifab_msg,
+                }
+                try:
+                    _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                        "code": "fabrication_suspected", "message": _antifab_msg,
+                    })
+                except Exception:  # noqa: BLE001 — diagnostics must never break the run
+                    logger.debug("run_experiment: fabrication_suspected event emit failed")
+                logger.warning(
+                    "run_experiment[%s]: %s", getattr(ctx, "run_id", "?"), _antifab_msg,
+                )
+        except Exception:  # noqa: BLE001 — the antifab degradation must never crash the run
+            logger.debug("run_experiment: antifab VRAM degradation failed", exc_info=True)
 
     # Finalize-on-timeout (2026-06-08): a timed-out / stalled experiment must SCORE its
     # completed work, not zero it (the Adam failure: 4/5 families trained, the timeout fired
