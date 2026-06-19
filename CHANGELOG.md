@@ -17,6 +17,59 @@ version + date and start a new `[Unreleased]` block above it.
 
 ## [Unreleased]
 
+### Changed (2026-06-19 — gpt-chat-latest enabled as Foundry root + all sub-roles)
+- **gpt-chat-latest now drives the full RLM loop OAuth-free.** Empirically verified
+  (2026-06-19, live endpoint smoke): with the exact shape the `rlms` root client
+  sends (model + messages only, no token/temperature params) gpt-chat-latest returns
+  `finish_reason=stop`, `reasoning_tokens=0`, and a clean ```repl fenced block — it
+  does NOT refuse. The earlier "chat deployments REFUSE to drive the REPL loop"
+  conclusion (2026-06-18 handoff, baked into `sdar_gcp_run.sh`) was a misdiagnosed
+  HTTP 400: gpt-chat-latest is a reasoning-class model that rejects `max_tokens`
+  (needs `max_completion_tokens`) and any non-default `temperature`. That constraint
+  is already handled on every role — `_is_reasoning_model` covers `gpt-chat*` for the
+  primitive + grader/verifier transport (`OpenAILlmClient`), and the root loop
+  (`rlms` `OpenAIClient`) and executor (Agents SDK, `_non_null_or_omit`) both omit
+  those params when unset. No param-handling code change was needed; the prior
+  conclusion was simply stale.
+- `scripts/sdar_gcp_run.sh` default `AZURE_FOUNDRY_DEPLOYMENT` flipped `grok-4.3` →
+  `gpt-chat-latest` and the stale "REFUSES" comment corrected to the empirical
+  finding (override via `AZURE_FOUNDRY_DEPLOYMENT=...`).
+- `azure-foundry` root `prompt_addendum` now carries a guardrail for unvalidated
+  chat/reasoning Foundry deployments (grok/kimi/gpt-chat-latest): autonomous-agent
+  posture (anti-refusal), ```repl fence discipline, and the `FINAL_VAR("var")` call
+  contract — gpt-chat-latest emitted `FINAL_VAR = report` (assignment, never
+  terminates) in a smoke, so the call form is reinforced. Pure additive guidance;
+  brace-free so `build_system_prompt`'s brace-escape leaves it intact. Resolution +
+  stamp verified: root + executor + grader + verifier all stamp
+  `azure-foundry:gpt-chat-latest`; advisory `role_model_fidelity` warnings still fire
+  (gpt-chat-latest is not paper-validated). `models.py`, `system_prompt.py` (no code
+  change — addendum data only).
+
+### Added (2026-06-18 — Kimi-K2.6 Foundry switch + honest deployment stamp)
+- `kimi`/`kimi-k2.6`/`kimi-k2-6` aliases route to the `azure-foundry` provider for
+  the root (`--model kimi-k2.6`) and every sub-role, so Kimi-K2.6 deployed to the
+  existing Foundry endpoint is a one-variable swap (`AZURE_FOUNDRY_DEPLOYMENT=Kimi-K2.6`)
+  off grok — shared endpoint+key, OAuth-free. Distinct from the OpenRouter
+  `kimi-k2.5` registry key (`backend/agents/rlm/models.py`, `role_models.py`).
+- `RoleSpec.stamp` resolves the live `AZURE_FOUNDRY_DEPLOYMENT` so
+  `final_report.models` distinguishes `azure-foundry:Kimi-K2.6` from
+  `azure-foundry:grok-4.3` instead of a shared `<deployment>` placeholder; the grader
+  stamp prefers its explicit RoleSpec like executor/verifier (`run.py`). Display-only —
+  the build path is unchanged. Tests in `tests/agents/rlm/test_role_models.py`.
+
+### Changed (2026-06-18 — SDAR/GCP run: prep off the GPU, stop billing on terminal)
+- `scripts/gcp_sdar_preflight.sh` splits the run by machine type: `prepare` flips the
+  VM to a cheap CPU type (`e2-standard-16`) and warms datasets/env WITHOUT
+  `--require-gpu` (no A100 billing during setup); `launch` flips to `a2-highgpu-8g`
+  only for training. The [GREEN] GPU-readiness gate is preserved. Overridable via
+  `OPENRESEARCH_GCP_{CPU,GPU}_MACHINE_TYPE`.
+- `scripts/sdar_gcp_run.sh` self-stops the VM (`sudo shutdown -h now`) on ANY terminal
+  state (success/error/outer-wall-timeout) to halt GPU billing; the boot disk persists
+  for debug. Opt out with `OPENRESEARCH_SDAR_NO_AUTOSTOP=1`. An outer `timeout` backstops
+  a wedged orchestrator past `--max-wall-clock`. The root token is the neutral `foundry`
+  alias so `AZURE_FOUNDRY_DEPLOYMENT` is the single model switch; optional GCS report push
+  via `OPENRESEARCH_SDAR_REPORT_GCS`.
+
 ### Added (2026-06-17 — SDAR/GCP asset preflight and VM-safe preparation)
 - `backend/requirements-sdar.txt` declares the heavy SDAR-only runtime stack
   (`transformers>=4.51`, `accelerate`, `datasets`, retrieval libs, `alfworld`,

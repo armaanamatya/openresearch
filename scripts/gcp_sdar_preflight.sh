@@ -11,11 +11,12 @@
 #   scripts/gcp_sdar_preflight.sh monitor
 #   scripts/gcp_sdar_preflight.sh stop
 #
-# `prepare` starts the VM, syncs the repo, installs SDAR deps, warms datasets and
-# model caches, provisions ALFWorld/WebShop/Search-QA, then leaves the VM running
-# for an immediate run. `launch` starts the reproduction detached on the VM (gate
-# on a GREEN prepare first). Use `scripts/cancel_gcp_sdar_run.sh --stop-vm` or
-# `stop` when done.
+# `prepare` runs on the cheap CPU machine type (no GPU billing): flips to
+# CPU_MACHINE_TYPE, syncs the repo, installs SDAR deps, warms datasets/model caches,
+# provisions ALFWorld/WebShop/Search-QA, then leaves the VM ready. `launch` flips
+# to GPU_MACHINE_TYPE (attaches the A100s), verifies env/GPU readiness, then starts
+# the reproduction detached (gate on a GREEN prepare first). Use
+# `scripts/cancel_gcp_sdar_run.sh --stop-vm` or `stop` when done.
 set -euo pipefail
 
 ACTION="${1:-check}"
@@ -27,6 +28,8 @@ CLOUDSDK_CONFIG="${CLOUDSDK_CONFIG:-/home/abheekp/.config/gcloud}"
 REMOTE_USER="${OPENRESEARCH_GCP_SSH_USER:-abheekp}"
 REQUIRE_SPOT="${OPENRESEARCH_REQUIRE_SPOT:-true}"
 MIN_GPUS="${OPENRESEARCH_SDAR_MIN_GPUS:-8}"
+CPU_MACHINE_TYPE="${OPENRESEARCH_GCP_CPU_MACHINE_TYPE:-e2-standard-16}"
+GPU_MACHINE_TYPE="${OPENRESEARCH_GCP_GPU_MACHINE_TYPE:-a2-highgpu-8g}"
 
 export CLOUDSDK_CONFIG
 
@@ -75,12 +78,53 @@ ensure_spot() {
   fi
 }
 
+current_machine_type() {
+  "${gcloud_base[@]}" compute instances describe "$INSTANCE" \
+    --zone "$ZONE" --format='value(machineType.basename())' 2>/dev/null || true
+}
+
+# ensure_machine_type <type>: if the VM is already on <type>, return immediately.
+# Otherwise stop the VM (if RUNNING) and wait for TERMINATED, then set-machine-type.
+# The machine type can only be changed while the VM is stopped.
+ensure_machine_type() {
+  local want="$1"
+  local cur
+  cur="$(current_machine_type)"
+  if [[ "$cur" == "$want" ]]; then
+    echo "[machine-type] already $want — no change"
+    return 0
+  fi
+  echo "[machine-type] current=$cur want=$want"
+  local s
+  s="$(status_only 2>/dev/null || true)"
+  if [[ "$s" == "RUNNING" ]]; then
+    echo "[machine-type] stopping VM to flip machine type..."
+    "${gcloud_base[@]}" compute instances stop "$INSTANCE" --zone "$ZONE"
+    local deadline
+    deadline=$((SECONDS + 300))
+    while (( SECONDS < deadline )); do
+      s="$(status_only 2>/dev/null || true)"
+      if [[ "$s" == "TERMINATED" ]]; then break; fi
+      sleep 10
+    done
+    if [[ "$s" != "TERMINATED" ]]; then
+      echo "ERROR: VM did not reach TERMINATED within 300s; cannot flip machine type" >&2
+      exit 1
+    fi
+  fi
+  echo "[machine-type] setting machine type to $want..."
+  "${gcloud_base[@]}" compute instances set-machine-type "$INSTANCE" \
+    --zone "$ZONE" --machine-type "$want"
+  echo "[machine-type] done — now $want"
+}
+
 start_vm() {
   local s
   ensure_spot
   s="$(status_only 2>/dev/null || true)"
   if [[ "$s" == "RUNNING" ]]; then
     echo "VM already RUNNING"
+    wait_for_ssh
     return
   fi
   if [[ "$s" == "TERMINATED" ]]; then
@@ -92,6 +136,7 @@ start_vm() {
     exit 1
   fi
   wait_for_running
+  wait_for_ssh
 }
 
 wait_for_running() {
@@ -119,6 +164,27 @@ wait_for_running() {
   done
   echo "timed out waiting for $INSTANCE to become RUNNING" >&2
   exit 1
+}
+
+# wait_for_ssh: RUNNING != sshd-ready on a cold boot. The first SSH after a fresh
+# start often fails "connect to host … port 22: Connection refused" (the
+# 2026-06-19 prepare failure, and the launch gate's documented race). Poll a
+# trivial SSH until it answers so the first REAL command (sync / GPU gate) does
+# not abort spuriously — critical on `launch`, where the VM is already on the
+# billed a2 GPU by the time the gate SSH runs. Bounded + fail-soft: on timeout it
+# warns and proceeds, letting the real command surface any genuine outage.
+wait_for_ssh() {
+  local deadline
+  deadline=$((SECONDS + ${OPENRESEARCH_GCP_SSH_TIMEOUT_S:-180}))
+  while (( SECONDS < deadline )); do
+    if "${ssh_base[@]}" "true" >/dev/null 2>&1; then
+      echo "sshd is ready"
+      return 0
+    fi
+    sleep 10
+  done
+  echo "WARNING: sshd not confirmed ready within ${OPENRESEARCH_GCP_SSH_TIMEOUT_S:-180}s; proceeding anyway" >&2
+  return 0
 }
 
 stop_vm() {
@@ -162,6 +228,7 @@ remote_check() {
 }
 
 remote_prepare() {
+  ensure_machine_type "$CPU_MACHINE_TYPE"
   start_vm
   sync_repo
   # System build prerequisites for source-built Python deps. Ubuntu 24.04 ships
@@ -183,7 +250,7 @@ remote_prepare() {
   # dedicated venv. `--seed` gives the uv venv pip/setuptools (uv omits them by
   # default). `sudo rm` clears any root-owned files a prior `sudo pip` left behind.
   # Idempotent: an existing 3.12 venv is reused as-is.
-  "${ssh_base[@]}" "export PATH=\"\$HOME/.local/bin:\$PATH\" && cd $REMOTE_DIR && if [ ! -x .venv/bin/python ] || ! .venv/bin/python --version 2>&1 | grep -q '3\\.12'; then sudo rm -rf .venv && uv venv --python 3.12 --seed .venv; fi && .venv/bin/python -m pip install -r backend/requirements.txt && .venv/bin/python scripts/sdar_gcp_assets.py --prepare --check --require-gpu --min-gpus $MIN_GPUS"
+  "${ssh_base[@]}" "export PATH=\"\$HOME/.local/bin:\$PATH\" && cd $REMOTE_DIR && if [ ! -x .venv/bin/python ] || ! .venv/bin/python --version 2>&1 | grep -q '3\\.12'; then sudo rm -rf .venv && uv venv --python 3.12 --seed .venv; fi && .venv/bin/python -m pip install -r backend/requirements.txt && .venv/bin/python scripts/sdar_gcp_assets.py --prepare --check"
 }
 
 assert_running() {
@@ -202,6 +269,7 @@ monitor_run() {
 }
 
 launch_run() {
+  ensure_machine_type "$GPU_MACHINE_TYPE"
   start_vm
   # GPU-COST GATE: never start a GPU run until env + data + GPUs are verified
   # installed. Re-runs the asset readiness check (datasets, model snapshots,
@@ -221,7 +289,7 @@ launch_run() {
   # Build a whitelist of run-shaping env vars to forward to the remote side.
   # printf %q produces shell-safe quoting that survives one layer of SSH word-splitting.
   REMOTE_ENV=""
-  for v in AZURE_FOUNDRY_DEPLOYMENT OPENRESEARCH_SDAR_PROJECT_ID OPENRESEARCH_GRADER_SAMPLES OPENRESEARCH_SDAR_MODELS; do
+  for v in AZURE_FOUNDRY_DEPLOYMENT OPENRESEARCH_SDAR_PROJECT_ID OPENRESEARCH_GRADER_SAMPLES OPENRESEARCH_SDAR_MODELS OPENRESEARCH_SDAR_ROOT OPENRESEARCH_SDAR_NO_AUTOSTOP OPENRESEARCH_SDAR_OUTER_WALL_S OPENRESEARCH_SDAR_REPORT_GCS OPENRESEARCH_EVIDENCE_GATE; do
     [ -n "${!v:-}" ] && REMOTE_ENV+="$v=$(printf %q "${!v}") "
   done
   # Refuse to double-launch the same paper; require a GREEN-prepared env file;

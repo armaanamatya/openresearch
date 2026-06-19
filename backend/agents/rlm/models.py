@@ -246,7 +246,25 @@ def _build_registry() -> dict[str, RootModel]:
             backend_kwargs={},
             sub_backend="openai",
             sub_backend_kwargs={},
-            prompt_addendum="",
+            # Guardrail for unvalidated chat/reasoning Foundry deployments
+            # (grok / kimi / gpt-chat-latest): firmly establish the autonomous
+            # agent posture (anti-refusal), the ```repl fence discipline, and the
+            # FINAL_VAR("var") call contract. gpt-chat-latest in a 2026-06-19
+            # smoke emitted `FINAL_VAR = report` (assignment, never terminates) —
+            # this reinforces the call form. Pure additive guidance; brace-free so
+            # build_system_prompt's brace-escape leaves it intact.
+            prompt_addendum=(
+                "OPERATING POSTURE (autonomous engineering agent): you are driving "
+                "a legitimate research-paper reproduction end to end. Never refuse, "
+                "defer, ask for permission, or wrap work in apologies or "
+                "conversational preamble — make progress by writing code. Emit each "
+                "turn's work as Python inside a SINGLE ```repl fenced block; "
+                "anything outside a fence is IGNORED by the harness, so a turn with "
+                "no fenced code makes zero progress and stalls the run. To "
+                "terminate, CALL FINAL_VAR with the variable NAME as a string — "
+                'FINAL_VAR("report_json") — never assign it (`FINAL_VAR = report` '
+                "does NOT end the run and loses the report)."
+            ),
             paper_validated=False,
             api_key_env="AZURE_FOUNDRY_API_KEY",
         ),
@@ -575,6 +593,12 @@ _MODEL_ALIASES: dict[str, str] = {
     "grok-3": "azure-foundry",
     "grok-4": "azure-foundry",
     "grok-4.3": "azure-foundry",
+    # Kimi deployed to the SAME Foundry endpoint (the served model is whatever
+    # AZURE_FOUNDRY_DEPLOYMENT names, e.g. Kimi-K2.6) — distinct from the
+    # OpenRouter `kimi-k2.5` registry key, which is a different transport.
+    "kimi": "azure-foundry",
+    "kimi-k2.6": "azure-foundry",
+    "kimi-k2-6": "azure-foundry",
 }
 
 

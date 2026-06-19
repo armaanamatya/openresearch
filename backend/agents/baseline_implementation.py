@@ -526,6 +526,33 @@ _NO_STUB_BLOCK = (
     "actual model + data.\n"
 )
 
+_ENGINEERING_STANDARDS_BLOCK = (
+    "\n\nENGINEERING STANDARDS — implement like an elite ML engineer:\n"
+    "Correctness and faithfulness to the paper come before speed. Hard habits:\n"
+    "  1. FAITHFUL ALGORITHM. Implement the paper's ACTUAL method — its exact "
+    "equations, loss terms, gates, and hyperparameter VALUES (copy the symbols and "
+    "numbers from the paper). Do not approximate the core contribution with a "
+    "generic proxy; the leaf scorer inspects the algorithm, not just that code ran.\n"
+    "  2. USE THE ECOSYSTEM IDIOMATICALLY. Reach for mature libraries (transformers, "
+    "datasets, accelerate, torch) instead of hand-rolling what they provide; use "
+    "mixed precision (bf16), gradient checkpointing/accumulation, and a proper "
+    "optimizer+scheduler. Follow the paper's described configs rather than inventing.\n"
+    "  3. DETERMINISM + RIGOR. Seed torch/numpy/random; load the REAL train and eval "
+    "splits with NO leakage between them; mask and reduce losses correctly; validate "
+    "tensor shapes/dtypes/devices at boundaries and fail fast with an explicit "
+    "message (e.g. f\"expected (B,T,V) got {x.shape}\").\n"
+    "  4. MEASURED METRICS ONLY. Compute every reported number from real model "
+    "outputs on real eval data; never hardcode or echo a paper table value. The "
+    "headline metrics key must be the paper's metric (e.g. success_rate / accuracy), "
+    "never a placeholder like total_length or chunk_count.\n"
+    "  5. SELF-VERIFY BEFORE SCALING (the habit that separates elite engineers). Run "
+    "ONE tiny REAL step first and ASSERT it truly worked: the real pretrained weights "
+    "loaded, the loss is finite and CHANGES across two steps, and — on a GPU run — "
+    "torch.cuda.max_memory_allocated() > 0. If any assert fails your implementation is "
+    "a stub: fix it before scaling. A run that 'succeeds' using ~0 GPU memory or "
+    "emitting placeholder metrics is a stub and scores ~0.\n"
+)
+
 _POD_SETUP_BLOCK = (
     "\n\nRUNPOD SANDBOX — pod env setup (when sandbox=runpod):\n"
     "On RunPod the pod boots from a GENERIC pytorch image (typically "
@@ -2253,6 +2280,7 @@ def _compute_constraint_guidance(
 
     Prompt assembly order:
     1. _NO_STUB_BLOCK
+    1b. _ENGINEERING_STANDARDS_BLOCK (elite-ML-engineer craft + self-verification rail)
     2. _RUNTIME_DETECTION_BLOCK
     3. _POD_SETUP_BLOCK (only when sandbox=runpod)
     4. _DATASET_SETUP_BLOCK (always-on)
@@ -2307,7 +2335,9 @@ def _compute_constraint_guidance(
     else:  # auto
         _inject_budget = _is_cost_bearing
 
-    guidance = _NO_STUB_BLOCK + _RUNTIME_DETECTION_BLOCK + _EAGER_METRICS_BLOCK
+    guidance = (
+        _NO_STUB_BLOCK + _ENGINEERING_STANDARDS_BLOCK + _RUNTIME_DETECTION_BLOCK + _EAGER_METRICS_BLOCK
+    )
     # comp 3c: memory discipline is always-on (the fp32 full-vocab logprob blowup
     # OOMs regardless of backend). comp 3a/3b (budget brief + cell contract) ride
     # the harness-owned cell path only.

@@ -29,10 +29,25 @@ set -a
 set +a
 
 PROJECT_ID="${OPENRESEARCH_SDAR_PROJECT_ID:-sdar_gcp_20260618}"
-# Default to grok-4.3 as root+executor (the PROVEN RLM root — chat-only
-# deployments like gpt-chat-latest REFUSE to drive the REPL loop; see the
-# 2026-06-18 handoff). Override the deployment via AZURE_FOUNDRY_DEPLOYMENT.
-export AZURE_FOUNDRY_DEPLOYMENT="${AZURE_FOUNDRY_DEPLOYMENT:-grok-4.3}"
+# Default to gpt-chat-latest as root + every sub-role (OAuth-free). Empirically
+# verified 2026-06-19 to drive the REPL loop cleanly (emits ```repl fences,
+# finish_reason=stop, reasoning_tokens=0, no refusal). The earlier "chat
+# deployments REFUSE to drive the loop" conclusion was a misdiagnosed max_tokens
+# 400: gpt-chat-latest is a reasoning-class model requiring max_completion_tokens
+# + default temperature. That is now handled on every role — _is_reasoning_model
+# (primitives + grader/verifier transport) and null-param omission (rlms root
+# loop + executor Agents SDK both omit max_tokens/temperature when unset).
+# Override the deployment via AZURE_FOUNDRY_DEPLOYMENT (e.g. =grok-4.3, =Kimi-K2.6).
+export AZURE_FOUNDRY_DEPLOYMENT="${AZURE_FOUNDRY_DEPLOYMENT:-gpt-chat-latest}"
+# Root token for --model: "foundry" is the neutral alias; the actual model is
+# whatever AZURE_FOUNDRY_DEPLOYMENT names. Override to switch models without
+# editing this script (e.g. OPENRESEARCH_SDAR_ROOT=grok or =kimi-k2.5).
+export OPENRESEARCH_SDAR_ROOT="${OPENRESEARCH_SDAR_ROOT:-foundry}"
+# Self-stop controls: set NO_AUTOSTOP=1 to leave the VM running for debug.
+export OPENRESEARCH_SDAR_NO_AUTOSTOP="${OPENRESEARCH_SDAR_NO_AUTOSTOP:-0}"
+# Outer wall-clock backstop (seconds): kills the reproduce process if the
+# orchestrator itself wedges past the harness's own --max-wall-clock 86400.
+export OPENRESEARCH_SDAR_OUTER_WALL_S="${OPENRESEARCH_SDAR_OUTER_WALL_S:-90000}"
 export OPENRESEARCH_GRADER_SAMPLES="${OPENRESEARCH_GRADER_SAMPLES:-3}"
 export OPENRESEARCH_BASELINE_EXTRA_GUIDANCE="${OPENRESEARCH_BASELINE_EXTRA_GUIDANCE:-$(cat <<'SDAR_GUIDANCE_EOF'
 REAL REPRODUCTION - NO FABRICATION. The harness now DETECTS and REJECTS stub models, random
@@ -70,17 +85,59 @@ baselines/retrieval/sweeps. Do NOT fake any result to increase coverage.
 SDAR_GUIDANCE_EOF
 )}"
 
-# Per-role models. Default: pure grok (OAuth-free). To put a reliable ChatGPT/
-# gpt-5 grader+verifier behind the grok agent (more trustworthy grading), set —
+# Per-role models. Default: pure foundry (OAuth-free, matches the root alias).
+# "foundry" is the neutral token; the actual model is AZURE_FOUNDRY_DEPLOYMENT.
+# To put a reliable ChatGPT/gpt-5 grader+verifier behind the foundry agent, set —
 # REQUIRES a LIVE OPENAI_API_KEY in .env (the bundled one is currently dead):
-#   OPENRESEARCH_SDAR_MODELS=executor=grok,grader=gpt-5,verifier=gpt-5
-export OPENRESEARCH_SDAR_MODELS="${OPENRESEARCH_SDAR_MODELS:-executor=grok,grader=grok,verifier=grok}"
+#   OPENRESEARCH_SDAR_MODELS=executor=foundry,grader=gpt-5,verifier=gpt-5
+export OPENRESEARCH_SDAR_MODELS="${OPENRESEARCH_SDAR_MODELS:-executor=foundry,grader=foundry,verifier=foundry}"
 
-echo "[sdar_gcp_run] project_id=$PROJECT_ID deployment=$AZURE_FOUNDRY_DEPLOYMENT models=$OPENRESEARCH_SDAR_MODELS grader_samples=$OPENRESEARCH_GRADER_SAMPLES"
-exec env -u ANTHROPIC_API_KEY .venv/bin/python -m backend.cli reproduce 2605.15155 \
-  --mode rlm --sandbox local --model grok \
-  --models "$OPENRESEARCH_SDAR_MODELS" \
-  --paper-hint 2605.15155 \
-  --gpu-mode max --gpu-parallelism multi --vram-gb 40 \
-  --no-force-single-gpu --max-wall-clock 86400 \
-  --project-id "$PROJECT_ID"
+echo "[sdar_gcp_run] project_id=$PROJECT_ID root=$OPENRESEARCH_SDAR_ROOT deployment=$AZURE_FOUNDRY_DEPLOYMENT models=$OPENRESEARCH_SDAR_MODELS grader_samples=$OPENRESEARCH_GRADER_SAMPLES"
+
+# self_stop <reason>: best-effort GCS upload, then halt the VM to stop GPU billing.
+# The boot disk (with all run artifacts) persists after shutdown; flip back to the
+# CPU machine type and start the VM for interactive debug without GPU charges.
+# Set OPENRESEARCH_SDAR_NO_AUTOSTOP=1 to skip shutdown (leave VM running).
+self_stop() {
+  local reason="$1"
+  echo "[sdar_gcp_run] self_stop triggered: $reason"
+  if [[ "${OPENRESEARCH_SDAR_NO_AUTOSTOP:-0}" == "1" ]]; then
+    echo "[sdar_gcp_run] autostop disabled (OPENRESEARCH_SDAR_NO_AUTOSTOP=1); leaving VM running for debug"
+    return 0
+  fi
+  if [[ -n "${OPENRESEARCH_SDAR_REPORT_GCS:-}" ]]; then
+    echo "[sdar_gcp_run] uploading run artifacts to $OPENRESEARCH_SDAR_REPORT_GCS/$PROJECT_ID/ ..."
+    gsutil -m cp \
+      "runs/$PROJECT_ID/final_report.json" \
+      "runs/$PROJECT_ID/final_report.md" \
+      "runs/sdar_gcp_run.out" \
+      "$OPENRESEARCH_SDAR_REPORT_GCS/$PROJECT_ID/" 2>/dev/null || true
+  fi
+  echo "[sdar_gcp_run] halting GPU billing via shutdown; boot disk persists; flip to CPU machine type to debug without GPU charges"
+  sync
+  sudo shutdown -h now || sudo poweroff || true
+}
+
+# Run under timeout as an outer backstop in case the orchestrator wedges past its
+# own --max-wall-clock limit. set +e so the non-zero rc (or rc=124 on timeout)
+# does not abort the script before self_stop runs.
+set +e
+timeout --signal=TERM --kill-after=180 "$OPENRESEARCH_SDAR_OUTER_WALL_S" \
+  env -u ANTHROPIC_API_KEY .venv/bin/python -m backend.cli reproduce 2605.15155 \
+    --mode rlm --sandbox local --model "$OPENRESEARCH_SDAR_ROOT" \
+    --models "$OPENRESEARCH_SDAR_MODELS" \
+    --paper-hint 2605.15155 \
+    --gpu-mode max --gpu-parallelism multi --vram-gb 40 \
+    --no-force-single-gpu --max-wall-clock 86400 \
+    --project-id "$PROJECT_ID"
+rc=$?
+set -e
+
+if [ "$rc" -eq 124 ]; then
+  self_stop "outer_wall_timeout rc=124"
+elif [ "$rc" -ne 0 ]; then
+  self_stop "error rc=$rc"
+else
+  self_stop "success rc=0"
+fi
+exit "$rc"

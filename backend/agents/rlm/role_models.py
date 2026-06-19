@@ -131,6 +131,11 @@ _ROLE_VOCAB: dict[str, tuple[str, str | None]] = {
     "foundry": (PROVIDER_AZURE_FOUNDRY, None),
     "grok": (PROVIDER_AZURE_FOUNDRY, None),
     "grok-4.3": (PROVIDER_AZURE_FOUNDRY, None),
+    # Kimi on the same Foundry endpoint (served model = AZURE_FOUNDRY_DEPLOYMENT,
+    # e.g. Kimi-K2.6); a real sub-role provider so executor/grader/verifier=kimi work.
+    "kimi": (PROVIDER_AZURE_FOUNDRY, None),
+    "kimi-k2.6": (PROVIDER_AZURE_FOUNDRY, None),
+    "kimi-k2-6": (PROVIDER_AZURE_FOUNDRY, None),
 }
 
 
@@ -158,8 +163,29 @@ class RoleSpec:
 
     @property
     def stamp(self) -> str:
-        """Compact ``provider:model`` identifier for ``final_report.models``."""
-        return f"{self.provider}:{self.model or '<deployment>'}"
+        """Compact ``provider:model`` identifier for ``final_report.models``.
+
+        For the Azure Foundry provider the concrete model is ``None`` by design
+        (the served model is whatever ``AZURE_FOUNDRY_DEPLOYMENT`` names). Resolve
+        that deployment here so a grok run and a Kimi run stamp DISTINCTLY
+        (``azure-foundry:grok-4.3`` vs ``azure-foundry:Kimi-K2.6``) instead of a
+        shared ``<deployment>`` placeholder — honest provenance for the report +
+        leaderboard. Display-only: the build path still reads the deployment from
+        env, so resolution here changes nothing about which model is called.
+        Fail-soft — falls back to the placeholder if resolution raises.
+        """
+        model = self.model
+        if model is None and self.provider == PROVIDER_AZURE_FOUNDRY:
+            try:
+                from backend.agents.runtime.foundry_endpoint import (
+                    resolve_foundry_credentials,
+                )
+
+                _base, deployment, _key = resolve_foundry_credentials()
+                model = deployment or None
+            except Exception:  # noqa: BLE001 — stamping must never break a run
+                model = None
+        return f"{self.provider}:{model or '<deployment>'}"
 
 
 @dataclass(frozen=True)

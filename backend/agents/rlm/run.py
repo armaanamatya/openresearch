@@ -46,6 +46,7 @@ from backend.agents.rlm.checkpoint import IterationCheckpointer
 from backend.agents.rlm.context import RunContext
 from backend.agents.rlm.repl_snapshot import ReplSnapshotWriter
 from backend.agents.rlm.models import (
+    AZURE_FOUNDRY_KEY,
     RootModel,
     register_featherless_context_limits,
     resolve_root_model,
@@ -281,7 +282,23 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
             )
         from backend.services.context.workspace.tools.openai_client import OpenAILlmClient
         model = sub_bk.get("model_name") or bk.get("model_name", "")
-        return OpenAILlmClient(model=model, api_key=bk["api_key"], base_url=bk["base_url"]), model
+        # Reasoning models served via Azure Foundry (e.g. Kimi-K2.6) emit
+        # reasoning_content BEFORE content; a 4096 cap shared with the thinking
+        # truncates a large rubric/plan into unparseable output (observed
+        # 2026-06-18: generate_rubric_tree failed all 3 attempts → rubric-less
+        # run). Give the Foundry primitive client ample headroom (a cap only —
+        # unused tokens cost nothing). Featherless / other openai+base_url roots
+        # keep the 4096 default → byte-identical.
+        _client_max_tokens = 32768 if root_model.key == AZURE_FOUNDRY_KEY else 4096
+        return (
+            OpenAILlmClient(
+                model=model,
+                api_key=bk["api_key"],
+                base_url=bk["base_url"],
+                max_tokens=_client_max_tokens,
+            ),
+            model,
+        )
 
     # 3. OpenRouter — also OpenAI-compatible; api_key from backend_kwargs (injected by resolve_root_model)
     if backend == "openrouter":
@@ -3082,6 +3099,7 @@ def _finalize(
     _role_selection = getattr(ctx, "role_selection", None)
     _sel_executor = getattr(_role_selection, "executor", None)
     _sel_verifier = getattr(_role_selection, "verifier", None)
+    _sel_grader = getattr(_role_selection, "grader", None)
     report.models = {
         "planner": llm_model,
         "executor": (
@@ -3094,7 +3112,10 @@ def _finalize(
             if _sel_verifier is not None
             else llm_model
         ),
-        "grader": _grader_stamp,
+        # Prefer the explicit grader RoleSpec stamp (mirrors executor/verifier) so
+        # an explicit foundry grader names its real deployment; fall back to the
+        # env/llm_model-derived stamp when the grader inherits.
+        "grader": (_sel_grader.stamp if _sel_grader is not None else _grader_stamp),
     }
     started_at: str | None = None
     demo_status_path = project_dir / "demo_status.json"

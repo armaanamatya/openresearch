@@ -67,3 +67,51 @@ def test_multiple_blocks_in_order():
 
 def test_pure_prose_returns_empty():
     assert parsing.find_code_blocks("No code here, just prose about the paper.") == []
+
+
+# The exact iteration responses from the dead Kimi-K2.6 run (sdar_gcp_kimi_20260618):
+# Kimi (Moonshot) routes its REPL code through native tool-call tokens, not a fence,
+# so the code lives in the JSON `code` arg of a `functions.repl` call.
+_KIMI_ITER1 = (
+    "<|tool_calls_section_begin|><|tool_call_begin|>functions.repl:0"
+    '<|tool_call_argument_begin|>{"code": "check_user_messages()\\n"}'
+    "<|tool_call_end|><|tool_calls_section_end|>"
+)
+_KIMI_ITER2 = (
+    "<|tool_call_begin|>functions.repl:1<|tool_call_argument_begin|>"
+    '{"code": "paper_text = context[\\"paper_text\\"]\\nprint(len(paper_text))"}'
+    "<|tool_call_end|>"
+)
+
+
+def test_extracts_kimi_tool_call_code_regression():
+    blocks = core_rlm.find_code_blocks(_KIMI_ITER1)
+    assert blocks == ["check_user_messages()"]
+    blocks2 = core_rlm.find_code_blocks(_KIMI_ITER2)
+    assert len(blocks2) == 1
+    assert blocks2[0].startswith('paper_text = context["paper_text"]')
+
+
+def test_non_repl_tool_call_is_ignored():
+    # Only the repl/code tool carries executable REPL code; a different tool name
+    # must not be mis-executed.
+    text = (
+        "<|tool_call_begin|>functions.search<|tool_call_argument_begin|>"
+        '{"query": "x"}<|tool_call_end|>'
+    )
+    assert parsing.find_code_blocks(text) == []
+
+
+def test_malformed_tool_call_arg_is_failsoft():
+    # A tool call whose argument is not valid JSON / lacks `code` is skipped, never raises.
+    text = (
+        "<|tool_call_begin|>functions.repl:0<|tool_call_argument_begin|>"
+        "not json at all<|tool_call_end|>"
+    )
+    assert parsing.find_code_blocks(text) == []
+
+
+def test_bare_json_with_code_key_is_not_a_tool_call():
+    # A `{"code": ...}` in plain prose (no tool-call tokens) must NOT be executed —
+    # the special-token delimiters are required.
+    assert parsing.find_code_blocks('the dict {"code": "danger()"} appears in prose') == []
