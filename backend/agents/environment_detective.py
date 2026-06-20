@@ -93,6 +93,10 @@ def run_offline(
         python_version, pip_packages, gpu_mode=gpu_mode, sandbox_mode=sandbox_mode,
     )
 
+    # Validate the FROM base and normalize hallucinated/unknown bases before use.
+    # Fail-soft: any exception leaves the Dockerfile unchanged.
+    dockerfile = _normalize_dockerfile_from(dockerfile)
+
     spec = EnvironmentSpec(
         dockerfile=dockerfile,
         python_version=python_version,
@@ -477,6 +481,81 @@ def validate_from_base(
         ),
         suggested_image=fallback_base,
     )
+
+
+def _normalize_dockerfile_from(dockerfile: str) -> str:
+    """Apply validate_from_base and normalize the FROM line if needed.
+
+    Rules:
+    - Malformed / missing FROM (ok=False): replace with a minimal fallback
+      Dockerfile whose first line is ``FROM <fallback_base>``, preserving the
+      remainder of the original.
+    - Unknown / hallucinated base (ok=True, suggested_image set, not devel hint
+      only): swap the FROM line's image token to the fallback; leave everything
+      else untouched.
+    - Known-good base: return unchanged.
+    - Devel hint: log only; no structural change (advisory).
+    - Any exception: return the original unchanged (fail-soft).
+    """
+    try:
+        result = validate_from_base(dockerfile)
+        if not result.ok:
+            # Malformed or missing FROM — replace the entire FROM line with fallback.
+            fallback = result.suggested_image or _RUNPOD_PYTORCH_BASE
+            logger.warning(
+                "run_offline: Dockerfile has no valid FROM line; "
+                "replacing with fallback base %r",
+                fallback,
+            )
+            # Prepend the fallback FROM, dropping any existing broken FROM line.
+            lines = dockerfile.splitlines(keepends=True)
+            cleaned = [
+                ln for ln in lines
+                if not ln.strip().upper().startswith("FROM")
+            ]
+            return f"FROM {fallback}\n" + "".join(cleaned)
+
+        if result.suggested_image and not result.devel_hint:
+            # Unknown / hallucinated base — swap the image token only.
+            logger.warning(
+                "run_offline: FROM base %r not recognised; "
+                "normalising to configured fallback %r",
+                result.image,
+                result.suggested_image,
+            )
+            # Replace the first FROM line's image token in-place.
+            new_lines = []
+            replaced = False
+            for line in dockerfile.splitlines(keepends=True):
+                stripped = line.strip()
+                if not replaced and stripped.upper().startswith("FROM "):
+                    parts = stripped.split()
+                    if len(parts) >= 2:
+                        # Preserve the rest of the FROM (e.g. AS alias).
+                        suffix = " ".join(parts[2:])
+                        new_from = f"FROM {result.suggested_image}"
+                        if suffix:
+                            new_from += f" {suffix}"
+                        # Preserve original line ending.
+                        ending = "\n" if line.endswith("\n") else ""
+                        new_lines.append(new_from + ending)
+                        replaced = True
+                        continue
+                new_lines.append(line)
+            return "".join(new_lines)
+
+        if result.devel_hint and result.warning:
+            # Advisory only — log but do not modify the Dockerfile.
+            logger.warning("run_offline: devel hint: %s", result.warning)
+
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "run_offline: validate_from_base raised unexpectedly; "
+            "leaving Dockerfile unchanged",
+            exc_info=True,
+        )
+
+    return dockerfile
 
 
 def _generate_dockerfile(
