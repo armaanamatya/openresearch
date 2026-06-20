@@ -25,6 +25,7 @@ from backend.agents.rlm.zero_metrics_detection import (
     normalize_metric_values,
     zero_metrics_guard_enabled,
     zero_metrics_repair_message,
+    zero_metrics_should_veto,
 )
 
 
@@ -535,3 +536,48 @@ def test_single_nonzero_value_not_flagged_as_constant():
 def test_single_zero_value_fires_via_all_zero_branch():
     # A single 0.0 IS suspect — caught by the all-zero branch (not the constant one).
     assert looks_like_zero_metrics({"accuracy": 0.0}) is True
+
+
+# ---------------------------------------------------------------------------
+# zero_metrics_should_veto — the composed three-part decision (P0.2 wire)
+# ---------------------------------------------------------------------------
+
+
+def test_should_veto_fires_on_zero_gpu_no_provenance(monkeypatch):
+    # The SDAR v6 shape: all-zero result, real GPU claim, no provenance manifest.
+    monkeypatch.setenv("OPENRESEARCH_ZERO_METRICS_GUARD", "1")
+    assert zero_metrics_should_veto(
+        {"loss": 0.0, "reward": 0.0}, gpu_claim=True, provenance_present=False
+    ) is True
+
+
+def test_should_veto_not_when_provenance_present(monkeypatch):
+    # A real failing baseline that scored 0 emits provenance — never vetoed.
+    monkeypatch.setenv("OPENRESEARCH_ZERO_METRICS_GUARD", "1")
+    assert zero_metrics_should_veto(
+        {"loss": 0.0, "reward": 0.0}, gpu_claim=True, provenance_present=True
+    ) is False
+
+
+def test_should_veto_not_when_no_gpu_claim(monkeypatch):
+    # No GPU claim → cannot be the "ran on GPU but wrote zeros" fabrication.
+    monkeypatch.setenv("OPENRESEARCH_ZERO_METRICS_GUARD", "1")
+    assert zero_metrics_should_veto(
+        {"loss": 0.0, "reward": 0.0}, gpu_claim=False, provenance_present=False
+    ) is False
+
+
+def test_should_veto_not_when_flag_off(monkeypatch):
+    # Default-OFF: byte-identical to baseline (no veto).
+    monkeypatch.delenv("OPENRESEARCH_ZERO_METRICS_GUARD", raising=False)
+    assert zero_metrics_should_veto(
+        {"loss": 0.0, "reward": 0.0}, gpu_claim=True, provenance_present=False
+    ) is False
+
+
+def test_should_veto_not_on_real_metrics(monkeypatch):
+    # Real varied metrics never fire regardless of the discriminators.
+    monkeypatch.setenv("OPENRESEARCH_ZERO_METRICS_GUARD", "1")
+    assert zero_metrics_should_veto(
+        {"loss": 1.2, "reward": 0.3}, gpu_claim=True, provenance_present=False
+    ) is False

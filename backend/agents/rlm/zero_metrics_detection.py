@@ -165,6 +165,35 @@ def looks_like_zero_metrics(metrics: object) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Composed veto decision (consumed by the run_experiment wire, P0.2)
+# ---------------------------------------------------------------------------
+
+def zero_metrics_should_veto(
+    metrics: object,
+    *,
+    gpu_claim: bool,
+    provenance_present: bool,
+) -> bool:
+    """Composed Tier-1 veto decision for the run_experiment wire (spec §6.1).
+
+    Returns True (the caller degrades to fabrication_suspected) iff ALL hold:
+      * the guard is enabled (``OPENRESEARCH_ZERO_METRICS_GUARD``),
+      * the result-claiming metrics are all-zero / constant (``looks_like_zero_metrics``),
+      * the metrics CLAIM gpu training (caller passes ``metrics_claim_gpu_training(...)``),
+      * NO ``provenance.json`` links the metric to a real output (caller checks disk).
+
+    Provenance presence is the fake-0-vs-real-0 discriminator: a legitimately
+    failing baseline that scored 0 emits a provenance manifest and is NOT vetoed.
+    Pure — the inputs are pre-computed by the caller; never raises.
+    """
+    if not zero_metrics_guard_enabled():
+        return False
+    if not looks_like_zero_metrics(metrics):
+        return False
+    return bool(gpu_claim) and not bool(provenance_present)
+
+
+# ---------------------------------------------------------------------------
 # Repair message
 # ---------------------------------------------------------------------------
 

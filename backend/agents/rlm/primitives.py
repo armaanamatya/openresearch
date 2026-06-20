@@ -6463,6 +6463,53 @@ def run_experiment(
         except Exception:  # noqa: BLE001 — the stub-metrics guard must never crash the run
             logger.debug("run_experiment: stub-metrics guard failed", exc_info=True)
 
+    # Zero/constant-metrics fabrication floor (flag-gated, default OFF; spec 2026-06-20
+    # §6.1). The VRAM antifab fires only when metrics CLAIM gpu and the stub guard keys on
+    # placeholder KEYS — the SDAR v6 case wrote all-0.0 VALUES with REAL keys after real GPU
+    # training, slipping both. Fire only when result-claiming values are all-zero/constant
+    # across cells AND the metrics claim gpu training AND no provenance.json links the metric
+    # to a real output (a legit failing baseline scores 0 but emits provenance, so it is NOT
+    # vetoed). P0 is fail-HONEST report-only: degrade to the repairable fabrication_suspected;
+    # the fix-first repair loop that consumes it lands in P3. Fail-soft.
+    if result.get("success"):
+        try:
+            from pathlib import Path as _ZmPath
+
+            from backend.agents.rlm.gpu_cell_runner import metrics_claim_gpu_training
+            from backend.agents.rlm.zero_metrics_detection import (
+                zero_metrics_repair_message,
+                zero_metrics_should_veto,
+            )
+            _zm_metrics = result.get("metrics")
+            _zm_prov = False
+            try:
+                _zm_pd = getattr(ctx, "project_dir", None)
+                if _zm_pd is not None:
+                    _zm_code = _ZmPath(_zm_pd) / "code"
+                    _zm_prov = _zm_code.is_dir() and any(_zm_code.rglob("provenance.json"))
+            except Exception:  # noqa: BLE001
+                _zm_prov = False
+            if zero_metrics_should_veto(
+                _zm_metrics,
+                gpu_claim=metrics_claim_gpu_training(_zm_metrics),
+                provenance_present=_zm_prov,
+            ):
+                _zm_msg = zero_metrics_repair_message(_zm_metrics)
+                result = {
+                    **result,
+                    "success": False,
+                    "failure_class": "fabrication_suspected",
+                    "error": _zm_msg,
+                }
+                _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                    "code": "fabrication_suspected", "message": _zm_msg,
+                })
+                logger.warning(
+                    "run_experiment[%s]: %s", getattr(ctx, "run_id", "?"), _zm_msg,
+                )
+        except Exception:  # noqa: BLE001 — the zero-metrics floor must never crash the run
+            logger.debug("run_experiment: zero-metrics guard failed", exc_info=True)
+
     # Finalize-on-timeout (2026-06-08): a timed-out / stalled experiment must SCORE its
     # completed work, not zero it (the Adam failure: 4/5 families trained, the timeout fired
     # mid-VAE, every rubric leaf scored 0). Both the inner exec_timeout/exec_stalled return
