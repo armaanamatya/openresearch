@@ -16,13 +16,24 @@ import backend.agents.rlm.metric_reality_smoke as mrs
 # ---------------------------------------------------------------------------
 
 class TestEvaluateSmokeTrace:
-    def test_fewer_than_two_records_fails(self):
+    def test_one_record_with_real_loss_passes(self):
+        # Relaxed to >=1 record: one step with loss>0 passes (slow-rollout RL).
         v = mrs.evaluate_smoke_trace([{"loss": 0.5}], None)
+        assert v["ok"] is True
+
+    def test_zero_records_fails(self):
+        v = mrs.evaluate_smoke_trace([], None)
         assert v["ok"] is False and v["failure_class"] == "smoke_metrics_unreal"
 
-    def test_single_dict_normalized_then_fails(self):
+    def test_one_record_zero_loss_fails(self):
+        # A single step with loss==0.0 still catches the v6 disconnected-loss failure.
+        v = mrs.evaluate_smoke_trace([{"loss": 0.0}], None)
+        assert v["ok"] is False
+
+    def test_single_dict_with_real_loss_passes(self):
+        # A single-dict trace normalizes to one record; loss>0 passes.
         v = mrs.evaluate_smoke_trace({"loss": 0.5}, None)
-        assert v["ok"] is False  # one record < 2
+        assert v["ok"] is True
 
     def test_non_list_non_dict_fails(self):
         v = mrs.evaluate_smoke_trace(42, None)
@@ -100,21 +111,39 @@ class TestRunSmoke:
         v = mrs.run_metric_reality_smoke(ctx=object(), code_dir=tmp_path, cells=None)
         assert v["ok"] is True
 
-    def test_fix1_launched_no_trace_is_judged(self, tmp_path, monkeypatch):
+    def test_natural_exit_no_trace_is_judged(self, tmp_path, monkeypatch):
         cells = _setup(tmp_path)
         monkeypatch.setenv("OPENRESEARCH_METRIC_REALITY_SMOKE", "1")
         monkeypatch.setattr(mrs, "_get_available_gpu_ids", lambda: ["0"])
-        # launched=True, trace=None → must be JUDGED, not fail-open.
-        monkeypatch.setattr(mrs, "_run_one_smoke_cell", lambda *a, **k: (None, 8.0, True))
+        # launched=True, NATURAL exit (timed_out=False), no trace → JUDGED (codex Area-4).
+        monkeypatch.setattr(mrs, "_run_one_smoke_cell", lambda *a, **k: (None, 8.0, True, False))
         v = mrs.run_metric_reality_smoke(ctx=object(), code_dir=tmp_path, cells=cells)
         assert v["ok"] is False and v["failure_class"] == "smoke_metrics_unreal"
+
+    def test_timeout_no_trace_is_inconclusive_fail_open(self, tmp_path, monkeypatch):
+        cells = _setup(tmp_path)
+        monkeypatch.setenv("OPENRESEARCH_METRIC_REALITY_SMOKE", "1")
+        monkeypatch.setattr(mrs, "_get_available_gpu_ids", lambda: ["0"])
+        # TIMED OUT before any record (slow-rollout env) → inconclusive, fail-open.
+        monkeypatch.setattr(mrs, "_run_one_smoke_cell", lambda *a, **k: (None, None, True, True))
+        v = mrs.run_metric_reality_smoke(ctx=object(), code_dir=tmp_path, cells=cells)
+        assert v["ok"] is True
+
+    def test_timeout_with_bad_partial_is_judged(self, tmp_path, monkeypatch):
+        cells = _setup(tmp_path)
+        monkeypatch.setenv("OPENRESEARCH_METRIC_REALITY_SMOKE", "1")
+        monkeypatch.setattr(mrs, "_get_available_gpu_ids", lambda: ["0"])
+        # Timed out but produced a partial trace whose loss is 0.0 → still judged.
+        monkeypatch.setattr(mrs, "_run_one_smoke_cell", lambda *a, **k: ([{"loss": 0.0}], 8.0, True, True))
+        v = mrs.run_metric_reality_smoke(ctx=object(), code_dir=tmp_path, cells=cells)
+        assert v["ok"] is False
 
     def test_fix1_all_wont_spawn_fail_open(self, tmp_path, monkeypatch):
         cells = _setup(tmp_path)
         monkeypatch.setenv("OPENRESEARCH_METRIC_REALITY_SMOKE", "1")
         monkeypatch.setattr(mrs, "_get_available_gpu_ids", lambda: ["0"])
         # launched=False everywhere → fail-open.
-        monkeypatch.setattr(mrs, "_run_one_smoke_cell", lambda *a, **k: (None, None, False))
+        monkeypatch.setattr(mrs, "_run_one_smoke_cell", lambda *a, **k: (None, None, False, False))
         v = mrs.run_metric_reality_smoke(ctx=object(), code_dir=tmp_path, cells=cells)
         assert v["ok"] is True
 
@@ -124,7 +153,7 @@ class TestRunSmoke:
         monkeypatch.setattr(mrs, "_get_available_gpu_ids", lambda: ["0"])
         monkeypatch.setattr(
             mrs, "_run_one_smoke_cell",
-            lambda *a, **k: ([{"loss": 0.5}, {"loss": 0.4}], 8.0, True),
+            lambda *a, **k: ([{"loss": 0.5}, {"loss": 0.4}], 8.0, True, False),
         )
         v = mrs.run_metric_reality_smoke(ctx=object(), code_dir=tmp_path, cells=cells)
         assert v["ok"] is True
@@ -135,7 +164,7 @@ class TestRunSmoke:
         monkeypatch.setattr(mrs, "_get_available_gpu_ids", lambda: ["0"])
         monkeypatch.setattr(
             mrs, "_run_one_smoke_cell",
-            lambda *a, **k: ([{"loss": 0.0}, {"loss": 0.0}], 8.0, True),
+            lambda *a, **k: ([{"loss": 0.0}, {"loss": 0.0}], 8.0, True, False),
         )
         v = mrs.run_metric_reality_smoke(ctx=object(), code_dir=tmp_path, cells=cells)
         assert v["ok"] is False

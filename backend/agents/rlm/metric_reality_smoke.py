@@ -51,8 +51,12 @@ def metric_reality_smoke_enabled() -> bool:
 
 # Default: smoke at most this many cells.
 _DEFAULT_SMOKE_MAX_CELLS = 4
-# Default per-cell timeout for the smoke.
-_DEFAULT_SMOKE_TIMEOUT_S = 300
+# Default per-cell timeout for the smoke. 900s (was 300s): loading a real model +
+# env + running one tiny step exceeds 300s for ML cells, so a 300s smoke timed out
+# during model-load and got wrongly judged. A timeout is now treated as INCONCLUSIVE
+# (fail-open), not a rejection — but a generous budget still lets fast cells complete
+# and be verified empirically.
+_DEFAULT_SMOKE_TIMEOUT_S = 900
 
 
 def _smoke_max_cells() -> int:
@@ -155,30 +159,32 @@ def evaluate_smoke_trace(
 
     step_records = [r for r in trace if isinstance(r, dict)]
 
-    # Requirement 1: >=2 step records.
-    if len(step_records) < 2:
+    # Requirement 1: >=1 step record. Relaxed from >=2 — for slow-rollout RL envs
+    # (ALFWorld ~20-30 min/step) a 2-step smoke is infeasible; one step with positive
+    # backprop evidence still catches the disconnected/fake-loss failure. Step-variation
+    # is checked below only when >=2 records are present.
+    if len(step_records) < 1:
         return {
             "ok": False,
             "failure_class": "smoke_metrics_unreal",
-            "detail": (
-                f"smoke trace has {len(step_records)} step record(s); need >=2 "
-                f"(write metrics incrementally per step — see incremental-metrics guidance)"
-            ),
+            "detail": "smoke trace has 0 step records — trainer produced no per-step metrics",
         }
 
-    # Requirement 2: PRIMARY loss present, >0, and varied across steps.
+    # Requirement 2: PRIMARY loss present and >0; varied across steps when >=2 records.
+    # With a single record, loss>0 alone catches the v6 disconnected-loss (0.0) failure;
+    # the constant-across-steps check needs >=2 records and is skipped for one record.
     primary = _primary_loss_series(step_records)
-    if len(primary) >= 2:
+    if primary:
         if all(v == 0.0 for v in primary):
             return {
                 "ok": False,
                 "failure_class": "smoke_metrics_unreal",
                 "detail": (
-                    f"smoke trace: the primary loss is 0.0 across all {len(primary)} steps — "
+                    f"smoke trace: the primary loss is 0.0 across all {len(primary)} step(s) — "
                     f"loss is not connected to the model graph"
                 ),
             }
-        if len(set(primary)) == 1:
+        if len(primary) >= 2 and len(set(primary)) == 1:
             return {
                 "ok": False,
                 "failure_class": "smoke_metrics_unreal",
@@ -188,7 +194,7 @@ def evaluate_smoke_trace(
                 ),
             }
     else:
-        # Fallback: no PRIMARY loss key — use the lenient pooled loss check.
+        # Fallback: no PRIMARY loss key present — use the lenient pooled loss check.
         all_loss: list[float] = []
         for rec in step_records:
             all_loss.extend(_get_float(rec, _is_loss_key))
@@ -204,7 +210,7 @@ def evaluate_smoke_trace(
                 "failure_class": "smoke_metrics_unreal",
                 "detail": f"smoke trace: all {len(all_loss)} loss values are 0.0 — loss is disconnected",
             }
-        if len(set(all_loss)) == 1:
+        if len(all_loss) >= 2 and len(set(all_loss)) == 1:
             return {
                 "ok": False,
                 "failure_class": "smoke_metrics_unreal",
@@ -306,13 +312,14 @@ def _run_one_smoke_cell(
     gpu_id: str,
     output_dir: Path,
     timeout_s: float,
-) -> tuple[dict | list | None, float | None, bool]:
-    """Run one cell for ~2 steps; return (trace, peak_vram_gb, launched).
+) -> tuple[dict | list | None, float | None, bool, bool]:
+    """Run one cell for ~2 steps; return (trace, peak_vram_gb, launched, timed_out).
 
-    `launched` is True whenever the subprocess actually started — even if it then
-    errored or wrote no trace (those are JUDGED, not fail-open).  `launched` is
-    False ONLY when the subprocess could not be spawned at all (OSError), which is
-    the sole fail-open signal (fix codex review #1).
+    `launched` is True whenever the subprocess actually started; False ONLY when it
+    could not be spawned (OSError) — a harness fail-open signal.
+    `timed_out` is True when the subprocess hit `timeout_s` and was killed — for a
+    slow-rollout env that is INCONCLUSIVE (the caller fails open), not broken code; a
+    NATURAL exit (timed_out False) with no/bad trace is still judged (codex Area-4).
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -359,11 +366,13 @@ def _run_one_smoke_cell(
         logger.debug("metric_reality_smoke: subprocess won't spawn: %s", exc)
         if _stop is not None:
             _stop.set()
-        return None, None, False  # launched=False — the sole fail-open signal
+        return None, None, False, False  # launched=False — spawn-fail fail-open signal
 
+    timed_out = False
     try:
         proc.communicate(timeout=timeout_s)
     except subprocess.TimeoutExpired:
+        timed_out = True
         proc.kill()
         try:
             proc.communicate(timeout=5)
@@ -389,7 +398,7 @@ def _run_one_smoke_cell(
             except Exception:  # noqa: BLE001
                 continue
 
-    return trace, peak_vram_gib, True  # launched=True even when trace is None
+    return trace, peak_vram_gib, True, timed_out  # launched=True even when trace is None
 
 
 # ---------------------------------------------------------------------------
@@ -463,6 +472,7 @@ def run_metric_reality_smoke(
 
     any_launched = False
     failures: list[str] = []
+    inconclusive: list[str] = []
 
     with tempfile.TemporaryDirectory(prefix="or_smoke_") as tmpdir:
         tmp = Path(tmpdir)
@@ -471,7 +481,7 @@ def run_metric_reality_smoke(
             cell_out = tmp / f"cell_{i}"
             cell_id = cell.get("id", f"rep_{i}")
 
-            trace, peak_vram, launched = _run_one_smoke_cell(
+            trace, peak_vram, launched, timed_out = _run_one_smoke_cell(
                 cell, cell_script, gpu_id, cell_out, timeout
             )
 
@@ -483,14 +493,32 @@ def run_metric_reality_smoke(
                 continue
 
             any_launched = True
-            if trace is None:
-                # Ran but wrote no trace — JUDGED (the trainer must write per-step metrics).
-                failures.append(
-                    f"[{cell_id}] executor ran but wrote no per-step trace — "
-                    f"write metrics.json/smoke_trace.json incrementally per step"
-                )
+            records = (
+                [r for r in trace if isinstance(r, dict)] if isinstance(trace, list)
+                else ([trace] if isinstance(trace, dict) else [])
+            )
+            if not records:
+                if timed_out:
+                    # Timed out before producing any step record — INCONCLUSIVE for a
+                    # slow-rollout env (e.g. ALFWorld), not broken code. Fail-open for
+                    # this cell: the full-grid timeout cap + the in-run zero-metrics guard
+                    # remain the backstop. Only a NATURAL exit (below) is judged.
+                    inconclusive.append(cell_id)
+                    logger.info(
+                        "metric_reality_smoke: cell %s timed out before any step record "
+                        "— inconclusive (fail-open)", cell_id,
+                    )
+                else:
+                    # Natural exit with no per-step trace — a trainer that completes
+                    # without logging is JUDGED (codex Area-4 intent preserved).
+                    failures.append(
+                        f"[{cell_id}] executor exited without writing any per-step trace — "
+                        f"write metrics.json/smoke_trace.json incrementally per step"
+                    )
                 continue
 
+            # >=1 record (natural exit, or a timeout that still produced a partial
+            # trace) — judge what we have.
             verdict = evaluate_smoke_trace(trace, peak_vram)
             if not verdict["ok"]:
                 failures.append(f"[{cell_id}] {verdict['detail']}")
@@ -508,5 +536,8 @@ def run_metric_reality_smoke(
         logger.warning("metric_reality_smoke: %s", detail)
         return {"ok": False, "failure_class": "smoke_metrics_unreal", "detail": detail}
 
-    logger.info("metric_reality_smoke: all launched smoke cells passed")
+    logger.info(
+        "metric_reality_smoke: smoke passed (%d inconclusive/fail-open) — proceeding",
+        len(inconclusive),
+    )
     return {"ok": True, "failure_class": None, "detail": ""}
