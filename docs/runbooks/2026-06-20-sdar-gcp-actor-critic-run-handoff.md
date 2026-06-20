@@ -91,27 +91,59 @@ SDAR `PAPER_HINTS` default + `OPENRESEARCH_BASELINE_EXTRA_GUIDANCE` / `--scope-s
 
 ---
 
-## 5. The command (GCP)
+## 5. The GCP run procedure (self-contained)
 
-Use the existing GCP path — do not reinvent it (see `sdar_gcp_run.sh` / `reserve_and_run_sdar.py` and
-`2026-06-16-sdar-on-gcp-a100-vm.md` / `2026-06-19-sdar-gcp-e2e-guardrails-handoff.md` for cluster/VM
-bring-up + the preflight `gcp_sdar_preflight.sh`). The reproduce invocation, with the new layer:
+The whole run is driven by `scripts/gcp_sdar_preflight.sh` (the established, idempotent path) — do NOT
+hand-roll a VM. GCP defaults (override via env): `PROJECT=deepinvent-ext-ut`, `ZONE=us-central1-c`,
+`INSTANCE=sdar-a100-8g`, GPU machine `a2-highgpu-8g` (8×A100), CPU machine `e2-standard-16`,
+`REMOTE_DIR=/home/abheekp/openresearch`, spot required, `MIN_GPUS=8`. `prepare` runs on the **cheap CPU**
+machine (no GPU billing); `launch` flips to the **8×A100** and starts the reproduce detached.
 
 ```bash
-# 1. GCP preflight (cluster/VM + quota + creds)
-bash scripts/gcp_sdar_preflight.sh
-
-# 2. Run SDAR with the actor-critic layer (root=gpt-5, exec=Sonnet, validator=grok)
-python -m backend.cli reproduce 2605.15155 \
-  --sandbox gcp \
-  --model gpt-5 \
-  --models executor=sonnet,validator=grok \
-  --run-spec runs/_specs/sdar_gcp_actor_critic.json \
-  --paper-hint 2605.15155 \
-  --max-wall-clock <budgeted-seconds>
+# from the repo root (locally — the script drives the VM over gcloud SSH)
+scripts/gcp_sdar_preflight.sh status     # VM/instance state
+scripts/gcp_sdar_preflight.sh prepare    # CPU machine: sync repo, install SDAR deps, warm model/dataset
+                                         # caches, provision ALFWorld/WebShop/Search-QA  -> must reach [GREEN]
+# >>> inject the actor-critic flags now (see below), BEFORE launch <<<
+scripts/gcp_sdar_preflight.sh launch     # flips to 8×A100, verifies env/GPU, execs sdar_gcp_run.sh detached
+scripts/gcp_sdar_preflight.sh monitor    # tail progress
+scripts/cancel_gcp_sdar_run.sh --stop-vm # when done (or: gcp_sdar_preflight.sh stop)
 ```
 
-(If using the launcher `sdar_gcp_run.sh`, export the same run-spec env or pass `--run-spec` through it.)
+**Inject the new flags:** `sdar_gcp_run.sh` sources `runs/.cache/sdar_gcp.env` (written by `prepare`) and
+the harness honors `os.environ`/`.env`. After a GREEN `prepare`, append §4's flags to that env file **on the
+VM** (the script runs there), before `launch`:
+
+```bash
+# on the VM (e.g. via: scripts/gcp_sdar_preflight.sh sync then SSH, or add to the prepare step):
+cat >> runs/.cache/sdar_gcp.env <<'EOF'
+OPENRESEARCH_EVIDENCE_AUDIT=1
+OPENRESEARCH_EXTERNAL_VALIDATOR=1
+OPENRESEARCH_VALIDATOR_BACKEND=azure-foundry
+OPENRESEARCH_VALIDATOR_MODEL=grok-4.3
+OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S=1800
+OPENRESEARCH_LEAF_EVIDENCE_GATE=1
+EOF
+```
+
+**Model roles on GCP (what the script actually does):** it defaults to **pure-Foundry, OAuth-free** —
+root + executor + grader + verifier all = `AZURE_FOUNDRY_DEPLOYMENT` (default `gpt-chat-latest`, a
+reasoning-class model already verified to drive the REPL loop). To make the validator a *real independent*
+check, give it a DIFFERENT deployment than root/executor:
+- **Easiest (weak separation):** keep root/exec = `gpt-chat-latest`, set the validator to a different
+  Foundry deployment — `OPENRESEARCH_VALIDATOR_BACKEND=azure-foundry`, `OPENRESEARCH_VALIDATOR_MODEL=grok-4.3`
+  (cross-deployment ⇒ `separation=weak`, the machine-checked veto still stands).
+- **Strongest (independent):** run the **executor on Sonnet** (`CLAUDE_CODE_OAUTH_TOKEN` in `.env` +
+  `OPENRESEARCH_SDAR_MODELS=executor=sonnet,grader=foundry,verifier=foundry`) and the validator on grok-Foundry
+  → cross-FAMILY ⇒ `separation=independent`.
+Switch the root model with `AZURE_FOUNDRY_DEPLOYMENT=...` (e.g. `grok-4.3`); per-role with
+`OPENRESEARCH_SDAR_MODELS=...`. `OPENRESEARCH_SDAR_ROOT=foundry` is the neutral root alias.
+
+**Scope:** the script defaults to the **full 3×3 matrix** (Qwen3-1.7B + Qwen2.5-3B + Qwen2.5-7B × envs;
+the 7B shards over 2 cards). For a cheap de-risk smoke FIRST, stage smallest-two guidance at
+`runs/.cache/sdar_scope_guidance.txt` before `launch` (the script auto-loads it; an explicit
+`OPENRESEARCH_BASELINE_EXTRA_GUIDANCE` still wins). The default guidance already includes the full
+anti-fabrication + SDAR-method spec (lambda_SDAR=0.01, beta=5.0, OPSD/GRPO, the three gates, 150 real steps).
 
 ---
 
