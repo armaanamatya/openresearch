@@ -49,6 +49,13 @@ class RunContext:
     # which is today's behaviour.
     role_selection: Any = None      # RoleSelection | None — typed Any to avoid an import cycle
     verifier_client: Any = None     # LlmClient | None — None = inherit llm_client
+    # External adversarial validator client (spec 2026-06-20 §7.4), built
+    # FAIL-CLOSED by grader_transport.build_validator_client and threaded by
+    # run.py when the validator role was overridden. ``None`` = the validator
+    # role was not selected → the panel is ``unavailable`` and the Tier-1
+    # deterministic floor is the sole backstop (NEVER a silent fall-through to
+    # the executor-family client). Typed Any to avoid an import cycle.
+    validator_client: Any = None    # LlmClient | None — None = validator unselected
     workspace_service: Any = None
     workspace_id: str | None = None
     deadline_utc: datetime | None = field(default=None)  # M-DEADLINE — set by run.py
