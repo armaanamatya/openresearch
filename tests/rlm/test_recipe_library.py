@@ -1074,3 +1074,203 @@ def test_red_line_static_import_guard():
             if violations_b else ""
         )
     )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# REGRESSION GUARD TESTS (§7, Pillar 5)
+#
+# These tests prove that the cross-run recipe admission gate is:
+#   (a) impervious to a fabricated/unbacked run (all-zero metrics or no success row)
+#   (b) impervious to a run that looks good only in the LLM grade but has no
+#       deterministic evidence backing
+#
+# "The fitness signal is the deterministic evidence layer, NEVER the LLM grade."
+# (spec §2, §7 red line).
+#
+# Each test has an explicit comment naming WHICH gate it exercises and why.
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_regression_fabricated_all_zero_metrics_not_admitted(monkeypatch, tmp_path):
+    """REGRESSION: A fabricated run with all-zero metrics.json must NOT be admitted.
+
+    Simulates the SDAR-v6 hallucination: real GPU training, all-0.0 metrics with
+    real metric keys (not stub keys). The zero_metrics floor in gate 4 must veto.
+    This run looks plausible from the grade alone (0.9) but the actual measured
+    evidence is degenerate.
+    """
+    _enable_recipes(monkeypatch)
+    project_dir = _make_project_dir(
+        tmp_path,
+        with_success_row=True,   # Gate 2 passes
+        with_metrics=True,
+        metrics=_ZERO_METRICS,   # all-zero — degenerate fabrication signal
+    )
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+
+    # Report: evidence gate passed, high LLM grade, measured_headline matches.
+    # The ONLY thing that should block: code/metrics.json is all-zero.
+    report = {
+        "evidence_gate_passed": True,       # Gate 1 passes
+        "rubric": {
+            "overall_score": 0.90,           # high LLM grade — must NOT be the admission signal
+            "target_score": 0.60,
+            "meets_target": True,            # grade says yes — must NOT matter for gate 4
+        },
+        "paper_claimed_target": 0.60,
+        "measured_headline": 0.90,           # headline claims to exceed target
+        "scope": {"models": ["Qwen3-1.7B"], "datasets": ["ALFWorld"]},
+        "arxiv_id": "2605.15155",
+    }
+
+    admit_recipe(
+        project_dir, runs_root,
+        report=report,
+        validator_verdict=_clean_validator_verdict(),   # Gate 3 passes
+        paper_class="sdar_agentic_rl",
+    )
+
+    records = _read_recipes(runs_root, "sdar_agentic_rl")
+    assert records == [], (
+        "FABRICATION REGRESSION: a run with all-zero code/metrics.json must NEVER be admitted "
+        "regardless of the LLM grade or claimed measured_headline. "
+        "Gate 4's zero-metrics disk check must veto this."
+    )
+
+
+def test_regression_no_experiment_evidence_not_admitted(monkeypatch, tmp_path):
+    """REGRESSION: A run with no successful experiment ledger row must NOT be admitted.
+
+    No success row in experiment_runs.jsonl = no evidence that an experiment actually
+    ran. A fabricating agent could claim success in the report without running anything.
+    Gate 2 must veto even if the report looks perfect.
+    """
+    _enable_recipes(monkeypatch)
+    project_dir = _make_project_dir(
+        tmp_path,
+        with_success_row=False,   # Gate 2 must fail this
+        with_metrics=True,
+        metrics=_REAL_METRICS,
+    )
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+
+    report = {
+        "evidence_gate_passed": True,
+        "deterministic_meets_target": True,   # harness-set boolean fast-path
+        "rubric": {
+            "overall_score": 0.88,
+            "target_score": 0.60,
+        },
+        "scope": {"models": ["Qwen3-1.7B"], "datasets": ["ALFWorld"]},
+        "arxiv_id": "2605.15155",
+    }
+
+    admit_recipe(
+        project_dir, runs_root,
+        report=report,
+        validator_verdict=_clean_validator_verdict(),
+        paper_class="sdar_agentic_rl",
+    )
+
+    records = _read_recipes(runs_root, "sdar_agentic_rl")
+    assert records == [], (
+        "LEDGER REGRESSION: no success row in experiment_runs.jsonl must block admission. "
+        "Gate 2 must be the hard backstop against a run that never actually executed an experiment."
+    )
+
+
+def test_regression_llm_grade_high_evidence_poor_not_admitted(monkeypatch, tmp_path):
+    """REGRESSION: High LLM grade with weak evidence must NOT be admitted.
+
+    This is the canonical red-line test. The report carries:
+    - rubric.overall_score = 0.95 (high LLM grade)
+    - rubric.meets_target = True (LLM says yes)
+    - evidence_gate_passed = True
+    But there is NO deterministic_meets_target flag, NO paper_claimed_target,
+    NO measured_headline, and NO code/metrics.json on disk.
+
+    The recipe library must refuse because there is zero deterministic measured
+    evidence that this run actually met its target. The LLM grade is NOT the signal.
+    """
+    _enable_recipes(monkeypatch)
+    # Only a success ledger row — no metrics.json on disk.
+    project_dir = _make_project_dir(
+        tmp_path,
+        with_success_row=True,
+        with_metrics=False,   # no metrics.json at all
+    )
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+
+    report = {
+        "evidence_gate_passed": True,        # Gate 1 passes
+        "rubric": {
+            "overall_score": 0.95,            # very high LLM grade — the red-line temptation
+            "target_score": 0.60,
+            "meets_target": True,             # LLM says the target was met
+        },
+        # NOTE: no "deterministic_meets_target", no "paper_claimed_target",
+        # no "measured_headline" — purely an LLM-graded signal.
+        "scope": {"models": ["Qwen3-1.7B"], "datasets": ["ALFWorld"]},
+        "arxiv_id": "2605.15155",
+    }
+
+    admit_recipe(
+        project_dir, runs_root,
+        report=report,
+        validator_verdict=_clean_validator_verdict(),   # Gate 3 passes
+        paper_class="sdar_agentic_rl",
+    )
+
+    records = _read_recipes(runs_root, "sdar_agentic_rl")
+    assert records == [], (
+        "RED LINE REGRESSION: a high LLM grade (rubric.overall_score=0.95, "
+        "rubric.meets_target=True) must NEVER be the admission signal. "
+        "Without deterministic_meets_target or a measured_headline+paper_claimed_target "
+        "comparison backed by real code/metrics.json, gate 4 must refuse."
+    )
+
+
+def test_regression_validator_vetoed_blocks_even_with_clean_evidence(monkeypatch, tmp_path):
+    """REGRESSION: Validator veto must block admission even when all deterministic evidence
+    is clean.
+
+    The validator can discover adversarial patterns that pass the local predicates.
+    A 'vetoed' verdict must be an unconditional hard block — NOT overridable by any
+    other gate combination.
+    """
+    _enable_recipes(monkeypatch)
+    project_dir = _make_project_dir(
+        tmp_path,
+        with_success_row=True,
+        with_metrics=True,
+        metrics=_REAL_METRICS,
+    )
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+
+    # Perfect deterministic evidence — but the validator found a problem.
+    report = {
+        "evidence_gate_passed": True,
+        "deterministic_meets_target": True,
+        "paper_claimed_target": 0.60,
+        "measured_headline": 0.85,
+        "rubric": {"overall_score": 0.85, "target_score": 0.60},
+        "scope": {"models": ["Qwen3-1.7B"], "datasets": ["ALFWorld"]},
+        "arxiv_id": "2605.15155",
+    }
+
+    admit_recipe(
+        project_dir, runs_root,
+        report=report,
+        validator_verdict=_vetoed_validator_verdict(),   # Gate 3 must veto unconditionally
+        paper_class="sdar_agentic_rl",
+    )
+
+    records = _read_recipes(runs_root, "sdar_agentic_rl")
+    assert records == [], (
+        "VALIDATOR REGRESSION: a 'vetoed' validator verdict must block admission unconditionally, "
+        "even when all other gates pass and deterministic evidence looks clean. "
+        "The validator's min-aggregation veto is a hard block — not advisory."
+    )
