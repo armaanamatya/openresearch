@@ -1813,6 +1813,38 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
             print(_rv_error, file=sys.stderr)
         return _rv_exit
 
+    # Credential preflight — validate the root model's API key BEFORE any
+    # ingest or subprocess spawn.  Catches the 13-run class of 401 failures
+    # that historically occurred minutes into a run after expensive ingest.
+    # Gate: OPENRESEARCH_SKIP_CRED_PREFLIGHT=1 opts out entirely (CI / offline
+    # / already-validated environments).  Fail-OPEN on inconclusive errors so a
+    # network blip never blocks a legitimate run.
+    _skip_cred_preflight = (
+        os.environ.get("OPENRESEARCH_SKIP_CRED_PREFLIGHT", "").strip().lower()
+        in ("1", "on", "true", "yes")
+    )
+    if not _skip_cred_preflight:
+        try:
+            from backend.agents.rlm.pre_flight_validator import validate_root_credentials
+            from backend.agents.rlm.models import resolve_root_model as _resolve_root_model
+
+            _root_entry = _resolve_root_model(getattr(args, "model", None))
+            _cred_provider = _root_entry.rlm_backend
+            _cred_model = _root_entry.key
+            _cred_ok, _cred_msg = validate_root_credentials(
+                _cred_provider, model=_cred_model
+            )
+            if _cred_ok:
+                print(_cred_msg, file=sys.stderr)
+            else:
+                print(f"\n[error] Credential preflight FAILED:\n{_cred_msg}\n", file=sys.stderr)
+                return 1
+        except Exception as _cpf_exc:  # noqa: BLE001 — fail-open; never block on probe error
+            print(
+                f"[cred-preflight] probe raised {type(_cpf_exc).__name__} — proceeding.",
+                file=sys.stderr,
+            )
+
     # rlm (default hybrid) or rlm-pure with a PaperBench bundle ID:
     # bypass ingest, load the bundle directly.
     if args.mode in ("rlm", "rlm-pure") and _is_paperbench_bundle_id(args.source, runs_root):
