@@ -1362,6 +1362,88 @@ def _notify_run_terminal(project_dir: Path) -> None:
         logger.debug("run-notify: terminal helper raised", exc_info=True)
 
 
+def _run_finalize_validation_panel(ctx: Any, report: Any, project_dir: Path) -> None:
+    """OFFLINE adversarial validation panel (report-stamping only), shared by every
+    ctx-bearing finalize path so the grok validator runs on the normal, fatal-abort,
+    AND hard-stop paths — not just the happy one. Gated by OPENRESEARCH_EXTERNAL_VALIDATOR
+    + ctx.validator_client (unset/None -> no-op -> byte-identical). Reuses a verdict the
+    P3 FINAL_VAR gate already persisted for this evidence (no duplicate panel). Fail-soft:
+    a panel failure must NEVER break finalize."""
+    try:
+        from backend.agents.rlm.external_validator import (  # noqa: PLC0415
+            external_validator_enabled,
+            run_validation_panel,
+            persist_verdict,
+        )
+        _val_client = getattr(ctx, "validator_client", None)
+        if external_validator_enabled() and _val_client is not None:
+            # Gather metrics from the report's baseline_metrics if present, else on-disk.
+            _val_metrics: dict = dict(report.baseline_metrics) if report.baseline_metrics else {}
+            if not _val_metrics:
+                _mpath = project_dir / "code" / "metrics.json"
+                if _mpath.exists():
+                    try:
+                        _val_metrics = json.loads(_mpath.read_text(encoding="utf-8"))
+                    except Exception:  # noqa: BLE001
+                        _val_metrics = {}
+            # Consume a verdict the P3 validator gate ALREADY persisted for THIS
+            # evidence (spec §7.1: the panel is invoked once at the FINAL_VAR-attempt
+            # and consumed — NOT re-run — by _finalize). Skipping the re-run avoids a
+            # duplicate LLM panel and a later stochastic verdict overwriting the gate's.
+            from backend.agents.rlm.external_validator import (  # noqa: PLC0415
+                evidence_fingerprint as _val_efp,
+                load_verdict as _load_verdict,
+            )
+            _already_validated = (
+                _load_verdict(project_dir, expect_fingerprint=_val_efp(_val_metrics)) is not None
+            )
+            if _already_validated:
+                logger.info("finalize-validation: reusing the validator verdict from the FINAL_VAR gate (no re-run)")
+            else:
+                # Gather leaf records from rubric_evaluation.json (best-effort).
+                _leaf_records: list[dict] = []
+                _eval_p = project_dir / "rubric_evaluation.json"
+                if _eval_p.exists():
+                    try:
+                        _eval_data = json.loads(_eval_p.read_text(encoding="utf-8"))
+                        _leaf_records = list(_eval_data.get("leaf_scores", {}).values())
+                    except Exception:  # noqa: BLE001
+                        _leaf_records = []
+                _val_tier = _validator_separation_tier(getattr(ctx, "role_selection", None))
+                _val_label = os.environ.get("OPENRESEARCH_VALIDATOR_MODEL", "").strip() or \
+                             os.environ.get("OPENRESEARCH_VALIDATOR_BACKEND", "").strip() or "validator"
+                # §4.5: thread report claims into the panel when OPENRESEARCH_VALIDATOR_CHECK_REPORT=1.
+                _report_claims_for_panel = None
+                if os.environ.get("OPENRESEARCH_VALIDATOR_CHECK_REPORT", "").strip() == "1":
+                    try:
+                        from backend.agents.rlm.claim_grounding import extract_result_claims as _erc  # noqa: PLC0415
+                        _summary = getattr(report, "reproduction_summary", "") or ""
+                        _rm = getattr(report, "reported_metrics", None)
+                        _rm_text = (
+                            _rm if isinstance(_rm, str) else
+                            (__import__("json").dumps(_rm, default=str) if _rm else "")
+                        )
+                        _report_claims_for_panel = _erc(_summary + "\n" + _rm_text)
+                    except Exception:  # noqa: BLE001
+                        _report_claims_for_panel = None
+                _verdict = run_validation_panel(
+                    validator_client=_val_client,
+                    panel_models=[_val_label],
+                    metrics=_val_metrics,
+                    project_dir=project_dir,
+                    leaf_records=_leaf_records,
+                    separation=_val_tier,
+                    report_claims=_report_claims_for_panel,
+                )
+                persist_verdict(project_dir, _verdict)
+                logger.info(
+                    "finalize-validation: validation panel complete — status=%s veto_set=%r separation=%s",
+                    _verdict.status, _verdict.veto_set, _verdict.separation,
+                )
+    except Exception:  # noqa: BLE001 — panel failure must never break finalize
+        logger.warning("finalize-validation: external validation panel failed (non-fatal)", exc_info=True)
+
+
 def _finalize_fatal_primitive_abort(
     *,
     abort: _FatalPrimitiveAbort,
@@ -1417,6 +1499,9 @@ def _finalize_fatal_primitive_abort(
         _fr.regrade_and_emit(ctx, report, emit)
     except Exception:  # noqa: BLE001
         logger.warning("_finalize_fatal_primitive_abort: regrade failed (non-fatal)", exc_info=True)
+    # Run the adversarial validator on the abort path too (gated; byte-identical when off) —
+    # a fabrication-guard abort must not skip the critic. Before write so the stamp sees it.
+    _run_finalize_validation_panel(ctx, report, project_dir)
     json_path, _md_path = write_final_report_rlm(
         report, project_dir, run_experiment_calls=run_experiment_call_count(ctx),
         run_experiment_ok_calls=run_experiment_success_count(ctx),
@@ -1549,6 +1634,10 @@ def _hard_stop_with_report(
     salvaged_score = _salvage_partial_report(
         report, project_dir, stop_kind=stop_kind, stop_detail=status_error,
     )
+    # Run the adversarial validator on the wall-clock/SIGTERM hard-stop path too (gated;
+    # byte-identical when off). ctx may be None here (the watchdog can fire pre-bind).
+    if ctx is not None:
+        _run_finalize_validation_panel(ctx, report, project_dir)
     try:
         # Evidence-gate trust counts (audit 2026-06-11): without these the
         # watchdog/SIGTERM path fell back to content-only trust — a forging
@@ -3568,84 +3657,11 @@ def _finalize(
     except Exception:  # noqa: BLE001 — re-grade is advisory, never blocks finalize
         logger.warning("_finalize: finalize_regrade failed (non-fatal)", exc_info=True)
 
-    # P2.3 — OFFLINE adversarial validation panel (report-stamping only).
-    # Runs BEFORE write_final_report_rlm so the verdict is on disk when the
-    # report-stamp chokepoint runs.  OFFLINE: does NOT refuse FINAL_VAR, does
-    # NOT change any verdict here — pure stamp into rlm_state/validation_verdict.json.
-    # Fail-soft: a panel failure must NEVER break finalize.
-    try:
-        from backend.agents.rlm.external_validator import (  # noqa: PLC0415
-            external_validator_enabled,
-            run_validation_panel,
-            persist_verdict,
-        )
-        _val_client = getattr(ctx, "validator_client", None)
-        if external_validator_enabled() and _val_client is not None:
-            # Gather metrics from the report's baseline_metrics if present, else on-disk.
-            _val_metrics: dict = dict(report.baseline_metrics) if report.baseline_metrics else {}
-            if not _val_metrics:
-                _mpath = project_dir / "code" / "metrics.json"
-                if _mpath.exists():
-                    try:
-                        _val_metrics = json.loads(_mpath.read_text(encoding="utf-8"))
-                    except Exception:  # noqa: BLE001
-                        _val_metrics = {}
-            # Consume a verdict the P3 validator gate ALREADY persisted for THIS
-            # evidence (spec §7.1: the panel is invoked once at the FINAL_VAR-attempt
-            # and consumed — NOT re-run — by _finalize). Skipping the re-run avoids a
-            # duplicate LLM panel and a later stochastic verdict overwriting the gate's.
-            from backend.agents.rlm.external_validator import (  # noqa: PLC0415
-                evidence_fingerprint as _val_efp,
-                load_verdict as _load_verdict,
-            )
-            _already_validated = (
-                _load_verdict(project_dir, expect_fingerprint=_val_efp(_val_metrics)) is not None
-            )
-            if _already_validated:
-                logger.info("_finalize: reusing the validator verdict from the FINAL_VAR gate (no re-run)")
-            else:
-                # Gather leaf records from rubric_evaluation.json (best-effort).
-                _leaf_records: list[dict] = []
-                _eval_p = project_dir / "rubric_evaluation.json"
-                if _eval_p.exists():
-                    try:
-                        _eval_data = json.loads(_eval_p.read_text(encoding="utf-8"))
-                        _leaf_records = list(_eval_data.get("leaf_scores", {}).values())
-                    except Exception:  # noqa: BLE001
-                        _leaf_records = []
-                _val_tier = _validator_separation_tier(getattr(ctx, "role_selection", None))
-                _val_label = os.environ.get("OPENRESEARCH_VALIDATOR_MODEL", "").strip() or \
-                             os.environ.get("OPENRESEARCH_VALIDATOR_BACKEND", "").strip() or "validator"
-                # §4.5: thread report claims into the panel when OPENRESEARCH_VALIDATOR_CHECK_REPORT=1.
-                _report_claims_for_panel = None
-                if os.environ.get("OPENRESEARCH_VALIDATOR_CHECK_REPORT", "").strip() == "1":
-                    try:
-                        from backend.agents.rlm.claim_grounding import extract_result_claims as _erc  # noqa: PLC0415
-                        _summary = getattr(report, "reproduction_summary", "") or ""
-                        _rm = getattr(report, "reported_metrics", None)
-                        _rm_text = (
-                            _rm if isinstance(_rm, str) else
-                            (__import__("json").dumps(_rm, default=str) if _rm else "")
-                        )
-                        _report_claims_for_panel = _erc(_summary + "\n" + _rm_text)
-                    except Exception:  # noqa: BLE001
-                        _report_claims_for_panel = None
-                _verdict = run_validation_panel(
-                    validator_client=_val_client,
-                    panel_models=[_val_label],
-                    metrics=_val_metrics,
-                    project_dir=project_dir,
-                    leaf_records=_leaf_records,
-                    separation=_val_tier,
-                    report_claims=_report_claims_for_panel,
-                )
-                persist_verdict(project_dir, _verdict)
-                logger.info(
-                    "_finalize: validation panel complete — status=%s veto_set=%r separation=%s",
-                    _verdict.status, _verdict.veto_set, _verdict.separation,
-                )
-    except Exception:  # noqa: BLE001 — panel failure must never break finalize
-        logger.warning("_finalize: external validation panel failed (non-fatal)", exc_info=True)
+    # P2.3 — OFFLINE adversarial validation panel (report-stamping only). Extracted to
+    # _run_finalize_validation_panel so the fatal-abort + hard-stop paths run it too.
+    # Runs BEFORE write_final_report_rlm so the verdict is on disk for the stamp chokepoint.
+    if not run_failed:
+        _run_finalize_validation_panel(ctx, report, project_dir)
 
     json_path, _md_path = write_final_report_rlm(
         report, project_dir, run_experiment_calls=run_experiment_call_count(ctx),
