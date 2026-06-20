@@ -1508,6 +1508,32 @@ def _apply_evidence_gate(
     """
     if os.environ.get("OPENRESEARCH_EVIDENCE_GATE", "1").strip().lower() in {"0", "false", "off"}:
         return report
+    # Unified deterministic critic (§3.2): when OPENRESEARCH_EVIDENCE_AUDIT is ON,
+    # AND-in the run-level clean predicate — a success-ish verdict additionally
+    # requires audit_evidence_from_dir(...).run_level_clean.  When the flag is OFF
+    # the audit path is never entered, so byte-identical behaviour is guaranteed by
+    # construction (a plain branch, not a conditional import).
+    # Fail-soft: any audit error leaves the existing gate decision unchanged.
+    _audit_veto: bool = False
+    _audit_note: str = ""
+    try:
+        from backend.agents.rlm.evidence_audit import (  # noqa: PLC0415
+            evidence_audit_enabled,
+            audit_evidence_from_dir,
+        )
+        if evidence_audit_enabled():
+            _audit = audit_evidence_from_dir(project_dir, ok_count=run_experiment_ok_calls)
+            if not _audit.run_level_clean:
+                _audit_veto = True
+                _audit_note = (
+                    " [evidence_audit] Downgraded to 'failed': unified deterministic "
+                    "critic found degenerate evidence"
+                    + (f" ({'; '.join(_audit.reasons)})" if _audit.reasons else "")
+                    + "."
+                )
+    except Exception:  # noqa: BLE001 — audit must never block finalization
+        logger.debug("report: unified evidence audit failed (non-fatal)", exc_info=True)
+
     content_evidence = _has_experiment_evidence(project_dir)
     # Forged iff there IS a success+metrics row on disk but the authoritative ledger
     # proves no real primitive call backs it: either run_experiment never ran at all
@@ -1583,6 +1609,15 @@ def _apply_evidence_gate(
             )
         report.verdict = "failed"
         report.reproduction_summary = (report.reproduction_summary or "").rstrip() + note
+    # Unified critic veto (§3.2): runs only when OPENRESEARCH_EVIDENCE_AUDIT is ON
+    # AND the verdict is still success-ish after the primary gate.  Mirrors the
+    # same downgrade pattern as the no-evidence branch above.
+    # When the flag is OFF, _audit_veto is always False (set before the
+    # content_evidence check), so this branch is never entered -> byte-identical.
+    elif _audit_veto and report.verdict in {"reproduced", "partial"}:
+        logger.warning("report: unified evidence audit downgraded verdict to 'failed'")
+        report.verdict = "failed"
+        report.reproduction_summary = (report.reproduction_summary or "").rstrip() + _audit_note
     return report
 
 

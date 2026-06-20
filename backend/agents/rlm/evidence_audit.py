@@ -159,23 +159,75 @@ def _load_latest_metrics(ctx: Any) -> dict:
     return {}
 
 
-def audit_evidence(ctx: Any) -> EvidenceAudit:
-    """Run-level deterministic evidence snapshot from on-disk state + the ledger.
+def _load_latest_metrics_from_dir(project_dir: Any) -> dict:
+    """Latest on-disk metrics from ``project_dir`` alone. Same loader chain as
+    ``_load_latest_metrics`` but takes a Path instead of a ctx. Fail-soft -> {}."""
+    import json  # noqa: PLC0415
 
-    Pure read-only function (modulo ledger session counters) -> deterministic
-    ``fingerprint``. Consumed by the verdict gate, recipe admission, and the
-    validator. Fail-soft: any error yields the safe all-true snapshot."""
-    metrics = _load_latest_metrics(ctx)
+    from pathlib import Path  # noqa: PLC0415
 
-    backed = True
+    project_dir = Path(project_dir)
+    path = None
     try:
-        from backend.agents.rlm.report import run_experiment_success_count  # noqa: PLC0415
+        from backend.evals.paperbench.leaf_scorer import _latest_metrics_path  # noqa: PLC0415
 
-        ok = run_experiment_success_count(ctx)
-        if ok is not None:
-            backed = ok >= 1
+        path = _latest_metrics_path(project_dir)
     except Exception:
-        backed = True
+        path = None
+    try:
+        if path is None:
+            cand = project_dir / "code" / "metrics.json"
+            path = cand if cand.exists() else None
+        if path is not None and path.exists():
+            data = json.loads(path.read_text())
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+    return {}
+
+
+def _provenance_on_disk_from_dir(project_dir: Any) -> bool:
+    """True iff code/provenance.json exists under project_dir. Fail-soft -> False."""
+    from pathlib import Path  # noqa: PLC0415
+
+    try:
+        code = Path(project_dir) / "code"
+        return code.is_dir() and any(code.rglob("provenance.json"))
+    except Exception:
+        return False
+
+
+def audit_evidence_from_dir(
+    project_dir: Any,
+    *,
+    ok_count: int | None = None,
+) -> EvidenceAudit:
+    """Ctx-free variant of :func:`audit_evidence`.
+
+    Computes the same run-level deterministic evidence snapshot from
+    ``project_dir`` alone, without requiring a live ``RunContext``.
+
+    Args:
+        project_dir: Path to the run project directory (coerced via ``Path``).
+        ok_count: In-process success-compatible ``run_experiment`` call count
+            from the cost ledger. ``None`` means the ledger is unavailable;
+            ``backed_by_ledger`` then defaults to ``True`` (replay / postmortem
+            rule — trust content rather than fail-closed). Pass ``0`` to
+            explicitly mark no successful call.
+
+    Returns:
+        An :class:`EvidenceAudit` snapshot. Fail-soft: any error yields the
+        safe all-true snapshot (never blocks a run on its own bug).
+    """
+    from pathlib import Path  # noqa: PLC0415
+
+    project_dir = Path(project_dir)
+    metrics = _load_latest_metrics_from_dir(project_dir)
+
+    # backed_by_ledger: None ok_count -> trust content (replay rule)
+    backed = True
+    if ok_count is not None:
+        backed = ok_count >= 1
 
     non_degen = True
     keys_real = True
@@ -208,9 +260,42 @@ def audit_evidence(ctx: Any) -> EvidenceAudit:
 
     return EvidenceAudit(
         backed_by_ledger=backed,
-        provenance_present=_provenance_on_disk(ctx),
+        provenance_present=_provenance_on_disk_from_dir(project_dir),
         metrics_non_degenerate=non_degen,
         metric_keys_real=keys_real,
         fingerprint=fingerprint,
         reasons=tuple(reasons),
     )
+
+
+def audit_evidence(ctx: Any) -> EvidenceAudit:
+    """Run-level deterministic evidence snapshot from on-disk state + the ledger.
+
+    Pure read-only function (modulo ledger session counters) -> deterministic
+    ``fingerprint``. Consumed by the verdict gate, recipe admission, and the
+    validator. Fail-soft: any error yields the safe all-true snapshot.
+
+    Delegates to :func:`audit_evidence_from_dir` after extracting
+    ``project_dir`` and ``ok_count`` from ``ctx``."""
+    ok_count: int | None = None
+    try:
+        from backend.agents.rlm.report import run_experiment_success_count  # noqa: PLC0415
+
+        ok_count = run_experiment_success_count(ctx)
+    except Exception:
+        ok_count = None
+
+    try:
+        project_dir = ctx.project_dir
+    except Exception:
+        # Fail-soft: ctx missing project_dir -> return the safe all-true snapshot
+        return EvidenceAudit(
+            backed_by_ledger=True,
+            provenance_present=False,
+            metrics_non_degenerate=True,
+            metric_keys_real=True,
+            fingerprint="",
+            reasons=(),
+        )
+
+    return audit_evidence_from_dir(project_dir, ok_count=ok_count)
