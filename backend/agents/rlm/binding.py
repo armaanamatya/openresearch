@@ -611,6 +611,30 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                 ctx.dashboard.primitive_call(name, "error", result_summary=summary)
                 _emit_primitive_resource(ctx, primitive=name, boundary="end")
                 _ledger("raised")
+                # P1 lifecycle ledger — record the raised outcome HERE: the
+                # post-validation append below is unreachable from the except path,
+                # so a raised primitive would otherwise be absent from the ledger.
+                # Only the exception TYPE name (value-free) is stored. Fail-soft —
+                # the re-raise below is never masked.
+                try:
+                    from backend.agents.rlm.lifecycle_ledger import (
+                        LedgerRecord,
+                        append_record,
+                        lifecycle_ledger_enabled,
+                        project_inputs,
+                    )
+                    if lifecycle_ledger_enabled():
+                        append_record(ctx.project_dir, LedgerRecord(
+                            primitive=name,
+                            seq=len(ctx.cost_ledger.entries),
+                            inputs_projection=project_inputs(name, kwargs),
+                            outputs_pointer={"error_type": type(exc).__name__},
+                            evidence_keys=[],
+                            outcome="raised",
+                            iteration=int(getattr(ctx, "current_iteration", 0) or 0),
+                        ))
+                except Exception:  # noqa: BLE001 — the ledger must never mask the re-raise
+                    pass
                 logger.warning("primitive %s raised %s", name, type(exc).__name__)
                 raise
             # Most primitives are fail-soft: on failure they RETURN a failure-shaped

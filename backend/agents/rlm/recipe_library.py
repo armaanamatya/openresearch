@@ -277,75 +277,60 @@ def _validator_ok(validator_verdict: Any, *, floor_passed: bool) -> bool:
 
 
 def _deterministic_meets_target(report: dict, project_dir: Path) -> bool:
-    """True iff deterministic MEASURED evidence shows the run met its target.
+    """True iff deterministic MEASURED evidence proves the run met its target.
 
     Keyed ONLY on Tier-1 deterministic evidence — NEVER on grade-derived score
     fields (overall_score / median_score / rubric_score / compute_adjusted_score).
     Those are the forbidden reward-hacking vectors (red line §3.1).
 
-    Decision order (first match wins):
-    1. ``report["deterministic_meets_target"] is True`` — a harness-set boolean
-       from the measured-vs-claimed layer (already deterministic; trust it).
-    2. ``project_dir/code/metrics.json`` on disk: require ALL of —
-       (a) the file exists,
-       (b) ``normalize_metric_values(metrics)`` is non-empty (real result-claiming
-           values are present — not just structural/denominator keys),
-       (c) ``looks_like_zero_metrics(metrics)`` is False (not a degenerate all-zero
-           or constant fabrication).
-       If ANY condition fails → False (fail-soft).
-    3. If BOTH ``report["paper_claimed_target"]`` and ``report["measured_headline"]``
-       are numeric, additionally require ``measured_headline >= paper_claimed_target``.
-       When no claimed target is available, a substantiated non-degenerate metrics.json
-       (checks above) is sufficient — we do NOT invent a headline extractor.
+    CONSERVATIVE by design (spec §9.2 requires "measured metric vs the paper's
+    claimed target"): a recipe captures a SUCCESSFUL pattern, so a real-but-below-
+    target run must NOT be admitted. Returns True iff EITHER:
+      1. ``report["deterministic_meets_target"] is True`` — a harness-set boolean
+         from the measured-vs-claimed layer (already deterministic; trust it); OR
+      2. numeric ``report["paper_claimed_target"]`` AND ``report["measured_headline"]``
+         are both present, a real non-degenerate ``code/metrics.json`` exists on disk
+         (the precondition), AND ``measured_headline >= paper_claimed_target``.
 
-    Fail-soft throughout: any exception → False.
+    When NO claimed target is available we CANNOT deterministically prove the run
+    met its target — so we return False (better no recipe than a below-target one).
+    We never fall back to "real metrics exist" (that proves a run happened, not that
+    it succeeded) and never to the LLM grade. Fail-soft throughout → False.
     """
     # 1. Explicit harness-set deterministic flag.
     if report.get("deterministic_meets_target") is True:
         return True
 
-    # 2. Measured evidence on disk.
+    # 2. A real measured-vs-claimed-target comparison. Without BOTH numeric values
+    #    we cannot prove meets_target deterministically → do not admit.
+    claimed = report.get("paper_claimed_target")
+    measured = report.get("measured_headline")
+    if claimed is None or measured is None:
+        return False
+    try:
+        claimed_f = float(claimed)
+        measured_f = float(measured)
+    except (TypeError, ValueError):
+        return False
+
+    # Precondition: a real, non-degenerate measured result must exist on disk
+    # (a target "hit" backed by a fabricated metrics.json must never admit).
     try:
         from backend.agents.rlm.zero_metrics_detection import (  # lazy import — stdlib-only dep
             looks_like_zero_metrics,
             normalize_metric_values,
         )
-    except Exception:
-        return False
-
-    try:
         metrics_path = Path(project_dir) / "code" / "metrics.json"
         if not metrics_path.exists():
             return False
-        try:
-            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-        except Exception:
+        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        if not normalize_metric_values(metrics) or looks_like_zero_metrics(metrics):
             return False
-
-        # (b) Non-empty result-claiming values present.
-        values = normalize_metric_values(metrics)
-        if not values:
-            return False
-
-        # (c) Not a degenerate all-zero / constant fabrication.
-        if looks_like_zero_metrics(metrics):
-            return False
-
-        # 3. Optional claimed-vs-measured numeric comparison.
-        try:
-            claimed = report.get("paper_claimed_target")
-            measured = report.get("measured_headline")
-            if claimed is not None and measured is not None:
-                claimed_f = float(claimed)
-                measured_f = float(measured)
-                if measured_f < claimed_f:
-                    return False
-        except (TypeError, ValueError):
-            pass  # no claimed target available — non-degenerate metrics.json is sufficient
-
-        return True
     except Exception:
         return False
+
+    # The actual deterministic meets_target: the measured headline clears the claim.
+    return measured_f >= claimed_f
 
 
 # ──────────────────────────────────────────────────────────────────────────────

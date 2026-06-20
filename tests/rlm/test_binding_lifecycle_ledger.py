@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from backend.agents.rlm.binding import wrap_primitive
 from backend.agents.rlm.lifecycle_ledger import read_records
 
@@ -184,3 +186,27 @@ def test_redaction_canary_not_in_inputs_projection(make_context, tmp_path, monke
     assert canary not in ledger_text, (
         f"Canary found in on-disk ledger: {ledger_text!r}"
     )
+
+
+def test_raised_primitive_writes_raised_record(make_context, tmp_path, monkeypatch):
+    """A primitive that RAISES records outcome='raised' (then the exception re-raises).
+
+    Codex review fix: the post-validation append is unreachable from the except
+    path, so a raised primitive would otherwise be absent from the ledger entirely.
+    """
+    monkeypatch.setenv("OPENRESEARCH_LIFECYCLE_LEDGER", "1")
+    ctx = make_context(tmp_path)
+
+    def _boom(code_path, *, ctx):
+        raise ValueError("kaboom")
+
+    wrapped = wrap_primitive("run_experiment", _boom, ctx)
+    with pytest.raises(ValueError):
+        wrapped("code/")
+
+    records = _records(ctx)
+    assert len(records) == 1
+    assert records[0].outcome == "raised"
+    assert records[0].primitive == "run_experiment"
+    # Only the value-free exception TYPE name is stored, never a message/value.
+    assert records[0].outputs_pointer.get("error_type") == "ValueError"

@@ -437,15 +437,19 @@ def test_admit_recipe_no_deterministic_flag_no_metrics_not_admitted(monkeypatch,
     assert records == [], "Must NOT admit: no deterministic_meets_target flag and no metrics.json"
 
 
-def test_admit_recipe_real_metrics_on_disk_admits(monkeypatch, tmp_path):
-    """Gate 4 passes when a real non-zero metrics.json exists on disk (disk path)."""
+def test_admit_recipe_real_metrics_without_target_not_admitted(monkeypatch, tmp_path):
+    """CONSERVATIVE gate 4: a real non-zero metrics.json proves a run HAPPENED, not
+    that it MET the target. Without a deterministic target proof (no
+    deterministic_meets_target flag, no paper_claimed_target/measured_headline),
+    admission must be refused — never fall back to 'real metrics exist' or the grade.
+    """
     _enable_recipes(monkeypatch)
     project_dir = _make_project_dir(
         tmp_path, with_success_row=True, with_metrics=True, metrics=_REAL_METRICS
     )
     runs_root = tmp_path / "runs"
     runs_root.mkdir()
-    # Report has NO deterministic_meets_target flag — gate 4 must use disk evidence.
+    # Real metrics on disk + a high LLM grade, but NO deterministic target proof.
     report = {
         "evidence_gate_passed": True,
         "rubric": {"overall_score": 0.75, "target_score": 0.60},
@@ -461,7 +465,7 @@ def test_admit_recipe_real_metrics_on_disk_admits(monkeypatch, tmp_path):
     )
 
     records = _read_recipes(runs_root, "sdar_agentic_rl")
-    assert len(records) == 1, "Must admit when a real non-zero metrics.json is on disk"
+    assert records == [], "Must NOT admit without a deterministic measured-vs-target proof"
 
 
 def test_admit_recipe_zero_metrics_not_admitted(monkeypatch, tmp_path):
