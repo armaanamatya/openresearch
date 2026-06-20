@@ -1864,6 +1864,50 @@ def write_final_report_rlm(
     except Exception:  # noqa: BLE001 — floor is best-effort, never crashes the write
         logger.exception("report: best-of-run write-chokepoint floor failed (non-fatal)")
 
+    # --- Score-fidelity chokepoint (audit 2026-06-20) -------------------------
+    # (1) Verdict/score consistency: cap the verdict at what the final
+    #     authoritative rubric score supports. Symptom: pb_ftrl_1779413937
+    #     shipped verdict=reproduced at leaf score 0.0. Uses
+    #     reconcile_verdict_with_score() which ONLY downgrades, never upgrades.
+    #     Fail-soft: any error leaves the verdict unchanged.
+    # (2) meets_target population: recompute meets_target from the FINAL
+    #     overall_score vs target_score in one canonical place at the write
+    #     chokepoint so it is never None when both values are present.
+    #     Symptom: 100% of an old report corpus shipped meets_target=None.
+    try:
+        _rubric_final = dict(report.rubric or {})
+        _final_score = _rubric_final.get("overall_score")
+        _final_target = _rubric_final.get("target_score")
+        _changed = False
+        # (1) Verdict cap — only when we have a real score to enforce against.
+        if _final_score is not None:
+            try:
+                _capped = reconcile_verdict_with_score(report.verdict, float(_final_score))
+                if _capped != report.verdict:
+                    logger.info(
+                        "report: write-chokepoint verdict cap %r -> %r "
+                        "(overall_score=%.4f)",
+                        report.verdict, _capped, float(_final_score),
+                    )
+                    report.verdict = _capped
+            except Exception:  # noqa: BLE001 — verdict cap is best-effort
+                logger.exception("report: write-chokepoint verdict cap failed (non-fatal)")
+        # (2) meets_target recompute from the final authoritative score.
+        try:
+            if _final_score is None or _final_target is None:
+                new_mt: bool | None = None
+            else:
+                new_mt = bool(float(_final_score) >= float(_final_target))
+            if new_mt != _rubric_final.get("meets_target"):
+                _rubric_final["meets_target"] = new_mt
+                _changed = True
+        except (TypeError, ValueError):
+            pass  # keep whatever is there
+        if _changed:
+            report.rubric = _rubric_final
+    except Exception:  # noqa: BLE001 — score-fidelity block is best-effort, never fatal
+        logger.exception("report: score-fidelity chokepoint failed (non-fatal)")
+
     # --- JSON (canonical) ---
     # Two-axis reproducibility verdict (live finalize path, U11): when enabled and the
     # producer artifacts exist, attach implementation/replication verdicts + schema=2 and
