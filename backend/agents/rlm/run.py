@@ -1940,6 +1940,81 @@ def _load_reusable_rubric(project_dir: Path) -> dict | None:
     return None
 
 
+def _validator_separation_tier(role_selection: Any) -> str:
+    """Compute the model-lineage separation tier between executor and validator.
+
+    Reads ``OPENRESEARCH_VALIDATOR_BACKEND`` and ``OPENRESEARCH_VALIDATOR_MODEL``
+    from the environment (no side effects) and constructs a synthetic
+    :class:`~backend.agents.rlm.role_models.RoleSpec` for the validator, then
+    delegates to :func:`~backend.agents.rlm.role_models.separation_strength`.
+
+    For the Azure×Azure case the executor's ACTUAL deployment
+    (``AZURE_OPENAI_DEPLOYMENT``) is substituted so that two different Azure
+    deployments read as "weak" rather than "degraded".
+
+    Returns one of: ``"independent"`` | ``"weak"`` | ``"degraded"`` | ``"unavailable"``.
+    """
+    backend = os.environ.get("OPENRESEARCH_VALIDATOR_BACKEND", "").strip().lower()
+    if not backend:
+        return "unavailable"
+    try:
+        from backend.agents.rlm.role_models import (  # noqa: PLC0415
+            RoleSpec,
+            _classify_model_family,
+            separation_strength,
+            PROVIDER_AZURE,
+            PROVIDER_ANTHROPIC_OAUTH,
+            PROVIDER_ANTHROPIC,
+            PROVIDER_OPENAI,
+            PROVIDER_AZURE_FOUNDRY,
+        )
+        import dataclasses  # noqa: PLC0415
+
+        _BACKEND_PROVIDER: dict[str, str] = {
+            "azure": PROVIDER_AZURE,
+            "oauth": PROVIDER_ANTHROPIC_OAUTH,
+            "claude-oauth": PROVIDER_ANTHROPIC_OAUTH,
+            "anthropic-oauth": PROVIDER_ANTHROPIC_OAUTH,
+            "anthropic": PROVIDER_ANTHROPIC,
+            "openai": PROVIDER_OPENAI,
+            "azure-foundry": PROVIDER_AZURE_FOUNDRY,
+            "foundry": PROVIDER_AZURE_FOUNDRY,
+            "grok": PROVIDER_AZURE_FOUNDRY,
+        }
+        val_provider = _BACKEND_PROVIDER.get(backend, backend)
+        # The actual validator model/deployment for the tier comparison.
+        # For the azure backend, OPENRESEARCH_VALIDATOR_MODEL overrides the
+        # deployment — same logic as build_transport_client's azure branch.
+        val_model = (
+            os.environ.get("OPENRESEARCH_VALIDATOR_MODEL", "").strip()
+            or (
+                os.environ.get("AZURE_OPENAI_DEPLOYMENT", "").strip()
+                if val_provider == PROVIDER_AZURE
+                else ""
+            )
+            or None
+        )
+        val_spec = RoleSpec(
+            role="validator",
+            token=backend,
+            provider=val_provider,
+            model=val_model,
+            family=_classify_model_family(val_provider, val_model),
+        )
+        exec_spec = getattr(role_selection, "executor", None) if role_selection is not None else None
+        # For the Azure executor, substitute the ACTUAL deployment so that
+        # azure(deployA) × azure(deployB) reads as "weak", not "degraded".
+        if exec_spec is not None and exec_spec.provider == PROVIDER_AZURE:
+            exec_spec = dataclasses.replace(
+                exec_spec,
+                model=os.environ.get("AZURE_OPENAI_DEPLOYMENT", "").strip() or exec_spec.model,
+            )
+        return separation_strength(exec_spec, val_spec)
+    except Exception:  # noqa: BLE001 — tier computation is advisory; never crashes a run
+        logger.debug("_validator_separation_tier: failed, defaulting to unavailable", exc_info=True)
+        return "unavailable"
+
+
 async def run_pipeline_rlm(
     project_id: str,
     runs_root: Path,
@@ -2196,6 +2271,7 @@ async def run_pipeline_rlm(
                 getattr(get_settings(), "rubric_verifier_model", "")
                 or os.environ.get("OPENRESEARCH_RUBRIC_VERIFIER_MODEL", "")
             ).strip() or None,
+            validator_model_setting=os.environ.get("OPENRESEARCH_VALIDATOR_MODEL", "").strip() or None,
         )
     except RoleModelError as _exc:
         raise RuntimeError(f"invalid per-role model selection: {_exc}") from _exc
@@ -2224,6 +2300,51 @@ async def run_pipeline_rlm(
             role_label="verifier",
         )
         logger.info("run_pipeline_rlm: verifier transport=%s", _verifier_label)
+
+    # Validator transport (P2.3 — fail-closed): when OPENRESEARCH_VALIDATOR_BACKEND
+    # is set, build an independent adversarial-panel client.  build_validator_client
+    # raises ValueError when the requested backend cannot be constructed (missing
+    # credential / unknown backend) — we convert to RuntimeError (fail-closed).
+    # When OPENRESEARCH_VALIDATOR_BACKEND is unset, build_validator_client returns the
+    # fallback unchanged; in that case the separation tier is "unavailable" and we
+    # leave validator_client=None to signal "no independent validator".
+    validator_client = None
+    _validator_label = provider_label
+    try:
+        from backend.agents.rlm.grader_transport import build_validator_client
+        _vc, _vlabel = build_validator_client(
+            fallback_client=llm_client,
+            fallback_label=provider_label,
+        )
+        if _vc is not llm_client:
+            validator_client = _vc
+            _validator_label = _vlabel
+            logger.info("run_pipeline_rlm: validator transport=%s", _validator_label)
+    except ValueError as _exc:
+        raise RuntimeError(f"validator setup failed (fail-closed): {_exc}") from _exc
+
+    # Separation tier (emitted as a run_warning when degraded/weak).
+    _validator_tier = _validator_separation_tier(role_selection)
+    if _validator_tier == "degraded":
+        emit(build_run_warning_event(
+            level="warn",
+            code="validator_separation_degraded",
+            message=(
+                "External validator and executor share the same model/deployment — "
+                "the LLM-suspicion portion is not independently grounded (separation=degraded). "
+                "The harness-side machine-check veto still stands."
+            ),
+        ))
+    elif _validator_tier == "weak":
+        emit(build_run_warning_event(
+            level="info",
+            code="validator_separation_weak",
+            message=(
+                "External validator and executor share the same model family but use "
+                "different deployments/models (separation=weak). "
+                "Same-provider weak separation is supported; the operator requested it explicitly."
+            ),
+        ))
 
     # Grader unified surface → feed the existing OPENRESEARCH_GRADER_* path that
     # leaf_scorer.build_grader_client reads (only when the operator did not set
@@ -2280,6 +2401,7 @@ async def run_pipeline_rlm(
         agent_model=agent_model,
         role_selection=role_selection,
         verifier_client=verifier_client,
+        validator_client=validator_client,
         workspace_service=workspace_service,
         workspace_id=workspace_id,
         sandbox_mode=sandbox_mode,
@@ -3214,6 +3336,56 @@ def _finalize(
             _fr.regrade_and_emit(ctx, report, emit)
     except Exception:  # noqa: BLE001 — re-grade is advisory, never blocks finalize
         logger.warning("_finalize: finalize_regrade failed (non-fatal)", exc_info=True)
+
+    # P2.3 — OFFLINE adversarial validation panel (report-stamping only).
+    # Runs BEFORE write_final_report_rlm so the verdict is on disk when the
+    # report-stamp chokepoint runs.  OFFLINE: does NOT refuse FINAL_VAR, does
+    # NOT change any verdict here — pure stamp into rlm_state/validation_verdict.json.
+    # Fail-soft: a panel failure must NEVER break finalize.
+    try:
+        from backend.agents.rlm.external_validator import (  # noqa: PLC0415
+            external_validator_enabled,
+            run_validation_panel,
+            persist_verdict,
+        )
+        _val_client = getattr(ctx, "validator_client", None)
+        if external_validator_enabled() and _val_client is not None:
+            # Gather metrics from the report's baseline_metrics if present, else on-disk.
+            _val_metrics: dict = dict(report.baseline_metrics) if report.baseline_metrics else {}
+            if not _val_metrics:
+                _mpath = project_dir / "code" / "metrics.json"
+                if _mpath.exists():
+                    try:
+                        _val_metrics = json.loads(_mpath.read_text(encoding="utf-8"))
+                    except Exception:  # noqa: BLE001
+                        _val_metrics = {}
+            # Gather leaf records from rubric_evaluation.json (best-effort).
+            _leaf_records: list[dict] = []
+            _eval_p = project_dir / "rubric_evaluation.json"
+            if _eval_p.exists():
+                try:
+                    _eval_data = json.loads(_eval_p.read_text(encoding="utf-8"))
+                    _leaf_records = list(_eval_data.get("leaf_scores", {}).values())
+                except Exception:  # noqa: BLE001
+                    _leaf_records = []
+            _val_tier = _validator_separation_tier(getattr(ctx, "role_selection", None))
+            _val_label = os.environ.get("OPENRESEARCH_VALIDATOR_MODEL", "").strip() or \
+                         os.environ.get("OPENRESEARCH_VALIDATOR_BACKEND", "").strip() or "validator"
+            _verdict = run_validation_panel(
+                validator_client=_val_client,
+                panel_models=[_val_label],
+                metrics=_val_metrics,
+                project_dir=project_dir,
+                leaf_records=_leaf_records,
+                separation=_val_tier,
+            )
+            persist_verdict(project_dir, _verdict)
+            logger.info(
+                "_finalize: validation panel complete — status=%s veto_set=%r separation=%s",
+                _verdict.status, _verdict.veto_set, _verdict.separation,
+            )
+    except Exception:  # noqa: BLE001 — panel failure must never break finalize
+        logger.warning("_finalize: external validation panel failed (non-fatal)", exc_info=True)
 
     json_path, _md_path = write_final_report_rlm(
         report, project_dir, run_experiment_calls=run_experiment_call_count(ctx),

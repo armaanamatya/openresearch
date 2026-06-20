@@ -375,6 +375,17 @@ def _compute_evidence_fingerprint(metrics: Any) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def evidence_fingerprint(metrics: object) -> str:
+    """Public alias for :func:`_compute_evidence_fingerprint`.
+
+    Exposes the canonical fingerprint function so ``report.py`` (and tests)
+    can compute the SAME fingerprint the panel used without importing a
+    private symbol.  The panel and the report-stamp chokepoint both call this
+    alias, ensuring they are always in sync.
+    """
+    return _compute_evidence_fingerprint(metrics)
+
+
 # ---------------------------------------------------------------------------
 # Core panel runner
 # ---------------------------------------------------------------------------

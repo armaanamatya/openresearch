@@ -185,6 +185,19 @@ class RLMFinalReport(BaseModel):
             "None on a normally-completed run."
         ),
     )
+    # P2.3 — external adversarial validation panel stamp (spec 2026-06-20 §7.1).
+    # Populated from the persisted verdict only when the fingerprint matches the
+    # shipped evidence. Empty dict (= never validated) when the validator was not
+    # enabled, the panel was not built, or the verdict fingerprint is stale.
+    validation: dict = Field(
+        default_factory=dict,
+        description=(
+            "Adversarial validation panel result for this run's shipped evidence. "
+            "Fields: status (clean|vetoed|unavailable), veto_set, separation, "
+            "panel_models, evidence_fingerprint, predicates. "
+            "Empty when the validator is disabled or the verdict is stale."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1776,6 +1789,45 @@ def write_final_report_rlm(
                 report.verdict = "reproduced"
     except Exception:  # noqa: BLE001 — merge is best-effort, never crashes the write
         logger.exception("report: rubric_evaluation.json merge failed (non-fatal)")
+
+    # --- P2.3: validation panel stamp (spec 2026-06-20 §7.1) ----------------
+    # Read the persisted verdict keyed by the SAME evidence fingerprint that the
+    # panel used.  A stale verdict (metrics changed since the panel ran) is ignored
+    # — load_verdict returns None and validation stays empty.  Fail-soft.
+    try:
+        from backend.agents.rlm.external_validator import (  # noqa: PLC0415
+            load_verdict,
+            evidence_fingerprint,
+        )
+        _shipped_metrics: dict = dict(report.baseline_metrics) if report.baseline_metrics else {}
+        if not _shipped_metrics:
+            _mpath = project_dir / "code" / "metrics.json"
+            if _mpath.exists():
+                try:
+                    import json as _j
+                    _shipped_metrics = _j.loads(_mpath.read_text(encoding="utf-8"))
+                except Exception:  # noqa: BLE001
+                    _shipped_metrics = {}
+        _fp = evidence_fingerprint(_shipped_metrics)
+        _v = load_verdict(project_dir, expect_fingerprint=_fp)
+        if _v is not None:
+            report.validation = {
+                "status": _v.status,
+                "veto_set": _v.veto_set,
+                "separation": _v.separation,
+                "panel_models": _v.panel_models,
+                "evidence_fingerprint": _v.evidence_fingerprint,
+                "predicates": [
+                    {
+                        "predicate": p.predicate,
+                        "metric_ref": p.metric_ref,
+                        "violated": p.violated,
+                    }
+                    for p in _v.predicates
+                ],
+            }
+    except Exception:  # noqa: BLE001 — stamp is best-effort, never crashes the write
+        logger.debug("report: validation stamp skipped", exc_info=True)
 
     # --- Best-of-run floor at the write chokepoint (2026-06-13 OmniZip) -----
     # build_final_report applies _apply_best_of_run_floor, but the root-assembled
