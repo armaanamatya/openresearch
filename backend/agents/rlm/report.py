@@ -1915,6 +1915,37 @@ def write_final_report_rlm(
     except Exception:  # noqa: BLE001 — two-axis attach is best-effort, never blocks the write
         logger.warning("report: two-axis verdict attach failed (non-fatal)", exc_info=True)
 
+    # --- A: Report-claim gate (§4.3, 2026-06-20) ----------------------------
+    # FINAL verdict mutation: caps to "partial" + cites when the root's report
+    # narrative contains result claims absent from code/metrics.json (≥5% tol).
+    # Runs AFTER the best-of-run floor and two-axis attach so nothing re-upgrades
+    # it afterward (codex-6). Byte-identical-off: gate function checks its own flag.
+    try:
+        from backend.agents.rlm.report_claim_gate import (
+            apply_report_claim_gate,
+            report_claim_gate_enabled,
+        )
+        if report_claim_gate_enabled():
+            _rcg_dict = json.loads(json_content)
+            _emit_rcg_warning = None
+            try:
+                import json as _json_ev
+                from backend.agents.rlm.sse_bridge import build_run_warning_event as _bwe
+
+                def _emit_rcg_warning(code: str, msg: str) -> None:
+                    _ev = _bwe(code=code, message=msg)
+                    _evp = project_dir / "dashboard_events.jsonl"
+                    with open(_evp, "a", encoding="utf-8") as _ef:
+                        _ef.write(_json_ev.dumps(_ev) + "\n")
+            except Exception:  # noqa: BLE001
+                pass
+            _rcg_dict = apply_report_claim_gate(
+                report, _rcg_dict, project_dir, emit_warning=_emit_rcg_warning
+            )
+            json_content = json.dumps(_rcg_dict, indent=2)
+    except Exception:  # noqa: BLE001 — claim gate is best-effort, never blocks the write
+        logger.warning("report: report_claim_gate failed (non-fatal)", exc_info=True)
+
     # --- Experiment-arm stamp (A/B observability, 2026-06-11) ---------------
     # Label every report with its with/without-BES arm + flag snapshot so
     # paired runs are explicit for scripts/ab_compare.py and the leaderboard.

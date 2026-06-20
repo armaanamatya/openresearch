@@ -10,6 +10,7 @@ Key design:
   - Normalizes BOTH the flat-scalar shape (the common case) and the nested
     per_model[model][env][baseline] shape to a flat list of result-claiming floats.
   - Structural/denominator/size keys are excluded (see EXCLUDED_KEY_PATTERNS).
+  - Hyperparameter/config keys are also excluded (see _CONFIG_TERMS).
   - Pure shape signal only — provenance/GPU discriminators are applied by the
     CALLER (primitives.py:6465, W2-1 wire), not here.
   - Fail-soft everywhere; any exception -> safe fallback ([] or False).
@@ -61,9 +62,73 @@ _EXCLUDED_PREFIXES: tuple[str, ...] = (
 # Suffix pattern: any key ending in "_n" (denominator / sample count).
 _SUFFIX_N_RE = re.compile(r"_n$")
 
+# Token-split pattern: split a key into words on underscores and non-alphanumeric chars.
+_TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9]+")
+
+# Hyperparameter / config tokens whose presence in a key's token decomposition (or
+# whose compound form matches the full lowercased key) marks the key as a config
+# value rather than a result-claiming metric.
+#
+# Spec: §4.0 of 2026-06-20-pre-gpu-code-review-and-report-validation-design.md.
+# Fix for codex-1 hparam-masking bug: {"loss":0.0,"accuracy":0.0,"learning_rate":1e-5}
+# was NOT flagged as all-zero because the nonzero hparam survived normalization.
+# The compound term "learning_rate" is checked against the full lowercased key (not just
+# its individual tokens) so that "learning" and "rate" are not independently excluded —
+# which would wrongly drop "success_rate" whose last token is also "rate".
+_CONFIG_TERMS: frozenset[str] = frozenset({
+    "learning_rate",  # compound — matched against full key, not split tokens
+    "lr",
+    "beta",
+    "lambda",
+    "weight_decay",
+    "momentum",
+    "gamma",
+    "eps",
+    "epsilon",
+    "clip",
+    "clip_ratio",
+    "warmup",
+    "temperature",
+    "top_p",
+    "top_k",
+    "seed",
+    "gpu",
+    "vram",
+    "num_gpus",
+    "hidden",
+    "dim",
+    "embed",
+    "max_len",
+    "max_prompt",
+    "max_tokens",
+    "num_layers",
+    "vocab",
+    "hour",
+    "gb",
+})
+
+
+def _is_config_key(key: str) -> bool:
+    """Return True iff this key is a hyperparameter/config value, not a result metric.
+
+    Checks (a) whether the full lowercased key appears in _CONFIG_TERMS (handles
+    compound terms like "learning_rate"), then (b) whether any individual token
+    (split on underscores/non-alphanumeric) appears in _CONFIG_TERMS (handles
+    short aliases like "lr", embedded terms like "clip" in "grad_clip_norm").
+    Token-boundary match only — NOT naive substring — so "accuracy" is never
+    excluded even though it contains the letters of no config token.
+    """
+    lk = key.lower()
+    # (a) Full-key match for compound terms (e.g. "learning_rate").
+    if lk in _CONFIG_TERMS:
+        return True
+    # (b) Token-level match.
+    tokens = _TOKEN_SPLIT_RE.split(lk)
+    return any(tok in _CONFIG_TERMS for tok in tokens if tok)
+
 
 def _is_excluded_key(key: str) -> bool:
-    """Return True iff this key represents a structural, denominator, or size value."""
+    """Return True iff this key represents a structural, denominator, size, or config value."""
     lk = key.lower()
     if lk in _EXCLUDED_EXACT:
         return True
@@ -71,6 +136,8 @@ def _is_excluded_key(key: str) -> bool:
         if lk.startswith(prefix):
             return True
     if _SUFFIX_N_RE.search(lk):
+        return True
+    if _is_config_key(key):
         return True
     return False
 

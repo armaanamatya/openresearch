@@ -191,6 +191,16 @@ class ForcedIterationPolicy:
     # loop (record_repair_attempt("validator_veto")) so it is bounded by REPAIR_MAX
     # and stops honestly as repair_exhausted. Inert (skipped) when None (default).
     validator_gate: Callable[[], tuple[bool, str] | None] | None = None
+    # §4.4 — report-claim gate (B). Stashed by _intercepted_final_var from the
+    # REPL namespace; stringified snapshot of the FINAL_VAR variable's value so
+    # the claim gate can check it before accepting the report. Best-effort: None
+    # when resolution fails (B no-ops, A still backstops at the write chokepoint).
+    pending_final_value: Any | None = field(default=None, compare=False, repr=False)
+    # §4.4 — claim gate callback. run.py wires this only when the fix-first loop
+    # is engaged AND OPENRESEARCH_REPORT_CLAIM_GATE=1. Same repair_floor signature
+    # as validator_gate: returns (vetoed, directive) on ungrounded claims, else None.
+    # Inert (skipped) when None (default) — byte-identical-off.
+    claim_gate: Callable[[], tuple[bool, str] | None] | None = None
     # Task 2 — no-progress refusal-loop detection.  ``degenerate_threshold`` is
     # the number of consecutive same-signature refusals with NO intervening
     # state-changing primitive that constitutes a degenerate loop (default from
@@ -516,6 +526,39 @@ class ForcedIterationPolicy:
                     "model outputs on real data, then run_experiment + "
                     "verify_against_rubric again."
                 ))
+
+        # §4.4 B — in-loop report-claim gate. Checks the pending FINAL_VAR value's
+        # claimed numbers against on-disk measured values. Same repair_floor signature
+        # as validator_gate; bounded by REPAIR_MAX → honest repair_exhausted terminal.
+        # Inert when claim_gate is None (default) — byte-identical-off.
+        if self.claim_gate is not None and self._terminal_failure_class != "repair_exhausted":
+            try:
+                _cgate = self.claim_gate()
+            except Exception:  # noqa: BLE001 — claim gate must never crash the policy
+                _cgate = None
+            if _cgate is not None and _cgate[0]:
+                self.record_repair_attempt("report_claim")
+                if self._terminal_failure_class == "repair_exhausted":
+                    logger.info(
+                        "forced_iteration: claim_gate repair_exhausted — accepting FINAL_VAR"
+                    )
+                    return (False, None)
+                self._pending_refusal_code = "forced_repair_iteration"
+                self._pending_refusal_signature = "repair_floor"
+                return (True, _cgate[1] or (
+                    "FINAL_VAR refused: the report claims result values not found in "
+                    "code/metrics.json. Either run_experiment to produce that evidence "
+                    "or correct the report, then FINAL_VAR again."
+                ))
+            elif self._last_repair_failure_class == "report_claim":
+                # The claim gate is now clean (or unverifiable) after a prior
+                # report_claim veto → the report issue is resolved.  Clear the stale
+                # repair trigger (the canonical reset) so the repair floor below does
+                # not refuse a corrected report forever (codex Area-5): a report TEXT
+                # fix is valid progress without a new run_experiment.  Gate A at the
+                # write chokepoint remains the deterministic backstop if the
+                # correction is somehow incomplete.
+                self.clear_repair_trigger()
 
         # Compute repair-iteration refusal eagerly — this check is independent
         # of min_iterations (rubric floor) so it fires even when the rubric
@@ -870,6 +913,24 @@ def apply_forced_iteration_patch() -> None:
             policy = _current_policy()
             if policy is None:
                 return _original_final_var(self, variable_name)
+
+            # §4.4 B — stash the FINAL_VAR value for the claim gate.
+            # The LocalREPL stores variables in self.locals (a plain dict).
+            # Best-effort: on any failure leave pending_final_value=None so
+            # the claim gate no-ops and gate A backstops at the write chokepoint.
+            try:
+                if policy.claim_gate is not None:
+                    _var_name = variable_name if isinstance(variable_name, str) else str(variable_name)
+                    _raw_val = getattr(self, "locals", {}).get(_var_name)
+                    if _raw_val is not None:
+                        try:
+                            policy.pending_final_value = str(_raw_val)
+                        except Exception:  # noqa: BLE001
+                            policy.pending_final_value = None
+                    else:
+                        policy.pending_final_value = None
+            except Exception:  # noqa: BLE001 — never block the policy on stash failure
+                policy.pending_final_value = None
 
             # PR-μ Solution C: two-experiment-per-iteration anti-pattern check.
             # Refuses BEFORE the existing should_refuse() so the message is precise.

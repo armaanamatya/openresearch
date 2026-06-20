@@ -245,6 +245,47 @@ def test_validator_stamp_present_in_full_shape():
 
 
 # ---------------------------------------------------------------------------
+# 5b. §4.7 stamp fix — the validator stamp prefers OPENRESEARCH_VALIDATOR_MODEL.
+# ---------------------------------------------------------------------------
+def test_validator_stamp_prefers_validator_model_env(monkeypatch):
+    # A bridged azure-foundry validator (model None) would otherwise stamp the
+    # global AZURE_FOUNDRY_DEPLOYMENT (the executor's model). With
+    # OPENRESEARCH_VALIDATOR_MODEL set, the stamp must name the validator model.
+    monkeypatch.setenv("OPENRESEARCH_VALIDATOR_MODEL", "grok-4.3-val")
+    spec = parse_model_spec("grok", role="validator")
+    assert spec.provider == PROVIDER_AZURE_FOUNDRY
+    assert spec.stamp == "azure-foundry:grok-4.3-val"
+
+
+def test_validator_model_env_does_not_leak_to_other_roles(monkeypatch):
+    # The env preference is keyed on role == "validator" only — a grader/verifier
+    # foundry RoleSpec must NOT pick up OPENRESEARCH_VALIDATOR_MODEL.
+    monkeypatch.setenv("OPENRESEARCH_VALIDATOR_MODEL", "grok-4.3-val")
+    grader = parse_model_spec("grok", role="grader")
+    assert grader.role == "grader"
+    assert grader.stamp != "azure-foundry:grok-4.3-val"
+
+
+def test_validator_stamp_ignores_blank_validator_model_env(monkeypatch):
+    # A blank/whitespace OPENRESEARCH_VALIDATOR_MODEL falls through to the normal
+    # deployment-resolution path (no spurious "azure-foundry:" stamp).
+    monkeypatch.setenv("OPENRESEARCH_VALIDATOR_MODEL", "   ")
+    spec = parse_model_spec("gpt-4o-azure", role="validator")
+    # Concrete model present → normal stamp, env ignored.
+    assert spec.stamp == "azure:gpt-4o"
+
+
+def test_roleselection_validator_stamp_inherits_env_preference(monkeypatch):
+    # The aggregator delegates to RoleSpec.stamp, so the §4.7 preference flows
+    # through RoleSelection.stamp() too.
+    monkeypatch.setenv("OPENRESEARCH_VALIDATOR_MODEL", "gpt-4o-valB")
+    sel = resolve_role_models(
+        planner_token="claude-oauth", cli_models="validator=gpt-4o-azure"
+    )
+    assert sel.stamp()["validator"] == "azure:gpt-4o-valB"
+
+
+# ---------------------------------------------------------------------------
 # 6. No regression — adding validator must not change grader/verifier/executor.
 # ---------------------------------------------------------------------------
 def test_grader_verifier_unchanged_when_no_validator():

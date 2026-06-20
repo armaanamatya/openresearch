@@ -581,3 +581,53 @@ def test_should_veto_not_on_real_metrics(monkeypatch):
     assert zero_metrics_should_veto(
         {"loss": 1.2, "reward": 0.3}, gpu_claim=True, provenance_present=False
     ) is False
+
+
+# ---------------------------------------------------------------------------
+# codex-1 regression: hparam-masking fix (§4.0 of pre-gpu-code-review spec)
+# ---------------------------------------------------------------------------
+
+def test_codex1_hparam_does_not_mask_all_zero_results(monkeypatch):
+    """Regression for codex-1 latent P0: a nonzero hyperparameter (learning_rate=1e-5)
+    must no longer prevent the guard from vetoing all-zero result metrics.
+
+    Before the fix, normalize_metric_values({loss:0.0, accuracy:0.0, learning_rate:1e-5})
+    returned [0.0, 0.0, 1e-5] — not all-zero — so the veto was skipped.
+    After the fix, learning_rate is excluded as a config key, leaving [0.0, 0.0],
+    which is all-zero, and the veto fires correctly.
+    """
+    monkeypatch.setenv("OPENRESEARCH_ZERO_METRICS_GUARD", "1")
+    assert zero_metrics_should_veto(
+        {"loss": 0.0, "accuracy": 0.0, "learning_rate": 1e-5},
+        gpu_claim=True,
+        provenance_present=False,
+    ) is True, (
+        "learning_rate=1e-5 must not mask the all-zero result metrics; "
+        "the guard must veto this shape."
+    )
+
+
+def test_codex1_lr_shorthand_also_excluded(monkeypatch):
+    """The short alias 'lr' must also be excluded as a config key."""
+    monkeypatch.setenv("OPENRESEARCH_ZERO_METRICS_GUARD", "1")
+    assert zero_metrics_should_veto(
+        {"loss": 0.0, "mean_reward": 0.0, "lr": 3e-4},
+        gpu_claim=True,
+        provenance_present=False,
+    ) is True, "lr=3e-4 must not mask all-zero result metrics"
+
+
+def test_codex1_result_keys_not_excluded_by_config_fix():
+    """The config-key exclusion must NOT drop any of the SDAR result keys."""
+    from backend.agents.rlm.zero_metrics_detection import normalize_metric_values
+    sdar_keys = {
+        "loss", "l_grpo", "mean_reward", "accuracy_avg", "f1_avg",
+        "teacher_gap_mean", "gate_activation_ratio", "success_rate",
+        "return", "accuracy", "reward",
+    }
+    metrics = {k: 0.5 for k in sdar_keys}
+    vals = normalize_metric_values(metrics)
+    assert len(vals) == len(sdar_keys), (
+        f"Config-key exclusion dropped result keys; expected {len(sdar_keys)} values, "
+        f"got {len(vals)}.  Metrics: {metrics}"
+    )

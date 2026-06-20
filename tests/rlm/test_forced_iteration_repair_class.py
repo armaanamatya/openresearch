@@ -184,3 +184,109 @@ def test_validator_gate_exhausts_to_repair_exhausted():
     results = [p.should_refuse()[0] for _ in range(4)]
     assert results[-1] is False  # eventually accepts (repair_exhausted)
     assert p._terminal_failure_class == "repair_exhausted"
+
+
+# ---------------------------------------------------------------------------
+# Claim gate (§4.4 B) — an ungrounded-report veto feeds the SAME fix-first loop
+# ---------------------------------------------------------------------------
+
+
+def test_claim_gate_vetoed_refuses_final_var():
+    # An ungrounded report claim → refuse FINAL_VAR with the gate's directive.
+    p = ForcedIterationPolicy(
+        min_iterations=0,
+        evidence_fingerprint=lambda: "ev",
+        claim_gate=lambda: (True, "report claims accuracy 0.84 not in metrics.json"),
+        current_iteration=lambda: 1,
+        remaining_s=lambda: 9999.0,
+    )
+    p._total_run_experiments = 1
+    refuse, msg = p.should_refuse()
+    assert refuse is True
+    assert "accuracy" in msg.lower()
+
+
+def test_claim_gate_inert_when_none():
+    # No claim_gate → byte-identical (no claim veto path); min_iterations 0 accepts.
+    p = ForcedIterationPolicy(
+        min_iterations=0, current_iteration=lambda: 1, remaining_s=lambda: 9999.0
+    )
+    p._total_run_experiments = 1
+    refuse, _ = p.should_refuse()
+    assert refuse is False
+
+
+def test_claim_gate_clean_does_not_refuse():
+    # claim_gate returning None (claims grounded / unverifiable) → no refusal.
+    p = ForcedIterationPolicy(
+        min_iterations=0,
+        evidence_fingerprint=lambda: "ev",
+        claim_gate=lambda: None,
+        current_iteration=lambda: 1,
+        remaining_s=lambda: 9999.0,
+    )
+    p._total_run_experiments = 1
+    refuse, _ = p.should_refuse()
+    assert refuse is False
+
+
+def test_claim_gate_exhausts_to_repair_exhausted():
+    # A persistently-ungrounded report on UNCHANGED evidence stops honestly as
+    # repair_exhausted (bounded by REPAIR_MAX), never an infinite refusal loop.
+    p = ForcedIterationPolicy(
+        min_iterations=0,
+        evidence_fingerprint=lambda: "stuck",
+        claim_gate=lambda: (True, "still ungrounded"),
+        current_iteration=lambda: 1,
+        remaining_s=lambda: 9999.0,
+    )
+    p._total_run_experiments = 1
+    results = [p.should_refuse()[0] for _ in range(4)]
+    assert results[-1] is False  # eventually accepts (repair_exhausted)
+    assert p._terminal_failure_class == "repair_exhausted"
+
+
+def test_claim_gate_exception_treated_as_clean():
+    # A claim_gate that raises must never crash the policy; treated as clean.
+    def _boom():
+        raise RuntimeError("claim gate blew up")
+
+    p = ForcedIterationPolicy(
+        min_iterations=0,
+        evidence_fingerprint=lambda: "ev",
+        claim_gate=_boom,
+        current_iteration=lambda: 1,
+        remaining_s=lambda: 9999.0,
+    )
+    p._total_run_experiments = 1
+    refuse, _ = p.should_refuse()
+    assert refuse is False
+
+
+def test_claim_gate_clean_after_veto_clears_stale_trigger():
+    # codex Area-5: after a report_claim veto, if the report is corrected so the gate
+    # goes clean, the stale repair trigger must clear so FINAL_VAR is no longer refused
+    # — a report TEXT fix is valid progress without a new run_experiment. Without the
+    # fix, the repair floor kept refusing the corrected report until repair_exhausted.
+    state = {"veto": True}
+
+    def _gate():
+        return (True, "report claims accuracy 0.84 not in metrics.json") if state["veto"] else None
+
+    p = ForcedIterationPolicy(
+        min_iterations=0,
+        evidence_fingerprint=lambda: "ev",
+        claim_gate=_gate,
+        current_iteration=lambda: 1,
+        remaining_s=lambda: 9999.0,
+    )
+    p._total_run_experiments = 1
+    # First attempt: ungrounded → refuse + sets the report_claim repair trigger.
+    refuse1, _ = p.should_refuse()
+    assert refuse1 is True
+    assert p._last_repair_failure_class == "report_claim"
+    # Root corrects the report text → gate now clean.
+    state["veto"] = False
+    refuse2, _ = p.should_refuse()
+    assert refuse2 is False, "a corrected report must not stay stuck in the repair floor"
+    assert p._last_repair_failure_class is None

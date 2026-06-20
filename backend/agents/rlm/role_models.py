@@ -48,6 +48,7 @@ Design invariants (intentional, load-bearing):
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 
 # Canonical sub-role provider taxonomy. ``anthropic-oauth`` and ``anthropic``
@@ -233,7 +234,18 @@ class RoleSpec:
         leaderboard. Display-only: the build path still reads the deployment from
         env, so resolution here changes nothing about which model is called.
         Fail-soft — falls back to the placeholder if resolution raises.
+
+        §4.7 stamp fix: for the ``validator`` role, ``OPENRESEARCH_VALIDATOR_MODEL``
+        (the deployment the validator transport actually targets) takes precedence
+        over the role's own ``model`` — otherwise a bridged azure-foundry validator
+        would stamp the global ``AZURE_FOUNDRY_DEPLOYMENT`` (the executor's model)
+        rather than the operator-selected validator model. Cosmetic: the transport
+        already targets ``OPENRESEARCH_VALIDATOR_MODEL`` (``build_validator_client``).
         """
+        if self.role == "validator":
+            _vm = os.environ.get("OPENRESEARCH_VALIDATOR_MODEL", "").strip()
+            if _vm:
+                return f"{self.provider}:{_vm}"
         model = self.model
         if model is None and self.provider == PROVIDER_AZURE_FOUNDRY:
             try:
@@ -283,6 +295,8 @@ class RoleSelection:
 
         Sub-roles left to inherit stamp ``None``; ``run.py`` backfills those
         with the effective inherited model (planner's / the legacy grader's).
+        The validator's ``OPENRESEARCH_VALIDATOR_MODEL`` preference lives in
+        ``RoleSpec.stamp`` (§4.7), so each role here simply delegates to it.
         """
         return {
             "planner": self.planner.stamp,

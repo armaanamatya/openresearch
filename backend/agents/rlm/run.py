@@ -133,13 +133,23 @@ def _fixfirst_loop_engaged() -> bool:
     """True iff the P3 fix-first repair loop should be engaged for this run.
 
     The loop activates when EITHER the zero-metrics guard OR the external
-    adversarial validator is enabled.  When neither flag is set this returns
+    adversarial validator is enabled, or any of the pre-GPU/report gates that
+    feed the same repair loop.  When none of these flags are set this returns
     False and the policy is byte-identical to the pre-P3 behavior (no
     evidence_fingerprint / validator_gate hooks are assigned).
     """
     from backend.agents.rlm.zero_metrics_detection import zero_metrics_guard_enabled  # noqa: PLC0415
     from backend.agents.rlm.external_validator import external_validator_enabled  # noqa: PLC0415
-    return zero_metrics_guard_enabled() or external_validator_enabled()
+    from backend.agents.rlm.report_claim_gate import report_claim_gate_enabled  # noqa: PLC0415
+    _code_review = os.environ.get("OPENRESEARCH_CODE_REVIEW_GATE", "").strip() == "1"
+    _smoke = os.environ.get("OPENRESEARCH_METRIC_REALITY_SMOKE", "").strip() == "1"
+    return (
+        zero_metrics_guard_enabled()
+        or external_validator_enabled()
+        or report_claim_gate_enabled()
+        or _code_review
+        or _smoke
+    )
 
 
 # --- Tuning constants ------------------------------------------------------
@@ -3137,6 +3147,55 @@ async def run_pipeline_rlm(
 
         iteration_policy.validator_gate = _validator_gate
 
+    # §4.4 B — claim gate: wire only when the fix-first loop is engaged AND the
+    # report-claim gate flag is on. Stringifies the pending FINAL_VAR value
+    # (stashed by _intercepted_final_var), extracts result claims, and checks
+    # them against on-disk measured values. Returns (vetoed, directive) when
+    # ungrounded claims exist, else None. Fail-soft: any exception → None.
+    from backend.agents.rlm.report_claim_gate import report_claim_gate_enabled as _rcg_enabled  # noqa: PLC0415
+    if _rcg_enabled():
+        from backend.agents.rlm.claim_grounding import (  # noqa: PLC0415
+            check_claims_grounded as _check_claims_grounded,
+            extract_result_claims as _extract_result_claims,
+            flatten_measured_values as _flatten_measured_values,
+        )
+
+        def _claim_gate() -> tuple[bool, str] | None:
+            """Check the pending FINAL_VAR value's claims vs on-disk metrics.
+
+            Returns (True, directive) when ≥1 ungrounded result claim is found
+            and measured evidence is present, else None (clean or unverifiable).
+            Fail-soft: any error → None.
+            """
+            try:
+                _pending = iteration_policy.pending_final_value
+                if not _pending:
+                    return None
+                _claims = _extract_result_claims(_pending)
+                if not _claims:
+                    return None
+                _measured = _flatten_measured_values(project_dir)
+                if not _measured:
+                    return None  # no evidence → unverifiable, not ungrounded
+                _grounding = _check_claims_grounded(_claims, _measured)
+                _ungrounded = _grounding.get("ungrounded", [])
+                if not _ungrounded:
+                    return None
+                # Build a concise cited directive.
+                _first = _ungrounded[0]
+                _directive = (
+                    f"FINAL_VAR refused: your report claims {_first.value} "
+                    f"({_first.term}) but code/metrics.json has no matching "
+                    "measured value within 5%. Either run_experiment to produce "
+                    "that evidence or correct the report, then FINAL_VAR again."
+                )
+                return (True, _directive)
+            except Exception:  # noqa: BLE001 — never crash the policy
+                logger.debug("_claim_gate: failed; treating as clean", exc_info=True)
+                return None
+
+        iteration_policy.claim_gate = _claim_gate
+
     # PR-α followup: populate the late-binding holder so the tool wrapper
     # can call policy.record_repair_attempt() when run_experiment returns
     # a repairable outcome.  Slot 0 is set here; wrappers close over the list.
@@ -3557,6 +3616,20 @@ def _finalize(
                 _val_tier = _validator_separation_tier(getattr(ctx, "role_selection", None))
                 _val_label = os.environ.get("OPENRESEARCH_VALIDATOR_MODEL", "").strip() or \
                              os.environ.get("OPENRESEARCH_VALIDATOR_BACKEND", "").strip() or "validator"
+                # §4.5: thread report claims into the panel when OPENRESEARCH_VALIDATOR_CHECK_REPORT=1.
+                _report_claims_for_panel = None
+                if os.environ.get("OPENRESEARCH_VALIDATOR_CHECK_REPORT", "").strip() == "1":
+                    try:
+                        from backend.agents.rlm.claim_grounding import extract_result_claims as _erc  # noqa: PLC0415
+                        _summary = getattr(report, "reproduction_summary", "") or ""
+                        _rm = getattr(report, "reported_metrics", None)
+                        _rm_text = (
+                            _rm if isinstance(_rm, str) else
+                            (__import__("json").dumps(_rm, default=str) if _rm else "")
+                        )
+                        _report_claims_for_panel = _erc(_summary + "\n" + _rm_text)
+                    except Exception:  # noqa: BLE001
+                        _report_claims_for_panel = None
                 _verdict = run_validation_panel(
                     validator_client=_val_client,
                     panel_models=[_val_label],
@@ -3564,6 +3637,7 @@ def _finalize(
                     project_dir=project_dir,
                     leaf_records=_leaf_records,
                     separation=_val_tier,
+                    report_claims=_report_claims_for_panel,
                 )
                 persist_verdict(project_dir, _verdict)
                 logger.info(

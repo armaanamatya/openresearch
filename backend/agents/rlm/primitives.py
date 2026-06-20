@@ -66,6 +66,8 @@ _RUN_EXPERIMENT_REPAIRABLE_FAILURES = {
     "scope_shape_violation",
     "dockerfile_invalid",
     "fabrication_suspected",   # GAP-1: VRAM-evidence fabrication → agent must re-implement
+    "code_review_rejected",    # P1: pre-GPU code review found anti-fabrication bug
+    "smoke_metrics_unreal",    # P2: pre-GPU smoke found non-real metrics
     "unknown",
 }
 _RUN_EXPERIMENT_RETRYABLE_FAILURES = {
@@ -5960,6 +5962,116 @@ def run_experiment(
     except Exception:  # noqa: BLE001 — pre-flight MUST NOT block on its own bug
         logger.exception("run_experiment: pre_flight_validator raised — skipping")
 
+    # P1 — pre-GPU code-review gate (flag-gated, default OFF; spec 2026-06-20 §4.1).
+    # Uses the grok validator (EXTERNAL_VALIDATOR=1) to review training code for
+    # anti-fabrication issues BEFORE any GPU is spent.  Fail-OPEN: any error →
+    # non-blocking (P2 + post-run guards backstop).
+    try:
+        from backend.agents.rlm.code_review_gate import (  # noqa: PLC0415
+            code_review_gate_enabled,
+            review_executor_code,
+        )
+        if code_review_gate_enabled():
+            _crg_client = getattr(ctx, "validator_client", None)
+            _crg_method_ctx = "Generic anti-fabrication review: SDAR-style RL training"
+            try:
+                _crg_arxiv = getattr(ctx, "arxiv_id", None)
+                if _crg_arxiv:
+                    from backend.agents.prompts.paper_hints import PAPER_HINTS as _CRG_PH  # noqa: PLC0415
+                    import re as _crg_re  # noqa: PLC0415
+                    _crg_hint = _CRG_PH.get(_crg_re.sub(r"v\d+$", "", str(_crg_arxiv))) or _CRG_PH.get(str(_crg_arxiv))
+                    if _crg_hint and getattr(_crg_hint, "guidance", None):
+                        _crg_method_ctx = f"Paper {_crg_arxiv}: {_crg_hint.guidance[:1000]}"
+                _crg_rubric_path = ctx.project_dir / "generated_rubric.json"
+                if _crg_rubric_path.exists():
+                    import json as _crg_json  # noqa: PLC0415
+                    _crg_rubric = _crg_json.loads(_crg_rubric_path.read_text(encoding="utf-8"))
+                    _crg_contrib = str(_crg_rubric.get("core_contribution") or "")[:500]
+                    if _crg_contrib:
+                        _crg_method_ctx = f"{_crg_method_ctx}\nCore contribution: {_crg_contrib}"
+            except Exception:  # noqa: BLE001 — building method_context must never block
+                pass
+            _crg_verdict = review_executor_code(
+                validator_client=_crg_client,
+                code_dir=Path(code_path),
+                method_context=_crg_method_ctx,
+            )
+            if _crg_verdict.blocking:
+                _crg_cited = [
+                    f for f in _crg_verdict.findings
+                    if f.get("severity") in {"will_produce_fake_metrics", "will_produce_wrong_metrics"}
+                ]
+                _crg_msg = (
+                    "code_review_rejected: the code review found "
+                    f"{len(_crg_cited)} blocking anti-fabrication issue(s) — "
+                    + "; ".join(
+                        f"{f.get('file')}:{f.get('line')} [{f.get('anti_pattern')}] {f.get('detail')}"
+                        for f in _crg_cited[:3]
+                    )
+                )
+                try:
+                    _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                        "code": "code_review_rejected", "message": _crg_msg,
+                    })
+                except Exception:  # noqa: BLE001
+                    pass
+                logger.warning("run_experiment[%s]: %s", getattr(ctx, "run_id", "?"), _crg_msg)
+                return _persist_experiment_result(ctx, {
+                    "success": False,
+                    "metrics": {},
+                    "failure_class": "code_review_rejected",
+                    "error": _crg_msg,
+                    "repair_context": {"cited_findings": _crg_cited[:5]},
+                }, model_id=model_id, eval_env=eval_env)
+    except Exception:  # noqa: BLE001 — the code-review gate MUST NOT block on its own bug
+        logger.exception("run_experiment: code_review_gate raised — skipping")
+
+    # P2 — metric-reality smoke (flag-gated, default OFF; spec 2026-06-20 §4.2).
+    # Runs ~2 training steps on one representative per cell-group BEFORE the full
+    # grid to assert that the training loop backprops a real loss.  Fail-OPEN only
+    # when the smoke cannot launch; any executor-side bad outcome is judged.
+    try:
+        from backend.agents.rlm.metric_reality_smoke import (  # noqa: PLC0415
+            metric_reality_smoke_enabled,
+            run_metric_reality_smoke,
+        )
+        if metric_reality_smoke_enabled():
+            _p2_cells: list | None = None
+            try:
+                _p2_cells_path = Path(code_path) / "cells.json"
+                if _p2_cells_path.is_file():
+                    import json as _p2_json  # noqa: PLC0415
+                    _p2_manifest = _p2_json.loads(_p2_cells_path.read_text(encoding="utf-8"))
+                    _p2_cells = [
+                        c for c in (_p2_manifest.get("cells") or [])
+                        if isinstance(c, dict) and c.get("id")
+                    ]
+            except Exception:  # noqa: BLE001
+                _p2_cells = None
+            _p2_smoke = run_metric_reality_smoke(
+                ctx=ctx,
+                code_dir=Path(code_path),
+                cells=_p2_cells,
+            )
+            if not _p2_smoke.get("ok"):
+                _p2_msg = _p2_smoke.get("detail") or "smoke_metrics_unreal: smoke failed"
+                try:
+                    _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                        "code": "smoke_metrics_unreal", "message": _p2_msg,
+                    })
+                except Exception:  # noqa: BLE001
+                    pass
+                logger.warning("run_experiment[%s]: %s", getattr(ctx, "run_id", "?"), _p2_msg)
+                return _persist_experiment_result(ctx, {
+                    "success": False,
+                    "metrics": {},
+                    "failure_class": "smoke_metrics_unreal",
+                    "error": _p2_msg,
+                    "repair_context": {"smoke_detail": _p2_msg},
+                }, model_id=model_id, eval_env=eval_env)
+    except Exception:  # noqa: BLE001 — the smoke gate MUST NOT block on its own bug
+        logger.exception("run_experiment: metric_reality_smoke raised — skipping")
+
     # PR-μ Solution B: mode-scaled wall-clock cap.
     # resolve_experiment_timeout_s applies OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S >
     # EXPERIMENT_TIMEOUT_BY_MODE[execution_mode] > _DEFAULT_EXPERIMENT_TIMEOUT_S,
@@ -6509,6 +6621,43 @@ def run_experiment(
                 )
         except Exception:  # noqa: BLE001 — the zero-metrics floor must never crash the run
             logger.debug("run_experiment: zero-metrics guard failed", exc_info=True)
+
+    # C — metric-semantics guard (flag-gated, default OFF; spec 2026-06-20 §4.6).
+    # Out-of-range rate metrics (accuracy/f1/precision/recall/success_rate > 1+eps) or
+    # non-finite loss/reward are degraded to fabrication_suspected.  Conservative —
+    # 0.0 is in range; only a CLEAR out-of-range fires.  Fail-soft.
+    if result.get("success"):
+        try:
+            from backend.agents.rlm.metric_semantics import (  # noqa: PLC0415
+                metric_semantics_guard_enabled,
+                metric_semantics_violation,
+            )
+            if metric_semantics_guard_enabled():
+                _ms_violation = metric_semantics_violation(result.get("metrics"))
+                if _ms_violation is not None:
+                    _ms_msg = (
+                        "fabrication_suspected: metric-semantics violation — "
+                        + _ms_violation
+                        + ". Re-implement: ensure rate metrics (accuracy/f1/etc.) are "
+                        "fractions in [0, 1] and loss/reward are finite."
+                    )
+                    result = {
+                        **result,
+                        "success": False,
+                        "failure_class": "fabrication_suspected",
+                        "error": _ms_msg,
+                    }
+                    try:
+                        _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                            "code": "fabrication_suspected", "message": _ms_msg,
+                        })
+                    except Exception:  # noqa: BLE001
+                        logger.debug("run_experiment: metric-semantics event emit failed")
+                    logger.warning(
+                        "run_experiment[%s]: %s", getattr(ctx, "run_id", "?"), _ms_msg,
+                    )
+        except Exception:  # noqa: BLE001 — the metric-semantics guard must never crash the run
+            logger.debug("run_experiment: metric-semantics guard failed", exc_info=True)
 
     # Finalize-on-timeout (2026-06-08): a timed-out / stalled experiment must SCORE its
     # completed work, not zero it (the Adam failure: 4/5 families trained, the timeout fired

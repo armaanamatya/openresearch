@@ -191,6 +191,35 @@ def check_rerun_agrees(  # noqa: ANN002
     return None  # P2: always skipped
 
 
+def check_report_claims_grounded(
+    report_claims: list[Any] | None,
+    project_dir: Path,
+) -> bool:
+    """Machine-check: True (grounded/clean) iff all report claims are grounded.
+
+    The machine-check IS ``claim_grounding.check_claims_grounded`` — the
+    deterministic engine, not an LLM judgment.  Returns True (not violated) when
+    report_claims is None/empty or when no ungrounded claims are found; returns
+    False (violated) when ≥1 ungrounded result claim exists and measured evidence
+    is present (evidence_gate owns the no-evidence case).
+    Fail-soft → True (clean).
+    """
+    try:
+        if not report_claims:
+            return True
+        from backend.agents.rlm.claim_grounding import (  # noqa: PLC0415
+            check_claims_grounded,
+            flatten_measured_values,
+        )
+        measured = flatten_measured_values(project_dir)
+        if not measured:
+            return True  # unverifiable — evidence_gate owns the no-evidence case
+        grounding = check_claims_grounded(report_claims, measured)
+        return len(grounding.get("ungrounded", [])) == 0
+    except Exception:  # noqa: BLE001 — fail-soft
+        return True
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -200,6 +229,7 @@ _VALID_PREDICATES = frozenset({
     "not_all_constant",
     "gpu_claim_plausible",
     "rerun_agrees",
+    "report_claims_grounded",
 })
 
 _ADVERSARIAL_SYSTEM = """You are an adversarial ML research verifier.
@@ -214,6 +244,7 @@ Valid predicates:
 - not_all_constant: suspect all result values are zero or suspiciously constant
 - gpu_claim_plausible: suspect the GPU/training claim is implausible given the evidence
 - rerun_agrees: suspect a re-run would not reproduce the claimed result
+- report_claims_grounded: suspect the report narrative claims a result value absent from code/metrics.json
 
 Output a JSON array of suspicions. If you find no issues output [].
 Do not explain — only output the JSON array."""
@@ -225,6 +256,9 @@ METRICS:
 
 LEAF RECORDS (rubric evaluation context):
 {leaf_records_json}
+
+REPORT CLAIMS (root's achieved-result narrative, optional):
+{report_claims_json}
 
 Output ONLY a JSON array of {{predicate, metric_ref}} suspicions. Example:
 [{{"predicate": "not_all_constant", "metric_ref": "mean_reward"}}, {{"predicate": "provenance_present", "metric_ref": "accuracy_avg"}}]"""
@@ -281,11 +315,14 @@ def _machine_check(
     metrics: Any,
     project_dir: Path,
     evidence: dict[str, Any],
+    *,
+    report_claims: list[Any] | None = None,
 ) -> PredicateVerdict:
     """Run the deterministic machine-check for ``predicate`` and return a PredicateVerdict.
 
     ``violated=True`` means the machine-check confirmed the predicate is violated
     (i.e. the suspicion is substantiated).
+    ``report_claims`` is only consulted for the ``report_claims_grounded`` predicate.
     """
     if predicate == "provenance_present":
         present = check_provenance_present(metrics, project_dir)
@@ -348,6 +385,26 @@ def _machine_check(
             detail="rerun_agrees check is pending (P3) — not vetoed at P2",
         )
 
+    elif predicate == "report_claims_grounded":
+        grounded = check_report_claims_grounded(report_claims, project_dir)
+        if grounded:
+            return PredicateVerdict(
+                predicate=predicate,
+                metric_ref=metric_ref,
+                violated=False,
+                detail="report claims are grounded by code/metrics.json",
+            )
+        else:
+            return PredicateVerdict(
+                predicate=predicate,
+                metric_ref=metric_ref,
+                violated=True,
+                detail=(
+                    "report narrative claims result values absent from code/metrics.json "
+                    "(within 5% tolerance)"
+                ),
+            )
+
     else:
         # Unknown predicate — conservatively not violated
         return PredicateVerdict(
@@ -399,6 +456,7 @@ def run_validation_panel(
     project_dir: Path,
     leaf_records: list[dict[str, Any]],
     separation: str,
+    report_claims: list[Any] | None = None,
 ) -> ValidatorVerdict:
     """Run the adversarial validation panel and return a min-aggregated verdict.
 
@@ -439,9 +497,16 @@ def run_validation_panel(
     except Exception:  # noqa: BLE001
         leaf_records_json = "[]"
 
+    try:
+        _rc_list = [{"term": c.term, "value": c.value, "context": c.context} for c in (report_claims or [])]
+        report_claims_json = json.dumps(_rc_list[:20], indent=2, default=str) if _rc_list else "null"
+    except Exception:  # noqa: BLE001
+        report_claims_json = "null"
+
     user_prompt = _ADVERSARIAL_USER_TEMPLATE.format(
         metrics_json=metrics_json,
         leaf_records_json=leaf_records_json,
+        report_claims_json=report_claims_json,
     )
 
     n = validator_panel_n()
@@ -478,7 +543,7 @@ def run_validation_panel(
         for sus in suspicions:
             pred = sus["predicate"]
             ref = sus["metric_ref"]
-            verdict = _machine_check(pred, ref, metrics, project_dir, evidence_ctx)
+            verdict = _machine_check(pred, ref, metrics, project_dir, evidence_ctx, report_claims=report_claims)
             all_predicate_verdicts.append(verdict)
             if verdict.violated:
                 vetoed_refs.add(ref)
