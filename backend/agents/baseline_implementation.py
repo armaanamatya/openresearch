@@ -2361,6 +2361,19 @@ def _compute_constraint_guidance(
                 guidance += "\n\n" + _neg + "\n"
         except Exception:  # noqa: BLE001 — advisory memory must never break the prompt
             pass
+    # Cross-run positive recipes (OPENRESEARCH_POSITIVE_RECIPES) — inject the top
+    # prior SUCCESSFUL method pattern for this paper class (admitted only on Tier-1 +
+    # validator evidence, never the grade). DISTINCT from the paper's data recipes.
+    if project_dir is not None and arxiv_id:
+        try:
+            from backend.agents.rlm.recipe_library import derive_paper_class, recipe_guidance_block
+            from backend.agents.prompts.paper_hints import PAPER_HINTS
+            _pc = derive_paper_class(arxiv_id=arxiv_id, paper_hints=PAPER_HINTS, rubric=None)
+            _rec = recipe_guidance_block(Path(project_dir).parent, _pc)
+            if _rec:
+                guidance += "\n\n" + _rec + "\n"
+        except Exception:  # noqa: BLE001 — advisory only
+            pass
     # Lane Q — minimize-compute substitution rules + scope.declared_reductions
     # contract. Only injected when the user opted in via the CLI flag or the
     # lab UI checkbox; strict reproduction stays the default.

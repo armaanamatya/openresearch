@@ -1414,6 +1414,23 @@ def _finalize_fatal_primitive_abort(
     )
     _notify_run_terminal(project_dir)
 
+    # Positive recipe admission (OPENRESEARCH_POSITIVE_RECIPES, default-OFF).
+    # Mirrors the mine_lessons pattern; fail-soft so a bookkeeping error never
+    # interrupts this finalize path.
+    try:
+        from backend.agents.rlm import recipe_library as _rl
+        from backend.agents.prompts.paper_hints import PAPER_HINTS as _PH
+        from backend.agents.rlm.external_validator import load_verdict as _load_verdict
+        if _rl.positive_recipes_enabled():
+            _report_dict = report.model_dump() if hasattr(report, "model_dump") else (report if isinstance(report, dict) else {})
+            _verdict = _load_verdict(project_dir)
+            _paper_class = _rl.derive_paper_class(
+                arxiv_id=getattr(ctx, "arxiv_id", None), paper_hints=_PH, rubric=_report_dict.get("rubric"),
+            )
+            _rl.admit_recipe(project_dir, project_dir.parent, report=_report_dict, validator_verdict=_verdict, paper_class=_paper_class)
+    except Exception:  # noqa: BLE001 — recipe bookkeeping must never break finalize
+        logger.debug("_finalize_fatal_primitive_abort: recipe admission skipped", exc_info=True)
+
     try:
         emit(
             build_run_complete_event(
@@ -1537,6 +1554,21 @@ def _hard_stop_with_report(
     except Exception:  # noqa: BLE001
         logger.exception("run_pipeline_rlm: hard-stop could not write final report")
     _notify_run_terminal(project_dir)
+    # Positive recipe admission (OPENRESEARCH_POSITIVE_RECIPES, default-OFF).
+    # The ctx guard is load-bearing here: _hard_stop_with_report has ctx: Any = None.
+    try:
+        from backend.agents.rlm import recipe_library as _rl
+        from backend.agents.prompts.paper_hints import PAPER_HINTS as _PH
+        from backend.agents.rlm.external_validator import load_verdict as _load_verdict
+        if ctx is not None and _rl.positive_recipes_enabled():
+            _report_dict = report.model_dump() if hasattr(report, "model_dump") else (report if isinstance(report, dict) else {})
+            _verdict = _load_verdict(project_dir)
+            _paper_class = _rl.derive_paper_class(
+                arxiv_id=getattr(ctx, "arxiv_id", None), paper_hints=_PH, rubric=_report_dict.get("rubric"),
+            )
+            _rl.admit_recipe(project_dir, project_dir.parent, report=_report_dict, validator_verdict=_verdict, paper_class=_paper_class)
+    except Exception:  # noqa: BLE001 — recipe bookkeeping must never break finalize
+        logger.debug("_hard_stop_with_report: recipe admission skipped", exc_info=True)
     try:
         emit(
             build_run_complete_event(
@@ -3533,6 +3565,23 @@ def _finalize(
         mine_lessons(project_dir, project_dir.parent, getattr(ctx, "arxiv_id", None))
     except Exception:  # noqa: BLE001 — lesson bookkeeping must never break finalize
         logger.debug("_finalize: mine_lessons raised", exc_info=True)
+
+    # Positive recipe admission (OPENRESEARCH_POSITIVE_RECIPES, default-OFF).
+    # Mirrors mine_lessons; fired after write_final_report_rlm so the report is
+    # on disk when admit_recipe reads experiment_runs.jsonl alongside it.
+    try:
+        from backend.agents.rlm import recipe_library as _rl
+        from backend.agents.prompts.paper_hints import PAPER_HINTS as _PH
+        from backend.agents.rlm.external_validator import load_verdict as _load_verdict
+        if _rl.positive_recipes_enabled():
+            _report_dict = report.model_dump() if hasattr(report, "model_dump") else (report if isinstance(report, dict) else {})
+            _verdict = _load_verdict(project_dir)
+            _paper_class = _rl.derive_paper_class(
+                arxiv_id=getattr(ctx, "arxiv_id", None), paper_hints=_PH, rubric=_report_dict.get("rubric"),
+            )
+            _rl.admit_recipe(project_dir, project_dir.parent, report=_report_dict, validator_verdict=_verdict, paper_class=_paper_class)
+    except Exception:  # noqa: BLE001 — recipe bookkeeping must never break finalize
+        logger.debug("_finalize: recipe admission skipped", exc_info=True)
 
     # Write worker reports summary at run finalization
     try:
