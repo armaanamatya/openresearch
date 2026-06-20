@@ -128,6 +128,20 @@ apply_forced_iteration_patch()
 
 logger = logging.getLogger(__name__)
 
+
+def _fixfirst_loop_engaged() -> bool:
+    """True iff the P3 fix-first repair loop should be engaged for this run.
+
+    The loop activates when EITHER the zero-metrics guard OR the external
+    adversarial validator is enabled.  When neither flag is set this returns
+    False and the policy is byte-identical to the pre-P3 behavior (no
+    evidence_fingerprint / validator_gate hooks are assigned).
+    """
+    from backend.agents.rlm.zero_metrics_detection import zero_metrics_guard_enabled  # noqa: PLC0415
+    from backend.agents.rlm.external_validator import external_validator_enabled  # noqa: PLC0415
+    return zero_metrics_guard_enabled() or external_validator_enabled()
+
+
 # --- Tuning constants ------------------------------------------------------
 _MAX_ITERATIONS = 20          # paper Appendix A
 _MAX_DEPTH = 2                # brief §3 — depth-2 enables real rlm_query recursion
@@ -1163,6 +1177,21 @@ def _record_last_primitive_result_tools(
                     except Exception:  # noqa: BLE001 — never crash a tool wrapper
                         logger.exception(
                             "_record_last_primitive_result_tools: record_repair_attempt failed"
+                        )
+                elif (
+                    name == "run_experiment"
+                    and _outcome_value(result.get("outcome")) not in ("repairable", "partial_evidence", "fatal")
+                    and repair_policy_holder
+                ):
+                    # P3 fix-first: a SUCCESS run_experiment clears the repair trigger so
+                    # the loop stops forcing repairs once real evidence lands on disk.
+                    # INERT (clear_repair_trigger is a no-op) unless evidence_fingerprint
+                    # is wired — byte-identical to today when both flags are off.
+                    try:
+                        repair_policy_holder[0].clear_repair_trigger()
+                    except Exception:  # noqa: BLE001 — never crash a tool wrapper
+                        logger.exception(
+                            "_record_last_primitive_result_tools: clear_repair_trigger failed"
                         )
                 # comp 4b (2026-05-31): a terminal capacity/OOM stop is NOT repairable
                 # by re-running the same config — notify the policy so forced_iteration
@@ -2965,6 +2994,107 @@ async def run_pipeline_rlm(
         tools=custom_tools,
         oauth_root=oauth_root,
     )
+    # P3 fix-first repair loop (2026-06-20): wire the two new hooks that engage
+    # the evidence-fingerprint-based repair loop and the external validator gate.
+    # Both are DEFAULT-OFF: when neither OPENRESEARCH_ZERO_METRICS_GUARD nor
+    # OPENRESEARCH_EXTERNAL_VALIDATOR is set, _fixfirst_loop_engaged() is False
+    # and neither hook is assigned — the policy is byte-identical to today.
+    # B1: evidence_fingerprint — engage the loop when either guard flag is on.
+    if _fixfirst_loop_engaged():
+        def _current_evidence_fingerprint() -> str:
+            """Hash the measured on-disk metrics. Changes on real progress; fail-soft -> ''."""
+            try:
+                from backend.agents.rlm.external_validator import evidence_fingerprint as _efp  # noqa: PLC0415
+                _mp = project_dir / "code" / "metrics.json"
+                _m = json.loads(_mp.read_text(encoding="utf-8")) if _mp.exists() else {}
+                return _efp(_m)
+            except Exception:  # noqa: BLE001 — never crash the policy
+                return ""
+        iteration_policy.evidence_fingerprint = _current_evidence_fingerprint
+
+    # B2: validator_gate — only when the external validator flag is on AND a
+    # validator client was built.  The closure caches the panel result by evidence
+    # fingerprint so the LLM panel runs AT MOST ONCE per distinct evidence state
+    # (cost guard — should_refuse may call the gate on every FINAL_VAR attempt).
+    from backend.agents.rlm.external_validator import external_validator_enabled as _ext_validator_enabled  # noqa: PLC0415
+    if _ext_validator_enabled() and getattr(ctx, "validator_client", None) is not None:
+        from backend.agents.rlm.external_validator import (  # noqa: PLC0415
+            run_validation_panel as _run_validation_panel,
+            persist_verdict as _persist_verdict,
+        )
+        _panel_cache: dict[str, tuple[bool, str]] = {}
+        _val_tier = _validator_separation_tier(role_selection)
+        _val_label = _validator_label  # captured from enclosing scope (built at line ~2312)
+
+        def _validator_gate() -> tuple[bool, str] | None:
+            """Run the adversarial panel, cached by evidence fingerprint (one run per state).
+
+            Returns (vetoed, directive) on a machine-verified veto, else None.
+            Fail-soft: any error returns None (panel never crashes the policy).
+            """
+            try:
+                from backend.agents.rlm.external_validator import evidence_fingerprint as _efp  # noqa: PLC0415
+                _mp = project_dir / "code" / "metrics.json"
+                _metrics = json.loads(_mp.read_text(encoding="utf-8")) if _mp.exists() else {}
+                _fp = _efp(_metrics)
+                if _fp in _panel_cache:  # cost guard — one panel run per evidence state
+                    return _panel_cache[_fp]
+                # Gather leaf records from rubric_evaluation.json (best-effort).
+                _leaf_records: list[dict] = []
+                try:
+                    _re_path = project_dir / "rubric_evaluation.json"
+                    if _re_path.exists():
+                        _re_data = json.loads(_re_path.read_text(encoding="utf-8"))
+                        _leaf_records = _re_data.get("leaf_scores") or _re_data.get("leaves") or []
+                except Exception:  # noqa: BLE001
+                    _leaf_records = []
+                _verdict = _run_validation_panel(
+                    validator_client=ctx.validator_client,
+                    panel_models=[_val_label],
+                    metrics=_metrics,
+                    project_dir=project_dir,
+                    leaf_records=_leaf_records,
+                    separation=_val_tier,
+                )
+                _persist_verdict(project_dir, _verdict)
+                _vetoed = _verdict.status == "vetoed"
+                _directive = ""
+                if _vetoed:
+                    _directive = (
+                        "FINAL_VAR refused: the external validator vetoed these result "
+                        f"claims as unsubstantiated: {', '.join(_verdict.veto_set[:6])}. "
+                        "Re-implement so each cited metric traces to real model outputs on "
+                        "real data (loss backprops from the model, reward reads env outcomes, "
+                        "eval scores against gold), then run_experiment + verify_against_rubric."
+                    )
+                    # Route the cited directive to leaf_triage so the next implementer
+                    # prompt carries the specific repair guidance (best-effort, fail-soft).
+                    try:
+                        from backend.agents.rlm import leaf_triage as _lt  # noqa: PLC0415
+                        if _lt.is_enabled():
+                            _plan = [
+                                {
+                                    "leaf_id": r,
+                                    "score": 0.0,
+                                    "repair_class": "validator_veto",
+                                    "cost": "targeted_rerun",
+                                    "directive": _directive,
+                                    "justification": "external validator machine-verified veto",
+                                }
+                                for r in _verdict.veto_set[:6]
+                            ]
+                            _lt.persist(project_dir, {"plan": _plan, "facts": {}, "summary": "external validator veto"})
+                    except Exception:  # noqa: BLE001 — leaf_triage is advisory only
+                        pass
+                _result: tuple[bool, str] = (_vetoed, _directive)
+                _panel_cache[_fp] = _result
+                return _result
+            except Exception:  # noqa: BLE001 — the validator must never crash the policy
+                logger.debug("_validator_gate: failed; treating as clean", exc_info=True)
+                return None
+
+        iteration_policy.validator_gate = _validator_gate
+
     # PR-α followup: populate the late-binding holder so the tool wrapper
     # can call policy.record_repair_attempt() when run_experiment returns
     # a repairable outcome.  Slot 0 is set here; wrappers close over the list.
