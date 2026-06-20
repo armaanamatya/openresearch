@@ -28,6 +28,33 @@ set -a
 . "$ENV_FILE"
 set +a
 
+# --- Sonnet executor OAuth token (headless) ---------------------------------
+# The CLI reproduce path reads .env via pydantic Settings, but the OAuth check
+# (factory.py) and the claude-agent-sdk read os.environ DIRECTLY, so a token
+# sitting only in .env is invisible to them. Lift it into the environment here.
+# Sourced in a subshell so quoting is handled exactly as bash would and no other
+# .env var leaks into the run env. No-op for OAuth-free foundry-only runs.
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -f .env ]; then
+  _claude_tok="$(set -a; . ./.env >/dev/null 2>&1; printf '%s' "${CLAUDE_CODE_OAUTH_TOKEN:-}")"
+  if [ -n "$_claude_tok" ]; then
+    export CLAUDE_CODE_OAUTH_TOKEN="$_claude_tok"
+    echo "[sdar_gcp_run] CLAUDE_CODE_OAUTH_TOKEN exported from .env (Sonnet executor auth)"
+  fi
+  unset _claude_tok
+fi
+
+# --- Optional scope override (e.g. smallest-two de-risking smoke) -----------
+# If a guidance file was staged at runs/.cache/sdar_scope_guidance.txt, use it
+# as the implementer guidance; otherwise fall through to the full-matrix default
+# below. Lets a cheap smallest-two smoke precede the full 3-model run with no
+# script edit. An explicit OPENRESEARCH_BASELINE_EXTRA_GUIDANCE still wins.
+_SDAR_GUIDANCE_FILE="runs/.cache/sdar_scope_guidance.txt"
+if [ -z "${OPENRESEARCH_BASELINE_EXTRA_GUIDANCE:-}" ] && [ -f "$_SDAR_GUIDANCE_FILE" ]; then
+  OPENRESEARCH_BASELINE_EXTRA_GUIDANCE="$(cat "$_SDAR_GUIDANCE_FILE")"
+  export OPENRESEARCH_BASELINE_EXTRA_GUIDANCE
+  echo "[sdar_gcp_run] scope guidance loaded from $_SDAR_GUIDANCE_FILE"
+fi
+
 PROJECT_ID="${OPENRESEARCH_SDAR_PROJECT_ID:-sdar_gcp_20260618}"
 # Default to gpt-chat-latest as root + every sub-role (OAuth-free). Empirically
 # verified 2026-06-19 to drive the REPL loop cleanly (emits ```repl fences,

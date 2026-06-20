@@ -807,6 +807,8 @@ _REPRODUCE_DEFAULTS = {
     # Lane Q — defaults to False (strict reproduction). Set to True via
     # --minimize-compute or the lab UI "Minimize compute" checkbox.
     "minimize_compute": False,
+    # Config-file run spec (P0.3). None = not provided.
+    "run_spec": None,
 }
 
 
@@ -816,6 +818,66 @@ def _with_reproduce_defaults(args: argparse.Namespace) -> argparse.Namespace:
         if not hasattr(args, name):
             setattr(args, name, value)
     return args
+
+
+def _load_run_spec(path: str) -> None:
+    """Load a JSON run-spec file into os.environ (EARLY, before flag resolution).
+
+    The spec is a JSON object whose top-level keys are applied as follows:
+      - Keys matching ``OPENRESEARCH_*`` or ``REPROLAB_*`` → os.environ verbatim
+        (string-coerced).  These become the spec-layer defaults; explicit CLI flags
+        set the same env vars AFTER this call and therefore WIN.
+      - ``"models"`` → ``os.environ["OPENRESEARCH_ROLE_MODELS"]`` (string value).
+      - ``"baseline_extra_guidance"`` → ``os.environ["OPENRESEARCH_BASELINE_EXTRA_GUIDANCE"]``
+        as-is (multi-line survives JSON; the shell env-word-split footgun is §10's motivation).
+
+    All other keys are silently ignored (forward-compatibility).
+
+    Errors:
+      - Missing file → argparse.ArgumentTypeError (clear, fail-fast).
+      - Non-object JSON (array, string, null, …) → argparse.ArgumentTypeError.
+      - Invalid JSON → argparse.ArgumentTypeError.
+    """
+    spec_path = Path(path)
+    if not spec_path.exists():
+        raise argparse.ArgumentTypeError(
+            f"--run-spec: file not found: {path!r}"
+        )
+    try:
+        raw = spec_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise argparse.ArgumentTypeError(
+            f"--run-spec: cannot read {path!r}: {exc}"
+        ) from exc
+    try:
+        spec = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError(
+            f"--run-spec: invalid JSON in {path!r}: {exc}"
+        ) from exc
+    if not isinstance(spec, dict):
+        raise argparse.ArgumentTypeError(
+            f"--run-spec: expected a JSON object in {path!r}, got {type(spec).__name__}"
+        )
+
+    applied = 0
+    for key, val in spec.items():
+        if key in ("models",):
+            os.environ["OPENRESEARCH_ROLE_MODELS"] = str(val)
+            applied += 1
+        elif key == "baseline_extra_guidance":
+            os.environ["OPENRESEARCH_BASELINE_EXTRA_GUIDANCE"] = str(val)
+            applied += 1
+        elif key.startswith(("OPENRESEARCH_", "REPROLAB_")):
+            os.environ[key] = str(val)
+            applied += 1
+        # Unknown keys silently ignored.
+
+    print(
+        f"[run-spec] loaded {path!r}: {applied} env key(s) applied "
+        f"(explicit CLI flags override).",
+        file=sys.stderr,
+    )
 
 
 def _find_latest_rdr_project_dir(runs_root: Path, paper_id: str) -> str | None:
@@ -1558,6 +1620,17 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     # active run's demo_status to "killed" instead of leaving it "running".
     _set_active_project_id(None, runs_root)
     _install_termination_handlers()
+
+    # --run-spec: load JSON spec into os.environ BEFORE flag resolution so that
+    # every explicit CLI flag (which sets its env var AFTER this block) wins.
+    # A missing / non-object / invalid-JSON spec is a hard error here.
+    _run_spec_path = getattr(args, "run_spec", None)
+    if _run_spec_path:
+        try:
+            _load_run_spec(_run_spec_path)
+        except argparse.ArgumentTypeError as _rse:
+            print(str(_rse), file=sys.stderr)
+            return 2
 
     # Dynamic GPU CLI overrides: set env vars BEFORE any Settings construction so
     # pydantic-settings picks them up. Non-None CLI values override env defaults.
@@ -2551,6 +2624,21 @@ def _build_parser() -> argparse.ArgumentParser:
             "(with --resume-cells) fall through to a full codegen pass instead of "
             "only refreshing vendored helpers — use when train_cell.py / cells.json "
             "themselves must be regenerated, not just the env helpers."
+        ),
+    )
+    reproduce.add_argument(
+        "--run-spec",
+        dest="run_spec",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Path to a JSON config file (run spec) loaded BEFORE flag resolution. "
+            "Top-level keys: ``OPENRESEARCH_*`` / ``REPROLAB_*`` → os.environ verbatim; "
+            "``models`` → OPENRESEARCH_ROLE_MODELS; ``baseline_extra_guidance`` → "
+            "OPENRESEARCH_BASELINE_EXTRA_GUIDANCE (multi-line survives JSON, avoiding "
+            "shell env-word-split). Explicit CLI flags always override spec values. "
+            "Missing file or non-object JSON → clear error. "
+            "Replaces the 12-var env whitelist in gcp_sdar_preflight.sh."
         ),
     )
     reproduce.set_defaults(func=cmd_reproduce)

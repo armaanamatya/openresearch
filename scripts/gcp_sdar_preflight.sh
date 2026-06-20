@@ -213,10 +213,14 @@ sync_repo() {
     backend scripts docs docker infra \
     "${files[@]}" \
     "$stage/"
-  gcloud compute scp --recurse \
-    --zone "$ZONE" --project "$PROJECT" --quiet --compress \
-    "$stage"/* \
-    "$REMOTE_USER@$INSTANCE:$REMOTE_DIR/"
+  # dotglob so "$stage"/* also matches dotfiles like .env. Without it the default
+  # glob skips dotfiles, which silently dropped .env from every sync (the
+  # 2026-06-19 token miss: creds renamed locally never reached the VM).
+  ( shopt -s dotglob
+    gcloud compute scp --recurse \
+      --zone "$ZONE" --project "$PROJECT" --quiet --compress \
+      "$stage"/* \
+      "$REMOTE_USER@$INSTANCE:$REMOTE_DIR/" )
   "${ssh_base[@]}" "chmod +x $REMOTE_DIR/scripts/gcp_sdar_preflight.sh $REMOTE_DIR/scripts/sdar_gcp_assets.py $REMOTE_DIR/scripts/cancel_gcp_sdar_run.sh"
 }
 
@@ -286,21 +290,94 @@ launch_run() {
   # Push the latest run script (it may post-date the last prepare sync).
   gcloud compute scp --zone "$ZONE" --project "$PROJECT" --quiet \
     scripts/sdar_gcp_run.sh "$REMOTE_USER@$INSTANCE:$REMOTE_DIR/scripts/sdar_gcp_run.sh"
-  # Build a whitelist of run-shaping env vars to forward to the remote side.
-  # printf %q produces shell-safe quoting that survives one layer of SSH word-splitting.
-  REMOTE_ENV=""
-  for v in AZURE_FOUNDRY_DEPLOYMENT OPENRESEARCH_SDAR_PROJECT_ID OPENRESEARCH_GRADER_SAMPLES OPENRESEARCH_SDAR_MODELS OPENRESEARCH_SDAR_ROOT OPENRESEARCH_SDAR_NO_AUTOSTOP OPENRESEARCH_SDAR_OUTER_WALL_S OPENRESEARCH_SDAR_REPORT_GCS OPENRESEARCH_EVIDENCE_GATE; do
-    [ -n "${!v:-}" ] && REMOTE_ENV+="$v=$(printf %q "${!v}") "
-  done
+
+  # --- run-spec (P0.3): ship one JSON config instead of a 12-var env whitelist ---
+  # Builds runs/.cache/run_spec.json from the local env and SCPs it to the VM.
+  # The remote sdar_gcp_run.sh passes it via --run-spec so multi-line values
+  # (e.g. OPENRESEARCH_BASELINE_EXTRA_GUIDANCE) survive intact — no shell
+  # env-word-split footgun.  Optional scope-guidance text is folded into
+  # baseline_extra_guidance inside the JSON; the old sdar_scope_guidance.txt
+  # staging is kept as a fallback for scripts that have not yet adopted --run-spec.
+  #
+  # JSON spec format (matches _load_run_spec in backend/cli.py):
+  #   { "OPENRESEARCH_<KEY>": "<value>", ..., "baseline_extra_guidance": "<text>" }
+  # Keys that are empty/unset locally are omitted (never forwarded as empty strings).
+  mkdir -p runs/.cache
+
+  # Start with a minimal valid JSON object.
+  _spec_file="runs/.cache/run_spec.json"
+  printf '{' > "$_spec_file"
+  _first=1
+
+  # Helper: append a key→value pair to the JSON object (only when value is non-empty).
+  _spec_add() {
+    local _k="$1" _v="$2"
+    [ -n "$_v" ] || return 0
+    # Escape backslash and double-quote for JSON; newlines become \n.
+    local _vj
+    _vj="$(printf '%s' "$_v" | sed 's/\\/\\\\/g; s/"/\\"/g' | awk '{printf "%s\\n", $0}' | sed 's/\\n$//')"
+    if [ "$_first" = "1" ]; then
+      printf '"%s":"%s"' "$_k" "$_vj" >> "$_spec_file"
+      _first=0
+    else
+      printf ',"%s":"%s"' "$_k" "$_vj" >> "$_spec_file"
+    fi
+  }
+
+  # Forwarded OPENRESEARCH_* vars (the former whitelist, now JSON-encoded).
+  _spec_add AZURE_FOUNDRY_DEPLOYMENT          "${AZURE_FOUNDRY_DEPLOYMENT:-}"
+  _spec_add OPENRESEARCH_SDAR_PROJECT_ID      "${OPENRESEARCH_SDAR_PROJECT_ID:-}"
+  _spec_add OPENRESEARCH_GRADER_SAMPLES       "${OPENRESEARCH_GRADER_SAMPLES:-}"
+  _spec_add OPENRESEARCH_SDAR_MODELS          "${OPENRESEARCH_SDAR_MODELS:-}"
+  _spec_add OPENRESEARCH_SDAR_ROOT            "${OPENRESEARCH_SDAR_ROOT:-}"
+  _spec_add OPENRESEARCH_SDAR_NO_AUTOSTOP     "${OPENRESEARCH_SDAR_NO_AUTOSTOP:-}"
+  _spec_add OPENRESEARCH_SDAR_OUTER_WALL_S    "${OPENRESEARCH_SDAR_OUTER_WALL_S:-}"
+  _spec_add OPENRESEARCH_SDAR_REPORT_GCS      "${OPENRESEARCH_SDAR_REPORT_GCS:-}"
+  _spec_add OPENRESEARCH_EVIDENCE_GATE        "${OPENRESEARCH_EVIDENCE_GATE:-}"
+  _spec_add OPENRESEARCH_ARG_CONTRACTS        "${OPENRESEARCH_ARG_CONTRACTS:-}"
+  _spec_add OPENRESEARCH_STUB_METRICS_GUARD   "${OPENRESEARCH_STUB_METRICS_GUARD:-}"
+  _spec_add OPENRESEARCH_LLM_AUTH_STRATEGY    "${OPENRESEARCH_LLM_AUTH_STRATEGY:-}"
+
+  # Multi-line scope guidance: fold from the staged text file (backward-compat)
+  # or from OPENRESEARCH_BASELINE_EXTRA_GUIDANCE if set directly.
+  _guidance=""
+  if [ -f runs/.cache/sdar_scope_guidance.txt ]; then
+    _guidance="$(cat runs/.cache/sdar_scope_guidance.txt)"
+  fi
+  if [ -n "${OPENRESEARCH_BASELINE_EXTRA_GUIDANCE:-}" ]; then
+    if [ -n "$_guidance" ]; then
+      _guidance="${OPENRESEARCH_BASELINE_EXTRA_GUIDANCE}"$'\n\n'"${_guidance}"
+    else
+      _guidance="${OPENRESEARCH_BASELINE_EXTRA_GUIDANCE}"
+    fi
+  fi
+  _spec_add baseline_extra_guidance "$_guidance"
+
+  printf '}' >> "$_spec_file"
+
+  # SCP the spec to the VM (always, even if minimal — the remote side uses --run-spec).
+  "${ssh_base[@]}" "mkdir -p $REMOTE_DIR/runs/.cache"
+  gcloud compute scp --zone "$ZONE" --project "$PROJECT" --quiet \
+    "$_spec_file" "$REMOTE_USER@$INSTANCE:$REMOTE_DIR/runs/.cache/run_spec.json"
+
+  # Backward-compat: also SCP the raw guidance file when present, so older
+  # sdar_gcp_run.sh invocations that have not yet adopted --run-spec can still read it.
+  if [ -f runs/.cache/sdar_scope_guidance.txt ]; then
+    gcloud compute scp --zone "$ZONE" --project "$PROJECT" --quiet \
+      runs/.cache/sdar_scope_guidance.txt "$REMOTE_USER@$INSTANCE:$REMOTE_DIR/runs/.cache/sdar_scope_guidance.txt"
+  fi
+
   # Refuse to double-launch the same paper; require a GREEN-prepared env file;
   # then start the reproduction fully detached (setsid+nohup, stdin from
   # /dev/null) so it survives this SSH session closing. The run logs to
   # runs/sdar_gcp_run.out and streams to runs/<project_id>/dashboard_events.jsonl.
+  # --run-spec loads the JSON spec built above; explicit flags in sdar_gcp_run.sh
+  # (--sandbox, --model, etc.) still override spec values per _load_run_spec contract.
   "${ssh_base[@]}" "cd $REMOTE_DIR \
     && chmod +x scripts/sdar_gcp_run.sh \
     && { [ -f runs/.cache/sdar_gcp.env ] || { echo 'ERROR: runs/.cache/sdar_gcp.env missing — run prepare to [GREEN] first' >&2; exit 1; }; } \
     && { ! pgrep -f '[b]ackend.cli reproduce 2605.15155' >/dev/null || { echo 'ERROR: a reproduce process for 2605.15155 is already running' >&2; exit 1; }; } \
-    && ( setsid nohup env $REMOTE_ENV bash scripts/sdar_gcp_run.sh > runs/sdar_gcp_run.out 2>&1 < /dev/null & ) \
+    && ( setsid nohup bash scripts/sdar_gcp_run.sh --run-spec runs/.cache/run_spec.json > runs/sdar_gcp_run.out 2>&1 < /dev/null & ) \
     && sleep 4 \
     && echo '--- launch tail (runs/sdar_gcp_run.out) ---' \
     && tail -n 20 runs/sdar_gcp_run.out"
