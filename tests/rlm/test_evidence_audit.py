@@ -251,3 +251,59 @@ def test_audit_evidence_failsoft_on_missing_dir(tmp_path):
     a = audit_evidence(_ctx_dir(tmp_path, ledger_ok=None))
     assert isinstance(a.fingerprint, str)
     assert a.provenance_present is False
+
+
+# ---------------------------------------------------------------------------
+# Plan 2: apply_result_veto()
+# ---------------------------------------------------------------------------
+
+_SDAR_V6 = {"success": True, "metrics": {"per_model": {"Qwen/Qwen3-1.7B": {"alfworld": {"sdar":
+           {"status": "ok", "device": "cuda", "success_rate": 0.0, "reward": 0.0}}}}}}
+
+
+def test_apply_result_veto_unchanged_when_flag_off(monkeypatch, tmp_path):
+    monkeypatch.delenv("OPENRESEARCH_EVIDENCE_AUDIT", raising=False)
+    from backend.agents.rlm.evidence_audit import apply_result_veto
+    src = dict(_SDAR_V6)
+    out = apply_result_veto(src, _ctx(tmp_path))
+    assert out is src  # byte-identical: same object returned, untouched
+
+
+def test_apply_result_veto_degrades_when_flag_on(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENRESEARCH_EVIDENCE_AUDIT", "1")
+    from backend.agents.rlm.evidence_audit import apply_result_veto
+    emitted = []
+    out = apply_result_veto(dict(_SDAR_V6), _ctx(tmp_path), emit=emitted.append)
+    assert out["success"] is False
+    assert out["failure_class"] == "fabrication_suspected"
+    assert out["error"]
+    assert emitted and ("zero" in emitted[0].lower() or "constant" in emitted[0].lower())
+
+
+def test_apply_result_veto_clean_unchanged(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENRESEARCH_EVIDENCE_AUDIT", "1")
+    from backend.agents.rlm.evidence_audit import apply_result_veto
+    clean = {"success": True, "metrics": {"per_model": {"m": {"e": {"b":
+            {"status": "ok", "accuracy": 0.83}}}}}}
+    out = apply_result_veto(clean, _ctx(tmp_path))
+    assert out is clean  # identity: untouched
+
+
+def test_apply_result_veto_preserves_other_keys(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENRESEARCH_EVIDENCE_AUDIT", "1")
+    from backend.agents.rlm.evidence_audit import apply_result_veto
+    src = dict(_SDAR_V6, logs="x", wall_time_s=1.5)
+    out = apply_result_veto(src, _ctx(tmp_path))
+    assert out["success"] is False
+    assert out["logs"] == "x" and out["wall_time_s"] == 1.5
+
+
+def test_apply_result_veto_emit_failsoft(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENRESEARCH_EVIDENCE_AUDIT", "1")
+    from backend.agents.rlm.evidence_audit import apply_result_veto
+
+    def bad_emit(_msg):
+        raise RuntimeError("boom")
+
+    out = apply_result_veto(dict(_SDAR_V6), _ctx(tmp_path), emit=bad_emit)
+    assert out["success"] is False  # degraded despite emit failure

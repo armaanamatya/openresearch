@@ -11,6 +11,7 @@ docs/superpowers/specs/2026-06-20-actor-critic-evidence-critic-redesign-design.m
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -103,6 +104,35 @@ def result_is_fabricated(result: Any, ctx: Any, *, peak_vram_gb: float | None = 
     except Exception:
         return None
     return None
+
+
+def apply_result_veto(
+    result: Any,
+    ctx: Any,
+    *,
+    peak_vram_gb: float | None = None,
+    emit: Callable[[str], None] | None = None,
+) -> Any:
+    """Degrade a result the unified critic flags to a repairable fabrication_suspected
+    failure (mirrors the existing per-guard pattern in run_experiment). Returns the input
+    ``result`` unchanged when not flagged — byte-identical when the master flag is off
+    (``result_is_fabricated`` returns None). ``emit`` (if given) is called with the reason
+    for a run_warning; emit failures are swallowed (diagnostics must never break a run)."""
+    reason = result_is_fabricated(result, ctx, peak_vram_gb=peak_vram_gb)
+    if reason is None:
+        return result
+    degraded = {
+        **result,
+        "success": False,
+        "failure_class": "fabrication_suspected",
+        "error": reason,
+    }
+    if emit is not None:
+        try:
+            emit(reason)
+        except Exception:
+            pass
+    return degraded
 
 
 def _load_latest_metrics(ctx: Any) -> dict:

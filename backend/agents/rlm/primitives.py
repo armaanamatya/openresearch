@@ -6659,6 +6659,24 @@ def run_experiment(
         except Exception:  # noqa: BLE001 — the metric-semantics guard must never crash the run
             logger.debug("run_experiment: metric-semantics guard failed", exc_info=True)
 
+    # Unified evidence-audit veto (Pillar-1 wiring, spec 2026-06-20 §3). Flag-gated INSIDE
+    # result_is_fabricated (OPENRESEARCH_EVIDENCE_AUDIT, default OFF → returns None → this is
+    # byte-identical). When ON, the unified critic catches the SDAR-v6 all-0.0-real-keys / stub
+    # / low-VRAM fabrications even if the individual guard flags above are off — one master
+    # switch. Re-checks success (a prior guard may have flipped it). Fail-soft in the helper.
+    if result.get("success"):
+        from backend.agents.rlm.evidence_audit import apply_result_veto  # noqa: PLC0415
+        result = apply_result_veto(
+            result,
+            ctx,
+            peak_vram_gb=_antifab_peak_vram_gb,
+            emit=lambda _msg: _emit_dashboard_event(
+                ctx,
+                event_type="run_warning",
+                payload={"code": "fabrication_suspected", "message": _msg},
+            ),
+        )
+
     # Finalize-on-timeout (2026-06-08): a timed-out / stalled experiment must SCORE its
     # completed work, not zero it (the Adam failure: 4/5 families trained, the timeout fired
     # mid-VAE, every rubric leaf scored 0). Both the inner exec_timeout/exec_stalled return
