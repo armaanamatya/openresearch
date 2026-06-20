@@ -72,6 +72,13 @@ _TERMINAL_FAILURE_CLASSES = frozenset(
         "capacity_exhausted",
         "budget_exhausted",
         "root_degenerate_loop",
+        # P3 (2026-06-20) — the fix-first repair loop exhausted its REPAIR_MAX
+        # budget OR made no evidence-fingerprint progress across attempts. This
+        # is an HONEST, distinct terminal (never the confusing root_degenerate_loop)
+        # so the run ships a cited failed/degraded report instead of churning.
+        # Only ever set when the fix-first loop is engaged (evidence_fingerprint
+        # wired by run.py), so adding it to the frozenset is byte-safe when off.
+        "repair_exhausted",
     }
 )
 
@@ -85,6 +92,18 @@ def _default_degenerate_threshold() -> int:
     """
     raw = os.environ.get("OPENRESEARCH_DEGENERATE_REFUSAL_THRESHOLD", "").strip()
     return int(raw) if raw.isdigit() and int(raw) > 0 else 3
+
+
+def _default_repair_max() -> int:
+    """Read OPENRESEARCH_REPAIR_MAX_ITERATIONS (default 4 — generous).
+
+    The CEILING for the P3 fix-first repair loop: how many repairable attempts
+    the policy forces (atop the OPENRESEARCH_MIN_REPAIR_ITERATIONS floor) before
+    an honest ``repair_exhausted`` stop. Defensive parse — a non-numeric /
+    non-positive value falls back to 4.
+    """
+    raw = os.environ.get("OPENRESEARCH_REPAIR_MAX_ITERATIONS", "").strip()
+    return int(raw) if raw.isdigit() and int(raw) > 0 else 4
 
 
 @dataclass
@@ -150,6 +169,28 @@ class ForcedIterationPolicy:
     # can carry code="forced_repair_iteration" distinct from "forced_iteration".
     # Defaults to None; when None the existing on_refusal is used as fallback.
     on_repair_refusal: Callable[[str], None] | None = None
+    # P3 fix-first repair loop (2026-06-20). ALL of these are INERT unless
+    # ``evidence_fingerprint`` is wired by run.py (under the new repair-loop /
+    # validator flags) — so with the new flags off the policy is byte-identical
+    # to the hardened 2026-06-17 behavior. ``evidence_fingerprint()`` returns the
+    # current deterministic evidence fingerprint; a repair "makes progress" when
+    # it CHANGES between attempts. ``_repair_max_iterations`` is the CEILING (atop
+    # the MIN_REPAIR floor); ``_repair_noprogress_limit`` consecutive no-progress
+    # attempts also stops. On exhaustion ``record_repair_attempt`` sets
+    # ``_terminal_failure_class="repair_exhausted"`` — a distinct, honest terminal,
+    # never the confusing root_degenerate_loop (resolves B1).
+    evidence_fingerprint: Callable[[], str] | None = None
+    _repair_max_iterations: int = field(default_factory=_default_repair_max, compare=False, repr=False)
+    _repair_noprogress_limit: int = field(default=2, compare=False, repr=False)
+    _last_repair_fingerprint: str | None = field(default=None, compare=False, repr=False)
+    _repair_noprogress_count: int = field(default=0, compare=False, repr=False)
+    # P3 — the validator gate. run.py wires this to run the external adversarial
+    # panel ONCE per evidence state (cached by fingerprint), persist the verdict,
+    # and route the cited directive to leaf_triage. Returns ``(vetoed, directive)``
+    # on a machine-verified veto, else None. A veto feeds the SAME fix-first repair
+    # loop (record_repair_attempt("validator_veto")) so it is bounded by REPAIR_MAX
+    # and stops honestly as repair_exhausted. Inert (skipped) when None (default).
+    validator_gate: Callable[[], tuple[bool, str] | None] | None = None
     # Task 2 — no-progress refusal-loop detection.  ``degenerate_threshold`` is
     # the number of consecutive same-signature refusals with NO intervening
     # state-changing primitive that constitutes a degenerate loop (default from
@@ -298,7 +339,47 @@ class ForcedIterationPolicy:
         decide whether to block the next FINAL_VAR call.
         """
         self._repair_iter_count += 1
+        # P3 fix-first: track evidence-fingerprint progress and bound the loop.
+        # INERT unless evidence_fingerprint is wired (byte-identical when off —
+        # the legacy MIN_REPAIR floor + count-based bound is unchanged there).
+        if self.evidence_fingerprint is not None:
+            try:
+                _fp = self.evidence_fingerprint()
+            except Exception:  # noqa: BLE001 — never crash the policy
+                _fp = None
+            _same_class = failure_class == self._last_repair_failure_class
+            _unchanged = _fp is not None and _fp == self._last_repair_fingerprint
+            if _same_class and _unchanged:
+                self._repair_noprogress_count += 1
+            else:
+                self._repair_noprogress_count = 0
+            self._last_repair_fingerprint = _fp
+            # Honest stop: the REPAIR_MAX ceiling reached OR no fingerprint
+            # progress across consecutive attempts. Set the DISTINCT terminal so
+            # should_refuse accepts the next FINAL_VAR and ships the cited
+            # failed/degraded report — NOT root_degenerate_loop (B1).
+            if (
+                self._repair_iter_count >= self._repair_max_iterations
+                or self._repair_noprogress_count >= self._repair_noprogress_limit
+            ):
+                self._terminal_failure_class = "repair_exhausted"
         self._last_repair_failure_class = failure_class
+
+    def clear_repair_trigger(self) -> None:
+        """A successful run_experiment cleared the repairable condition (P3).
+
+        Called from run.py's tool wrapper after a SUCCESS run_experiment so the
+        fix-first loop stops forcing repairs once the evidence is real again.
+        INERT (no-op) unless the fix-first loop is engaged (evidence_fingerprint
+        wired) — so the legacy MIN_REPAIR floor behavior is byte-identical when
+        the new flags are off (there the count-based floor bounds the loop).
+        """
+        if self.evidence_fingerprint is None:
+            return
+        self._last_repair_failure_class = None
+        self._repair_iter_count = 0
+        self._repair_noprogress_count = 0
+        self._last_repair_fingerprint = None
 
     def note_terminal_failure(self, failure_class: str) -> None:
         """Record an un-repairable terminal failure (e.g. ``oom_shrink_exhausted``).
@@ -404,15 +485,63 @@ class ForcedIterationPolicy:
             self._pending_refusal_signature = "no_experiment"
             return (True, self._no_experiment_message(cur))
 
+        # 0.8. P3 validator gate — at a FINAL_VAR attempt with real experiment
+        # evidence, consult the external adversarial validator. run.py's callback
+        # runs the panel ONCE per evidence state (cached by fingerprint), persists
+        # the verdict, and routes the cited directive to leaf_triage; it returns
+        # (vetoed, directive) on a machine-verified veto. A veto feeds the SAME
+        # fix-first repair loop, so it is bounded by REPAIR_MAX and stops honestly
+        # as repair_exhausted (never the confusing root_degenerate_loop). Inert
+        # (skipped) when validator_gate is None (default) — byte-identical.
+        if self.validator_gate is not None and self._terminal_failure_class != "repair_exhausted":
+            try:
+                _vgate = self.validator_gate()
+            except Exception:  # noqa: BLE001 — the validator must never crash the policy
+                _vgate = None
+            if _vgate is not None and _vgate[0]:
+                self.record_repair_attempt("validator_veto")
+                # record_repair_attempt may have just set the honest terminal —
+                # honor it now so an exhausted validator loop ships the cited
+                # report instead of refusing forever.
+                if self._terminal_failure_class == "repair_exhausted":
+                    logger.info(
+                        "forced_iteration: validator repair_exhausted — accepting FINAL_VAR"
+                    )
+                    return (False, None)
+                self._pending_refusal_code = "forced_repair_iteration"
+                self._pending_refusal_signature = "repair_floor"
+                return (True, _vgate[1] or (
+                    "FINAL_VAR refused: the external validator vetoed the result as "
+                    "unsubstantiated. Re-implement so the cited metrics trace to real "
+                    "model outputs on real data, then run_experiment + "
+                    "verify_against_rubric again."
+                ))
+
         # Compute repair-iteration refusal eagerly — this check is independent
         # of min_iterations (rubric floor) so it fires even when the rubric
         # policy is disabled via OPENRESEARCH_MIN_RUBRIC_ITERATIONS=0.
         min_repair = int(os.environ.get("OPENRESEARCH_MIN_REPAIR_ITERATIONS", "2"))
+        _repair_active = self._last_repair_failure_class is not None
         _repair_refuse = (
             min_repair > 0
-            and self._last_repair_failure_class is not None
+            and _repair_active
             and self._repair_iter_count < min_repair
         )
+        # P3 fix-first: when the loop is engaged (evidence_fingerprint wired),
+        # keep forcing repairs PAST the MIN_REPAIR floor up to the REPAIR_MAX
+        # ceiling — but ONLY while attempts are still making evidence-fingerprint
+        # progress. Exhaustion (ceiling or no-progress) is already a terminal
+        # (repair_exhausted, set by record_repair_attempt) that the terminal
+        # check at 0.4 accepts BEFORE reaching here, so this branch only EXTENDS
+        # the refusal window for a still-progressing repair. Inert when off.
+        if (
+            self.evidence_fingerprint is not None
+            and _repair_active
+            and not _repair_refuse
+            and self._repair_iter_count < self._repair_max_iterations
+            and self._repair_noprogress_count < self._repair_noprogress_limit
+        ):
+            _repair_refuse = True
 
         # 1. Rubric-iteration policy disabled — skip rubric checks; only the
         # repair floor (4.6) can still refuse.
@@ -591,6 +720,14 @@ class ForcedIterationPolicy:
         reaches ``degenerate_threshold``.  Inert (counter-only, no callback)
         when ``on_degenerate_refusal_loop`` is None.
         """
+        # P3 fix-first (B1): a repair refusal is a DISTINCT class with its own
+        # budget (REPAIR_MAX → repair_exhausted) — it must NOT accumulate toward
+        # the root_degenerate_loop trip, or a stuck-but-trying repair would ship
+        # the confusing "degenerate" verdict instead of the honest repair_exhausted.
+        # Excluded ONLY when the fix-first loop is engaged (evidence_fingerprint
+        # wired); otherwise behavior is byte-identical to today.
+        if signature == "repair_floor" and self.evidence_fingerprint is not None:
+            return
         if signature == self._last_refusal_signature:
             self._noprogress_refusals += 1
         else:
