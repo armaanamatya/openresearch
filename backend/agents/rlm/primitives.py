@@ -1677,6 +1677,11 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
     _payload = {"method_spec": method_spec, "env_spec": env_spec}
     _cached = _cache.maybe_get(ctx.project_dir, "plan_reproduction", payload=_payload)
     if _cached is not None:
+        try:
+            from backend.agents.rlm.reproduction_contract_store import activate as _activate_contract
+            _activate_contract(ctx, _cached)
+        except Exception:  # noqa: BLE001 -- optional migration must not affect cache hits
+            pass
         return _with_outcome(_cached, PrimitiveOutcome.ok)
 
     # β3: extend the planning prompt when compute is clipped.
@@ -1800,6 +1805,11 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
             data["data_recipes"] = []
 
         contract_out = ReproductionContract(**data).model_dump()
+        try:
+            from backend.agents.rlm.reproduction_contract_store import activate as _activate_contract
+            _activate_contract(ctx, contract_out)
+        except Exception:  # noqa: BLE001 -- optional migration must not affect planning
+            pass
         # ReproductionContract is extra="ignore" — re-attach harness feedback
         # (e.g. the compute_scope shape correction) AFTER the dump so the agent
         # actually sees it on the returned plan instead of it being silently
