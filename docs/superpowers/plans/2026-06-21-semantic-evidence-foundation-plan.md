@@ -14,6 +14,8 @@
 
 ## Phase 1 — contract model and intake persistence (M)
 
+- [x] Persist the existing validated planner contract under an explicit default-OFF
+  flag and attach it to `RunContext`, including cache-hit paths (`f64077ef`).
 - [ ] Add versioned Pydantic schemas for `ReproductionContract`, source links,
   unresolved fields, capability profile, `MetricContract`, and dimensions.
 - [ ] Implement fail-soft contract persistence under `rlm_state/` and an explicit
