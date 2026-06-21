@@ -2,6 +2,10 @@
 
 from types import SimpleNamespace
 
+import json
+
+import pytest
+
 from backend.agents.schemas import ReproductionContract
 
 
@@ -49,3 +53,42 @@ def test_contract_store_is_fail_soft_for_bad_payload(monkeypatch, tmp_path):
     assert store.activate(ctx, {"metrics_shape": "not-a-list"}) is None
     assert ctx.reproduction_contract is None
     assert not (tmp_path / "rlm_state" / "reproduction_contract.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("name", "method_spec", "env_spec"),
+    [
+        ("sdar", {"core_contribution": "OPSD-gated GRPO"}, {"framework": "pytorch"}),
+        ("vision", {"core_contribution": "All-CNN"}, {"framework": "pytorch"}),
+        ("sweep", {"core_contribution": "optimizer ablation"}, {"framework": "jax"}),
+    ],
+)
+def test_planner_contract_opt_in_is_hermetic_paired_ab(
+    monkeypatch, tmp_path, make_context, name, method_spec, env_spec,
+):
+    """A/B: the planner's public result is identical; ON adds only the artifact/context."""
+    from backend.agents.rlm.primitives import plan_reproduction
+
+    response = json.dumps({
+        "reproduction_definition": f"Reproduce {name}.",
+        "expected_outputs": ["metrics.json"],
+        "evaluation_plan": "Evaluate held-out results.",
+    })
+
+    monkeypatch.delenv("OPENRESEARCH_REPRO_CONTRACT", raising=False)
+    off_dir = tmp_path / "off"
+    off_dir.mkdir()
+    off_ctx = make_context(off_dir, llm_responses=[response])
+    off = plan_reproduction(method_spec, env_spec, ctx=off_ctx)
+
+    monkeypatch.setenv("OPENRESEARCH_REPRO_CONTRACT", "1")
+    on_dir = tmp_path / "on"
+    on_dir.mkdir()
+    on_ctx = make_context(on_dir, llm_responses=[response])
+    on = plan_reproduction(method_spec, env_spec, ctx=on_ctx)
+
+    assert on == off
+    assert off_ctx.reproduction_contract is None
+    assert on_ctx.reproduction_contract is not None
+    assert (on_ctx.project_dir / "rlm_state" / "reproduction_contract.json").is_file()
+    assert not (off_ctx.project_dir / "rlm_state" / "reproduction_contract.json").exists()
