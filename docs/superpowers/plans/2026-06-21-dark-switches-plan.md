@@ -132,7 +132,15 @@ def orphan_guard_enabled() -> bool:
 - [ ] **Step 5: Suite slice + ruff.**
 - [ ] **Step 6: Commit** `feat(reliability): orphan-guard default-ON (kill abandoned GPU subprocs; opt-out)`.
 
-### Task 3: Import preflight-smoke default-ON for cost-bearing sandboxes
+### Task 3: Import preflight-smoke default-ON — RECLASSIFIED TO PHASE 2 (2026-06-21)
+
+> **Reclassified during implementation.** A preflight-smoke FAILURE short-circuits training
+> (`primitives.py:3884` MARKER), so a false-positive smoke (a dep that imports differently,
+> a conditional/optional import) would BLOCK a run that would otherwise succeed. That is a
+> behavior/outcome risk, not a pure win — so the default-flip must be A/B-validated like the
+> other Phase-2 switches, NOT flipped blind. The gate is `is_enabled()` at
+> `primitives.py:3656` (make it sandbox-aware as below), default stays OFF until A/B clears.
+> Mechanism/wiring (sandbox-aware `is_enabled(sandbox_mode)`) below; do not flip the default.
 
 **Why:** `preflight_smoke` runs an import-resolution test on CPU (`CUDA_VISIBLE_DEVICES=""`),
 catching the whole `ModuleNotFoundError` class before a paid pod boots; false-positive rate

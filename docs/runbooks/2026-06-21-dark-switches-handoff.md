@@ -15,14 +15,17 @@ flipping any default**, and behavior-changing flips need GPU. So:
 - **Phase 2 (mechanism ready, default OFF):** changes run behavior/quality → **you** run the
   A/B, then flip the default. Commands below.
 
-## Phase 1 — already done (verify in the PR, then merge to the trunk)
+## Phase 1 — DONE (verify in the PR, then merge to the trunk)
 | Switch | What changed | Risk |
 |---|---|---|
-| Re-preflight after patch | A patch that doesn't clear the violation no longer returns success | none (pure correctness) |
-| Orphan-guard default-ON | Abandoned GPU subprocesses are killed (opt-out `OPENRESEARCH_ORPHAN_GUARD=0`) | none (fail-soft per-pgid) |
-| Preflight import-smoke default-ON on runpod/brev | `ModuleNotFoundError` caught on CPU before a paid pod (opt-out `OPENRESEARCH_PREFLIGHT_SMOKE=0`) | ~zero false positives |
+| Re-preflight after patch | A patch that still leaves a confident AST violation falls through to a full rewrite instead of returning success | none (pure correctness; fail-soft on scan error) |
+| Orphan-guard default-ON | Abandoned GPU subprocesses are killed on a per-primitive timeout (opt-out `OPENRESEARCH_ORPHAN_GUARD=0`) | none (fail-soft per-pgid; reliability-only — can't change a score) |
 
-All covered by hermetic tests + full suite green.
+Both covered by hermetic tests + full suite green (7037→7040 passing).
+
+> **Preflight import-smoke was RECLASSIFIED to Phase 2** during implementation: a
+> false-positive smoke failure short-circuits training and would block a run that would
+> otherwise succeed — an outcome risk, so it must be A/B-validated, not flipped blind.
 
 ## Phase 2 — your A/B before flipping (each is a real $/quality lever)
 

@@ -1907,6 +1907,24 @@ def _drive_baseline_child(
     )
 
 
+def _patched_code_still_violates(code_dir: str) -> bool:
+    """True if AST preflight still finds confident violations after a patch-mode write.
+
+    A patch can apply cleanly yet not yield clean code (didn't fix, or re-introduced a
+    bug). When this returns True the caller distrusts the patch and falls through to a
+    full rewrite — far cheaper than burning a GPU dispatch to rediscover the violation.
+    `scan_code_dir` already suppresses ambiguous cases, so a non-empty result is a
+    confident signal. Fail-soft: a scan error returns False (never block the patch path).
+    """
+    try:
+        from pathlib import Path as _Path
+
+        from backend.agents.rlm import preflight_ast
+        return len(preflight_ast.scan_code_dir(_Path(code_dir))) > 0
+    except Exception:  # noqa: BLE001 — re-validation must never crash the patch path
+        return False
+
+
 def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = False) -> dict:
     """Generate the baseline code from a reproduction plan; return a typed envelope.
 
@@ -2085,11 +2103,20 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
             _tmp.write_text(_patch_result, encoding="utf-8")
             import os as _os
             _os.replace(_tmp, _train_py_path)
-            logger.info(
-                "implement_baseline[%s]: patch-mode succeeded — train.py updated in-place",
-                ctx.project_id,
+            _code_dir = str(ctx.project_dir / "code")
+            # Re-validate: a patch can apply cleanly yet still leave a confident AST
+            # violation. Trust it only if preflight is now clean; otherwise fall
+            # through (past the else) to the full-rewrite path below.
+            if not _patched_code_still_violates(_code_dir):
+                logger.info(
+                    "implement_baseline[%s]: patch-mode succeeded — train.py updated in-place",
+                    ctx.project_id,
+                )
+                return _code_dir
+            logger.warning(
+                "implement_baseline[%s]: patch applied but AST preflight still flags "
+                "violations — falling through to full rewrite", ctx.project_id,
             )
-            return str(ctx.project_dir / "code")
         else:
             logger.warning(
                 "implement_baseline[%s]: patch-mode failed (%s) — "
