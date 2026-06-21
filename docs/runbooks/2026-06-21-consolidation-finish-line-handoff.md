@@ -26,6 +26,23 @@ gh pr merge 115 --merge
 After this, `main` contains the trunk + all three workstreams + the #110 integration +
 the cleanup foundation. Everything below becomes safe.
 
+## Why the 3 CONFLICTING PRs must be SUPERSEDED, not "fixed" individually
+#104, #109, #110 (all `lolout1`'s) show CONFLICTING only because they target the diverged
+`main` (2-ahead / 173-behind the trunk). **Do not resolve their conflicts one-by-one** —
+verified 2026-06-21:
+- **#104 (grader-fidelity)** and **#109 (azure-bicep)** are **literal ancestors of the
+  trunk** → 100% of their content is already in #115.
+- **#110 (grounded-self-improvement)** was squash-integrated via #116 → in #115; its only
+  residual vs the trunk is **104 lines / 50 files**, which are #110's *older* versions of
+  shared files (`CLAUDE.md`, `accelerator.py`, `grader_transport.py`, `gke_cell_entrypoint.py`,
+  `start.sh`…) that the trunk now holds in *newer* form (superseded by workstreams #111/#112
+  + the #116 trunk-canonical integration). #110's 76 net-new feature modules are all in the
+  trunk. **Nothing is lost.**
+
+Resolving these against `main` individually would (a) redo #115's work 3×, (b) risk
+**reintroducing the stale file versions**, and (c) create three competing main-landing PRs.
+The correct fix is the single #115 merge below; then close all three as superseded.
+
 ## After #115 lands — close the 4 superseded PRs
 Their content is now in `main`; they are redundant. (Do NOT close before #115 merges —
 their content currently lives only in unmerged branches.)
