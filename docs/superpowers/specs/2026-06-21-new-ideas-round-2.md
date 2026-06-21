@@ -77,4 +77,7 @@ the legacy projection. Then choose either #6–#8 for the honesty frontier or
 #9–#11 for immediate iteration/cost reliability. Do not default-flip any proposal
 without three stamped paired A/B runs and a grader-noise check.
 
-Which idea(s) should I turn into a specification and implementation plan?
+The shared design and execution order are now captured in
+`2026-06-21-semantic-evidence-foundation-design.md` and
+`2026-06-21-semantic-evidence-foundation-plan.md`; implementation starts with
+their Phase 0 compatibility fixtures.
