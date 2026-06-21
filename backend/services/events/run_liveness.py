@@ -196,22 +196,57 @@ def _cost_usd(run_dir: Path) -> float:
 
 
 def _write_final_report_if_missing(run_dir: Path, status: dict[str, Any], now_iso: str) -> None:
-    path = run_dir / "final_report.json"
-    if path.exists():
+    json_path = run_dir / "final_report.json"
+    if json_path.exists():
         return
+    score = _last_rubric_score(run_dir)
+    verdict = "partial" if score > 0.0 else "failed"
+    project_id = status.get("projectId") or run_dir.name
+    paper_id = status.get("paperId")
     payload = {
         "status": "interrupted",
+        "verdict": verdict,
         "mode": status.get("runMode") or status.get("mode"),
-        "paperId": status.get("paperId"),
-        "projectId": status.get("projectId") or run_dir.name,
+        "paperId": paper_id,
+        "projectId": project_id,
         "startedAt": status.get("startedAt"),
         "completed_at": now_iso,
         "iterations": _count_iterations(run_dir),
-        "rubric_score": _last_rubric_score(run_dir),
+        "rubric_score": score,
         "cost_usd": _cost_usd(run_dir),
         "reason": "orphaned",
+        "stop_reason": {"kind": "orphaned", "detail": _ORPHAN_REASON},
     }
-    _atomic_write_json(path, payload)
+    _atomic_write_json(json_path, payload)
+    _write_salvage_md(run_dir / "final_report.md", project_id, paper_id, score, verdict, now_iso)
+
+
+def _write_salvage_md(
+    md_path: Path,
+    project_id: str,
+    paper_id: str | None,
+    score: float,
+    verdict: str,
+    completed_at: str,
+) -> None:
+    if md_path.exists():
+        return
+    lines = [
+        f"# Salvaged report — {project_id}",
+        "",
+        f"**Verdict:** {verdict}  ",
+        f"**Score:** {score:.4f}  ",
+        f"**Paper:** {paper_id or 'unknown'}  ",
+        f"**Completed at:** {completed_at}  ",
+        "",
+        "> This report was salvaged by the orphan-run sweeper after the run "
+        "process disappeared without writing a final report. The score is the "
+        "best rubric score observed on disk before the process was lost.",
+    ]
+    try:
+        md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError as exc:
+        logger.warning("run_liveness: could not write salvage md %s: %s", md_path, exc)
 
 
 def _append_dashboard_events(run_dir: Path, report: OrphanReport, now_iso: str) -> None:

@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import ast
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -758,6 +759,451 @@ def _check_swallowed_backward_oom(
 
 
 # ---------------------------------------------------------------------------
+# Anti-fabrication guard (2026-06-18)
+# ---------------------------------------------------------------------------
+#
+# Motivation: grok fabricated an SDAR reproduction (prj_XXXX) by writing a
+# train_cell.py that (a) used ``torch.nn.Linear(1,1)`` as the "model" while
+# commenting it was a stub, (b) generated random log-probs via ``torch.randn``
+# assigned to ``student_logp``/``teacher_logp``, and (c) wrote hardcoded Table-1
+# numbers (``0.844 if "3b" in model_key else 0.539``) as the "measured metric".
+# The text-only grader credited the fabrication because the loss CODE looked
+# correct. This check blocks the three structural patterns before any GPU spend.
+#
+# Design (conservative — prefer false negatives over false positives):
+#   (a) Stub model: Linear/Identity/Module() in a file that also loads a real model.
+#   (b) Random log-probs: torch.randn/rand/np.random assigned to a logp/teacher/student var.
+#   (c) Hardcoded metric: a metric name assigned from a literal or a literal-conditional.
+#
+# Gate: OPENRESEARCH_ANTIFAB_GUARD (default "1"). Any parse/AST error → fail-soft (no findings).
+# Severity: "hard" (all three patterns are guaranteed fabrications when the full
+#            fingerprint matches — real training cannot produce these shapes).
+# Weak corroborating comment substrings ("stub", "dummy", etc.) are reported in
+# the message but never block on their own.
+
+# Real-model-load signals: if ANY of these appear in the file, the file has
+# declared an intent to load a real (large) model. A stub instantiation
+# alongside these signals is a fabrication.
+_REAL_MODEL_SIGNALS: frozenset[str] = frozenset({
+    "AutoModelForCausalLM",
+    "AutoModelForSeq2SeqLM",
+    "AutoModel",
+    "from_pretrained",
+    "Qwen",
+    "model_id",
+    "model_name",
+    "pretrained_model_name_or_path",
+})
+
+# Trivially-tiny stub module calls that are dead giveaways when used alongside a
+# real-model signal. We match the function/attribute name in a Call node.
+_STUB_MODULE_CALLS: frozenset[str] = frozenset({
+    "Linear",      # torch.nn.Linear / nn.Linear
+    "Identity",    # nn.Identity
+    "Module",      # nn.Module() bare instantiation
+})
+
+# Variable-name substrings that mark a random-logprob assignment.
+_LOGPROB_VAR_SUBSTRINGS: tuple[str, ...] = (
+    "logp", "logprob", "log_prob", "teacher", "student",
+)
+
+# Random-number call names that are fabrication signals when assigned to the above.
+# Matched as the final attribute/name in a Call node.
+_RANDOM_CALL_NAMES: frozenset[str] = frozenset({
+    "randn", "rand",          # torch.randn, torch.rand, np.random.rand*
+    "normal", "standard_normal",  # rng.normal, np.random.normal
+    "random",                 # np.random.random
+    "random_normal",          # tf alias
+})
+
+# Metric variable-name substrings — names that look like reported metrics.
+_METRIC_VAR_SUBSTRINGS: tuple[str, ...] = (
+    "metric", "success_rate", "accuracy", "reward", "final_",
+)
+
+# Keys in a dict literal that indicate a metric-write (agent writes to a metrics dict).
+_METRIC_DICT_KEYS: tuple[str, ...] = (
+    "metric", "success_rate", "accuracy", "reward", "final",
+)
+
+# Comment/string substrings that are weak corroborating fabrication signals.
+_FABRICATION_COMMENT_HINTS: tuple[str, ...] = (
+    "stub", "placeholder", "dummy", "fabricat", "hardcode", "plausible",
+)
+
+
+def _antifab_guard_enabled() -> bool:
+    return os.environ.get("OPENRESEARCH_ANTIFAB_GUARD", "1").strip() not in ("0", "false", "off", "no")
+
+
+def _node_is_random_call(node: ast.expr) -> bool:
+    """Return True if ``node`` is a call whose final name is in _RANDOM_CALL_NAMES."""
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if isinstance(func, ast.Name) and func.id in _RANDOM_CALL_NAMES:
+        return True
+    if isinstance(func, ast.Attribute) and func.attr in _RANDOM_CALL_NAMES:
+        return True
+    return False
+
+
+def _node_is_stub_call(node: ast.expr) -> bool:
+    """Return True if ``node`` is (or chains from) a stub module call (Linear, Identity, Module).
+
+    Handles chained calls like ``nn.Linear(1, 1).to("cuda")`` by unwrapping the
+    outer method call and checking its callee's value recursively.
+    """
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if isinstance(func, ast.Name) and func.id in _STUB_MODULE_CALLS:
+        return True
+    if isinstance(func, ast.Attribute) and func.attr in _STUB_MODULE_CALLS:
+        return True
+    # Chained call: ``stub(...).method(...)`` — unwrap one level.
+    # e.g. nn.Linear(1, 1).to("cuda"): func.value is the inner Call(Linear(...))
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Call):
+        return _node_is_stub_call(func.value)
+    return False
+
+
+# A stub Linear has trivially-tiny constant dims (e.g. Linear(1, 1)); a real layer
+# (a GRPO value head ``Linear(hidden, 1)``, a projection ``Linear(4096, 256)``) does not.
+_STUB_TRIVIAL_DIM = 16
+
+
+def _stub_args_trivial(node: ast.expr) -> bool:
+    """True if a stub ``Linear`` call has trivially-tiny constant dims (``Linear(1, 1)``).
+
+    Unwraps one level of chaining (``Linear(1, 1).to(...)``). Only ``Linear`` whose
+    first two positional args are int constants both ``<= _STUB_TRIVIAL_DIM`` is
+    trivial — this EXCLUDES a value head ``nn.Linear(hidden, 1)`` (a Name arg) and a
+    real projection ``nn.Linear(4096, 256)`` (large constants), so legitimate small
+    layers are never flagged on shape alone. ``Identity()``/``Module()`` return False
+    (legitimate no-op layers; they only fail when assigned to a model-named target).
+    """
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    # Unwrap one level of chaining: Linear(1, 1).to("cuda")
+    if (
+        isinstance(func, ast.Attribute)
+        and func.attr not in _STUB_MODULE_CALLS
+        and isinstance(func.value, ast.Call)
+    ):
+        return _stub_args_trivial(func.value)
+    name = func.id if isinstance(func, ast.Name) else (func.attr if isinstance(func, ast.Attribute) else "")
+    if name != "Linear":
+        return False
+    consts = [a.value for a in node.args if isinstance(a, ast.Constant) and isinstance(a.value, int)]
+    return len(consts) >= 2 and all(0 < c <= _STUB_TRIVIAL_DIM for c in consts[:2])
+
+
+def _target_name(tgt: ast.expr) -> str | None:
+    """Return the simple string name of an assignment target, or None."""
+    if isinstance(tgt, ast.Name):
+        return tgt.id
+    if isinstance(tgt, ast.Attribute):
+        return tgt.attr
+    return None
+
+
+def _var_matches_substrings(name: str, substrings: tuple[str, ...]) -> bool:
+    low = name.lower()
+    return any(sub in low for sub in substrings)
+
+
+def _tree_has_real_model_signal(tree: ast.AST) -> bool:
+    """Return True if any real-model-load signal appears anywhere in the tree."""
+    for node in ast.walk(tree):
+        # String constants (model_id = "Qwen/...", from_pretrained("..."))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if any(sig in node.value for sig in _REAL_MODEL_SIGNALS):
+                return True
+        # Name / attribute references
+        if isinstance(node, ast.Name) and node.id in _REAL_MODEL_SIGNALS:
+            return True
+        if isinstance(node, ast.Attribute) and node.attr in _REAL_MODEL_SIGNALS:
+            return True
+        # Import aliases: ``from transformers import AutoModelForCausalLM``
+        # ast.alias nodes appear in ast.Import.names and ast.ImportFrom.names
+        if isinstance(node, ast.alias) and node.name in _REAL_MODEL_SIGNALS:
+            return True
+    return False
+
+
+def _collect_fabrication_comment_hints(source: str) -> list[str]:
+    """Return a list of hint strings found in comments or string literals."""
+    found = []
+    for hint in _FABRICATION_COMMENT_HINTS:
+        if hint in source.lower():
+            found.append(hint)
+    return found
+
+
+def _node_is_literal_conditional(node: ast.expr) -> bool:
+    """Return True if ``node`` is a literal or a conditional-of-literals keyed on
+    model_key/model_id/env (the ``0.844 if "3b" in model_key else 0.539`` shape).
+
+    Conservative: we only flag the ``IfExp`` (ternary) shape where BOTH branches
+    are numeric literals and the test involves a string-in-name check.
+    """
+    # IfExp with both branches numeric literals (the ``0.844 if "3b" ... else 0.539``
+    # shape) is ALWAYS flagged — there is no legitimate reason to hardcode a metric
+    # conditional on model_key.
+    if isinstance(node, ast.IfExp):
+        return (
+            isinstance(node.body, ast.Constant) and isinstance(node.body.value, (int, float))
+            and isinstance(node.orelse, ast.Constant) and isinstance(node.orelse.value, (int, float))
+        )
+    # A plain numeric literal is flagged ONLY when it looks like a REPORTED RESULT:
+    # a float strictly in (0, 1) with more than 2 decimal places (e.g. 0.844, 0.716).
+    # This EXCLUDES legitimate inits / round configs (0.0, 0.5, 0.8, 0.85, 1.0), so a
+    # metric initialization like ``success_rate = 0.0`` is never flagged.
+    if isinstance(node, ast.Constant) and isinstance(node.value, float):
+        v = node.value
+        return 0.0 < v < 1.0 and abs(v - round(v, 2)) > 1e-9
+    return False
+
+
+def _dict_literal_hardcoded_metric(node: ast.expr) -> str | None:
+    """Return the metric key string if ``node`` is an ``ast.Dict`` literal that maps a
+    metric-substring key (``_METRIC_DICT_KEYS``) to a result-like literal value, else None.
+
+    Catches the dict-literal fabrication ``metrics = {"success_rate": 0.844}`` /
+    ``return {"success_rate": 0.844}`` that the per-target ``metric = 0.844`` and
+    ``results["metric"] = 0.844`` shapes miss.
+
+    Conservative — reuses ``_node_is_literal_conditional`` for the value test, so it
+    flags ONLY a result-like literal (a float in (0,1) with >2 decimals, or a
+    model-keyed ``IfExp`` of literals). It does NOT flag ``{"success_rate": 0.0}``
+    (init) or a computed value ``{"success_rate": acc}`` (the value is a Name, not a
+    literal). Returns the FIRST offending key (one violation per dict literal).
+    """
+    if not isinstance(node, ast.Dict):
+        return None
+    for key, value in zip(node.keys, node.values):
+        if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+            continue
+        if not any(k in key.value.lower() for k in _METRIC_DICT_KEYS):
+            continue
+        if _node_is_literal_conditional(value):
+            return key.value
+    return None
+
+
+def _check_no_fabrication(
+    tree: ast.AST,
+    path: Path,
+    source: str,
+    out: list[PreflightViolation],
+) -> None:
+    """Detect the three fabrication patterns in agent-written trainer code.
+
+    (a) Stub model: a trivially-small module instantiation (Linear/Identity/Module)
+        in a file that also signals intent to load a real model (from_pretrained /
+        AutoModelForCausalLM / Qwen / model_id).
+
+    (b) Random log-probs: torch.randn/rand/np.random.normal whose return value is
+        directly assigned to a variable named *logp*, *teacher*, *student*, etc.
+
+    (c) Hardcoded metric: a metric-named variable (or a dict entry under a metric
+        key) assigned from a numeric literal or a conditional-of-literals.
+
+    Gate: OPENRESEARCH_ANTIFAB_GUARD (checked by the caller). Fail-soft: any
+    exception swallowed (no findings returned for this check).
+
+    Severity: ``hard`` — each pattern is a guaranteed fabrication when the full
+    fingerprint is present. The file is pre-flight blocked before GPU spend.
+    """
+    comment_hints = _collect_fabrication_comment_hints(source)
+    hint_note = (
+        f" (comment/string hint(s) found: {comment_hints})" if comment_hints else ""
+    )
+
+    # -----------------------------------------------------------------------
+    # (a) Stub model alongside real-model signal
+    # -----------------------------------------------------------------------
+    has_real_signal = _tree_has_real_model_signal(tree)
+    if has_real_signal:
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            if not _node_is_stub_call(node.value):
+                continue
+            # Flag only when the stub is (1) assigned to a model-named variable, OR
+            # (2) a trivially-tiny shape like Linear(1, 1). This avoids false positives
+            # on legitimate small layers — e.g. a GRPO value head
+            # ``value_head = nn.Linear(hidden, 1)`` (non-model name + non-trivial args).
+            target_names = [_target_name(t) for t in node.targets]
+            model_targets = [n for n in target_names if n and "model" in n.lower()]
+            if not model_targets and not _stub_args_trivial(node.value):
+                continue
+            flagged_target = (model_targets or [n for n in target_names if n] or ["<unnamed>"])[0]
+            func = node.value.func  # type: ignore[attr-defined]
+            stub_name = func.id if isinstance(func, ast.Name) else func.attr
+            lineno = getattr(node, "lineno", 0)
+            out.append(PreflightViolation(
+                file=path.name,
+                line=lineno,
+                class_name=None,
+                missing_attr=None,
+                suggested_fix=(
+                    f"Remove the stub `{stub_name}(...)` in `{path.name}` line {lineno} "
+                    f"and replace with the real model load "
+                    f"(e.g. `AutoModelForCausalLM.from_pretrained(model_id, ...)`). "
+                    f"A stub alongside a real-model-load signal is a fabrication."
+                ),
+                severity="hard",
+                detail=(
+                    f"{path.name}:{lineno}: stub model `{stub_name}(...)` assigned "
+                    f"(target: {flagged_target!r}) in a file that also signals real-model "
+                    f"loading — fabricated model, not a genuine reproduction{hint_note}."
+                ),
+            ))
+
+    # -----------------------------------------------------------------------
+    # (b) Random log-probs assigned to logp/teacher/student variable
+    # -----------------------------------------------------------------------
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not _node_is_random_call(node.value):
+            continue
+        for tgt in node.targets:
+            name = _target_name(tgt)
+            if name is None:
+                continue
+            if not _var_matches_substrings(name, _LOGPROB_VAR_SUBSTRINGS):
+                continue
+            func = node.value.func  # type: ignore[attr-defined]
+            call_name = func.id if isinstance(func, ast.Name) else func.attr
+            lineno = getattr(node, "lineno", 0)
+            out.append(PreflightViolation(
+                file=path.name,
+                line=lineno,
+                class_name=None,
+                missing_attr=None,
+                suggested_fix=(
+                    f"`{name}` in `{path.name}` line {lineno} is assigned from "
+                    f"`{call_name}(...)` (random numbers). Replace with a real model "
+                    f"forward pass to compute log-probabilities — e.g. "
+                    f"`log_probs = model(input_ids).logits.log_softmax(-1)`. "
+                    f"Random log-probs fabricate the training signal."
+                ),
+                severity="hard",
+                detail=(
+                    f"{path.name}:{lineno}: `{name} = {call_name}(...)` — random numbers "
+                    f"assigned to a log-prob/teacher/student variable. This fabricates "
+                    f"the training signal instead of computing it from a real model "
+                    f"forward pass{hint_note}."
+                ),
+            ))
+            break  # one violation per assignment
+
+    # -----------------------------------------------------------------------
+    # (c) Hardcoded metric assigned from a literal or literal-conditional
+    # -----------------------------------------------------------------------
+    for node in ast.walk(tree):
+        # Shape 1: plain assignment ``metric = 0.844`` or ``final_metric = 0.844 if ... else 0.539``
+        # (guarded — NOT `continue`d — so an Assign with a dict-literal RHS still reaches
+        # Shape 1b below; the RHS of a metric DICT literal is an ast.Dict, not a literal).
+        if isinstance(node, ast.Assign) and _node_is_literal_conditional(node.value):
+            for tgt in node.targets:
+                # Direct metric variable name
+                name = _target_name(tgt)
+                if name and _var_matches_substrings(name, _METRIC_VAR_SUBSTRINGS):
+                    lineno = getattr(node, "lineno", 0)
+                    out.append(PreflightViolation(
+                        file=path.name,
+                        line=lineno,
+                        class_name=None,
+                        missing_attr=None,
+                        suggested_fix=(
+                            f"`{name}` in `{path.name}` line {lineno} is set from a "
+                            f"hardcoded literal. Replace with the value computed from "
+                            f"actual model evaluation (e.g. read from `metrics.json` "
+                            f"after training, or compute from model outputs). "
+                            f"Hardcoded metrics fabricate paper results."
+                        ),
+                        severity="hard",
+                        detail=(
+                            f"{path.name}:{lineno}: metric variable `{name}` assigned "
+                            f"from a numeric literal or literal-conditional "
+                            f"— hardcoded result, not a measured value{hint_note}."
+                        ),
+                    ))
+                    break
+                # Dict-subscript assignment: ``results["metric"] = 0.844``
+                if (
+                    isinstance(tgt, ast.Subscript)
+                    and isinstance(tgt.slice, ast.Constant)
+                    and isinstance(tgt.slice.value, str)
+                    and any(k in tgt.slice.value.lower() for k in _METRIC_DICT_KEYS)
+                ):
+                    key_str = tgt.slice.value
+                    lineno = getattr(node, "lineno", 0)
+                    out.append(PreflightViolation(
+                        file=path.name,
+                        line=lineno,
+                        class_name=None,
+                        missing_attr=None,
+                        suggested_fix=(
+                            f"Dict entry `{key_str!r}` in `{path.name}` line {lineno} "
+                            f"is set from a hardcoded literal. Compute the metric from "
+                            f"real model evaluation, then write it to the metrics dict."
+                        ),
+                        severity="hard",
+                        detail=(
+                            f"{path.name}:{lineno}: metrics dict key `{key_str!r}` assigned "
+                            f"from a numeric literal or literal-conditional "
+                            f"— hardcoded result, not a measured value{hint_note}."
+                        ),
+                    ))
+                    break
+
+        # Shape 1b: a metric-keyed DICT LITERAL with a result-like value, either
+        # assigned (``metrics = {"success_rate": 0.844}``) or returned
+        # (``return {"success_rate": 0.844}``). The per-target shapes above miss this
+        # because the RHS is an ``ast.Dict``, not a bare literal/IfExp. Conservative:
+        # ``_dict_literal_hardcoded_metric`` flags ONLY a result-like literal value, so
+        # ``{"success_rate": 0.0}`` (init) and ``{"success_rate": acc}`` (computed) pass.
+        _dict_node: ast.expr | None = None
+        if isinstance(node, ast.Assign):
+            _dict_node = node.value
+        elif isinstance(node, ast.Return):
+            _dict_node = node.value
+        if _dict_node is not None:
+            key_str = _dict_literal_hardcoded_metric(_dict_node)
+            if key_str is not None:
+                lineno = getattr(node, "lineno", 0)
+                out.append(PreflightViolation(
+                    file=path.name,
+                    line=lineno,
+                    class_name=None,
+                    missing_attr=None,
+                    suggested_fix=(
+                        f"Dict entry `{key_str!r}` in `{path.name}` line {lineno} is set "
+                        f"from a hardcoded literal inside a dict literal. Compute the "
+                        f"metric from real model evaluation, then build the metrics dict."
+                    ),
+                    severity="hard",
+                    detail=(
+                        f"{path.name}:{lineno}: metrics dict key `{key_str!r}` set from a "
+                        f"numeric literal or literal-conditional inside a dict literal "
+                        f"— hardcoded result, not a measured value{hint_note}."
+                    ),
+                ))
+
+        # Shape 2: augmented assign ``results["metric"] += 0.0`` — rare, skip (low value)
+
+    # Note: we deliberately do NOT flag on comment_hints alone (the spec says
+    # "include in the message but do not fail on this alone").
+
+
+# ---------------------------------------------------------------------------
 # SDAR teacher/student env interface contract
 # ---------------------------------------------------------------------------
 #
@@ -1101,13 +1547,19 @@ def scan_code_dir(code_dir: Path) -> list[PreflightViolation]:
     )
 
     trees: dict[Path, ast.AST] = {}
+    sources: dict[Path, str] = {}
 
     # Parse phase — collect syntax errors first.
     try:
         for path in py_files:
+            try:
+                raw = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                raw = ""
             tree = _parse_with_syntax_check(path, violations)
             if tree is not None:
                 trees[path] = tree
+                sources[path] = raw
     except Exception:  # noqa: BLE001 — never raise from pre-flight
         return violations
 
@@ -1144,6 +1596,12 @@ def scan_code_dir(code_dir: Path) -> list[PreflightViolation]:
             _check_harness_import(tree, path, violations)
         except Exception:  # noqa: BLE001
             logger.debug("preflight_ast: _check_harness_import failed on %s", path.name)
+
+        if _antifab_guard_enabled():
+            try:
+                _check_no_fabrication(tree, path, sources.get(path, ""), violations)
+            except Exception:  # noqa: BLE001 — fail-soft: never crash preflight
+                logger.debug("preflight_ast: _check_no_fabrication failed on %s", path.name)
 
     # SDAR teacher/student env interface contract — needs its OWN recursive walk
     # (``rglob``), independent of ``py_files`` above which only globs one level.

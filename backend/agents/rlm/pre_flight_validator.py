@@ -1383,7 +1383,356 @@ def validate_code_pre_flight(
     return violations
 
 
+def validate_root_credentials(
+    provider: str,
+    *,
+    model: str | None = None,
+) -> tuple[bool, str]:
+    """Validate that the configured provider credential is usable before a run.
+
+    Performs a CHEAP liveness check — a single minimal HTTP request or a local
+    file/env probe — and returns ``(ok, message)`` where:
+
+    * ``(True, msg)``  — credential is present and accepted; *msg* is a short
+      summary suitable for a log line.
+    * ``(False, msg)`` — credential is definitively rejected (HTTP 401 / 403, or
+      missing entirely); *msg* is an ACTIONABLE message naming the env var to fix.
+
+    Fail-OPEN contract
+    ------------------
+    Any error that is NOT a definitive authentication failure (network blip,
+    timeout, unexpected HTTP status, import error) returns ``(True, msg)`` so a
+    transient problem never blocks a legitimate run.  Only a confident
+    401 / 403 / "invalid API key" response or a locally-detected missing
+    credential returns ``(False, ...)``.
+
+    Parameters
+    ----------
+    provider : str
+        The resolved provider name, e.g. ``"openai"``, ``"anthropic"``,
+        ``"anthropic-oauth"``, ``"openrouter"``, ``"azure_openai"``,
+        ``"azure-foundry"``.  Unrecognised providers are fail-open (True).
+    model : str | None
+        The registry model key (e.g. ``"gpt-5"``, ``"claude-oauth"``).  Used to
+        surface the right env-var name in error messages.  Optional.
+
+    Returns
+    -------
+    tuple[bool, str]
+        ``(ok, message)``
+    """
+    import os as _os
+
+    p = (provider or "").lower().strip()
+
+    # ------------------------------------------------------------------
+    # Anthropic API key (non-OAuth)
+    # ------------------------------------------------------------------
+    if p in ("anthropic",):
+        api_key = _os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        if not api_key:
+            return (
+                False,
+                "[cred-preflight] ANTHROPIC_API_KEY is not set. "
+                "Set ANTHROPIC_API_KEY or use --model claude-oauth (subscription login). "
+                f"Model requested: {model or '(default)'}.",
+            )
+        # Cheap liveness: POST a 1-token request.
+        try:
+            import urllib.request
+            import json as _json
+
+            payload = _json.dumps({
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "hi"}],
+            }).encode()
+            req = urllib.request.Request(
+                "https://api.anthropic.com/v1/messages",
+                data=payload,
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                method="POST",
+            )
+            import urllib.error
+            try:
+                with urllib.request.urlopen(req, timeout=10):
+                    pass
+            except urllib.error.HTTPError as exc:
+                if exc.code in (401, 403):
+                    body = ""
+                    try:
+                        body = exc.read(512).decode("utf-8", errors="replace")
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return (
+                        False,
+                        f"[cred-preflight] ANTHROPIC_API_KEY rejected (HTTP {exc.code}). "
+                        f"Check that the key is valid and has credits. "
+                        f"To skip this check: OPENRESEARCH_SKIP_CRED_PREFLIGHT=1. "
+                        f"Server detail: {body[:200]}",
+                    )
+                # Non-auth HTTP error — fail-open.
+                return (True, f"[cred-preflight] anthropic probe non-auth HTTP {exc.code} — proceeding.")
+        except Exception:  # noqa: BLE001 — network error, import error, etc.
+            return (True, "[cred-preflight] anthropic probe inconclusive (network/timeout) — proceeding.")
+        return (True, "[cred-preflight] ANTHROPIC_API_KEY accepted.")
+
+    # ------------------------------------------------------------------
+    # Anthropic OAuth (claude-agent-sdk subscription login)
+    # ------------------------------------------------------------------
+    if p in ("anthropic-oauth", "claude-oauth"):
+        try:
+            from backend.agents.runtime.factory import _has_claude_subscription_oauth
+            if _has_claude_subscription_oauth():
+                return (True, "[cred-preflight] Claude OAuth subscription detected.")
+            return (
+                False,
+                "[cred-preflight] No Claude OAuth session found. "
+                "Run `claude login` to authenticate, or set ANTHROPIC_API_KEY "
+                "and use --model claude (API key path). "
+                f"Model requested: {model or '(default)'}.",
+            )
+        except Exception:  # noqa: BLE001 — fail-open on import/probe error
+            return (True, "[cred-preflight] Claude OAuth probe inconclusive — proceeding.")
+
+    # ------------------------------------------------------------------
+    # OpenAI
+    # ------------------------------------------------------------------
+    if p in ("openai",):
+        api_key = _os.environ.get("OPENAI_API_KEY", "").strip()
+        if not api_key:
+            return (
+                False,
+                "[cred-preflight] OPENAI_API_KEY is not set. "
+                "Set OPENAI_API_KEY or choose a different model via --model. "
+                f"Model requested: {model or '(default)'}.",
+            )
+        # Cheap liveness: GET /v1/models (no tokens consumed).
+        try:
+            import urllib.request
+            import urllib.error
+
+            req = urllib.request.Request(
+                "https://api.openai.com/v1/models?limit=1",
+                headers={"Authorization": f"Bearer {api_key}"},
+                method="GET",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=10):
+                    pass
+            except urllib.error.HTTPError as exc:
+                if exc.code in (401, 403):
+                    body = ""
+                    try:
+                        body = exc.read(512).decode("utf-8", errors="replace")
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return (
+                        False,
+                        f"[cred-preflight] OPENAI_API_KEY rejected (HTTP {exc.code}). "
+                        f"Check that the key is valid and not expired. "
+                        f"To skip this check: OPENRESEARCH_SKIP_CRED_PREFLIGHT=1. "
+                        f"Server detail: {body[:200]}",
+                    )
+                return (True, f"[cred-preflight] openai probe non-auth HTTP {exc.code} — proceeding.")
+        except Exception:  # noqa: BLE001
+            return (True, "[cred-preflight] openai probe inconclusive (network/timeout) — proceeding.")
+        return (True, "[cred-preflight] OPENAI_API_KEY accepted.")
+
+    # ------------------------------------------------------------------
+    # OpenRouter
+    # ------------------------------------------------------------------
+    if p in ("openrouter",):
+        api_key = _os.environ.get("OPENROUTER_API_KEY", "").strip()
+        if not api_key:
+            return (
+                False,
+                "[cred-preflight] OPENROUTER_API_KEY is not set. "
+                "Set OPENROUTER_API_KEY or choose a different model via --model. "
+                f"Model requested: {model or '(default)'}.",
+            )
+        try:
+            import urllib.request
+            import urllib.error
+
+            req = urllib.request.Request(
+                "https://openrouter.ai/api/v1/models?limit=1",
+                headers={"Authorization": f"Bearer {api_key}"},
+                method="GET",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=10):
+                    pass
+            except urllib.error.HTTPError as exc:
+                if exc.code in (401, 403):
+                    body = ""
+                    try:
+                        body = exc.read(512).decode("utf-8", errors="replace")
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return (
+                        False,
+                        f"[cred-preflight] OPENROUTER_API_KEY rejected (HTTP {exc.code}). "
+                        f"Check that the key is valid. "
+                        f"To skip this check: OPENRESEARCH_SKIP_CRED_PREFLIGHT=1. "
+                        f"Server detail: {body[:200]}",
+                    )
+                return (True, f"[cred-preflight] openrouter probe non-auth HTTP {exc.code} — proceeding.")
+        except Exception:  # noqa: BLE001
+            return (True, "[cred-preflight] openrouter probe inconclusive (network/timeout) — proceeding.")
+        return (True, "[cred-preflight] OPENROUTER_API_KEY accepted.")
+
+    # ------------------------------------------------------------------
+    # Azure OpenAI (classic deployment endpoint)
+    # ------------------------------------------------------------------
+    if p in ("azure_openai", "azure-openai", "azure"):
+        api_key = _os.environ.get("AZURE_OPENAI_API_KEY", "").strip()
+        endpoint = _os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
+        if not api_key:
+            return (
+                False,
+                "[cred-preflight] AZURE_OPENAI_API_KEY is not set. "
+                "Set AZURE_OPENAI_API_KEY (and AZURE_OPENAI_ENDPOINT) to use the Azure OpenAI backend. "
+                f"Model requested: {model or '(default)'}.",
+            )
+        if not endpoint:
+            # Key present but no endpoint — fail-open (may be set elsewhere)
+            return (True, "[cred-preflight] AZURE_OPENAI_ENDPOINT not set — skipping probe, proceeding.")
+        # Cheap probe: GET /openai/models (no deployment needed)
+        try:
+            import urllib.request
+            import urllib.error
+
+            url = endpoint.rstrip("/") + "/openai/models?api-version=2024-02-01"
+            req = urllib.request.Request(
+                url,
+                headers={"api-key": api_key},
+                method="GET",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=10):
+                    pass
+            except urllib.error.HTTPError as exc:
+                if exc.code in (401, 403):
+                    body = ""
+                    try:
+                        body = exc.read(512).decode("utf-8", errors="replace")
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return (
+                        False,
+                        f"[cred-preflight] AZURE_OPENAI_API_KEY rejected (HTTP {exc.code}). "
+                        f"Check that the key is valid for endpoint {endpoint!r}. "
+                        f"To skip this check: OPENRESEARCH_SKIP_CRED_PREFLIGHT=1. "
+                        f"Server detail: {body[:200]}",
+                    )
+                return (True, f"[cred-preflight] azure_openai probe non-auth HTTP {exc.code} — proceeding.")
+        except Exception:  # noqa: BLE001
+            return (True, "[cred-preflight] azure_openai probe inconclusive (network/timeout) — proceeding.")
+        return (True, "[cred-preflight] AZURE_OPENAI_API_KEY accepted.")
+
+    # ------------------------------------------------------------------
+    # Azure AI Foundry (OpenAI-compatible custom endpoint)
+    # ------------------------------------------------------------------
+    if p in ("azure-foundry", "azure_foundry", "foundry"):
+        api_key = _os.environ.get("AZURE_FOUNDRY_API_KEY", "").strip()
+        endpoint = _os.environ.get("AZURE_FOUNDRY_ENDPOINT", "").strip()
+        if not api_key:
+            return (
+                False,
+                "[cred-preflight] AZURE_FOUNDRY_API_KEY is not set. "
+                "Set AZURE_FOUNDRY_API_KEY (and AZURE_FOUNDRY_ENDPOINT) to use the Azure Foundry backend. "
+                f"Model requested: {model or '(default)'}.",
+            )
+        if not endpoint:
+            return (True, "[cred-preflight] AZURE_FOUNDRY_ENDPOINT not set — skipping probe, proceeding.")
+        try:
+            import urllib.request
+            import urllib.error
+
+            url = endpoint.rstrip("/") + "/models"
+            req = urllib.request.Request(
+                url,
+                headers={"Authorization": f"Bearer {api_key}"},
+                method="GET",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=10):
+                    pass
+            except urllib.error.HTTPError as exc:
+                if exc.code in (401, 403):
+                    body = ""
+                    try:
+                        body = exc.read(512).decode("utf-8", errors="replace")
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return (
+                        False,
+                        f"[cred-preflight] AZURE_FOUNDRY_API_KEY rejected (HTTP {exc.code}). "
+                        f"Check that the key is valid for endpoint {endpoint!r}. "
+                        f"To skip this check: OPENRESEARCH_SKIP_CRED_PREFLIGHT=1. "
+                        f"Server detail: {body[:200]}",
+                    )
+                return (True, f"[cred-preflight] azure-foundry probe non-auth HTTP {exc.code} — proceeding.")
+        except Exception:  # noqa: BLE001
+            return (True, "[cred-preflight] azure-foundry probe inconclusive (network/timeout) — proceeding.")
+        return (True, "[cred-preflight] AZURE_FOUNDRY_API_KEY accepted.")
+
+    # ------------------------------------------------------------------
+    # Featherless (OpenAI-compatible, different key)
+    # ------------------------------------------------------------------
+    if p in ("featherless",):
+        api_key = _os.environ.get("FEATHERLESS_API_KEY", "").strip()
+        if not api_key:
+            return (
+                False,
+                "[cred-preflight] FEATHERLESS_API_KEY is not set. "
+                "Set FEATHERLESS_API_KEY or choose a different model via --model. "
+                f"Model requested: {model or '(default)'}.",
+            )
+        try:
+            import urllib.request
+            import urllib.error
+
+            req = urllib.request.Request(
+                "https://api.featherless.ai/v1/models?limit=1",
+                headers={"Authorization": f"Bearer {api_key}"},
+                method="GET",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=10):
+                    pass
+            except urllib.error.HTTPError as exc:
+                if exc.code in (401, 403):
+                    body = ""
+                    try:
+                        body = exc.read(512).decode("utf-8", errors="replace")
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return (
+                        False,
+                        f"[cred-preflight] FEATHERLESS_API_KEY rejected (HTTP {exc.code}). "
+                        f"Check that the key is valid. "
+                        f"To skip this check: OPENRESEARCH_SKIP_CRED_PREFLIGHT=1. "
+                        f"Server detail: {body[:200]}",
+                    )
+                return (True, f"[cred-preflight] featherless probe non-auth HTTP {exc.code} — proceeding.")
+        except Exception:  # noqa: BLE001
+            return (True, "[cred-preflight] featherless probe inconclusive (network/timeout) — proceeding.")
+        return (True, "[cred-preflight] FEATHERLESS_API_KEY accepted.")
+
+    # ------------------------------------------------------------------
+    # Unknown / unrecognised provider — fail-open
+    # ------------------------------------------------------------------
+    return (True, f"[cred-preflight] provider {provider!r} not recognised — skipping, proceeding.")
+
+
 __all__ = [
     "PreFlightViolation",
     "validate_code_pre_flight",
+    "validate_root_credentials",
 ]

@@ -18,6 +18,8 @@ from backend.agents.environment_detective import (
     _generate_dockerfile,
     _infer_framework,
     _dataset_packages,
+    _normalize_dockerfile_from,
+    _RUNPOD_PYTORCH_BASE,
 )
 from backend.agents.schemas import (
     DatasetRequirement,
@@ -225,3 +227,114 @@ class TestDatasetPackages:
         )
         pkgs = _dataset_packages(claim_map)
         assert "torchvision" in pkgs
+
+
+# ---------------------------------------------------------------------------
+# _normalize_dockerfile_from — wiring tests (pure unit, no docker/network)
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeDockerfileFrom:
+    """Tests for the _normalize_dockerfile_from wiring function.
+
+    Covers:
+    - Known-good FROM → returned unchanged
+    - Hallucinated / unknown FROM → normalised to configured fallback
+    - Missing / malformed FROM (ok=False) → fallback FROM prepended
+    - Devel hint → Dockerfile left unchanged (advisory only)
+    - Exception in validate_from_base → original returned unchanged (fail-soft)
+    """
+
+    def test_known_good_from_python_slim_unchanged(self):
+        df = "FROM python:3.11-slim\nRUN pip install numpy\n"
+        result = _normalize_dockerfile_from(df)
+        assert result == df
+
+    def test_known_good_from_runpod_unchanged(self):
+        df = f"FROM {_RUNPOD_PYTORCH_BASE}\nRUN echo hi\n"
+        result = _normalize_dockerfile_from(df)
+        assert result == df
+
+    def test_known_good_from_nvidia_cuda_unchanged(self):
+        df = "FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04\nRUN pip install torch\n"
+        result = _normalize_dockerfile_from(df)
+        assert result == df
+
+    def test_hallucinated_from_normalised_to_fallback(self):
+        df = "FROM hallucinated/image:v99\nRUN pip install torch\n"
+        result = _normalize_dockerfile_from(df)
+        # The FROM line must now reference the fallback, not the garbage image.
+        first_from = next(
+            ln for ln in result.splitlines() if ln.strip().upper().startswith("FROM ")
+        )
+        assert "hallucinated/image:v99" not in first_from
+        assert _RUNPOD_PYTORCH_BASE in first_from
+
+    def test_hallucinated_from_rest_of_dockerfile_preserved(self):
+        df = "FROM totally-made-up:latest\nRUN pip install torch\nWORKDIR /code\n"
+        result = _normalize_dockerfile_from(df)
+        assert "pip install torch" in result
+        assert "WORKDIR /code" in result
+
+    def test_hallucinated_from_as_alias_preserved(self):
+        # FROM <bad_image> AS base  →  FROM <fallback> AS base
+        df = "FROM totally-made-up:latest AS base\nRUN pip install numpy\n"
+        result = _normalize_dockerfile_from(df)
+        first_from = next(
+            ln for ln in result.splitlines() if ln.strip().upper().startswith("FROM ")
+        )
+        assert "AS base" in first_from
+        assert _RUNPOD_PYTORCH_BASE in first_from
+
+    def test_missing_from_fallback_prepended(self):
+        df = "RUN pip install numpy\nWORKDIR /code\n"
+        result = _normalize_dockerfile_from(df)
+        assert result.splitlines()[0].strip().startswith("FROM ")
+        assert _RUNPOD_PYTORCH_BASE in result.splitlines()[0]
+
+    def test_malformed_from_no_image_fallback_used(self):
+        df = "FROM\nRUN pip install numpy\n"
+        result = _normalize_dockerfile_from(df)
+        # Should have a valid FROM line now.
+        assert any(
+            ln.strip().upper().startswith("FROM ") and len(ln.strip().split()) >= 2
+            for ln in result.splitlines()
+        )
+
+    def test_devel_hint_does_not_modify_dockerfile(self):
+        # flash-attn on a -runtime- base triggers devel_hint; we log only, no swap.
+        df = (
+            "FROM runpod/pytorch:2.1.0-py3.10-cuda11.8.0-runtime-ubuntu22.04\n"
+            "RUN pip install flash-attn\n"
+        )
+        result = _normalize_dockerfile_from(df)
+        # The -runtime- base must still be there (we did not swap to -devel-).
+        assert "-runtime-" in result
+        assert result == df
+
+    def test_exception_in_validator_returns_original(self, monkeypatch):
+        """validate_from_base raising must not propagate — fail-soft."""
+        import backend.agents.environment_detective as ed
+
+        def _raise(dockerfile, **kwargs):
+            raise RuntimeError("unexpected error in validator")
+
+        monkeypatch.setattr(ed, "validate_from_base", _raise)
+        df = "FROM python:3.11-slim\nRUN pip install numpy\n"
+        result = _normalize_dockerfile_from(df)
+        assert result == df
+
+    def test_run_offline_known_good_from_preserved(self, tmp_path):
+        """run_offline produces a known-good FROM; normalization must leave it alone."""
+        from backend.agents.schemas import PaperClaimMap
+
+        claim = PaperClaimMap(core_contribution="test")
+        spec = run_offline("prj_norm", tmp_path, claim)
+        # The returned dockerfile must contain a valid FROM line.
+        first_from = next(
+            ln for ln in spec.dockerfile.splitlines()
+            if ln.strip().upper().startswith("FROM ")
+        )
+        assert first_from.strip().startswith("FROM ")
+        # Must not be the fallback-replaced form on this path (it was already correct).
+        assert "python:" in first_from or "runpod/pytorch" in first_from

@@ -468,3 +468,107 @@ def test_adaptive_decision_lands_in_stamp(tmp_path, monkeypatch):
     stamp = bes_rlm.experiment_arm_stamp(tmp_path)
     assert stamp["bes"]["adaptive"]["engage"] is False
     assert stamp["bes"]["adaptive"]["best_score"] == pytest.approx(0.74)
+
+
+# ---------------------------------------------------------------------------
+# RED LINE guard: SELECT is driven by _static_grade only, never LLM grade
+# ---------------------------------------------------------------------------
+
+
+def test_select_uses_static_grade_not_llm_grade(tmp_path, monkeypatch):
+    """The BES winner is the candidate with the higher _static_grade score,
+    even when a LOWER-static-grade candidate has a higher prior LLM rubric grade
+    injected into its result envelope or context.
+
+    Red line (spec §6.2): the LLM grade is NEVER the selection key. Only the
+    deterministic _static_grade drives Candidate.score, which drives select_best.
+    The test sets up:
+      - candidate #0: high prior-run LLM grade (0.92) stored in the implement
+        result envelope + high static code score (0.75) → the implement envelope
+        carries a phantom llm_grade that MUST NOT elevate it
+      - candidate #1: no prior LLM grade, lower static code score (0.45)
+      - candidate #2: no prior LLM grade, highest static code score (0.85) → MUST win
+
+    The _static_grade mock returns the deterministic score only; the llm_grade
+    key on the envelope (simulating a cached grader result an attacker or bug
+    could inject) is invisible to select_best and must not affect the outcome.
+    """
+    monkeypatch.setattr("backend.config.get_settings", lambda: _settings(n=3))
+    ctx = _ctx(tmp_path)
+    _write_rubric(ctx)
+    code_dir = Path(ctx.runs_root) / ctx.project_id / "code"
+
+    # Implement function that embeds a phantom llm_grade in candidate #0's envelope.
+    def fake_implement_with_llm_grade(plan, *, ctx, _bes_inner=False):
+        idx = plan.get("_bes_candidate_idx", -1)
+        code_dir.mkdir(parents=True, exist_ok=True)
+        (code_dir / "commands.json").write_text(json.dumps(["python train.py"]))
+        (code_dir / "train.py").write_text(f"# candidate {idx}\n")
+        result = {"ok": True, "code_path": str(code_dir), "files": ["train.py", "commands.json"]}
+        if idx == 0:
+            # Simulate a cached/prior LLM grade embedded in the result envelope.
+            # This key MUST NOT reach the Candidate struct or influence select_best.
+            result["llm_grade"] = 0.92
+            result["rubric_score"] = 0.92
+        return result
+
+    # Static grades: candidate #0 = 0.75 (high, but #2 is higher), #1 = 0.45, #2 = 0.85
+    static_scores = {0: (0.75, ["leaf_x"]), 1: (0.45, ["leaf_x", "leaf_y"]), 2: (0.85, [])}
+
+    def fake_static_grade(rubric, cand_dir, _ctx):
+        idx = int(str(cand_dir).rsplit("_", 1)[-1])
+        return static_scores[idx]
+
+    monkeypatch.setattr(bes_rlm, "_static_grade", fake_static_grade)
+
+    result = bes_rlm.compete({"paper_claim_map": {}}, ctx=ctx, implement_fn=fake_implement_with_llm_grade)
+
+    assert result["ok"] is True
+    # Candidate #2 wins by highest static score; #0's phantom llm_grade must not matter.
+    assert result["bes"]["selected"] == "rlm_impl#2", (
+        f"Expected rlm_impl#2 (highest static score 0.85) to win, "
+        f"but got {result['bes']['selected']!r}. "
+        "SELECT must rank by _static_grade only — the LLM grade is never the selection key."
+    )
+    assert result["bes"]["n_candidates"] == 3
+    # Winner's code is #2, not #0 (which had the inflated phantom llm_grade).
+    assert (code_dir / "train.py").read_text() == "# candidate 2\n"
+
+
+def test_select_ignores_fields_not_in_candidate_struct(tmp_path, monkeypatch):
+    """Structural guard: select_best/select_best_gated read ONLY Candidate.score
+    and Candidate.failed_leaves. Any extra field on the result envelope (e.g.
+    an llm_grade, rubric_score, or overall_score from a prior run) cannot
+    influence the winner because no code path copies those fields onto the
+    Candidate struct.
+
+    Verify that adding an `llm_grade` attr to Candidate (simulating a bug) still
+    does NOT change the winner — select_best's key function only reads .score and
+    .failed_leaves, not any extra field.
+    """
+    from backend.agents.rdr.candidates import Candidate, select_best
+    from backend.agents.rdr.models import Artifacts
+
+    def _make_candidate(cid: str, score: float, failed: list[str]) -> Candidate:
+        return Candidate(
+            candidate_id=cid,
+            cluster_id="rlm_baseline",
+            scratch_dir=Path("/tmp/fake"),
+            artifacts=Artifacts(cluster_id="rlm_baseline", failed=False, error=None),
+            score=score,
+            failed_leaves=failed,
+        )
+
+    a = _make_candidate("rlm_impl#0", score=0.75, failed=["leaf_x"])
+    b = _make_candidate("rlm_impl#1", score=0.85, failed=[])
+
+    # Inject a phantom attribute onto candidate A as if a bug had set it.
+    # This must not override .score in select_best's key function.
+    object.__setattr__(a, "llm_grade", 0.99)  # type: ignore[call-arg]
+
+    winner = select_best([a, b], select_metric="cluster_score")
+
+    assert winner is b, (
+        "select_best must rank by Candidate.score only; "
+        "a phantom llm_grade=0.99 on candidate A must not elevate it above B's score=0.85."
+    )

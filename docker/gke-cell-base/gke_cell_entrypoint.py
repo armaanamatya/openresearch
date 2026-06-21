@@ -487,6 +487,75 @@ def _remove_stale_metrics(output_dir: Path) -> None:
         pass
 
 
+# ---------------------------------------------------------------------------
+# Multi-GPU launch — torchrun-wrap a distributed cell (SCOPE 2)
+#
+# Mirrors backend/agents/rlm/primitives.py::_resolve_distributed_launch, but
+# REIMPLEMENTED inline: this entrypoint is standalone (loaded by file path in
+# tests) and must not import the backend. Plain `torchrun --nproc_per_node N`
+# is a strict superset launcher for raw torch.distributed AND accelerate scripts.
+# ---------------------------------------------------------------------------
+_DISTRIBUTED_MARKERS: tuple[str, ...] = (
+    "FullyShardedDataParallel", "DistributedDataParallel", "init_process_group",
+    "torch.distributed", "fully_shard", "from accelerate", "import accelerate",
+    "Accelerator(",
+)
+
+
+def resolve_cell_gpu_count() -> int:
+    """Leased GPU count for this cell, from OPENRESEARCH_CELL_GPU_COUNT (default 1)."""
+    try:
+        return max(1, int(os.environ.get("OPENRESEARCH_CELL_GPU_COUNT", "1")))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _torchrun_wrap_disabled() -> bool:
+    return os.environ.get("OPENRESEARCH_DISABLE_TORCHRUN_WRAP", "").strip().lower() in (
+        "1", "true", "yes",
+    )
+
+
+def build_cell_launch_argv(
+    *, python_exe: str, train_cell_path: Path, cell_id: str, output_dir: Path,
+    gpu_count: int, script_text: str,
+) -> list[str]:
+    """Return the argv to launch one training cell.
+
+    * gpu_count <= 1                      → plain `python train_cell.py ...`
+    * gpu_count > 1 + distributed markers → `torchrun --nproc_per_node=N train_cell.py ...`
+    * gpu_count > 1 + NO markers          → plain python (N duplicate non-distributed
+      trainers would race on the same metrics.json — corruption, not speedup).
+    * OPENRESEARCH_DISABLE_TORCHRUN_WRAP=1 → always plain (operator override).
+    """
+    script_args = [str(train_cell_path), f"--cell-id={cell_id}", f"--output-dir={output_dir}"]
+    if (
+        gpu_count > 1
+        and not _torchrun_wrap_disabled()
+        and any(m in (script_text or "") for m in _DISTRIBUTED_MARKERS)
+    ):
+        logger.warning(
+            "build_cell_launch_argv: %d GPUs leased + distributed markers — "
+            "launching via `torchrun --nproc_per_node=%d`.", gpu_count, gpu_count,
+        )
+        return ["torchrun", "--standalone", "--nnodes=1",
+                f"--nproc_per_node={gpu_count}", *script_args]
+    if gpu_count > 1 and not _torchrun_wrap_disabled():
+        logger.warning(
+            "build_cell_launch_argv: %d GPUs leased but no distributed markers — "
+            "single-process to avoid duplicate trainers racing on metrics.json.", gpu_count,
+        )
+    return [python_exe, *script_args]
+
+
+def _read_trainer_script_text(train_cell_path: Path) -> str:
+    """Read train_cell.py for distributed-marker detection (empty on failure)."""
+    try:
+        return train_cell_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
 def _run_trainer_subprocess(
     train_cell_path: Path,
     output_dir: Path,
@@ -523,14 +592,18 @@ def _run_trainer_subprocess(
     output_lines: list[str] = []
     attempt_log_path.parent.mkdir(parents=True, exist_ok=True)
 
+    argv = build_cell_launch_argv(
+        python_exe=sys.executable,
+        train_cell_path=train_cell_path,
+        cell_id=cell_id,
+        output_dir=output_dir,
+        gpu_count=resolve_cell_gpu_count(),
+        script_text=_read_trainer_script_text(train_cell_path),
+    )
+
     with attempt_log_path.open("w", encoding="utf-8") as log_fh:
         proc = subprocess.Popen(
-            [
-                sys.executable,
-                str(train_cell_path),
-                f"--cell-id={cell_id}",
-                f"--output-dir={output_dir}",
-            ],
+            argv,
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -1134,14 +1207,18 @@ def main(
         output_lines_: list[str] = []
         attempt_log_path_.parent.mkdir(parents=True, exist_ok=True)
 
+        argv_ = build_cell_launch_argv(
+            python_exe=sys.executable,
+            train_cell_path=train_cell_path_,
+            cell_id=cell_id,
+            output_dir=output_dir_,
+            gpu_count=resolve_cell_gpu_count(),
+            script_text=_read_trainer_script_text(train_cell_path_),
+        )
+
         with attempt_log_path_.open("w", encoding="utf-8") as log_fh_:
             proc_ = _sp.Popen(
-                [
-                    sys.executable,
-                    str(train_cell_path_),
-                    f"--cell-id={cell_id}",
-                    f"--output-dir={output_dir_}",
-                ],
+                argv_,
                 env=env_,
                 stdout=_sp.PIPE,
                 stderr=_sp.STDOUT,

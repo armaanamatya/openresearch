@@ -13,7 +13,6 @@ from __future__ import annotations
 import copy
 import json
 
-import pytest
 
 from backend.agents.rlm.evidence_key import evidence_key, normalize_scope
 

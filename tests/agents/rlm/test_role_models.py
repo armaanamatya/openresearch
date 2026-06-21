@@ -42,11 +42,14 @@ def test_back_compat_inherit_planner_only():
 
 def test_back_compat_stamp_shape():
     sel = resolve_role_models(planner_token="claude-oauth")
+    # The stamp gained a 5th "validator" key (P2.1, spec 2026-06-20 §7.4); the
+    # four pre-existing keys are byte-identical, and validator inherits None.
     assert sel.stamp() == {
         "planner": "anthropic-oauth:claude-sonnet-4-6",
         "executor": None,
         "verifier": None,
         "grader": None,
+        "validator": None,
     }
 
 
@@ -470,16 +473,21 @@ class TestPlannerLeniencyForRootOnlyKeys:
 class TestAzureFoundrySubrole:
     @pytest.mark.parametrize("role", ["executor", "verifier", "grader"])
     @pytest.mark.parametrize("token", ["grok", "azure-foundry", "foundry", "grok-4.3"])
-    def test_grok_token_resolves_to_foundry_provider_model_none(self, role, token):
+    def test_grok_token_resolves_to_foundry_provider_model_none(self, role, token, monkeypatch):
         from backend.agents.rlm.role_models import (
             PROVIDER_AZURE_FOUNDRY,
             parse_model_spec,
         )
 
+        # The build contract is unchanged: provider is foundry, model is None
+        # (the served model is supplied from AZURE_FOUNDRY_DEPLOYMENT at build).
+        monkeypatch.setenv("AZURE_FOUNDRY_DEPLOYMENT", "grok-4.3")
         spec = parse_model_spec(token, role=role)
         assert spec.provider == PROVIDER_AZURE_FOUNDRY
         assert spec.model is None  # None ⇒ use AZURE_FOUNDRY_DEPLOYMENT at build
-        assert spec.stamp == "azure-foundry:<deployment>"
+        # The STAMP resolves the live deployment for honest provenance (a grok
+        # run and a Kimi run no longer share a `<deployment>` placeholder).
+        assert spec.stamp == "azure-foundry:grok-4.3"
 
     def test_resolve_role_models_executor_and_grader_grok(self):
         from backend.agents.rlm.role_models import (
@@ -500,3 +508,50 @@ class TestAzureFoundrySubrole:
         # foundry is a non-Claude sub-role → not the validated baseline.
         assert sel.executor.is_claude is False
         assert sel.grader.is_claude is False
+
+    @pytest.mark.parametrize("role", ["executor", "verifier", "grader", "planner"])
+    @pytest.mark.parametrize("token", ["kimi", "kimi-k2.6", "kimi-k2-6"])
+    def test_kimi_token_resolves_to_foundry_provider(self, role, token):
+        # Kimi-K2.6 is deployed to the SAME Foundry endpoint as grok, so the
+        # `kimi*` tokens route through the identical azure-foundry provider for
+        # every role (served model = AZURE_FOUNDRY_DEPLOYMENT).
+        from backend.agents.rlm.role_models import (
+            PROVIDER_AZURE_FOUNDRY,
+            parse_model_spec,
+        )
+
+        spec = parse_model_spec(token, role=role)
+        assert spec.provider == PROVIDER_AZURE_FOUNDRY
+        assert spec.model is None
+
+    def test_foundry_stamp_resolves_live_deployment(self, monkeypatch):
+        # Every foundry-routed token honestly stamps whatever is deployed — so a
+        # Kimi run and a grok run are distinguishable in final_report.models.
+        from backend.agents.rlm.role_models import parse_model_spec
+
+        monkeypatch.setenv("AZURE_FOUNDRY_DEPLOYMENT", "Kimi-K2.6")
+        assert parse_model_spec("kimi-k2.6", role="executor").stamp == "azure-foundry:Kimi-K2.6"
+        assert parse_model_spec("grok", role="grader").stamp == "azure-foundry:Kimi-K2.6"
+        assert parse_model_spec("foundry", role="verifier").stamp == "azure-foundry:Kimi-K2.6"
+
+    def test_foundry_stamp_placeholder_when_deployment_unresolvable(self, monkeypatch):
+        # Fail-soft: an unresolvable deployment degrades to the placeholder and
+        # never raises (stamping must never break a run).
+        from backend.agents.rlm import role_models
+
+        monkeypatch.setattr(
+            "backend.agents.runtime.foundry_endpoint.resolve_foundry_credentials",
+            lambda: ("", "", ""),
+        )
+        spec = role_models.parse_model_spec("grok", role="executor")
+        assert spec.stamp == "azure-foundry:<deployment>"
+
+    def test_kimi_resolves_as_root_model(self, monkeypatch):
+        # `--model kimi-k2.6` selects the azure-foundry root (same as `--model grok`).
+        from backend.agents.rlm.models import resolve_root_model
+
+        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", "https://x.services.ai.azure.com/openai/v1")
+        monkeypatch.setenv("AZURE_FOUNDRY_DEPLOYMENT", "Kimi-K2.6")
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "dummy")
+        for tok in ("kimi", "kimi-k2.6", "kimi-k2-6"):
+            assert resolve_root_model(tok).key == "azure-foundry"

@@ -185,6 +185,19 @@ class RLMFinalReport(BaseModel):
             "None on a normally-completed run."
         ),
     )
+    # P2.3 — external adversarial validation panel stamp (spec 2026-06-20 §7.1).
+    # Populated from the persisted verdict only when the fingerprint matches the
+    # shipped evidence. Empty dict (= never validated) when the validator was not
+    # enabled, the panel was not built, or the verdict fingerprint is stale.
+    validation: dict = Field(
+        default_factory=dict,
+        description=(
+            "Adversarial validation panel result for this run's shipped evidence. "
+            "Fields: status (clean|vetoed|unavailable), veto_set, separation, "
+            "panel_models, evidence_fingerprint, predicates. "
+            "Empty when the validator is disabled or the verdict is stale."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -834,7 +847,11 @@ def _apply_champion_artifact(rubric: dict, project_dir: "Path") -> dict:
     if not _champion_artifact_enabled():
         return rubric
     try:
-        from backend.agents.rlm.champion_artifact import best_champion, restore_snapshot
+        from backend.agents.rlm.champion_artifact import (
+            best_champion,
+            restore_rubric,
+            restore_snapshot,
+        )
         champ = best_champion(Path(project_dir) / "rlm_state" / "champions.json")
         if not champ:
             return rubric
@@ -852,7 +869,21 @@ def _apply_champion_artifact(rubric: dict, project_dir: "Path") -> dict:
         if snap and (cur_f is None or champ_score >= cur_f):
             restore_snapshot(Path(snap), Path(project_dir) / "code")
             out["overall_score"] = champ_score
+            # Restore the champion's own rubric block so score ≡ its leaf evidence.
+            # snap is the *code* dir; its parent is the entry dir holding rubric_block.json.
+            champ_rubric = restore_rubric(Path(snap).parent) or {}
+            for _k in (
+                "leaf_scores",
+                "weak_leaves",
+                "leaf_count",
+                "meets_target",
+                "target_score",
+                "compute_adjusted_score",
+            ):
+                if champ_rubric.get(_k) is not None:
+                    out[_k] = champ_rubric[_k]
             out["champion_restored"] = True
+            out["champion_sample_count"] = int(champ.get("sample_count", 1))
         return out
     except Exception:  # noqa: BLE001 — champion-artifact restore is best-effort, never fatal
         logger.exception("report: champion-artifact restore failed (non-fatal)")
@@ -1190,6 +1221,19 @@ def build_final_report(
         kwargs["overall_score"] = _final_rubric.get("overall_score")
         kwargs["meets_target"] = _final_rubric.get("meets_target")
 
+    # Conversion-guard repair (Task 6): if provenance is empty but the grader
+    # scored a populated code/metrics.json, repopulate baseline_metrics from disk.
+    # Evidence-tightening only — no-op on already-coherent reports.
+    # detect_projection_incoherence has a score-based fallback
+    # (overall_score not in (None,0) AND metrics_on_disk) so no explicit
+    # evidence_cites_metrics flag is needed — setting it on every report was an
+    # unconditional output change (fix: strict parity).
+    _rubric_block = kwargs.get("rubric") or {}
+    repair_projection_from_disk(kwargs, _rubric_block, ctx.project_dir)
+    # The sentinel key must be stripped before passing to the pydantic model
+    # (RLMFinalReport has no provenance_repaired field and no extra="allow").
+    kwargs.pop("provenance_repaired", None)
+
     return RLMFinalReport(**kwargs)
 
 
@@ -1257,6 +1301,38 @@ def _metric_provenance_enabled() -> bool:
         "no",
         "off",
     )
+
+
+def repair_projection_from_disk(kwargs_report: dict, rubric: dict, project_dir: "Path") -> dict:
+    """If provenance is empty but the grader scored code/metrics.json, repopulate
+    baseline_metrics from that file.  Evidence-tightening only; no-op when coherent.
+
+    Returns the (mutated) kwargs_report dict.  The ``provenance_repaired`` sentinel
+    key is set to True on the dict when a repair was made — callers that pass this
+    to ``RLMFinalReport(**kwargs)`` must pop it first (the model has no such field).
+    """
+    from backend.agents.rlm.conversion_guard import detect_projection_incoherence
+
+    try:
+        mpath = Path(project_dir) / "code" / "metrics.json"
+        metrics = json.loads(mpath.read_text(encoding="utf-8")) if mpath.is_file() else None
+    except (OSError, ValueError, TypeError):
+        metrics = None
+
+    probe = {
+        "baseline_metrics": kwargs_report.get("baseline_metrics"),
+        "experiment_run_id": kwargs_report.get("experiment_run_id"),
+        "primitive_trace": kwargs_report.get("primitive_trace"),
+    }
+    if detect_projection_incoherence(probe, rubric, metrics) is None:
+        return kwargs_report
+
+    kwargs_report["baseline_metrics"] = metrics
+    kwargs_report["provenance_repaired"] = True
+    logger.warning(
+        "report: repaired empty provenance from code/metrics.json (conversion guard)"
+    )
+    return kwargs_report
 
 
 # ---------------------------------------------------------------------------
@@ -1432,6 +1508,32 @@ def _apply_evidence_gate(
     """
     if os.environ.get("OPENRESEARCH_EVIDENCE_GATE", "1").strip().lower() in {"0", "false", "off"}:
         return report
+    # Unified deterministic critic (§3.2): when OPENRESEARCH_EVIDENCE_AUDIT is ON,
+    # AND-in the run-level clean predicate — a success-ish verdict additionally
+    # requires audit_evidence_from_dir(...).run_level_clean.  When the flag is OFF
+    # the audit path is never entered, so byte-identical behaviour is guaranteed by
+    # construction (a plain branch, not a conditional import).
+    # Fail-soft: any audit error leaves the existing gate decision unchanged.
+    _audit_veto: bool = False
+    _audit_note: str = ""
+    try:
+        from backend.agents.rlm.evidence_audit import (  # noqa: PLC0415
+            evidence_audit_enabled,
+            audit_evidence_from_dir,
+        )
+        if evidence_audit_enabled():
+            _audit = audit_evidence_from_dir(project_dir, ok_count=run_experiment_ok_calls)
+            if not _audit.run_level_clean:
+                _audit_veto = True
+                _audit_note = (
+                    " [evidence_audit] Downgraded to 'failed': unified deterministic "
+                    "critic found degenerate evidence"
+                    + (f" ({'; '.join(_audit.reasons)})" if _audit.reasons else "")
+                    + "."
+                )
+    except Exception:  # noqa: BLE001 — audit must never block finalization
+        logger.debug("report: unified evidence audit failed (non-fatal)", exc_info=True)
+
     content_evidence = _has_experiment_evidence(project_dir)
     # Forged iff there IS a success+metrics row on disk but the authoritative ledger
     # proves no real primitive call backs it: either run_experiment never ran at all
@@ -1507,6 +1609,15 @@ def _apply_evidence_gate(
             )
         report.verdict = "failed"
         report.reproduction_summary = (report.reproduction_summary or "").rstrip() + note
+    # Unified critic veto (§3.2): runs only when OPENRESEARCH_EVIDENCE_AUDIT is ON
+    # AND the verdict is still success-ish after the primary gate.  Mirrors the
+    # same downgrade pattern as the no-evidence branch above.
+    # When the flag is OFF, _audit_veto is always False (set before the
+    # content_evidence check), so this branch is never entered -> byte-identical.
+    elif _audit_veto and report.verdict in {"reproduced", "partial"}:
+        logger.warning("report: unified evidence audit downgraded verdict to 'failed'")
+        report.verdict = "failed"
+        report.reproduction_summary = (report.reproduction_summary or "").rstrip() + _audit_note
     return report
 
 
@@ -1714,6 +1825,45 @@ def write_final_report_rlm(
     except Exception:  # noqa: BLE001 — merge is best-effort, never crashes the write
         logger.exception("report: rubric_evaluation.json merge failed (non-fatal)")
 
+    # --- P2.3: validation panel stamp (spec 2026-06-20 §7.1) ----------------
+    # Read the persisted verdict keyed by the SAME evidence fingerprint that the
+    # panel used.  A stale verdict (metrics changed since the panel ran) is ignored
+    # — load_verdict returns None and validation stays empty.  Fail-soft.
+    try:
+        from backend.agents.rlm.external_validator import (  # noqa: PLC0415
+            load_verdict,
+            evidence_fingerprint,
+        )
+        _shipped_metrics: dict = dict(report.baseline_metrics) if report.baseline_metrics else {}
+        if not _shipped_metrics:
+            _mpath = project_dir / "code" / "metrics.json"
+            if _mpath.exists():
+                try:
+                    import json as _j
+                    _shipped_metrics = _j.loads(_mpath.read_text(encoding="utf-8"))
+                except Exception:  # noqa: BLE001
+                    _shipped_metrics = {}
+        _fp = evidence_fingerprint(_shipped_metrics)
+        _v = load_verdict(project_dir, expect_fingerprint=_fp)
+        if _v is not None:
+            report.validation = {
+                "status": _v.status,
+                "veto_set": _v.veto_set,
+                "separation": _v.separation,
+                "panel_models": _v.panel_models,
+                "evidence_fingerprint": _v.evidence_fingerprint,
+                "predicates": [
+                    {
+                        "predicate": p.predicate,
+                        "metric_ref": p.metric_ref,
+                        "violated": p.violated,
+                    }
+                    for p in _v.predicates
+                ],
+            }
+    except Exception:  # noqa: BLE001 — stamp is best-effort, never crashes the write
+        logger.debug("report: validation stamp skipped", exc_info=True)
+
     # --- Best-of-run floor at the write chokepoint (2026-06-13 OmniZip) -----
     # build_final_report applies _apply_best_of_run_floor, but the root-assembled
     # clean-completion path calls write_final_report_rlm DIRECTLY and bypassed it:
@@ -1748,6 +1898,50 @@ def write_final_report_rlm(
                     report.verdict = "reproduced"
     except Exception:  # noqa: BLE001 — floor is best-effort, never crashes the write
         logger.exception("report: best-of-run write-chokepoint floor failed (non-fatal)")
+
+    # --- Score-fidelity chokepoint (audit 2026-06-20) -------------------------
+    # (1) Verdict/score consistency: cap the verdict at what the final
+    #     authoritative rubric score supports. Symptom: pb_ftrl_1779413937
+    #     shipped verdict=reproduced at leaf score 0.0. Uses
+    #     reconcile_verdict_with_score() which ONLY downgrades, never upgrades.
+    #     Fail-soft: any error leaves the verdict unchanged.
+    # (2) meets_target population: recompute meets_target from the FINAL
+    #     overall_score vs target_score in one canonical place at the write
+    #     chokepoint so it is never None when both values are present.
+    #     Symptom: 100% of an old report corpus shipped meets_target=None.
+    try:
+        _rubric_final = dict(report.rubric or {})
+        _final_score = _rubric_final.get("overall_score")
+        _final_target = _rubric_final.get("target_score")
+        _changed = False
+        # (1) Verdict cap — only when we have a real score to enforce against.
+        if _final_score is not None:
+            try:
+                _capped = reconcile_verdict_with_score(report.verdict, float(_final_score))
+                if _capped != report.verdict:
+                    logger.info(
+                        "report: write-chokepoint verdict cap %r -> %r "
+                        "(overall_score=%.4f)",
+                        report.verdict, _capped, float(_final_score),
+                    )
+                    report.verdict = _capped
+            except Exception:  # noqa: BLE001 — verdict cap is best-effort
+                logger.exception("report: write-chokepoint verdict cap failed (non-fatal)")
+        # (2) meets_target recompute from the final authoritative score.
+        try:
+            if _final_score is None or _final_target is None:
+                new_mt: bool | None = None
+            else:
+                new_mt = bool(float(_final_score) >= float(_final_target))
+            if new_mt != _rubric_final.get("meets_target"):
+                _rubric_final["meets_target"] = new_mt
+                _changed = True
+        except (TypeError, ValueError):
+            pass  # keep whatever is there
+        if _changed:
+            report.rubric = _rubric_final
+    except Exception:  # noqa: BLE001 — score-fidelity block is best-effort, never fatal
+        logger.exception("report: score-fidelity chokepoint failed (non-fatal)")
 
     # --- JSON (canonical) ---
     # Two-axis reproducibility verdict (live finalize path, U11): when enabled and the
@@ -1799,6 +1993,37 @@ def write_final_report_rlm(
             json_content = json.dumps(_report_dict, indent=2)
     except Exception:  # noqa: BLE001 — two-axis attach is best-effort, never blocks the write
         logger.warning("report: two-axis verdict attach failed (non-fatal)", exc_info=True)
+
+    # --- A: Report-claim gate (§4.3, 2026-06-20) ----------------------------
+    # FINAL verdict mutation: caps to "partial" + cites when the root's report
+    # narrative contains result claims absent from code/metrics.json (≥5% tol).
+    # Runs AFTER the best-of-run floor and two-axis attach so nothing re-upgrades
+    # it afterward (codex-6). Byte-identical-off: gate function checks its own flag.
+    try:
+        from backend.agents.rlm.report_claim_gate import (
+            apply_report_claim_gate,
+            report_claim_gate_enabled,
+        )
+        if report_claim_gate_enabled():
+            _rcg_dict = json.loads(json_content)
+            _emit_rcg_warning = None
+            try:
+                import json as _json_ev
+                from backend.agents.rlm.sse_bridge import build_run_warning_event as _bwe
+
+                def _emit_rcg_warning(code: str, msg: str) -> None:
+                    _ev = _bwe(code=code, message=msg)
+                    _evp = project_dir / "dashboard_events.jsonl"
+                    with open(_evp, "a", encoding="utf-8") as _ef:
+                        _ef.write(_json_ev.dumps(_ev) + "\n")
+            except Exception:  # noqa: BLE001
+                pass
+            _rcg_dict = apply_report_claim_gate(
+                report, _rcg_dict, project_dir, emit_warning=_emit_rcg_warning
+            )
+            json_content = json.dumps(_rcg_dict, indent=2)
+    except Exception:  # noqa: BLE001 — claim gate is best-effort, never blocks the write
+        logger.warning("report: report_claim_gate failed (non-fatal)", exc_info=True)
 
     # --- Experiment-arm stamp (A/B observability, 2026-06-11) ---------------
     # Label every report with its with/without-BES arm + flag snapshot so

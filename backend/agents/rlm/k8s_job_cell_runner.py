@@ -709,6 +709,12 @@ def _build_job_manifest(
     else:
         gpu_count_str = "1"
 
+    # Plumb the leased GPU count into the cell so the in-pod entrypoint can
+    # torchrun-wrap a >1-GPU distributed cell
+    # (gke_cell_entrypoint.resolve_cell_gpu_count). Additive + default 1 → every
+    # single-GPU cell (incl. the AKS path) is byte-for-byte unchanged where unread.
+    env_vars.append({"name": "OPENRESEARCH_CELL_GPU_COUNT", "value": gpu_count_str})
+
     # P0-fix-3: node selector uses the infra pool label reprolab/sku in ALL paths.
     # With gpu_plan → target that SKU's pool; without → fall back to the default SKU.
     if gpu_plan is not None:

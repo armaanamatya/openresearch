@@ -485,6 +485,19 @@ class TestRunPipelineRlmIntegration:
         monkeypatch.setenv("OPENRESEARCH_RLM_STUB_PRIMITIVES", "1")
         monkeypatch.setenv("OPENRESEARCH_RLM_ROOT_MODEL", "gpt-5")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-not-used")
+        # This scripted root deliberately NEVER calls run_experiment — that is
+        # the whole premise of the honesty/evidence-gate subject under test
+        # (a success claim with zero executed evidence). But the forced-iteration
+        # policy's "no experiment ever run" check (BUG-NEW-046) would therefore
+        # refuse every FINAL_VAR, and each refused FINAL_VAR is a no-``repl``-block
+        # turn that trips the degenerate-loop detector
+        # (run.py::_FatalBackendGateLogger) before the finalize/honesty path runs.
+        # Cap the per-run iteration budget at 1 so the policy ACCEPTS the first
+        # post-Turn-1 FINAL_VAR (iteration budget exhausted) and the run reaches
+        # the report builder on Turn 2 — where the honesty guard + evidence gate
+        # are the actual subject of this test. Cannot add a run_experiment call:
+        # that would defeat the "zero executed evidence" scenario being asserted.
+        monkeypatch.setenv("OPENRESEARCH_MAX_RLM_ITERATIONS", "1")
 
         from backend.config import Settings
 

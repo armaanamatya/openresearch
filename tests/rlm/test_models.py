@@ -473,7 +473,12 @@ class TestAzureFoundryRoot:
 
 
 class TestNormalizeFoundryBaseUrl:
-    """_normalize_foundry_base_url accepts whatever the operator pastes."""
+    """Foundry base-url normalization accepts whatever the operator pastes.
+
+    G5: the local ``models._normalize_foundry_base_url`` was de-duplicated; the
+    single canonical implementation now lives in
+    ``backend.agents.runtime.foundry_endpoint.normalize_foundry_base_url``.
+    """
 
     @pytest.mark.parametrize(
         "raw,expected",
@@ -490,6 +495,6 @@ class TestNormalizeFoundryBaseUrl:
         ],
     )
     def test_normalisation(self, raw, expected):
-        from backend.agents.rlm.models import _normalize_foundry_base_url
+        from backend.agents.runtime.foundry_endpoint import normalize_foundry_base_url
 
-        assert _normalize_foundry_base_url(raw) == expected
+        assert normalize_foundry_base_url(raw) == expected

@@ -1059,6 +1059,44 @@ class ScopeSpec(BaseModel):
 import re as _re  # local import to avoid polluting the module top namespace
 
 
+# ---------------------------------------------------------------------------
+# Asset pre-provisioning spec (harness-invoked, 2026-06-18)
+# ---------------------------------------------------------------------------
+
+class AssetSpec(BaseModel):
+    """Declares the heavy ML assets a paper needs before GPU work begins.
+
+    Used by ``PaperHint.assets`` and consumed by
+    ``backend.services.runtime.asset_provisioning.ensure_assets``.
+
+    Fields:
+      - ``requirements_files``: repo-relative paths to pip requirements files
+        installed before any GPU work (idempotent — pip skips cached wheels).
+      - ``models``: HuggingFace repo ids whose weights must be warm in HF_HOME.
+      - ``datasets``: HuggingFace dataset names to warm (best-effort; failure
+        is logged but does not abort the run).
+      - ``webshop``: when True, ensure the ``web_agent_site`` package is
+        importable (clone + pip-install if not).
+    """
+
+    requirements_files: list[str] = Field(
+        default_factory=list,
+        description="Repo-relative pip requirements files to install.",
+    )
+    models: list[str] = Field(
+        default_factory=list,
+        description="HuggingFace repo ids to snapshot_download.",
+    )
+    datasets: list[str] = Field(
+        default_factory=list,
+        description="HuggingFace dataset names to warm (best-effort).",
+    )
+    webshop: bool = Field(
+        default=False,
+        description="Ensure web_agent_site is importable.",
+    )
+
+
 class InvariantSpec(BaseModel):
     """Deterministic regex check for one algorithmic invariant in the agent's code.
 
@@ -1173,6 +1211,12 @@ class PaperHint(BaseModel):
     #    "select_objective": "min"}          # min | max
     # None / absent ⇒ no synthesis (the agent may still emit its own ``search``).
     lr_search: dict | None = None
+    # Asset pre-provisioning (2026-06-18): heavy ML assets that must be warm in
+    # the shared cache before any GPU work. Consumed by
+    # ``backend.services.runtime.asset_provisioning.ensure_assets`` which the
+    # harness calls (on local sandbox, flag-gated) immediately before
+    # provision_scope. None / absent → no-op for every non-SDAR paper.
+    assets: "AssetSpec | None" = None
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,18 @@ from __future__ import annotations
 
 import os
 
+# Canonical Foundry mode-alias vocabulary — the ONE place every tier (root
+# registry, executor, factory, grader/verifier transport, navigation
+# accelerator) reads to decide whether a requested mode/backend names the
+# Azure AI Foundry OpenAI-compatible endpoint. Compare against a normalised
+# (``.strip().lower()``) value. Keep it minimal: ``azure-foundry`` is the
+# canonical key, the rest are documented convenience handles. (The root-tier
+# ``models._MODEL_ALIASES`` table is a separate, broader vocabulary — it also
+# maps grok-3/grok-4 etc. — and is intentionally NOT unified here.)
+FOUNDRY_MODE_ALIASES: frozenset[str] = frozenset(
+    {"azure-foundry", "foundry", "grok", "grok-4.3"}
+)
+
 
 def normalize_foundry_base_url(raw: str) -> str:
     """Normalise a Foundry endpoint to the ``/openai/v1`` base the OpenAI SDK appends to.
@@ -72,6 +84,7 @@ def has_foundry_credentials() -> bool:
 
 
 __all__ = [
+    "FOUNDRY_MODE_ALIASES",
     "normalize_foundry_base_url",
     "resolve_foundry_credentials",
     "has_foundry_credentials",

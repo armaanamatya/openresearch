@@ -15,7 +15,6 @@ End-to-end coverage of the three §D2 behaviours through the real
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from types import SimpleNamespace
 

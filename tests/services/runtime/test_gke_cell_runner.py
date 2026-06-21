@@ -339,3 +339,24 @@ class TestGkeSettingsPrefixIsolation:
 
         assert prefix == "azure"
         assert gpu_skus == ["azure_a100_80"]
+
+
+class TestCellJobGpuCountEnv:
+    """OPENRESEARCH_CELL_GPU_COUNT plumbed into the cell Job (SCOPE 2 support).
+
+    The in-pod entrypoint (gke_cell_entrypoint.resolve_cell_gpu_count) reads this
+    to torchrun-wrap a >1-GPU distributed cell deterministically.
+    """
+
+    def test_cell_job_injects_gpu_count_env(self):
+        plan = SimpleNamespace(short_name="gcp_a100_40x8", gpu_count=8)
+        manifest = _build_gcp_manifest(gpu_plan=plan)
+        env = manifest["spec"]["template"]["spec"]["containers"][0]["env"]
+        by_name = {e["name"]: e["value"] for e in env}
+        assert by_name.get("OPENRESEARCH_CELL_GPU_COUNT") == "8"
+
+    def test_cell_job_gpu_count_defaults_to_one_without_plan(self):
+        manifest = _build_gcp_manifest(gpu_plan=None)
+        env = manifest["spec"]["template"]["spec"]["containers"][0]["env"]
+        by_name = {e["name"]: e["value"] for e in env}
+        assert by_name.get("OPENRESEARCH_CELL_GPU_COUNT") == "1"

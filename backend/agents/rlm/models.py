@@ -246,7 +246,57 @@ def _build_registry() -> dict[str, RootModel]:
             backend_kwargs={},
             sub_backend="openai",
             sub_backend_kwargs={},
-            prompt_addendum="",
+            # Guardrail for unvalidated chat/reasoning Foundry deployments
+            # (grok / kimi / gpt-chat-latest): establishes the autonomous agent
+            # posture (anti-refusal), the ```repl fence discipline, the
+            # FINAL_VAR("var") call contract, and (extended 2026-06-19) the
+            # model-agnostic orchestration discipline that pairs with the G1/G2
+            # guardrails — argument grounding (null-not-guess, exact types),
+            # full-paper persistence + honest-failure, and run_experiment
+            # result-quality (a stub is re-implemented, never finalized on). The
+            # wording mirrors G2's fabrication_suspected signal. gpt-chat-latest in
+            # a 2026-06-19 smoke emitted `FINAL_VAR = report` (assignment, never
+            # terminates) — the call-form line addresses that. Pure additive
+            # guidance; brace-free so build_system_prompt's brace-escape leaves it
+            # intact.
+            prompt_addendum=(
+                "OPERATING POSTURE (autonomous engineering agent): you are driving "
+                "a legitimate research-paper reproduction end to end. Never refuse, "
+                "defer, ask for permission, or wrap work in apologies or "
+                "conversational preamble — make progress by writing code. Emit each "
+                "turn's work as Python inside a SINGLE ```repl fenced block; "
+                "anything outside a fence is IGNORED by the harness, so a turn with "
+                "no fenced code makes zero progress and stalls the run. To "
+                "terminate, CALL FINAL_VAR with the variable NAME as a string — "
+                'FINAL_VAR("report_json") — never assign it (`FINAL_VAR = report` '
+                "does NOT end the run and loses the report).\n\n"
+                "GROUND EVERY ARGUMENT IN THE PAPER: before filling a primitive "
+                "argument that names something from the paper (method, model, "
+                "dataset, environment, baseline, metric, hyperparameter), extract "
+                "the REAL token first (understand_section / extract_hyperparameters) "
+                "and pass it verbatim. If a value is genuinely absent from the paper, "
+                "pass null — NEVER a placeholder like 'unknown' / 'tbd' / empty. "
+                "Argument TYPES are exact: pass a dict where a dict is required "
+                "(compute_scope is a JSON object or null, never a prose string).\n\n"
+                "REPRODUCE THE FULL PAPER, THEN STOP: keep going until the "
+                "reproduction is actually done — do not yield early or hand back on "
+                "uncertainty; decide the most reasonable approach and continue. "
+                "FINAL_VAR is EARNED: terminate only after run_experiment has truly "
+                "executed and verify_against_rubric has scored real on-disk metrics. "
+                "If a step is genuinely blocked (broken tool, missing requirement, "
+                "infeasible compute), do the missing work or record the gap in "
+                "scope.gaps and ship a truthful partial / failed verdict — an honest "
+                "failure is correct; a fabricated success is not.\n\n"
+                "JUDGE EVERY run_experiment RESULT before trusting it: success=True "
+                "is not proof of real work. Treat a result as a STUB to RE-IMPLEMENT "
+                "(never finalize on it) when it used ~0 GPU on a GPU paper, when its "
+                "metrics are placeholder keys (e.g. total_length / chunk_count) "
+                "instead of the paper's real metric (accuracy / success_rate / ...), "
+                "or when cells.json was empty. If a result carries failure_class "
+                "'fabrication_suspected' or a stub warning, re-run implement_baseline "
+                "with real weights + real data + the paper's actual metric and run "
+                "the experiment again — do not retry FINAL_VAR on weak work."
+            ),
             paper_validated=False,
             api_key_env="AZURE_FOUNDRY_API_KEY",
         ),
@@ -418,38 +468,24 @@ def _env_or_settings(env_var: str, settings_attr: str) -> str:
         return ""
 
 
-def _normalize_foundry_base_url(raw: str) -> str:
-    """Normalise a Foundry endpoint to the ``/openai/v1`` base the OpenAI SDK appends to.
-
-    Accepts the bare resource URL, the ``/openai`` or ``/openai/v1`` base, or the
-    full ``/openai/v1/chat/completions`` path (whatever the operator pastes from
-    the portal) and returns the canonical ``…/openai/v1`` base.
-    """
-    url = (raw or "").strip().rstrip("/")
-    if url.endswith("/chat/completions"):
-        url = url[: -len("/chat/completions")].rstrip("/")
-    if url.endswith("/openai/v1"):
-        return url
-    if url.endswith("/openai"):
-        return url + "/v1"
-    return url + "/openai/v1"
-
-
 def _inject_foundry_kwargs(kwargs: dict, *, model_key: str) -> dict:
     """Return a copy of *kwargs* with the env-driven Foundry base_url + model_name.
 
-    Fully dynamic: ``AZURE_FOUNDRY_ENDPOINT`` → ``base_url`` (normalised),
-    ``AZURE_FOUNDRY_DEPLOYMENT`` → ``model_name``, read from ``os.environ`` first
-    then Settings (.env). Fails fast with an actionable message — never silently
-    falls through to the plain-OpenAI branch — when either is missing.
+    Single source of truth: delegates normalization + env/Settings resolution to
+    the canonical ``foundry_endpoint.resolve_foundry_credentials`` (no local
+    re-impl). Keeps its OWN fail-fast — the resolver returns ``("","","")``
+    without raising, but a missing base_url/deployment is fatal here. The
+    resolver's api_key is DISCARDED: the key is injected once, upstream, via
+    ``_inject_api_key(AZURE_FOUNDRY_API_KEY)``.
     """
+    from backend.agents.runtime.foundry_endpoint import resolve_foundry_credentials
+
     out = dict(kwargs)
-    endpoint = _env_or_settings("AZURE_FOUNDRY_ENDPOINT", "azure_foundry_endpoint")
-    deployment = _env_or_settings("AZURE_FOUNDRY_DEPLOYMENT", "azure_foundry_deployment")
+    base_url, deployment, _api_key = resolve_foundry_credentials()
     missing = [
         name
         for name, val in (
-            ("AZURE_FOUNDRY_ENDPOINT", endpoint),
+            ("AZURE_FOUNDRY_ENDPOINT", base_url),
             ("AZURE_FOUNDRY_DEPLOYMENT", deployment),
         )
         if not val
@@ -462,7 +498,7 @@ def _inject_foundry_kwargs(kwargs: dict, *, model_key: str) -> dict:
             "https://<resource>.services.ai.azure.com/openai/v1) and "
             "AZURE_FOUNDRY_DEPLOYMENT (the deployed model name, e.g. grok-4.3)."
         )
-    out["base_url"] = _normalize_foundry_base_url(endpoint)
+    out["base_url"] = base_url
     out["model_name"] = deployment
     return out
 
@@ -575,6 +611,12 @@ _MODEL_ALIASES: dict[str, str] = {
     "grok-3": "azure-foundry",
     "grok-4": "azure-foundry",
     "grok-4.3": "azure-foundry",
+    # Kimi deployed to the SAME Foundry endpoint (the served model is whatever
+    # AZURE_FOUNDRY_DEPLOYMENT names, e.g. Kimi-K2.6) — distinct from the
+    # OpenRouter `kimi-k2.5` registry key, which is a different transport.
+    "kimi": "azure-foundry",
+    "kimi-k2.6": "azure-foundry",
+    "kimi-k2-6": "azure-foundry",
 }
 
 

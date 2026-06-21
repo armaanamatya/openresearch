@@ -15,7 +15,10 @@ from backend.agents.runtime.base import (
     ProviderConfigurationError,
     ProviderName,
 )
-from backend.agents.runtime.foundry_endpoint import has_foundry_credentials
+from backend.agents.runtime.foundry_endpoint import (
+    FOUNDRY_MODE_ALIASES,
+    has_foundry_credentials,
+)
 from backend.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -236,6 +239,14 @@ def selected_provider(provider: ProviderName | str | None = None) -> ProviderNam
     if normalized in {"anthropic", "claude"}:
         return "anthropic"
     if normalized in {"openai", "oai"}:
+        return "openai"
+    # Azure OpenAI and Azure AI Foundry are not ProviderName literals; both ride
+    # the OpenAI SDK surface, so generic sub-agents may name them here and get
+    # the "openai" literal back (matching validate_provider_credentials, which
+    # returns "openai" for azure as the "closest ProviderName"). The dedicated
+    # Azure/Foundry runtimes are selected upstream in make_runtime() before this
+    # call; this branch only lets a caller that passed the name through resolve.
+    if normalized in {"azure", "azure-openai", "azure_openai"} | FOUNDRY_MODE_ALIASES:
         return "openai"
     raise ProviderConfigurationError(
         provider=normalized,

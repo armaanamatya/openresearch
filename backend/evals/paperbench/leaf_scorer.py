@@ -282,13 +282,19 @@ def _deterministic_leaves_enabled() -> bool:
 
 
 def _evidence_gate_enabled() -> bool:
-    """A7 (2026-06-16): the honest backstop. OPENRESEARCH_EVIDENCE_GATE, default OFF.
+    """A7 (2026-06-16): the honest backstop. OPENRESEARCH_LEAF_EVIDENCE_GATE, default OFF.
     When ON, veto to 0.0 any result-claiming leaf the grader credited (>0) whose
     cited per_model cell has no successful on-disk evidence (the MLR-Bench
     fabrication failure mode). Off → no veto, scoring byte-for-byte as today. The
     veto decision lives in the pure backend/agents/rlm/evidence_gate.py (imported
-    only when ON), which composes with this module's subject/alias matching."""
-    return os.environ.get("OPENRESEARCH_EVIDENCE_GATE", "").strip().lower() in (
+    only when ON), which composes with this module's subject/alias matching.
+
+    NOTE: this reads ``OPENRESEARCH_LEAF_EVIDENCE_GATE``, NOT
+    ``OPENRESEARCH_EVIDENCE_GATE``.  The verdict-level gate in
+    ``report.py::_apply_evidence_gate`` reads ``OPENRESEARCH_EVIDENCE_GATE``
+    (default-ON).  The two gates are now distinct to avoid the collision where
+    both shared one var with opposite defaults."""
+    return os.environ.get("OPENRESEARCH_LEAF_EVIDENCE_GATE", "").strip().lower() in (
         "1", "true", "yes", "on",
     )
 
@@ -1982,7 +1988,7 @@ def score_reproduction(
     # A7 EVIDENCE_GATE (2026-06-16): the honest backstop. The grader is an LLM and
     # can credit a measured result that was never computed (MLR-Bench ~80%
     # fabrication; RewardHacking env-hardening −87.7% exploits). When
-    # OPENRESEARCH_EVIDENCE_GATE is ON, veto to 0.0 any RESULT-CLAIMING leaf the grader
+    # OPENRESEARCH_LEAF_EVIDENCE_GATE is ON, veto to 0.0 any RESULT-CLAIMING leaf the grader
     # credited (>0) whose cited per_model cell has NO successful on-disk evidence.
     # Composes with this module's subject matching + the same alias loosening the
     # data-unavailable detector uses (so a synonym leaf is never false-vetoed).
@@ -2002,7 +2008,7 @@ def score_reproduction(
                 except (OSError, json.JSONDecodeError, ValueError):
                     _eg_metrics = {}
             _eg_det_ids = {str(r.get("id", "")) for r in _deterministic_records}
-            _eg_leaf_by_id = {str(l.get("id", "")): l for l in leaves}
+            _eg_leaf_by_id = {str(lf.get("id", "")): lf for lf in leaves}
             for _eg_rec in leaf_score_records:
                 _eg_lid = str(_eg_rec.get("id", ""))
                 # Skip the data-unavailable records (score=None, appended below) and

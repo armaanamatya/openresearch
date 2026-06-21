@@ -48,6 +48,7 @@ Design invariants (intentional, load-bearing):
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 
 # Canonical sub-role provider taxonomy. ``anthropic-oauth`` and ``anthropic``
@@ -88,10 +89,12 @@ _VALIDATED_SUBROLE_PROVIDERS: frozenset[str] = frozenset(
     {PROVIDER_ANTHROPIC_OAUTH, PROVIDER_ANTHROPIC}
 )
 
-ROLES: tuple[str, ...] = ("planner", "executor", "verifier", "grader")
-# The three sub-roles a fidelity warning applies to (planner has its own
-# paper_validated signal via the root registry).
-_SUBROLES: frozenset[str] = frozenset({"executor", "verifier", "grader"})
+ROLES: tuple[str, ...] = ("planner", "executor", "verifier", "grader", "validator")
+# The sub-roles a fidelity warning applies to (planner has its own
+# paper_validated signal via the root registry). The ``validator`` (the external
+# adversarial panel, spec 2026-06-20 §7.4) is a sub-role too: it resolves from
+# the unified surface and stamps like the others.
+_SUBROLES: frozenset[str] = frozenset({"executor", "verifier", "grader", "validator"})
 
 # token -> (provider, concrete_model_or_None). ``None`` model = provider default
 # (Azure: the deployment from AZURE_OPENAI_DEPLOYMENT). Tokens are lower-cased
@@ -131,7 +134,65 @@ _ROLE_VOCAB: dict[str, tuple[str, str | None]] = {
     "foundry": (PROVIDER_AZURE_FOUNDRY, None),
     "grok": (PROVIDER_AZURE_FOUNDRY, None),
     "grok-4.3": (PROVIDER_AZURE_FOUNDRY, None),
+    # Kimi on the same Foundry endpoint (served model = AZURE_FOUNDRY_DEPLOYMENT,
+    # e.g. Kimi-K2.6); a real sub-role provider so executor/grader/verifier=kimi work.
+    "kimi": (PROVIDER_AZURE_FOUNDRY, None),
+    "kimi-k2.6": (PROVIDER_AZURE_FOUNDRY, None),
+    "kimi-k2-6": (PROVIDER_AZURE_FOUNDRY, None),
 }
+
+
+def _classify_model_family(provider: str, model: str | None) -> str | None:
+    """Map a (provider, model) descriptor to its model *lineage* family.
+
+    Lineage, NOT transport (spec 2026-06-20 §7.2): ``claude`` (API key) and
+    ``claude-oauth`` (subscription) are the SAME family because they call the
+    same Sonnet/Opus models — the validator's separation guarantee is about
+    *whose weights* judge the run, not which credential pays for them. The KEY
+    invariant the separation ladder keys on::
+
+        family(PROVIDER_AZURE) == "gpt" != family(PROVIDER_ANTHROPIC_OAUTH) == "claude"
+
+    Families:
+      * ``"claude"`` — every Anthropic provider (oauth/api) + the de-collapsed
+        sonnet/opus/haiku tokens. The sub-family (sonnet vs opus) is retained in
+        ``RoleSpec.model`` for stamping; separation keys only on ``"claude"``.
+      * ``"gpt"``    — OpenAI-direct (gpt-5/gpt-4o/o4-mini) AND classic Azure
+        OpenAI (the deployment serves a GPT model). ``PROVIDER_AZURE`` ⇒ gpt.
+      * ``"grok"`` / ``"kimi"`` — the Azure Foundry custom endpoint, disambiguated
+        by the served model name (``AZURE_FOUNDRY_DEPLOYMENT``: grok* vs kimi*).
+        An un-named Foundry model falls back to ``"foundry"``.
+      * ``"qwen"``   — any qwen* token (root-only registry keys).
+      * ``None``     — unknown / un-classifiable (e.g. the PROVIDER_ROOT
+        passthrough planner stamp for a llama-70b root); never crashes a run.
+
+    Pure + stdlib-only; the model string is matched case-insensitively.
+    """
+    prov = (provider or "").strip().lower()
+    mdl = (model or "").strip().lower()
+    if prov in (PROVIDER_ANTHROPIC_OAUTH, PROVIDER_ANTHROPIC):
+        return "claude"
+    if prov in (PROVIDER_OPENAI, PROVIDER_AZURE):
+        return "gpt"
+    if prov == PROVIDER_AZURE_FOUNDRY:
+        if "grok" in mdl:
+            return "grok"
+        if "kimi" in mdl:
+            return "kimi"
+        return "foundry"
+    # PROVIDER_ROOT passthrough (planner stamps a raw root key here): classify by
+    # the token text so a claude/gpt/grok/kimi/qwen root still reports a family.
+    if mdl.startswith("qwen") or "qwen" in mdl:
+        return "qwen"
+    if mdl.startswith(("claude", "sonnet", "opus", "haiku")):
+        return "claude"
+    if "grok" in mdl:
+        return "grok"
+    if "kimi" in mdl:
+        return "kimi"
+    if mdl.startswith(("gpt", "o4", "o1", "o3")):
+        return "gpt"
+    return None
 
 
 class RoleModelError(ValueError):
@@ -151,6 +212,11 @@ class RoleSpec:
     token: str
     provider: str
     model: str | None
+    # Model *lineage* family (spec 2026-06-20 §7.2/§11.1) — the axis the external
+    # validator's separation-strength ladder keys on. ``None`` when un-classifiable.
+    # Set by parse_model_spec via _classify_model_family; defaults None so a
+    # hand-built RoleSpec (older callers/tests) still constructs.
+    family: str | None = None
 
     @property
     def is_claude(self) -> bool:
@@ -158,8 +224,40 @@ class RoleSpec:
 
     @property
     def stamp(self) -> str:
-        """Compact ``provider:model`` identifier for ``final_report.models``."""
-        return f"{self.provider}:{self.model or '<deployment>'}"
+        """Compact ``provider:model`` identifier for ``final_report.models``.
+
+        For the Azure Foundry provider the concrete model is ``None`` by design
+        (the served model is whatever ``AZURE_FOUNDRY_DEPLOYMENT`` names). Resolve
+        that deployment here so a grok run and a Kimi run stamp DISTINCTLY
+        (``azure-foundry:grok-4.3`` vs ``azure-foundry:Kimi-K2.6``) instead of a
+        shared ``<deployment>`` placeholder — honest provenance for the report +
+        leaderboard. Display-only: the build path still reads the deployment from
+        env, so resolution here changes nothing about which model is called.
+        Fail-soft — falls back to the placeholder if resolution raises.
+
+        §4.7 stamp fix: for the ``validator`` role, ``OPENRESEARCH_VALIDATOR_MODEL``
+        (the deployment the validator transport actually targets) takes precedence
+        over the role's own ``model`` — otherwise a bridged azure-foundry validator
+        would stamp the global ``AZURE_FOUNDRY_DEPLOYMENT`` (the executor's model)
+        rather than the operator-selected validator model. Cosmetic: the transport
+        already targets ``OPENRESEARCH_VALIDATOR_MODEL`` (``build_validator_client``).
+        """
+        if self.role == "validator":
+            _vm = os.environ.get("OPENRESEARCH_VALIDATOR_MODEL", "").strip()
+            if _vm:
+                return f"{self.provider}:{_vm}"
+        model = self.model
+        if model is None and self.provider == PROVIDER_AZURE_FOUNDRY:
+            try:
+                from backend.agents.runtime.foundry_endpoint import (
+                    resolve_foundry_credentials,
+                )
+
+                _base, deployment, _key = resolve_foundry_credentials()
+                model = deployment or None
+            except Exception:  # noqa: BLE001 — stamping must never break a run
+                model = None
+        return f"{self.provider}:{model or '<deployment>'}"
 
 
 @dataclass(frozen=True)
@@ -174,6 +272,11 @@ class RoleSelection:
     executor: RoleSpec | None
     verifier: RoleSpec | None
     grader: RoleSpec | None
+    # The external adversarial validator (spec 2026-06-20 §7.4) — a sub-role
+    # picked from the unified surface (``--models validator=...``). ``None`` when
+    # the operator did not select it; the panel then resolves ``unavailable`` and
+    # the Tier-1 deterministic floor is the backstop.
+    validator: RoleSpec | None = None
 
     def get(self, role: str) -> RoleSpec | None:
         return getattr(self, role, None)
@@ -183,7 +286,7 @@ class RoleSelection:
         """The sub-roles the operator actually overrode (non-inherit)."""
         return {
             role: spec
-            for role in ("executor", "verifier", "grader")
+            for role in ("executor", "verifier", "grader", "validator")
             if (spec := self.get(role)) is not None
         }
 
@@ -192,12 +295,15 @@ class RoleSelection:
 
         Sub-roles left to inherit stamp ``None``; ``run.py`` backfills those
         with the effective inherited model (planner's / the legacy grader's).
+        The validator's ``OPENRESEARCH_VALIDATOR_MODEL`` preference lives in
+        ``RoleSpec.stamp`` (§4.7), so each role here simply delegates to it.
         """
         return {
             "planner": self.planner.stamp,
             "executor": self.executor.stamp if self.executor else None,
             "verifier": self.verifier.stamp if self.verifier else None,
             "grader": self.grader.stamp if self.grader else None,
+            "validator": self.validator.stamp if self.validator else None,
         }
 
     def fidelity_warnings(self, *, fidelity_critical: bool) -> list[str]:
@@ -219,6 +325,50 @@ class RoleSelection:
                     "Claude baseline — fidelity-critical results may drift."
                 )
         return out
+
+
+def separation_strength(
+    executor: RoleSpec | None, validator: RoleSpec | None
+) -> str:
+    """Three-tier model-lineage separation between executor and validator.
+
+    The external validator's grounding power comes from judging the executor's
+    work with DIFFERENT model weights (spec 2026-06-20 §7.2). This replaces the
+    old binary same-family check with a graded ladder so the operator's two
+    funded panels are both first-class:
+
+    * ``"independent"`` — different families (``executor.family != validator.family``);
+      e.g. oauth-Sonnet (claude) × azure-gpt-4o (gpt). The strongest panel.
+    * ``"weak"``        — SAME family, DIFFERENT model/deployment; e.g. azure
+      gpt-4o × azure gpt-4.1. **SUPPORTED** (the operator's same-provider ask) —
+      downstream emits a soft ``validator_separation_weak`` notice, never blocks.
+      For Azure the "model" is the resolved deployment, so
+      ``OPENRESEARCH_VALIDATOR_MODEL=<deploymentB>`` vs ``AZURE_OPENAI_DEPLOYMENT=<deploymentA>``
+      lands here.
+    * ``"degraded"``    — same family AND same model (seed-only difference); the
+      validator is not meaningfully independent. Downstream emits the loud
+      ``validator_separation_degraded`` warning and treats the LLM-suspicion
+      portion as non-independent (the machine-checked veto still stands).
+    * ``"unavailable"`` — ``validator is None`` (the role was not selected); the
+      Tier-1 deterministic floor is the sole backstop.
+
+    Pure comparison of the two ``RoleSpec`` descriptors; no env reads.
+    """
+    if validator is None:
+        return "unavailable"
+    if executor is None:
+        # No executor pick to compare against (legacy executor path). A selected
+        # validator with no peer to separate from is treated as independent — it
+        # is a different lineage from "whatever the default executor is" by
+        # construction (the operator chose it explicitly).
+        return "independent"
+    if executor.family != validator.family:
+        return "independent"
+    # Same family: distinguish by the concrete model/deployment. For Azure the
+    # model string IS the deployment, so distinct deployments read as "weak".
+    if (executor.model or None) != (validator.model or None):
+        return "weak"
+    return "degraded"
 
 
 def supported_tokens() -> list[str]:
@@ -251,14 +401,26 @@ def parse_model_spec(token: str, *, role: str) -> RoleSpec:
         # absent from the sub-role vocab but parse fine here as a passthrough
         # for stamping (the real provider/model live in the RootModel; the
         # final report stamps planner from the resolved root label anyway).
-        return RoleSpec(role=role, token=key, provider=PROVIDER_ROOT, model=key)
+        return RoleSpec(
+            role=role,
+            token=key,
+            provider=PROVIDER_ROOT,
+            model=key,
+            family=_classify_model_family(PROVIDER_ROOT, key),
+        )
     provider, model = entry
     if role in _SUBROLES and provider not in SUBROLE_PROVIDERS:
         raise RoleModelError(
             f"token {token!r} (provider '{provider}') cannot drive sub-role "
             f"'{role}'; sub-roles support {sorted(SUBROLE_PROVIDERS)}"
         )
-    return RoleSpec(role=role, token=key, provider=provider, model=model)
+    return RoleSpec(
+        role=role,
+        token=key,
+        provider=provider,
+        model=model,
+        family=_classify_model_family(provider, model),
+    )
 
 
 def planner_token_from_surface(raw: str | None) -> str | None:
@@ -319,6 +481,7 @@ def resolve_role_models(
     grader_backend_env: str | None = None,
     grader_model_env: str | None = None,
     verifier_model_setting: str | None = None,
+    validator_model_setting: str | None = None,
 ) -> RoleSelection:
     """Resolve all four roles from the unified surface + legacy feeders.
 
@@ -378,4 +541,19 @@ def resolve_role_models(
         grader_legacy = (grader_model_env or "").strip() or "gpt-4o-mini"
     grader = _resolve_subrole("grader", grader_legacy)
 
-    return RoleSelection(planner=planner, executor=executor, verifier=verifier, grader=grader)
+    # Validator legacy feeder: an explicit validator-model setting / env
+    # (OPENRESEARCH_VALIDATOR_MODEL, threaded by run.py). The unified surface
+    # (``--models validator=...``) still wins via _resolve_subrole. ``None`` ⇒
+    # validator unselected → the panel is ``unavailable`` and the Tier-1 floor
+    # backs it (spec 2026-06-20 §7.2).
+    validator = _resolve_subrole(
+        "validator", (validator_model_setting or "").strip() or None
+    )
+
+    return RoleSelection(
+        planner=planner,
+        executor=executor,
+        verifier=verifier,
+        grader=grader,
+        validator=validator,
+    )

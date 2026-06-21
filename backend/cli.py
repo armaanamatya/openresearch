@@ -75,6 +75,65 @@ import backend.services.ingestion.discovery.events  # noqa: F401
 import backend.services.ingestion.intake.events  # noqa: F401
 import backend.services.ingestion.parser.events  # noqa: F401
 
+from backend.agents.rlm.models import resolve_root_model
+from backend.agents.rlm.root_validation import (
+    RISK_DEGENERATE_LOOP,
+    classify_root_model,
+)
+
+
+def _root_validation_gate(model: str | None) -> tuple[int | None, str | None, str | None]:
+    """Predict the degenerate-loop failure for the RLM root BEFORE a long run.
+
+    Returns ``(exit_code, warn_text, error_text)``:
+
+    * ``warn_text`` (or ``None``) — a LOUD ``[warn]`` block for ``claude-oauth``
+      (the documented FINAL_VAR refusal-loop risk). Surfaces regardless of the
+      flag — that is the point of the warning.
+    * ``error_text`` (or ``None``) — a ``[error]`` block printed when the
+      fail-fast fires.
+    * ``exit_code`` — ``1`` when ``OPENRESEARCH_REQUIRE_VALIDATED_ROOT`` is
+      truthy AND the resolved root is NOT paper-validated (abort before the
+      run); ``None`` otherwise (proceed).
+
+    FAIL-SOFT: if the root cannot be resolved/classified (unknown model, cred
+    probe failure), the gate is SKIPPED entirely — the real run will surface
+    the actual error. Default-OFF: a validated root or an unset flag never
+    blocks; the claude-oauth warning is the only effect when the flag is unset.
+
+    oauth-root-reliability plan, P2.
+    """
+    try:
+        validation = classify_root_model(resolve_root_model(model))
+    except Exception:  # noqa: BLE001 — fail-soft; never block on a probe failure
+        return None, None, None
+
+    warn_text: str | None = None
+    if validation.risk == RISK_DEGENERATE_LOOP:
+        warn_text = (
+            f"\n[warn] root model {validation.model_key!r} is an UNRELIABLE RLM root: "
+            "it degenerates into a FINAL_VAR refusal loop that never reaches "
+            "implement_baseline. The degenerate-loop detector now aborts the run "
+            "fast, but it may still produce no result. Recommended: --model gpt-5. "
+            "Set OPENRESEARCH_REQUIRE_VALIDATED_ROOT=1 to hard-block unvalidated "
+            "roots before the run starts.\n"
+        )
+
+    require = (
+        os.environ.get("OPENRESEARCH_REQUIRE_VALIDATED_ROOT", "").strip().lower()
+        in ("1", "on", "true", "yes")
+    )
+    if require and not validation.validated:
+        error_text = (
+            f"\n[error] root model {validation.model_key!r} is NOT paper-validated "
+            "as an RLM root and OPENRESEARCH_REQUIRE_VALIDATED_ROOT is set — "
+            "aborting before the run. Use --model gpt-5 (paper-validated) or unset "
+            "OPENRESEARCH_REQUIRE_VALIDATED_ROOT to override.\n"
+        )
+        return 1, warn_text, error_text
+
+    return None, warn_text, None
+
 
 def _warn_on_shell_env_override() -> None:
     """BUG-LR-014: warn when shell-exported API keys differ from .env values.
@@ -92,7 +151,9 @@ def _warn_on_shell_env_override() -> None:
     _SUSPECT_KEYS = (
         "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
         "FEATHERLESS_API_KEY", "OPENROUTER_API_KEY",
-        "AZURE_OPENAI_API_KEY", "OPENRESEARCH_RUNPOD_API_KEY",
+        "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_DEPLOYMENT",
+        "AZURE_FOUNDRY_API_KEY", "AZURE_FOUNDRY_ENDPOINT", "AZURE_FOUNDRY_DEPLOYMENT",
+        "OPENRESEARCH_RUNPOD_API_KEY",
     )
     def _prefix(s: str) -> str:
         return f"{s[:10]}…{s[-4:]}" if len(s) > 14 else "<set>"
@@ -748,6 +809,8 @@ _REPRODUCE_DEFAULTS = {
     # Lane Q — defaults to False (strict reproduction). Set to True via
     # --minimize-compute or the lab UI "Minimize compute" checkbox.
     "minimize_compute": False,
+    # Config-file run spec (P0.3). None = not provided.
+    "run_spec": None,
 }
 
 
@@ -757,6 +820,66 @@ def _with_reproduce_defaults(args: argparse.Namespace) -> argparse.Namespace:
         if not hasattr(args, name):
             setattr(args, name, value)
     return args
+
+
+def _load_run_spec(path: str) -> None:
+    """Load a JSON run-spec file into os.environ (EARLY, before flag resolution).
+
+    The spec is a JSON object whose top-level keys are applied as follows:
+      - Keys matching ``OPENRESEARCH_*`` or ``REPROLAB_*`` → os.environ verbatim
+        (string-coerced).  These become the spec-layer defaults; explicit CLI flags
+        set the same env vars AFTER this call and therefore WIN.
+      - ``"models"`` → ``os.environ["OPENRESEARCH_ROLE_MODELS"]`` (string value).
+      - ``"baseline_extra_guidance"`` → ``os.environ["OPENRESEARCH_BASELINE_EXTRA_GUIDANCE"]``
+        as-is (multi-line survives JSON; the shell env-word-split footgun is §10's motivation).
+
+    All other keys are silently ignored (forward-compatibility).
+
+    Errors:
+      - Missing file → argparse.ArgumentTypeError (clear, fail-fast).
+      - Non-object JSON (array, string, null, …) → argparse.ArgumentTypeError.
+      - Invalid JSON → argparse.ArgumentTypeError.
+    """
+    spec_path = Path(path)
+    if not spec_path.exists():
+        raise argparse.ArgumentTypeError(
+            f"--run-spec: file not found: {path!r}"
+        )
+    try:
+        raw = spec_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise argparse.ArgumentTypeError(
+            f"--run-spec: cannot read {path!r}: {exc}"
+        ) from exc
+    try:
+        spec = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError(
+            f"--run-spec: invalid JSON in {path!r}: {exc}"
+        ) from exc
+    if not isinstance(spec, dict):
+        raise argparse.ArgumentTypeError(
+            f"--run-spec: expected a JSON object in {path!r}, got {type(spec).__name__}"
+        )
+
+    applied = 0
+    for key, val in spec.items():
+        if key in ("models",):
+            os.environ["OPENRESEARCH_ROLE_MODELS"] = str(val)
+            applied += 1
+        elif key == "baseline_extra_guidance":
+            os.environ["OPENRESEARCH_BASELINE_EXTRA_GUIDANCE"] = str(val)
+            applied += 1
+        elif key.startswith(("OPENRESEARCH_", "REPROLAB_")):
+            os.environ[key] = str(val)
+            applied += 1
+        # Unknown keys silently ignored.
+
+    print(
+        f"[run-spec] loaded {path!r}: {applied} env key(s) applied "
+        f"(explicit CLI flags override).",
+        file=sys.stderr,
+    )
 
 
 def _find_latest_rdr_project_dir(runs_root: Path, paper_id: str) -> str | None:
@@ -1500,6 +1623,17 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     _set_active_project_id(None, runs_root)
     _install_termination_handlers()
 
+    # --run-spec: load JSON spec into os.environ BEFORE flag resolution so that
+    # every explicit CLI flag (which sets its env var AFTER this block) wins.
+    # A missing / non-object / invalid-JSON spec is a hard error here.
+    _run_spec_path = getattr(args, "run_spec", None)
+    if _run_spec_path:
+        try:
+            _load_run_spec(_run_spec_path)
+        except argparse.ArgumentTypeError as _rse:
+            print(str(_rse), file=sys.stderr)
+            return 2
+
     # Dynamic GPU CLI overrides: set env vars BEFORE any Settings construction so
     # pydantic-settings picks them up. Non-None CLI values override env defaults.
     import os as _os
@@ -1666,6 +1800,52 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     # treated as a bundle paper_id (or absolute path), not a PDF/arXiv/DOI.
     if args.mode == "rdr":
         return _cmd_reproduce_rdr(args, runs_root)
+
+    # Root-validation gate (oauth-root-reliability plan, P2): predict the
+    # degenerate-loop failure BEFORE any ingest / services / GPU run. Default-OFF
+    # + fail-soft: a validated root / unset flag never blocks; the claude-oauth
+    # warning still prints. Placed here so BOTH RLM run paths — the PaperBench
+    # bundle dispatch below AND the arXiv/PDF ingest path — are covered, and no
+    # event store is open yet (so the fail-fast needs no cleanup).
+    _rv_exit, _rv_warn, _rv_error = _root_validation_gate(args.model)
+    if _rv_warn:
+        print(_rv_warn, file=sys.stderr)
+    if _rv_exit is not None:
+        if _rv_error:
+            print(_rv_error, file=sys.stderr)
+        return _rv_exit
+
+    # Credential preflight — validate the root model's API key BEFORE any
+    # ingest or subprocess spawn.  Catches the 13-run class of 401 failures
+    # that historically occurred minutes into a run after expensive ingest.
+    # Gate: OPENRESEARCH_SKIP_CRED_PREFLIGHT=1 opts out entirely (CI / offline
+    # / already-validated environments).  Fail-OPEN on inconclusive errors so a
+    # network blip never blocks a legitimate run.
+    _skip_cred_preflight = (
+        os.environ.get("OPENRESEARCH_SKIP_CRED_PREFLIGHT", "").strip().lower()
+        in ("1", "on", "true", "yes")
+    )
+    if not _skip_cred_preflight:
+        try:
+            from backend.agents.rlm.pre_flight_validator import validate_root_credentials
+            from backend.agents.rlm.models import resolve_root_model as _resolve_root_model
+
+            _root_entry = _resolve_root_model(getattr(args, "model", None))
+            _cred_provider = _root_entry.rlm_backend
+            _cred_model = _root_entry.key
+            _cred_ok, _cred_msg = validate_root_credentials(
+                _cred_provider, model=_cred_model
+            )
+            if _cred_ok:
+                print(_cred_msg, file=sys.stderr)
+            else:
+                print(f"\n[error] Credential preflight FAILED:\n{_cred_msg}\n", file=sys.stderr)
+                return 1
+        except Exception as _cpf_exc:  # noqa: BLE001 — fail-open; never block on probe error
+            print(
+                f"[cred-preflight] probe raised {type(_cpf_exc).__name__} — proceeding.",
+                file=sys.stderr,
+            )
 
     # rlm (default hybrid) or rlm-pure with a PaperBench bundle ID:
     # bypass ingest, load the bundle directly.
@@ -2132,13 +2312,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     reproduce.add_argument(
         "--sandbox",
-        choices=("auto", "local", "docker", "runpod", "azure", "gcp"),
+        choices=("auto", "local", "docker", "runpod", "azure", "gcp", "gke"),
         default=DEFAULT_SANDBOX_MODE.value,
         help=(
             f"Experiment backend (default: {DEFAULT_SANDBOX_MODE.value}). "
             "azure dispatches training cells as AKS Jobs on Azure GPU nodes; "
-            "runpod uses a remote GPU Pod; docker is isolated local Docker; "
-            "local runs commands on the host; auto resolves to the configured default."
+            "gcp dispatches training cells as GKE Jobs on Google Cloud GPU nodes "
+            "(gke is an alias for gcp); runpod uses a remote GPU Pod; docker is "
+            "isolated local Docker; local runs commands on the host; auto resolves "
+            "to the configured default."
         ),
     )
     reproduce.add_argument(
@@ -2478,6 +2660,21 @@ def _build_parser() -> argparse.ArgumentParser:
             "(with --resume-cells) fall through to a full codegen pass instead of "
             "only refreshing vendored helpers — use when train_cell.py / cells.json "
             "themselves must be regenerated, not just the env helpers."
+        ),
+    )
+    reproduce.add_argument(
+        "--run-spec",
+        dest="run_spec",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Path to a JSON config file (run spec) loaded BEFORE flag resolution. "
+            "Top-level keys: ``OPENRESEARCH_*`` / ``REPROLAB_*`` → os.environ verbatim; "
+            "``models`` → OPENRESEARCH_ROLE_MODELS; ``baseline_extra_guidance`` → "
+            "OPENRESEARCH_BASELINE_EXTRA_GUIDANCE (multi-line survives JSON, avoiding "
+            "shell env-word-split). Explicit CLI flags always override spec values. "
+            "Missing file or non-object JSON → clear error. "
+            "Replaces the 12-var env whitelist in gcp_sdar_preflight.sh."
         ),
     )
     reproduce.set_defaults(func=cmd_reproduce)

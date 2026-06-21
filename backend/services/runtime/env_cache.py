@@ -219,8 +219,13 @@ def _default_webshop_launcher(cache_dir: Path, port: int) -> int:
     # correct interpreter, an un-installed ``web_agent_site`` surfaces as a clear
     # ModuleNotFoundError that ``ensure_webshop`` turns into a verified
     # ``env_setup_failed`` Exclusion, instead of a misleading ``No such file: python``.
+    #
+    # OPENRESEARCH_WEBSHOP_PYTHON allows a dedicated Python 3.10 venv to be used for
+    # WebShop's server, keeping its frozen old torch/transformers stack isolated from
+    # the run venv's modern stack (set by install_webshop_dedicated in asset_provisioning).
+    webshop_python = os.environ.get("OPENRESEARCH_WEBSHOP_PYTHON") or sys.executable
     proc = subprocess.Popen(
-        [sys.executable, "-m", "web_agent_site.app", "--port", str(port)],
+        [webshop_python, "-m", "web_agent_site.app", "--port", str(port)],
         cwd=str(cache_dir), stdout=log, stderr=subprocess.STDOUT,
         env={**os.environ},
     )

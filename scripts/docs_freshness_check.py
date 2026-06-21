@@ -39,6 +39,11 @@ APPROVED_PDF_GLOBS = [
     "best_runs/**/*.pdf",
     "docs/**/*.pdf",
     "third_party/**/*.pdf",
+    # Bundled reproduction targets (papers/registry.json) — input fixtures shipped
+    # in-repo so they're selectable on a fresh clone with no network fetch. Added
+    # by feat(papers) 01918a15; the allow-list was never updated, so docs-check
+    # had been failing on these published-paper PDFs.
+    "papers/*.pdf",
 ]
 
 # These were development working-notes; they live in docs/archive/ now. If any

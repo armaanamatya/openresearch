@@ -93,6 +93,10 @@ def run_offline(
         python_version, pip_packages, gpu_mode=gpu_mode, sandbox_mode=sandbox_mode,
     )
 
+    # Validate the FROM base and normalize hallucinated/unknown bases before use.
+    # Fail-soft: any exception leaves the Dockerfile unchanged.
+    dockerfile = _normalize_dockerfile_from(dockerfile)
+
     spec = EnvironmentSpec(
         dockerfile=dockerfile,
         python_version=python_version,
@@ -246,6 +250,312 @@ def _generate_assumptions(
 
 
 _RUNPOD_PYTORCH_BASE = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-runtime-ubuntu22.04"
+
+# ---------------------------------------------------------------------------
+# FROM-base static validator
+# ---------------------------------------------------------------------------
+
+# Known-good base image name prefixes (family prefixes, not full tags).
+# A FROM line whose image starts with one of these is accepted as-is.
+_KNOWN_GOOD_BASE_FAMILIES: tuple[str, ...] = (
+    "runpod/pytorch",
+    "pytorch/pytorch",
+    "nvidia/cuda",
+    "nvcr.io/nvidia",
+    "python:",
+    "python ",   # covers "python AS ..." without a tag
+    "ubuntu:",
+    "ubuntu ",
+    "debian:",
+    "debian ",
+    "tensorflow/tensorflow",
+    "rocm/pytorch",
+    "continuumio/",
+    "mambaorg/",
+    "quay.io/",
+    "gcr.io/",
+    "us-central1-docker.pkg.dev/",
+    "europe-west4-docker.pkg.dev/",
+    "scratch",
+    "busybox",
+    "alpine",
+)
+
+# Requirements packages that indicate CUDA-compilation headers are needed.
+# When any of these appear in a requirements list the devel-vs-runtime hint
+# prefers a -devel- base over a -runtime- base.
+_CUDA_COMPILE_PKGS: frozenset[str] = frozenset({
+    "bitsandbytes",
+    "flash-attn",
+    "flash_attn",
+    "deepspeed",
+    "apex",
+    "xformers",
+    "triton",
+    "pynvml",
+    "nvcc",
+})
+
+
+def _extract_from_image(dockerfile: str) -> str | None:
+    """Return the base image token from the first non-comment/non-ARG FROM line.
+
+    Returns ``None`` when no FROM line is found (empty or comments-only file).
+    """
+    for raw in dockerfile.splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        upper = stripped.upper()
+        if upper.startswith("ARG"):
+            continue
+        if upper.startswith("FROM "):
+            parts = stripped.split()
+            if len(parts) >= 2:
+                return parts[1]  # the image token (may include tag)
+            return None  # malformed FROM with no image
+        break  # first non-blank/non-comment/non-ARG line that is not FROM
+    return None
+
+
+def _is_known_good_base(image: str) -> bool:
+    """Return True when *image* matches a known-good base image family.
+
+    Comparison is case-insensitive; variable references (``$VAR`` / ``${VAR}``)
+    are treated as trusted (the user knows what they set).
+    """
+    if not image:
+        return False
+    if image.startswith("$"):
+        return True  # ARG-interpolated image — trust the caller
+    lower = image.lower()
+    return any(lower.startswith(fam.lower()) for fam in _KNOWN_GOOD_BASE_FAMILIES)
+
+
+def _requirements_need_devel(requirements_text: str) -> bool:
+    """Return True when *requirements_text* contains packages that need CUDA headers.
+
+    This is intentionally conservative — only returns True when a
+    known CUDA-compile package name is found as a whole word.  Package
+    names with version specifiers (``flash-attn>=2.0``) are matched too.
+    """
+    lower = requirements_text.lower()
+    return any(
+        re.search(r"\b" + re.escape(pkg) + r"\b", lower)
+        for pkg in _CUDA_COMPILE_PKGS
+    )
+
+
+def _suggest_devel_base(base_image: str) -> str:
+    """Swap *-runtime-* for *-devel-* in a RunPod/NVIDIA base tag.
+
+    Only touches images that already carry ``-runtime-``; all other
+    images are returned unchanged.  Never raises.
+    """
+    if "-runtime-" in base_image:
+        return base_image.replace("-runtime-", "-devel-", 1)
+    return base_image
+
+
+class FromValidationResult:
+    """Result of :func:`validate_from_base`."""
+
+    __slots__ = ("ok", "image", "warning", "suggested_image", "devel_hint")
+
+    def __init__(
+        self,
+        *,
+        ok: bool,
+        image: str | None,
+        warning: str | None = None,
+        suggested_image: str | None = None,
+        devel_hint: bool = False,
+    ) -> None:
+        self.ok = ok
+        self.image = image
+        self.warning = warning
+        self.suggested_image = suggested_image
+        self.devel_hint = devel_hint
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return (
+            f"FromValidationResult(ok={self.ok!r}, image={self.image!r}, "
+            f"warning={self.warning!r}, suggested_image={self.suggested_image!r}, "
+            f"devel_hint={self.devel_hint!r})"
+        )
+
+
+def validate_from_base(
+    dockerfile: str,
+    *,
+    requirements_text: str = "",
+    fallback_base: str | None = None,
+) -> FromValidationResult:
+    """Statically validate the FROM base image in *dockerfile*.
+
+    Runs at detect/generate time — before any ``docker build`` — to catch
+    hallucinated or malformed FROM lines cheaply.
+
+    Rules (all fail-soft; a non-None ``suggested_image`` is advisory only):
+
+    (a) **Malformed / empty FROM** — no FROM line found, or the FROM has no
+        image token → ``ok=False``, ``warning`` set.
+
+    (b) **Known-good base families** — ``runpod/pytorch``, ``pytorch/pytorch``,
+        ``nvidia/cuda``, ``python:``, ``ubuntu:``, ``tensorflow/tensorflow``,
+        official cloud registries, etc. → accepted unchanged (``ok=True``).
+
+    (c) **Unknown / hallucinated base** — image does NOT match any known family →
+        ``ok=True`` but ``warning`` set + ``suggested_image = fallback_base``
+        (caller decides whether to swap).  Conservative: no legitimate custom
+        base is blocked.
+
+    (d) **Devel-vs-runtime hint** — when *requirements_text* contains
+        CUDA-compilation packages (bitsandbytes / flash-attn / deepspeed /
+        apex / xformers / triton) AND the chosen base contains ``-runtime-``,
+        ``devel_hint=True`` is set and ``suggested_image`` is updated to the
+        ``-devel-`` variant (only when the base itself is otherwise accepted).
+
+    Parameters
+    ----------
+    dockerfile:
+        Full Dockerfile text (may be agent-generated).
+    requirements_text:
+        Optional pip requirements.txt / requirements list text; used for the
+        devel-vs-runtime hint.
+    fallback_base:
+        Default base image to suggest when the inferred FROM is unknown.
+        Defaults to ``_RUNPOD_PYTORCH_BASE``.
+    """
+    if fallback_base is None:
+        fallback_base = _RUNPOD_PYTORCH_BASE
+
+    image = _extract_from_image(dockerfile)
+
+    # (a) malformed / empty
+    if image is None:
+        return FromValidationResult(
+            ok=False,
+            image=None,
+            warning=(
+                "Dockerfile has no FROM line (or FROM is missing the image token). "
+                f"Consider using: {fallback_base}"
+            ),
+            suggested_image=fallback_base,
+        )
+
+    # (b) known-good base — accepted as-is (may still trigger devel hint)
+    if _is_known_good_base(image):
+        result = FromValidationResult(ok=True, image=image)
+        # (d) devel-vs-runtime hint
+        if requirements_text and _requirements_need_devel(requirements_text):
+            devel = _suggest_devel_base(image)
+            if devel != image:
+                result.devel_hint = True
+                result.suggested_image = devel
+                result.warning = (
+                    f"Requirements contain CUDA-compilation packages "
+                    f"(bitsandbytes/flash-attn/deepspeed/apex/xformers/triton) but "
+                    f"the base image uses -runtime- CUDA headers. "
+                    f"Consider switching to: {devel}"
+                )
+                logger.warning(
+                    "validate_from_base: devel hint for %r → %r", image, devel
+                )
+        return result
+
+    # (c) unknown / hallucinated base
+    logger.warning(
+        "validate_from_base: unrecognised FROM base %r; "
+        "suggesting fallback %r (caller decides whether to swap)",
+        image,
+        fallback_base,
+    )
+    return FromValidationResult(
+        ok=True,  # fail-soft — never block a legitimate custom base
+        image=image,
+        warning=(
+            f"FROM base {image!r} is not a recognised base image family. "
+            f"If this is a custom registry image, ignore this warning. "
+            f"Otherwise consider: {fallback_base}"
+        ),
+        suggested_image=fallback_base,
+    )
+
+
+def _normalize_dockerfile_from(dockerfile: str) -> str:
+    """Apply validate_from_base and normalize the FROM line if needed.
+
+    Rules:
+    - Malformed / missing FROM (ok=False): replace with a minimal fallback
+      Dockerfile whose first line is ``FROM <fallback_base>``, preserving the
+      remainder of the original.
+    - Unknown / hallucinated base (ok=True, suggested_image set, not devel hint
+      only): swap the FROM line's image token to the fallback; leave everything
+      else untouched.
+    - Known-good base: return unchanged.
+    - Devel hint: log only; no structural change (advisory).
+    - Any exception: return the original unchanged (fail-soft).
+    """
+    try:
+        result = validate_from_base(dockerfile)
+        if not result.ok:
+            # Malformed or missing FROM — replace the entire FROM line with fallback.
+            fallback = result.suggested_image or _RUNPOD_PYTORCH_BASE
+            logger.warning(
+                "run_offline: Dockerfile has no valid FROM line; "
+                "replacing with fallback base %r",
+                fallback,
+            )
+            # Prepend the fallback FROM, dropping any existing broken FROM line.
+            lines = dockerfile.splitlines(keepends=True)
+            cleaned = [
+                ln for ln in lines
+                if not ln.strip().upper().startswith("FROM")
+            ]
+            return f"FROM {fallback}\n" + "".join(cleaned)
+
+        if result.suggested_image and not result.devel_hint:
+            # Unknown / hallucinated base — swap the image token only.
+            logger.warning(
+                "run_offline: FROM base %r not recognised; "
+                "normalising to configured fallback %r",
+                result.image,
+                result.suggested_image,
+            )
+            # Replace the first FROM line's image token in-place.
+            new_lines = []
+            replaced = False
+            for line in dockerfile.splitlines(keepends=True):
+                stripped = line.strip()
+                if not replaced and stripped.upper().startswith("FROM "):
+                    parts = stripped.split()
+                    if len(parts) >= 2:
+                        # Preserve the rest of the FROM (e.g. AS alias).
+                        suffix = " ".join(parts[2:])
+                        new_from = f"FROM {result.suggested_image}"
+                        if suffix:
+                            new_from += f" {suffix}"
+                        # Preserve original line ending.
+                        ending = "\n" if line.endswith("\n") else ""
+                        new_lines.append(new_from + ending)
+                        replaced = True
+                        continue
+                new_lines.append(line)
+            return "".join(new_lines)
+
+        if result.devel_hint and result.warning:
+            # Advisory only — log but do not modify the Dockerfile.
+            logger.warning("run_offline: devel hint: %s", result.warning)
+
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "run_offline: validate_from_base raised unexpectedly; "
+            "leaving Dockerfile unchanged",
+            exc_info=True,
+        )
+
+    return dockerfile
 
 
 def _generate_dockerfile(

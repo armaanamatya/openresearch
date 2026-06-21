@@ -17,6 +17,23 @@ version + date and start a new `[Unreleased]` block above it.
 
 ## [Unreleased]
 
+### Added (OAuth-root degenerate-loop detector + harness backstop — plan `docs/superpowers/plans/2026-06-17-oauth-root-reliability-and-harness-backstop.md`)
+- **Degenerate-refusal-loop detector** (`backend/agents/rlm/forced_iteration.py`): `ForcedIterationPolicy` now tracks a per-run no-progress refusal counter. When a `FINAL_VAR` refusal fires with no state-changing primitive (`implement_baseline`/`build_environment`/`run_experiment`) having run since the previous refusal, and the refusal signature is unchanged, the counter increments; any state-changing call resets it to 0. At `OPENRESEARCH_DEGENERATE_REFUSAL_THRESHOLD` (default 3) consecutive same-signature no-progress refusals the detector fires `on_degenerate_refusal_loop` once. Healthy roots (gpt-5, or oauth on a good day) reset the counter via real work and are byte-for-byte identical.
+- **Stage-specific refusal text** (`backend/agents/rlm/root_progress.py`): `infer_required_stage` infers the missing lifecycle step from run state; no-experiment refusals name the real missing primitive (`implement_baseline` when no baseline has been attempted, not just `run_experiment`). At the degenerate threshold the message escalates with the loop name and a one-line recovery skeleton for oauth roots.
+- **Harness early-abort** (`backend/agents/rlm/run.py`): the `on_degenerate_refusal_loop` callback emits a `run_warning` with `code="root_degenerate_refusal_loop"` (payload: `signature`, `count`, `required_stage`/`stage`) and — with `OPENRESEARCH_OAUTH_AUTODRIVE` OFF (the default) — marks a terminal stop (`failure_class="root_degenerate_loop"`, added to `_TERMINAL_FAILURE_CLASSES`), finalizing the run in ≤ threshold refusals instead of churning to the 16-refusal cap (≈13 min of waste).
+- **A1 safe-capture early exit** (`scripts/bes_a1_safe_capture.py`): polls `dashboard_events.jsonl` for `root_degenerate_refusal_loop`; if seen before a candidate pool exists, kills the run and writes `a1_result.json {"ok": false, "verdict": "root_degenerate", "required_stage": ...}` — no more waiting out the 2h pool timeout on a degenerate oauth root.
+- **Flag-gated auto-drive backstop** (`OPENRESEARCH_OAUTH_AUTODRIVE`, default `0`, EXPERIMENTAL): when ON and the degenerate event fires for an oauth root at a drivable stage (`need_baseline`/`need_environment`/`need_experiment`) with no terminal/near-timeout condition, the harness emits a `root_autodrive` run_warning, writes `rlm_state/root_autodrive.json`, and issues ONE stage-specific `recommend_next_tool` directive. v1 caveat: the harness cannot reconstruct the root-assembled args (they live in the REPL), so v1 issues a structured directive rather than truly executing the primitive — a real harness-drive needs the lifecycle-state-machine refactor. Auto-drive fires at most once per run. gpt-5 remains the recommended reliable root; `claude-oauth` is now SAFE for zero-dollar local/dev A1 (a degenerate run aborts in ~3 refusals and the safe-capture wrapper exits early), but `OPENRESEARCH_OAUTH_AUTODRIVE=1` is not yet a guaranteed recovery.
+- New `run_warning` codes: `root_degenerate_refusal_loop`, `root_autodrive`. New `failure_class`: `root_degenerate_loop`.
+
+### Added (BES conversion + archival correctness — P0 prerequisite; all flag-gated default-OFF, parity-preserving; spec `docs/superpowers/specs/2026-06-17-bes-evidence-first-and-conversion-remediation-design.md`, plan `docs/superpowers/plans/2026-06-17-bes-conversion-archival-correctness.md`)
+- **The ambitious 3-phase evolutionary BES redesign was CUT** after a four-round review. BES's only observed static-SELECT margin (All-CNN pool 0.549 vs 0.557) sits within grader repeatability noise, and the one proven failure (Adam: a *clean* pool pick still shipped 0.533) is a **conversion / report-projection** bug, not a generation bug. Thesis: *conversion is the proven blocker; generation and selection quality remain unproven until conversion and archive provenance are pinned.* A2/C3 GPU experiments deferred to a follow-on plan.
+- **Coherent champion bundle** (`OPENRESEARCH_CHAMPION_ARTIFACT`, default OFF): `champion_artifact.snapshot_rubric`/`restore_rubric` persist the graded rubric block beside the code snapshot; `report._apply_champion_artifact` now restores the champion's OWN `leaf_scores`/`meets_target`/etc., so the shipped `overall_score` is never detached from its leaf evidence (it previously swapped only the top-line, leaving stale lower leaves). `record_champion` now carries `sample_count` — a single grade is no longer mislabeled median-of-N.
+- **Conversion provenance guard**: `backend/agents/rlm/conversion_guard.py::detect_projection_incoherence` flags the Adam shape (empty `baseline_metrics`/`experiment_run_id`/`primitive_trace` while the grader scored a populated `code/metrics.json`); `report.repair_projection_from_disk` repopulates `baseline_metrics` from disk before `RLMFinalReport` construction (evidence-tightening, no-op on already-coherent reports). Adds an advisory `rubric.evidence_cites_metrics` flag derived from leaf justifications.
+- **Archival-completeness gate**: `backend/agents/rlm/archive_completeness.py::check_bes_archive` (resolves each artifact at live-run AND curated-archive locations) wired into `scripts/ab_compare.py::validate_stamped_pair` under `--require-stamped`/`OPENRESEARCH_REQUIRE_STAMPED_AB` — refuses a BES efficacy Δ when either arm's archive is incomplete (the Adam lesson: no complete archive → the headline number becomes folklore).
+- **A1 SELECT-stability instrumentation**: `backend/agents/rlm/select_stability.py::stability_report` (top-1 flip-rate / pairwise win-prob / margin distribution — not degenerate Kendall-τ at small N) + operator-gated `scripts/bes_a1_capture.py` to falsify-or-confirm whether static LLM SELECT is noise on a fresh N≥3 capture.
+- **staged-search**: budget-dropped full cells now fold into structured `scope.gaps` (`cell_matrix.aggregate_cell_metrics(budget_dropped=...)` + a new `staged_search` `dropped_cells_full` return key threaded via `primitives.py`) instead of vanishing silently.
+- Validation runbook: `docs/runbooks/2026-06-17-bes-conversion-runpod-validation.md` (tiered RunPod GPU validation + the A1 kill-experiment).
+
 ### Added (2026-06-17 — SDAR/GCP asset preflight and VM-safe preparation)
 - `backend/requirements-sdar.txt` declares the heavy SDAR-only runtime stack
   (`transformers>=4.51`, `accelerate`, `datasets`, retrieval libs, `alfworld`,
@@ -97,6 +114,178 @@ Spec `2026-06-17-multi-cloud-production-gpu-execution-design.md` (Streams C/D); 
 - `backend/agents/runtime/factory.py` (CHANGED) — `_has_claude_subscription_oauth()` now returns True immediately when `CLAUDE_CODE_OAUTH_TOKEN` is set in the environment, before checking `~/.claude/.credentials.json`. This makes `--model claude-oauth` viable in unattended in-cluster pods without requiring a local credentials file. The token env is NOT in `_warn_on_shell_env_override`'s `_SUSPECT_KEYS` (never triggers a spurious warning).
 - `tests/config/test_claude_oauth_token_headless.py` (NEW) — verifies `CLAUDE_CODE_OAUTH_TOKEN` resolves as valid unattended root, produces no shell-override warning, and does not break the existing credentials-file path.
 - `tests/config/test_gcp_orchestrator_settings.py` (NEW) — verifies new `gcp_*` orchestrator/secret fields parse and round-trip via `OPENRESEARCH_GCP_*` env.
+
+### Added (2026-06-19 — reasoning-chat-root orchestration guardrails, all default-OFF, model-agnostic)
+- **G1 `OPENRESEARCH_ARG_CONTRACTS`** — generic argument pre-validation in `binding.wrap_primitive`
+  (mirrors `_run_experiment_contract_guard`) blocks placeholder/sentinel args (`unknown`/`tbd`/…) in
+  declared fields (`plan_reproduction`→`method_spec`/`paper_claim_map`) BEFORE the primitive runs,
+  returning a crisp `failure_class="arg_contract"` repair dict — closes the non-blocking
+  `paper_grounding_failed` gap. `backend/agents/rlm/arg_contracts.py`.
+- **G2 `OPENRESEARCH_STUB_METRICS_GUARD`** — route-agnostic stub detection in `run_experiment`: a
+  `success=True` result whose metric keys are ALL placeholders (e.g. `total_length`/`chunk_count`) with
+  no real-metric key is degraded to the already-repairable `fabrication_suspected` (complements the VRAM
+  antifab verdict, which only fires on gpu-training-claiming metrics). Conservative; fail-soft.
+  `backend/agents/rlm/stub_detection.py`.
+- **P1-P3** — the shared `azure-foundry` `prompt_addendum` gains argument-grounding (null-not-guess +
+  exact types), full-paper persistence + honest-failure, and run_experiment result-quality (stub →
+  re-drive) guidance (brace-free, verified round-trip).
+- **Validation** — `tests/rlm/test_{arg_contracts,stub_detection,guard_integration}.py` (deterministic
+  CI guard tests, 57 cases) + `scripts/rlm_root_ab.py` (operator-run A/B harness; pure metrics-parser
+  unit-tested in `tests/test_rlm_root_ab.py`). Full suite green (3600 passed).
+- All guards default-OFF (byte-for-byte unchanged until enabled). Decision: the non-Claude executor
+  already runs on the OpenAI Agents SDK (no swap); stubbing is model-bound, so Sonnet/gpt-5 remain the
+  recommended validated executor. Plan: `docs/superpowers/plans/2026-06-19-gptchat-rlm-root-optimization.md`.
+
+### Changed (2026-06-19 — gpt-chat-latest enabled as Foundry root + all sub-roles)
+- **gpt-chat-latest now drives the full RLM loop OAuth-free.** Empirically verified
+  (2026-06-19, live endpoint smoke): with the exact shape the `rlms` root client
+  sends (model + messages only, no token/temperature params) gpt-chat-latest returns
+  `finish_reason=stop`, `reasoning_tokens=0`, and a clean ```repl fenced block — it
+  does NOT refuse. The earlier "chat deployments REFUSE to drive the REPL loop"
+  conclusion (2026-06-18 handoff, baked into `sdar_gcp_run.sh`) was a misdiagnosed
+  HTTP 400: gpt-chat-latest is a reasoning-class model that rejects `max_tokens`
+  (needs `max_completion_tokens`) and any non-default `temperature`. That constraint
+  is already handled on every role — `_is_reasoning_model` covers `gpt-chat*` for the
+  primitive + grader/verifier transport (`OpenAILlmClient`), and the root loop
+  (`rlms` `OpenAIClient`) and executor (Agents SDK, `_non_null_or_omit`) both omit
+  those params when unset. No param-handling code change was needed; the prior
+  conclusion was simply stale.
+- `scripts/sdar_gcp_run.sh` default `AZURE_FOUNDRY_DEPLOYMENT` flipped `grok-4.3` →
+  `gpt-chat-latest` and the stale "REFUSES" comment corrected to the empirical
+  finding (override via `AZURE_FOUNDRY_DEPLOYMENT=...`).
+- `azure-foundry` root `prompt_addendum` now carries a guardrail for unvalidated
+  chat/reasoning Foundry deployments (grok/kimi/gpt-chat-latest): autonomous-agent
+  posture (anti-refusal), ```repl fence discipline, and the `FINAL_VAR("var")` call
+  contract — gpt-chat-latest emitted `FINAL_VAR = report` (assignment, never
+  terminates) in a smoke, so the call form is reinforced. Pure additive guidance;
+  brace-free so `build_system_prompt`'s brace-escape leaves it intact. Resolution +
+  stamp verified: root + executor + grader + verifier all stamp
+  `azure-foundry:gpt-chat-latest`; advisory `role_model_fidelity` warnings still fire
+  (gpt-chat-latest is not paper-validated). `models.py`, `system_prompt.py` (no code
+  change — addendum data only).
+
+### Added (2026-06-18 — Kimi-K2.6 Foundry switch + honest deployment stamp)
+- `kimi`/`kimi-k2.6`/`kimi-k2-6` aliases route to the `azure-foundry` provider for
+  the root (`--model kimi-k2.6`) and every sub-role, so Kimi-K2.6 deployed to the
+  existing Foundry endpoint is a one-variable swap (`AZURE_FOUNDRY_DEPLOYMENT=Kimi-K2.6`)
+  off grok — shared endpoint+key, OAuth-free. Distinct from the OpenRouter
+  `kimi-k2.5` registry key (`backend/agents/rlm/models.py`, `role_models.py`).
+- `RoleSpec.stamp` resolves the live `AZURE_FOUNDRY_DEPLOYMENT` so
+  `final_report.models` distinguishes `azure-foundry:Kimi-K2.6` from
+  `azure-foundry:grok-4.3` instead of a shared `<deployment>` placeholder; the grader
+  stamp prefers its explicit RoleSpec like executor/verifier (`run.py`). Display-only —
+  the build path is unchanged. Tests in `tests/agents/rlm/test_role_models.py`.
+
+### Changed (2026-06-18 — SDAR/GCP run: prep off the GPU, stop billing on terminal)
+- `scripts/gcp_sdar_preflight.sh` splits the run by machine type: `prepare` flips the
+  VM to a cheap CPU type (`e2-standard-16`) and warms datasets/env WITHOUT
+  `--require-gpu` (no A100 billing during setup); `launch` flips to `a2-highgpu-8g`
+  only for training. The [GREEN] GPU-readiness gate is preserved. Overridable via
+  `OPENRESEARCH_GCP_{CPU,GPU}_MACHINE_TYPE`.
+- `scripts/sdar_gcp_run.sh` self-stops the VM (`sudo shutdown -h now`) on ANY terminal
+  state (success/error/outer-wall-timeout) to halt GPU billing; the boot disk persists
+  for debug. Opt out with `OPENRESEARCH_SDAR_NO_AUTOSTOP=1`. An outer `timeout` backstops
+  a wedged orchestrator past `--max-wall-clock`. The root token is the neutral `foundry`
+  alias so `AZURE_FOUNDRY_DEPLOYMENT` is the single model switch; optional GCS report push
+  via `OPENRESEARCH_SDAR_REPORT_GCS`.
+
+### Added (2026-06-17 — SDAR/GCP asset preflight and VM-safe preparation)
+- `backend/requirements-sdar.txt` declares the heavy SDAR-only runtime stack
+  (`transformers>=4.51`, `accelerate`, `datasets`, retrieval libs, `alfworld`,
+  TextWorld, WebShop transport deps) separately from the core backend deps.
+- `scripts/sdar_gcp_assets.py` installs and validates the SDAR stack, warms Qwen
+  model snapshots and Search-QA datasets into shared caches, provisions
+  ALFWorld/WebShop/Search-QA through `EnvCacheManager`, and writes
+  `runs/.cache/sdar_gcp.env` for direct launches.
+- `scripts/gcp_sdar_preflight.sh` wraps the GCP VM workflow (`status/start/sync/check/prepare/stop`)
+  so operators can gate the full paper run before A100 billing is spent on
+  missing packages, datasets, or server assets. It stages source with cache/venv
+  exclusions and refuses non-spot GPU VMs by default via `OPENRESEARCH_REQUIRE_SPOT=true`.
+- Documentation: the GCP SDAR runbook now makes the preflight mandatory; `issues.md`
+  records the failed Grok/Foundry VM attempt and the mitigation.
+
+### Fixed (2026-06-17 — Stream F: GCP production-hardening; runtime/IaC split + 3 BLOCKERs + MAJORs; all IaC additions flag-gated, default helm render byte-identical)
+A production-readiness audit found the GCP GPU runtime wired but the Terraform/Helm
+layer not caught up, plus correctness bugs in the spot/budget/resume code.
+- **Budget multi-GPU undercount (BLOCKER):** `_check_budget` bills GPU-dollars as
+  Σ(`wall_clock_s × gpu_count × $/GPU-hr`) via a second accumulator separate from the
+  wall-clock pod-seconds cap — an 8-GPU cell was billed as 1, so `--max-usd` fired 8×
+  too late. OOM-escalation retries now reserve their own added budget.
+- **Spot reschedule killed (BLOCKER):** `_watch_job` no longer treats the first spot
+  preemption as terminal while `backoffLimit>0` (waits for `failed > backoffLimit`;
+  the FailJob condition still terminates exits 40-44).
+- **Orchestrator RBAC (BLOCKER):** the `reprolab-orchestrator` ServiceAccount is bound
+  to its Role (GCP + Azure) so the in-cluster pod can create cell Jobs.
+- **Resume result-loss (MAJOR):** cross-pod resume resubmits a cell whose status.json
+  is "ok" but whose metrics blob is missing, instead of skipping with `metrics=None`.
+- **Preempt grace (MAJOR):** the cell Job manifest injects
+  `OPENRESEARCH_CELL_PREEMPT_GRACE_S` and sets `terminationGracePeriodSeconds`
+  (grace+10s) so the kubelet's 30s default can't truncate the checkpoint flush.
+- **Fail-closed routing (MAJOR):** `_object_store` raises on an unknown settings prefix
+  instead of silently routing to Azure; the GKE entrypoint passes `--cell-id/--output-dir`
+  like AKS; both entrypoints close a SIGTERM-vs-Popen race.
+- **IaC wiring:** root TF threads `use_spot` per-SKU into the gpu_nodepool module; the
+  default GCP GPU pool is now 8×A100-80 (`a2-ultragpu-8g`); the orchestrator
+  Deployment/CronJob export `--max-usd` + `OPENRESEARCH_RESUME_CELLS/STABLE_RUN_ID/
+  GCP_USE_SPOT`; smoke jobs gate the Filestore PVC mount; the bootstrap CI SA gains
+  `roles/secretmanager.admin`; the GKE cluster enables Cloud Logging/Monitoring +
+  managed Prometheus.
+- Regression coverage: multi-GPU billing, spot-aware watcher, preempt-grace manifest,
+  resume-requires-metrics (the previously-missing budget-gate/resume-skip tests).
+
+### Added (2026-06-17 — Stream C + D: spot GPU pools, preemption-safe resume, K8s cost gate; all opt-in/default-OFF, byte-identical when unset)
+
+Spec `2026-06-17-multi-cloud-production-gpu-execution-design.md` (Streams C/D); operator guide `docs/runbooks/2026-06-17-spot-preemption-budget-operator-guide.md`. The recon corrected the spec on two points: K8s resume + per-cell budget were *already* partially implemented, so these changes are narrower than the spec implied.
+
+**Stream C — spot/preemptible GPU pools + preemption-safe resume**
+- `infra/gcp/modules/gpu_nodepool/{main,variables}.tf` (CHANGED) — `use_spot` bool var (default false) → `spot = var.use_spot`; default `machine_type` → `a2-highgpu-8g` (8×A100-40GB, sized for the 7B 8-GPU SDAR cell).
+- `infra/azure/bicep/modules/gpu-nodepool.bicep` (CHANGED) — `useSpot` param (default false) → `union()`s `{scaleSetPriority:'Spot', spotMaxPrice:-1, evictionPolicy:'Delete'}` when on, `{scaleSetPriority:'Regular'}` when off (semantically identical to the prior render); default `vmSize` → `Standard_ND96asr_v4` (8×A100-40GB). `az bicep build` clean.
+- `backend/services/runtime/gpu_catalog.py` (CHANGED) — adds `azure_a100_40x8` (`Standard_ND96asr_v4`, 40GB, 8 GPU); existing 80GB rows untouched. `infra/{gcp,azure}/helm/values.yaml` `defaultSku` → the coherent `*_a100_40x8` label.
+- `backend/agents/rlm/k8s_job_cell_runner.py` (CHANGED) — when the runtime spot flag is set (`gcp_use_spot`/`azure_use_spot`; default false), `_build_job_manifest` adds the cloud-specific spot toleration (`cloud.google.com/gke-spot` / `kubernetes.azure.com/scalesetpriority`) and `_run_cell_job` sets `backoffLimit = *_spot_backoff_limit` (default 3) when `*_job_backoff_limit` is 0, so a preempted cell reschedules onto a fresh node. Default off → tolerations/backoff byte-identical.
+- `docker/{aks,gke}-cell-base/*_cell_entrypoint.py` (CHANGED) — SIGTERM preemption handler: forwards SIGTERM to the `train_cell.py` child, bounded-waits, then flushes the latest checkpoint + partial `metrics.json` to object storage and writes a `preempted` status sentinel (`EXIT_PREEMPTED=45`). Grace `OPENRESEARCH_CELL_PREEMPT_GRACE_S` (default 20s). Fail-soft; normal path unchanged.
+- **Cross-pod resume** — `primitives.py` pins `run_id = project_id` when `OPENRESEARCH_STABLE_RUN_ID` is set (default: random suffix, unchanged); `k8s_job_cell_runner._process_cell` adds a `_resume_armed`-gated Blob fallback that reads the durable `runs/<run_id>/cells/<cell_id>/status.json` and skips a prior-`ok` cell (reusing the existing `_try_reconcile_status`/`_try_download_metrics`), so a rescheduled orchestrator pod skips completed cells instead of redoing the matrix.
+
+**Stream D — per-run GPU cost ceiling as a terminal stop**
+- `backend/agents/rlm/k8s_job_cell_runner.py::_check_budget` (CHANGED) — refusal error string now carries the `budget_exhausted:` prefix (the terminal contract).
+- `backend/agents/rlm/primitives.py::_execute_cell_matrix` (CHANGED) — promotes an all-budget-refused matrix to a terminal `budget_exhausted` `stop_reason` (mirror of the existing `capacity_exhausted` promotion), so the run reports instead of re-burning the exceeded budget in a repair loop.
+- `backend/agents/rlm/forced_iteration.py` (CHANGED) — `budget_exhausted` added to `_TERMINAL_FAILURE_CLASSES` so the orchestrator accepts the next `FINAL_VAR`.
+- `backend/config.py` (CHANGED) — `azure_use_spot`/`gcp_use_spot` (bool, default false) + `azure_spot_backoff_limit`/`gcp_spot_backoff_limit` (int, default 3) Settings fields.
+- Tests: `tests/agents/rlm/test_k8s_job_cell_runner.py` (+`TestBlobResume`, +`TestBudgetTerminal`), `tests/services/runtime/test_spot_preemptible_sku.py` (NEW), `tests/services/runtime/test_cell_entrypoint_preempt.py` (NEW). Deferred (operational): the live SDAR validation (needs a provisioned cluster + GPU quota + admin grants). Stream E (Helm dedup) deferred per the spec.
+
+### Added (2026-06-17 — Stream A + B: GCP in-cluster orchestrator parity + headless claude-oauth root)
+
+**Stream A — GCP in-cluster orchestrator (spec `2026-06-17-multi-cloud-production-gpu-execution-design.md`)**
+- `infra/gcp/modules/secret_manager/` (NEW) — Terraform module creating GCP Secret Manager names `claude-code-oauth-token`, `anthropic-api-key`, `azure-openai-api-key`. Names only; values set out-of-band with `gcloud secrets versions add`. Mirror of Azure `keyvault.bicep`.
+- `infra/gcp/modules/identity/` (CHANGED) — adds a second orchestrator GSA `<prefix>-orchestrator` with `roles/secretmanager.secretAccessor` on the three secrets, `roles/storage.objectAdmin` on the artifact bucket, and a Workload Identity KSA↔GSA binding for `reprolab-orchestrator`. New output `orchestrator_gsa_email`. Existing training GSA untouched.
+- `infra/gcp/helm/templates/orchestrator-{serviceaccount,deployment,cronjob,secretproviderclass}.yaml` (NEW) — four GCP orchestrator templates ported from the Azure Stream E templates. GCP differences: SA annotation is `iam.gke.io/gcp-service-account` (no per-pod WI label); SecretProviderClass uses `provider: gcp` and Secret Manager resource names. Deployment/CronJob target the system CPU pool (`nodeSelector: reprolab/node-type: system`). All four gated on `.Values.orchestrator.enabled` (default false).
+- `infra/gcp/helm/values.yaml` (CHANGED) — adds the `orchestrator:` block (enabled/image/paper/model/gcpServiceAccount/gcpProject/csiMountPath/claudeOauthToken/deployment/cronjob/env). Default `enabled: false`; byte-identical to HEAD on default render.
+- `infra/gcp/main.tf` / `variables.tf` / `outputs.tf` (CHANGED) — wires the `secret_manager` module (gated on `var.secret_manager_enabled`, default false) and exposes `orchestrator_gcp_service_account` output.
+- `backend/config.py` (CHANGED) — adds `gcp_orchestrator_image`, `gcp_csi_mount_path`, and `claude_code_oauth_token` Settings fields (read from `OPENRESEARCH_GCP_*` / `CLAUDE_CODE_OAUTH_TOKEN` env vars). Settings-only; no behaviour change when not set.
+
+**Stream B — long-lived CLAUDE_CODE_OAUTH_TOKEN headless root**
+- `infra/azure/bicep/modules/keyvault.bicep` (CHANGED) — additive: adds `claude-code-oauth-token` to the managed-secrets comment/doc block (name only; no Bicep resource added; value set out-of-band).
+- Azure `orchestrator-{deployment,cronjob,secretproviderclass}.yaml` + GCP orchestrator Deployment/CronJob (CHANGED) — inject `CLAUDE_CODE_OAUTH_TOKEN` env var from the secret store, gated on `.Values.orchestrator.claudeOauthToken.enabled` (default false). DEFAULT render is byte-identical to HEAD.
+- `infra/azure/helm/values.yaml` (CHANGED) — adds `orchestrator.claudeOauthToken: {enabled: false}` block.
+- `backend/agents/runtime/factory.py` (CHANGED) — `_has_claude_subscription_oauth()` now returns True immediately when `CLAUDE_CODE_OAUTH_TOKEN` is set in the environment, before checking `~/.claude/.credentials.json`. This makes `--model claude-oauth` viable in unattended in-cluster pods without requiring a local credentials file. The token env is NOT in `_warn_on_shell_env_override`'s `_SUSPECT_KEYS` (never triggers a spurious warning).
+- `tests/config/test_claude_oauth_token_headless.py` (NEW) — verifies `CLAUDE_CODE_OAUTH_TOKEN` resolves as valid unattended root, produces no shell-override warning, and does not break the existing credentials-file path.
+- `tests/config/test_gcp_orchestrator_settings.py` (NEW) — verifies new `gcp_*` orchestrator/secret fields parse and round-trip via `OPENRESEARCH_GCP_*` env.
+
+### Added (OAuth-root degenerate-loop detector + harness backstop — plan `docs/superpowers/plans/2026-06-17-oauth-root-reliability-and-harness-backstop.md`)
+- **Degenerate-refusal-loop detector** (`backend/agents/rlm/forced_iteration.py`): `ForcedIterationPolicy` now tracks a per-run no-progress refusal counter. When a `FINAL_VAR` refusal fires with no state-changing primitive (`implement_baseline`/`build_environment`/`run_experiment`) having run since the previous refusal, and the refusal signature is unchanged, the counter increments; any state-changing call resets it to 0. At `OPENRESEARCH_DEGENERATE_REFUSAL_THRESHOLD` (default 3) consecutive same-signature no-progress refusals the detector fires `on_degenerate_refusal_loop` once. Healthy roots (gpt-5, or oauth on a good day) reset the counter via real work and are byte-for-byte identical.
+- **Stage-specific refusal text** (`backend/agents/rlm/root_progress.py`): `infer_required_stage` infers the missing lifecycle step from run state; no-experiment refusals name the real missing primitive (`implement_baseline` when no baseline has been attempted, not just `run_experiment`). At the degenerate threshold the message escalates with the loop name and a one-line recovery skeleton for oauth roots.
+- **Harness early-abort** (`backend/agents/rlm/run.py`): the `on_degenerate_refusal_loop` callback emits a `run_warning` with `code="root_degenerate_refusal_loop"` (payload: `signature`, `count`, `required_stage`/`stage`) and — with `OPENRESEARCH_OAUTH_AUTODRIVE` OFF (the default) — marks a terminal stop (`failure_class="root_degenerate_loop"`, added to `_TERMINAL_FAILURE_CLASSES`), finalizing the run in ≤ threshold refusals instead of churning to the 16-refusal cap (≈13 min of waste).
+- **A1 safe-capture early exit** (`scripts/bes_a1_safe_capture.py`): polls `dashboard_events.jsonl` for `root_degenerate_refusal_loop`; if seen before a candidate pool exists, kills the run and writes `a1_result.json {"ok": false, "verdict": "root_degenerate", "required_stage": ...}` — no more waiting out the 2h pool timeout on a degenerate oauth root.
+- **Flag-gated auto-drive backstop** (`OPENRESEARCH_OAUTH_AUTODRIVE`, default `0`, EXPERIMENTAL): when ON and the degenerate event fires for an oauth root at a drivable stage (`need_baseline`/`need_environment`/`need_experiment`) with no terminal/near-timeout condition, the harness emits a `root_autodrive` run_warning, writes `rlm_state/root_autodrive.json`, and issues ONE stage-specific `recommend_next_tool` directive. v1 caveat: the harness cannot reconstruct the root-assembled args (they live in the REPL), so v1 issues a structured directive rather than truly executing the primitive — a real harness-drive needs the lifecycle-state-machine refactor. Auto-drive fires at most once per run. gpt-5 remains the recommended reliable root; `claude-oauth` is now SAFE for zero-dollar local/dev A1 (a degenerate run aborts in ~3 refusals and the safe-capture wrapper exits early), but `OPENRESEARCH_OAUTH_AUTODRIVE=1` is not yet a guaranteed recovery.
+- New `run_warning` codes: `root_degenerate_refusal_loop`, `root_autodrive`. New `failure_class`: `root_degenerate_loop`.
+
+### Added (BES conversion + archival correctness — P0 prerequisite; all flag-gated default-OFF, parity-preserving; spec `docs/superpowers/specs/2026-06-17-bes-evidence-first-and-conversion-remediation-design.md`, plan `docs/superpowers/plans/2026-06-17-bes-conversion-archival-correctness.md`)
+- **The ambitious 3-phase evolutionary BES redesign was CUT** after a four-round review. BES's only observed static-SELECT margin (All-CNN pool 0.549 vs 0.557) sits within grader repeatability noise, and the one proven failure (Adam: a *clean* pool pick still shipped 0.533) is a **conversion / report-projection** bug, not a generation bug. Thesis: *conversion is the proven blocker; generation and selection quality remain unproven until conversion and archive provenance are pinned.* A2/C3 GPU experiments deferred to a follow-on plan.
+- **Coherent champion bundle** (`OPENRESEARCH_CHAMPION_ARTIFACT`, default OFF): `champion_artifact.snapshot_rubric`/`restore_rubric` persist the graded rubric block beside the code snapshot; `report._apply_champion_artifact` now restores the champion's OWN `leaf_scores`/`meets_target`/etc., so the shipped `overall_score` is never detached from its leaf evidence (it previously swapped only the top-line, leaving stale lower leaves). `record_champion` now carries `sample_count` — a single grade is no longer mislabeled median-of-N.
+- **Conversion provenance guard**: `backend/agents/rlm/conversion_guard.py::detect_projection_incoherence` flags the Adam shape (empty `baseline_metrics`/`experiment_run_id`/`primitive_trace` while the grader scored a populated `code/metrics.json`); `report.repair_projection_from_disk` repopulates `baseline_metrics` from disk before `RLMFinalReport` construction (evidence-tightening, no-op on already-coherent reports). Adds an advisory `rubric.evidence_cites_metrics` flag derived from leaf justifications.
+- **Archival-completeness gate**: `backend/agents/rlm/archive_completeness.py::check_bes_archive` (resolves each artifact at live-run AND curated-archive locations) wired into `scripts/ab_compare.py::validate_stamped_pair` under `--require-stamped`/`OPENRESEARCH_REQUIRE_STAMPED_AB` — refuses a BES efficacy Δ when either arm's archive is incomplete (the Adam lesson: no complete archive → the headline number becomes folklore).
+- **A1 SELECT-stability instrumentation**: `backend/agents/rlm/select_stability.py::stability_report` (top-1 flip-rate / pairwise win-prob / margin distribution — not degenerate Kendall-τ at small N) + operator-gated `scripts/bes_a1_capture.py` to falsify-or-confirm whether static LLM SELECT is noise on a fresh N≥3 capture.
+- **staged-search**: budget-dropped full cells now fold into structured `scope.gaps` (`cell_matrix.aggregate_cell_metrics(budget_dropped=...)` + a new `staged_search` `dropped_cells_full` return key threaded via `primitives.py`) instead of vanishing silently.
+- Validation runbook: `docs/runbooks/2026-06-17-bes-conversion-runpod-validation.md` (tiered RunPod GPU validation + the A1 kill-experiment).
 
 ### Added (leaf-frontier remediation — close the leaf-repair loop; all default-OFF, fail-soft, byte-for-byte today when unset)
 - `backend/agents/rlm/leaf_actuator.py` — the actuator that closes `leaf_triage`'s open loop. Today triage only *diagnoses* a weak leaf into an advisory directive the agent may ignore (the real Adam 0.764 run shipped two clean `0.0`s that way); the actuator turns the cheapest, most-deterministic repairs into concrete artifacts the EXISTING routes consume. Master flag `OPENRESEARCH_LEAF_ACTUATE`. Routes: **L4** `result_quality` (inverted optimizer ordering) → a synthesized per-condition lr `search` block the staged-search route tunes + re-runs; **L5** variance-demanding leaf → a budget-gated seed plan (behind `OPENRESEARCH_LEAF_ACTUATE_SEEDS`); **L6** `aggregation_gap` → a declared-vs-aggregated completeness audit surfacing silently-lost cells; **L2b** `render_artifact` → a grounded `fig_*.json` sidecar emitted straight from the measured on-disk metrics.

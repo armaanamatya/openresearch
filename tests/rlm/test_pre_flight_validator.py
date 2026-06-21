@@ -288,10 +288,20 @@ def test_surrogate_detection_walks_exp_files(tmp_path: Path) -> None:
 
 
 def test_required_key_present_no_violation(tmp_path: Path) -> None:
+    # The metric must be COMPUTED, not a hardcoded literal: the anti-fabrication
+    # AST guard (preflight_ast._check_no_fabrication) correctly flags
+    # ``metrics["x"] = 0.985`` as fabrication (a real trainer measures metrics,
+    # it never assigns them a constant). Assign from a variable so the
+    # required-key check still sees the key present without tripping that guard.
+    # DO NOT "simplify" this back to a numeric literal.
     _write(
         tmp_path / "train.py",
-        'metrics = {}\n'
-        'metrics["mnist_baseline_final_acc"] = 0.985\n',
+        "def evaluate_model():\n"
+        "    return sum(p == t for p, t in preds) / len(preds)\n"
+        "preds = [(1, 1), (0, 0)]\n"
+        "final_acc = evaluate_model()  # computed, never hardcoded\n"
+        "metrics = {}\n"
+        'metrics["mnist_baseline_final_acc"] = final_acc\n',
     )
     out = validate_code_pre_flight(
         tmp_path,

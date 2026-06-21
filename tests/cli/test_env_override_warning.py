@@ -88,3 +88,35 @@ def test_no_warning_when_dotenv_key_absent() -> None:
 def test_env_u_workaround_mentioned_in_warning() -> None:
     out = _run("OPENAI_API_KEY", "sk-svcacct-XXXXXXXXXXXXXX1234", "sk-proj-YYYYYYYYYYYYYY5678")
     assert "env -u OPENAI_API_KEY" in out
+
+
+# ---------------------------------------------------------------------------
+# G4: Azure / Azure Foundry keys are suspect too — a stale shell value silently
+# shadowing .env causes 401s exactly like the OpenAI/Anthropic keys.
+# ---------------------------------------------------------------------------
+import pytest
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "AZURE_FOUNDRY_API_KEY",
+        "AZURE_FOUNDRY_ENDPOINT",
+        "AZURE_FOUNDRY_DEPLOYMENT",
+        "AZURE_OPENAI_ENDPOINT",
+        "AZURE_OPENAI_DEPLOYMENT",
+    ],
+)
+def test_warns_when_azure_foundry_keys_differ(key) -> None:
+    out = _run(key, "shell-value-AAAAAAAAAAAA", "dotenv-value-BBBBBBBBBBBB")
+    assert key in out
+    assert "warn" in out.lower()
+    assert f"env -u {key}" in out
+
+
+@pytest.mark.parametrize("key", ["AZURE_FOUNDRY_API_KEY", "AZURE_OPENAI_ENDPOINT"])
+def test_no_warning_when_azure_keys_match(key) -> None:
+    same = "same-value-CCCCCCCCCCCCCC"
+    out = _run(key, same, same)
+    assert "warn" not in out.lower()
+    assert key not in out

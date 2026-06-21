@@ -231,14 +231,17 @@ class Settings(BaseSettings):
     # defaults remain controlled separately by argparse flags. Local launchers
     # set this to runpod for GPU-backed dev runs; deployments can set it to
     # docker or local in env.
-    default_sandbox: Literal["auto", "local", "docker", "runpod", "azure", "gcp"] = "runpod"
+    # "gke" is a first-class alias for "gcp" (SandboxMode._missing_ maps it to the
+    # gcp member); accepted here so OPENRESEARCH_DEFAULT_SANDBOX=gke boots and the
+    # start.sh gcp/gke preflight branch is reachable.
+    default_sandbox: Literal["auto", "local", "docker", "runpod", "azure", "gcp", "gke"] = "runpod"
 
     # Optional hard override for every run's sandbox mode, regardless of what
     # the client requested. Empty means "honor the request/default_sandbox".
     # Deployments that must forbid RunPod should set OPENRESEARCH_FORCE_SANDBOX to
     # "docker" or "local" explicitly; the code default must stay empty so a
     # missing/commented .env line does not silently rewrite sandbox=runpod.
-    force_sandbox: Literal["", "auto", "local", "docker", "runpod", "azure", "gcp"] = ""
+    force_sandbox: Literal["", "auto", "local", "docker", "runpod", "azure", "gcp", "gke"] = ""
 
     # Force the LLM provider for every run regardless of what the client
     # requested — analogous to force_sandbox. The UI hard-codes provider=

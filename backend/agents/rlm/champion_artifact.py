@@ -28,7 +28,6 @@ import json
 import logging
 import shutil
 from pathlib import Path
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +35,8 @@ __all__ = [
     "SNAPSHOT_IGNORE",
     "snapshot_code",
     "restore_snapshot",
+    "snapshot_rubric",
+    "restore_rubric",
     "record_champion",
     "best_champion",
 ]
@@ -95,6 +96,26 @@ def restore_snapshot(snapshot_dir: Path, code_dir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Rubric-block snapshot / restore
+# ---------------------------------------------------------------------------
+
+def snapshot_rubric(rubric: dict, snapshot_dir: "Path") -> None:
+    """Persist the graded rubric block next to the code snapshot so a restore
+    re-materializes score+leaves+meets_target as ONE coherent evidence state."""
+    p = Path(snapshot_dir)
+    p.mkdir(parents=True, exist_ok=True)
+    (p / "rubric_block.json").write_text(json.dumps(rubric, indent=2), encoding="utf-8")
+
+
+def restore_rubric(snapshot_dir: "Path") -> dict | None:
+    """Return the snapshotted rubric block, or None if absent/unreadable (fail-soft)."""
+    try:
+        return json.loads((Path(snapshot_dir) / "rubric_block.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Champion registry — JSON-backed, fail-soft
 # ---------------------------------------------------------------------------
 
@@ -119,6 +140,7 @@ def record_champion(
     evidence_key: str,
     snapshot_dir: Path | str,
     median_score: float,
+    sample_count: int = 1,
 ) -> dict:
     """Append a champion entry to the JSON registry and return it.
 
@@ -141,6 +163,7 @@ def record_champion(
         "evidence_key": str(evidence_key),
         "snapshot_dir": str(snapshot_dir),
         "median_score": score,
+        "sample_count": int(sample_count),
         "seq": seq,
     }
     entries.append(entry)

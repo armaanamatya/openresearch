@@ -41,6 +41,22 @@ class SandboxMode(str, Enum):
     runpod = "runpod"
     simulate = "simulate"
 
+    @classmethod
+    def _missing_(cls, value: object) -> "SandboxMode | None":
+        # `gke` is a first-class alias for the GCP/GKE backend: --sandbox gke
+        # and --sandbox gcp both resolve to GkeJobBackend. Aliasing here (at the
+        # enum boundary) means SandboxMode('gke') returns the gcp member
+        # everywhere — including OPENRESEARCH_FORCE_SANDBOX=gke and every
+        # downstream `_sb_key == "gcp"` check — with zero further edits. A direct
+        # SandboxMode('gcp') never reaches _missing_, so the gcp path is byte-for-byte.
+        # CAVEAT: CLI (`--sandbox gke`) + env (`OPENRESEARCH_DEFAULT_SANDBOX`/
+        # `_FORCE_SANDBOX`) are the supported `gke` surfaces; the HTTP `POST /runs`
+        # body field is typed `SandboxMode` and Pydantic rejects `gke` with a 422
+        # (the UI emits `gcp`).
+        if isinstance(value, str) and value.strip().lower() == "gke":
+            return cls.gcp
+        return None
+
 
 DEFAULT_SANDBOX_MODE = SandboxMode.runpod
 

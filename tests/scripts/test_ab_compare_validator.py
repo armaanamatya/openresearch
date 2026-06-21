@@ -53,7 +53,15 @@ def _write_arm(
     paper_id: str = "1412.6806",
     completed_at: str = "2026-06-11T06:00:00+00:00",
 ) -> Path:
-    """Write a run dir with final_report.json (+ optional rubric_tree.json)."""
+    """Write a run dir with final_report.json (+ optional rubric_tree.json).
+
+    Also writes the full set of archive artifacts required by
+    ``check_bes_archive`` (BES archive-completeness gate, Task 8) so that
+    validator-mode tests exercise the rubric/scope/stamp checks rather than
+    hitting the archive gate first.  Unstamped arms (arm=None) write the same
+    artifacts because they are only used in reporter-mode tests where the gate
+    does not fire.
+    """
     run_dir = runs_root / project_id
     run_dir.mkdir(parents=True, exist_ok=True)
     report: dict = {
@@ -81,6 +89,15 @@ def _write_arm(
     if write_rubric_tree:
         tree = _RUBRIC_TREE if rubric_tree is None else rubric_tree
         (run_dir / "rubric_tree.json").write_text(json.dumps(tree), encoding="utf-8")
+    # Write the full BES archive so the archive-completeness gate (Task 8) passes
+    # and tests can exercise the rubric/scope/stamp checks independently.
+    for fname in ("bes_candidates.json", "dashboard_events.jsonl",
+                  "experiment_runs.jsonl", "rubric_evaluation.json",
+                  "metrics.json", "generated_rubric.json"):
+        artifact = run_dir / fname
+        if not artifact.exists():
+            artifact.write_text("{}", encoding="utf-8")
+    (run_dir / "candidates").mkdir(exist_ok=True)
     return run_dir
 
 

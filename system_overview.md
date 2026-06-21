@@ -100,6 +100,25 @@ papers can use it secondarily with a generated rubric. The design spec is
 is `backend/agents/rdr/` (`models`, `decomposer`, `context_engineer`, `agent`,
 `controller`, `run`); the launcher is `scripts/rdr_paperbench.py`.
 
+## Provider unification — one vocabulary for all five LLM tiers (2026-06-20)
+
+The five LLM tiers an RLM run touches — root, executor, verifier, grader, and the
+navigation accelerator — are each independently routable, but they now share a
+single Azure-AI-Foundry vocabulary (`azure-foundry`, aliases `foundry`/`grok`)
+and a single credential resolver. The navigation accelerator
+(`backend/agents/rlm/accelerator.py`) was the last tier without a Foundry path;
+Workstream A added it and de-duplicated the rest so all five read the canonical
+`backend/agents/runtime/foundry_endpoint.py::resolve_foundry_credentials`
+(`os.environ` → Settings/.env → normalized `(base_url, deployment, api_key)`),
+never ad hoc. Foundry is an OpenAI-compatible Bearer endpoint, so every tier rides
+the plain OpenAI SDK (`OpenAILlmClient` / `OpenAiAgentRuntime` with a custom
+`base_url`) and none touches `ClaudeAgentOptions` — the SDK-isolation invariant is
+non-applicable by construction. Default-OFF + fail-soft: with `AZURE_FOUNDRY_*`
+unset, every tier is byte-for-byte the prior path. The shell-shadow validator
+(`cli.py`) also grew to cover `AZURE_FOUNDRY_*` and the Azure-OpenAI
+endpoint/deployment, since a stale shell endpoint 401s a run exactly like a stale
+key. Plan: `docs/superpowers/plans/2026-06-20-foundry-provider-unification.md`.
+
 ## Run lifecycle (UI ↔ backend)
 
 1. RLM lab UI (`frontend/src/components/lab/rlm/`) starts a run — arXiv link or
@@ -144,6 +163,10 @@ see `docs/superpowers/specs/2026-05-28-rlm-stability-remediation-design.md`.
 ## Dynamic GPU selection (spec 2026-05-23)
 
 When `OPENRESEARCH_DYNAMIC_GPU=true` (the default), the root model calls the `resolve_gpu_requirements` primitive once per run with LLM-derived hardware clues (VRAM estimate, paper GPU string, confidence). The pure-Python resolver (`backend/services/runtime/gpu_resolver.py`) maps those clues to the cheapest matching entry in the static SKU catalog (`backend/services/runtime/gpu_catalog.py`, 8 SKUs from RTX 4090 to H200), applying a headroom multiplier (`OPENRESEARCH_DYNAMIC_GPU_HEADROOM=1.25` by default) before tier-up. The resolved `GpuPlan` is persisted atomically to `runs/<id>/rlm_state/gpu_plan.json` (idempotent on re-call) and passed to `RunpodBackend`, overriding the legacy `gpu_type` setting. On CUDA OOM, `run_experiment` auto-escalates up the `GpuPlan.ladder_remaining` sequence (up to `OPENRESEARCH_DYNAMIC_GPU_MAX_ESCALATIONS=2`), re-persisting the updated plan and emitting a `gpu_escalated` event. Per-GPU cost is bounded by `OPENRESEARCH_MAX_GPU_USD_PER_HOUR` (float, `0` = no cap); total run-level pod spend by `OPENRESEARCH_MAX_RUN_GPU_USD` (also float, `0` = no cap), enforced by `RunBudget.check_run_gpu_usd`. Multi-GPU is opt-in: `OPENRESEARCH_FORCE_SINGLE_GPU=true` (default) caps count=1. `--vram-gb` CLI flag routes through `OPENRESEARCH_VRAM_OVERRIDE_GB` → `ctx.vram_override` → resolver, bypassing the LLM estimate. OAuth orthogonality invariant: `ANTHROPIC_API_KEY` is never injected into the RunPod pod environment — the pod runs ML code only.
+
+## GKE / GCP execution backend
+
+The cloud GPU backends are RunPod (pods over SSH), Azure AKS (`AksJobBackend`), and Google GKE (`GkeJobBackend`) — both K8s backends dispatch one training cell per Job. `--sandbox gke` is a **first-class alias for `gcp`**: the aliasing lives at the `SandboxMode._missing_` enum boundary (the literal `gke`→the `gcp` member), so the gcp path stays byte-for-byte and every downstream `_sb_key == "gcp"` check, `OPENRESEARCH_FORCE_SANDBOX=gke`, and `OPENRESEARCH_DEFAULT_SANDBOX=gke` resolve to the same backend with no further branching. (Caveat: CLI (`--sandbox gke`) + env (`OPENRESEARCH_DEFAULT_SANDBOX`/`_FORCE_SANDBOX`) are the supported `gke` surfaces; the HTTP `POST /runs` body field is typed `SandboxMode` and Pydantic rejects `gke` with 422 — the UI emits `gcp`.) The catalog gained GCP L4 + H100 SKUs (`gcp_l4_24`, `gcp_h100_80`, `gcp_h100_80x8`) so a paper's hardware clue can resolve to a GCP machine type; A100 stays the default ladder and H100 is an opt-in step-up bounded by the same per-GPU $/hr cap. A multi-GPU GKE cell torchrun-shards: the standalone in-pod entrypoint (`docker/gke-cell-base/gke_cell_entrypoint.py`) reimplements the `_resolve_distributed_launch` marker-gated logic inline (`build_cell_launch_argv`) and wraps a >1-GPU distributed cell in `torchrun --nproc_per_node=N`, fed the leased count via the `OPENRESEARCH_CELL_GPU_COUNT` env var the cell-Job manifest injects. `scripts/gke_check.sh` (gcloud ADC + cluster reachability + GPU-node quota) is the free preflight, wired into `start.sh`; the live GKE GPU smoke is operator-gated and never runs in CI. Spec: `docs/superpowers/specs/2026-06-16-gcp-gke-execution-backend-design.md`.
 
 ## Chat steering surface (2026-05-23)
 

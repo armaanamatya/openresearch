@@ -28,6 +28,8 @@ import logging
 import os
 from typing import Any
 
+from backend.agents.runtime.foundry_endpoint import FOUNDRY_MODE_ALIASES
+
 logger = logging.getLogger(__name__)
 
 
@@ -111,6 +113,27 @@ def sample_completions(
         if isinstance(result, list):
             return [str(x) for x in result]
     return [client.complete(system=system, user=user) for _ in range(n)]
+
+
+def resolve_azure_deployment(model_override: str | None) -> str | None:
+    """Single source of the Azure OpenAI ``model -> deployment`` rule.
+
+    On Azure OpenAI the *deployment* routes the request (it becomes the URL
+    path); the ``model`` arg is largely cosmetic. An explicit model override
+    (e.g. ``OPENRESEARCH_VALIDATOR_MODEL=<deploymentB>``) must therefore override
+    the deployment too, else two "different" same-provider roles would both hit
+    ``AZURE_OPENAI_DEPLOYMENT`` and the separation would be a lie. Falls back to
+    ``AZURE_OPENAI_DEPLOYMENT`` (stripped) and finally ``None``.
+
+    Consumed by :func:`build_transport_client` (azure branch) and by
+    ``run.py::_validator_separation_tier`` — previously each re-derived this rule
+    and was kept in sync by comment only (ADR 2026-06-21, Decision 1).
+    """
+    return (
+        model_override
+        or os.environ.get("AZURE_OPENAI_DEPLOYMENT", "").strip()
+        or None
+    )
 
 
 def build_transport_client(
@@ -203,9 +226,14 @@ def build_transport_client(
                 raise ValueError(
                     "transport backend=azure requires AZURE_OPENAI_ENDPOINT"
                 )
-            azure_deployment = (
-                os.environ.get("AZURE_OPENAI_DEPLOYMENT", "").strip() or None
-            )
+            # On Azure OpenAI the DEPLOYMENT routes the request (it becomes the
+            # URL path); ``model`` is largely cosmetic. So a ``model`` override
+            # (e.g. OPENRESEARCH_VALIDATOR_MODEL=<deploymentB>) must override the
+            # DEPLOYMENT too, otherwise executor(deploymentA) and a "different"
+            # validator would both hit AZURE_OPENAI_DEPLOYMENT (deploymentA) and
+            # the validator separation would be a lie. Single resolver shared with
+            # run.py::_validator_separation_tier (ADR 2026-06-21, Decision 1).
+            azure_deployment = resolve_azure_deployment(model_override)
             api_key = os.environ.get("AZURE_OPENAI_API_KEY", "").strip() or None
             model = model_override or "gpt-4o"
             client = AzureOpenAILlmClient(
@@ -216,7 +244,7 @@ def build_transport_client(
             )
             return client, f"{role_label}:azure:{model}"
 
-        if backend in ("azure-foundry", "foundry", "grok"):
+        if backend in FOUNDRY_MODE_ALIASES:
             # Azure AI Foundry OpenAI-compatible v1 endpoint (e.g. Grok): Bearer
             # auth, base_url=…/openai/v1, model=deployment — rides the plain
             # OpenAI SDK (OpenAILlmClient), not AzureOpenAILlmClient. All creds
@@ -294,9 +322,75 @@ def build_grader_client(
     )
 
 
+def build_validator_client(
+    *, fallback_client: Any, fallback_label: str = ""
+) -> tuple[Any, str]:
+    """Resolve the external validator's transport — **FAIL-CLOSED** (§7.2).
+
+    The Tier-2 adversarial validator (spec 2026-06-20) MUST NOT reuse the
+    grader's *"we NEVER raise"* silent-fallback path: a validator that quietly
+    degrades to the executor-family client provides ZERO independent grounding
+    (it would judge the executor's work with the executor's own model lineage).
+    So this builder is the deliberate inverse of ``build_grader_client``:
+
+    * ``OPENRESEARCH_VALIDATOR_BACKEND`` unset/empty → the validator role was not
+      overridden. Return ``(fallback_client, fallback_label)`` unchanged; the
+      caller (run.py) sees the unchanged fallback, resolves ``separation`` as
+      ``unavailable``, and the Tier-1 deterministic floor is the sole backstop.
+    * ``OPENRESEARCH_VALIDATOR_BACKEND`` set → dispatch through
+      ``build_transport_client`` with ``model=OPENRESEARCH_VALIDATOR_MODEL``. If
+      that returns the **fallback** (a missing credential / unknown backend /
+      construction error all fail soft to the fallback there), **RAISE
+      ``ValueError``** — never silently fall through to the executor-family
+      client. A misconfigured validator must fail loudly, not pretend to ground.
+
+    For ``backend=azure`` the ``model`` arg overrides ``AZURE_OPENAI_DEPLOYMENT``
+    (see ``build_transport_client``'s azure branch) so executor(deploymentA) and
+    validator(deploymentB) hit DIFFERENT deployments — the same-provider "weak"
+    panel is honestly distinct, not an alias.
+
+    Supports the same backends as ``build_transport_client``: ``oauth`` /
+    ``anthropic`` / ``openai`` / ``azure`` / ``azure-foundry`` / ``grok``.
+
+    Returns ``(client, label)``.
+    """
+    backend = _flag_value("OPENRESEARCH_VALIDATOR_BACKEND")
+    model = os.environ.get("OPENRESEARCH_VALIDATOR_MODEL", "").strip() or None
+
+    # Validator role not overridden → ride the caller's client unchanged. The
+    # caller treats this as ``unavailable`` (Tier-1 floor backs it).
+    if not backend:
+        return fallback_client, fallback_label
+
+    client, label = build_transport_client(
+        backend=backend,
+        model=model,
+        fallback_client=fallback_client,
+        fallback_label=fallback_label,
+        role_label="validator",
+    )
+    # FAIL-CLOSED: build_transport_client returns the *exact* fallback object on
+    # a missing credential / unknown backend / construction error. Identity on
+    # the client is the unambiguous signal that no independent transport was
+    # built — an explicitly-requested validator that could not be constructed is
+    # an error, never a silent degrade to the executor-family client.
+    if client is fallback_client:
+        raise ValueError(
+            "OPENRESEARCH_VALIDATOR_BACKEND="
+            f"{backend!r} could not construct an independent validator transport "
+            "(missing credential, unknown backend, or construction error). The "
+            "external validator is FAIL-CLOSED: it must not silently fall back to "
+            "the executor-family client. Provide the backend's credentials "
+            "(e.g. AZURE_OPENAI_* for backend=azure) or unset "
+            "OPENRESEARCH_VALIDATOR_BACKEND to disable the validator."
+        )
+    return client, label
+
+
 __all__ = [
     "sample_completions",
     "build_grader_client",
+    "build_validator_client",
     "build_transport_client",
     "resolve_anthropic_subrole_backend",
 ]

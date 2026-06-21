@@ -70,8 +70,9 @@ def _by_id(result):
 @pytest.fixture(autouse=True)
 def _clear(monkeypatch):
     for v in (
-        "OPENRESEARCH_EVIDENCE_GATE", "OPENRESEARCH_GRADER_SAMPLES",
-        "OPENRESEARCH_GRADER_BACKEND", "OPENRESEARCH_DETERMINISTIC_LEAVES",
+        "OPENRESEARCH_EVIDENCE_GATE", "OPENRESEARCH_LEAF_EVIDENCE_GATE",
+        "OPENRESEARCH_GRADER_SAMPLES", "OPENRESEARCH_GRADER_BACKEND",
+        "OPENRESEARCH_DETERMINISTIC_LEAVES",
     ):
         monkeypatch.delenv(v, raising=False)
 
@@ -141,7 +142,10 @@ def test_gate_off_is_byte_for_byte_today(tmp_path):
 
 
 def test_gate_on_vetoes_unsubstantiated_result_only(monkeypatch, tmp_path):
-    monkeypatch.setenv("OPENRESEARCH_EVIDENCE_GATE", "1")
+    # Per-leaf evidence gate now keyed off OPENRESEARCH_LEAF_EVIDENCE_GATE
+    # (split from OPENRESEARCH_EVIDENCE_GATE to fix the collision between the
+    # verdict gate (default ON) and the leaf gate (default OFF) sharing one var).
+    monkeypatch.setenv("OPENRESEARCH_LEAF_EVIDENCE_GATE", "1")
     _write_metrics(tmp_path)
     result = score_reproduction(RUBRIC, tmp_path, _Stub(0.8), degraded=False)
     recs = _by_id(result)
@@ -158,7 +162,8 @@ def test_gate_on_vetoes_unsubstantiated_result_only(monkeypatch, tmp_path):
 
 
 def test_gate_on_empty_metrics_vetoes_all_result_claims(monkeypatch, tmp_path):
-    monkeypatch.setenv("OPENRESEARCH_EVIDENCE_GATE", "1")
+    # Per-leaf evidence gate now keyed off OPENRESEARCH_LEAF_EVIDENCE_GATE.
+    monkeypatch.setenv("OPENRESEARCH_LEAF_EVIDENCE_GATE", "1")
     _write_metrics(tmp_path, {"per_model": {}})  # credited results, nothing computed
     result = score_reproduction(RUBRIC, tmp_path, _Stub(0.8), degraded=False)
     recs = _by_id(result)
