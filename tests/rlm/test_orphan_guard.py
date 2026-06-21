@@ -20,14 +20,27 @@ def _clear(monkeypatch):
         og._active_pgids.clear()
 
 
-def test_off_state_kill_is_noop(monkeypatch):
+def test_optout_kill_is_noop(monkeypatch):
+    # Default is now ON (2026-06-21); explicit opt-out restores the no-op.
+    monkeypatch.setenv("OPENRESEARCH_ORPHAN_GUARD", "0")
     og.register(12345)
     killed: list[int] = []
     monkeypatch.setattr(og.os, "killpg", lambda pid, sig: killed.append(pid))
-    assert og.kill_orphans() == 0  # flag off → no kill
+    assert og.kill_orphans() == 0  # opt-out → no kill
     assert killed == []
     # registry untouched when off (a later on-call can still act)
     assert 12345 in og._active_pgids
+
+
+def test_default_on_kills_when_unset(monkeypatch):
+    # Unset env → guard is ON by default and reaps the registered group.
+    monkeypatch.delenv("OPENRESEARCH_ORPHAN_GUARD", raising=False)
+    assert og.orphan_guard_enabled() is True
+    og.register(999)
+    killed: list[int] = []
+    monkeypatch.setattr(og.os, "killpg", lambda pid, sig: killed.append(pid))
+    assert og.kill_orphans() == 1
+    assert killed == [999]
 
 
 def test_on_state_kills_registered_groups(monkeypatch):

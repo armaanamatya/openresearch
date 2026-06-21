@@ -32,12 +32,19 @@ _active_pgids: set[int] = set()
 
 
 def orphan_guard_enabled() -> bool:
-    """True iff ``OPENRESEARCH_ORPHAN_GUARD`` opts the kill ON (default OFF)."""
-    return os.environ.get("OPENRESEARCH_ORPHAN_GUARD", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
+    """True unless ``OPENRESEARCH_ORPHAN_GUARD`` explicitly opts OUT.
+
+    Default ON (2026-06-21): reaping an abandoned experiment's process group on a
+    per-primitive timeout is reliability-only — it frees GPU/VRAM for the retry and
+    cannot change a reproduction score, so it is safe to default-on. The kill is
+    fail-soft per-pgid (a dead group just raises ``ProcessLookupError`` and is
+    skipped). Opt out with ``OPENRESEARCH_ORPHAN_GUARD=0`` (also ``false``/``no``/``off``).
+    """
+    return os.environ.get("OPENRESEARCH_ORPHAN_GUARD", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
     )
 
 
