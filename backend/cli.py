@@ -1831,7 +1831,7 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
             from backend.agents.rlm.models import resolve_root_model as _resolve_root_model
 
             _root_entry = _resolve_root_model(getattr(args, "model", None))
-            _cred_provider = _root_entry.rlm_backend
+            _cred_provider = _root_entry.cred_provider
             _cred_model = _root_entry.key
             _cred_ok, _cred_msg = validate_root_credentials(
                 _cred_provider, model=_cred_model

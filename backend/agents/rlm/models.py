@@ -87,6 +87,29 @@ class RootModel:
     providers across root and sub-call would need a separate per-backend key.
     """
 
+    @property
+    def cred_provider(self) -> str:
+        """Credential family to validate at the preflight stage.
+
+        ``rlm_backend`` is the *transport* backend (e.g. ``"openai"`` for any
+        OpenAI-compatible host including Featherless and Azure Foundry).
+        ``cred_provider`` is the *credential family* that
+        ``validate_root_credentials`` should probe — which may differ from
+        ``rlm_backend`` when the entry uses an OpenAI-compatible transport but
+        its own secret key (Featherless) or a distinct endpoint family
+        (Azure Foundry).
+
+        Mapping rules:
+        - ``azure-foundry`` → ``"azure-foundry"`` (AZURE_FOUNDRY_API_KEY)
+        - ``qwen3-coder-featherless`` → ``"featherless"`` (FEATHERLESS_API_KEY)
+        - Everything else → ``self.rlm_backend``
+        """
+        if self.key == "azure-foundry":
+            return "azure-foundry"
+        if self.key == "qwen3-coder-featherless":
+            return "featherless"
+        return self.rlm_backend
+
 
 # ---------------------------------------------------------------------------
 # Qwen anti-over-subcalling addendum (paper Appendix C / mapping §5)

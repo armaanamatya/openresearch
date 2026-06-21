@@ -8,7 +8,10 @@ Covers the pure evaluate_smoke_trace contract + the three review fixes:
 
 from __future__ import annotations
 
+import textwrap
+
 import backend.agents.rlm.metric_reality_smoke as mrs
+from backend.agents.rlm.metric_reality_smoke import _run_one_smoke_cell
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +119,7 @@ class TestRunSmoke:
         monkeypatch.setenv("OPENRESEARCH_METRIC_REALITY_SMOKE", "1")
         monkeypatch.setattr(mrs, "_get_available_gpu_ids", lambda: ["0"])
         # launched=True, NATURAL exit (timed_out=False), no trace → JUDGED (codex Area-4).
-        monkeypatch.setattr(mrs, "_run_one_smoke_cell", lambda *a, **k: (None, 8.0, True, False))
+        monkeypatch.setattr(mrs, "_run_one_smoke_cell", lambda *a, **k: (None, 8.0, True, False, 0, ""))
         v = mrs.run_metric_reality_smoke(ctx=object(), code_dir=tmp_path, cells=cells)
         assert v["ok"] is False and v["failure_class"] == "smoke_metrics_unreal"
 
@@ -125,7 +128,7 @@ class TestRunSmoke:
         monkeypatch.setenv("OPENRESEARCH_METRIC_REALITY_SMOKE", "1")
         monkeypatch.setattr(mrs, "_get_available_gpu_ids", lambda: ["0"])
         # TIMED OUT before any record (slow-rollout env) → inconclusive, fail-open.
-        monkeypatch.setattr(mrs, "_run_one_smoke_cell", lambda *a, **k: (None, None, True, True))
+        monkeypatch.setattr(mrs, "_run_one_smoke_cell", lambda *a, **k: (None, None, True, True, None, ""))
         v = mrs.run_metric_reality_smoke(ctx=object(), code_dir=tmp_path, cells=cells)
         assert v["ok"] is True
 
@@ -134,7 +137,7 @@ class TestRunSmoke:
         monkeypatch.setenv("OPENRESEARCH_METRIC_REALITY_SMOKE", "1")
         monkeypatch.setattr(mrs, "_get_available_gpu_ids", lambda: ["0"])
         # Timed out but produced a partial trace whose loss is 0.0 → still judged.
-        monkeypatch.setattr(mrs, "_run_one_smoke_cell", lambda *a, **k: ([{"loss": 0.0}], 8.0, True, True))
+        monkeypatch.setattr(mrs, "_run_one_smoke_cell", lambda *a, **k: ([{"loss": 0.0}], 8.0, True, True, None, ""))
         v = mrs.run_metric_reality_smoke(ctx=object(), code_dir=tmp_path, cells=cells)
         assert v["ok"] is False
 
@@ -143,7 +146,7 @@ class TestRunSmoke:
         monkeypatch.setenv("OPENRESEARCH_METRIC_REALITY_SMOKE", "1")
         monkeypatch.setattr(mrs, "_get_available_gpu_ids", lambda: ["0"])
         # launched=False everywhere → fail-open.
-        monkeypatch.setattr(mrs, "_run_one_smoke_cell", lambda *a, **k: (None, None, False, False))
+        monkeypatch.setattr(mrs, "_run_one_smoke_cell", lambda *a, **k: (None, None, False, False, None, ""))
         v = mrs.run_metric_reality_smoke(ctx=object(), code_dir=tmp_path, cells=cells)
         assert v["ok"] is True
 
@@ -153,7 +156,7 @@ class TestRunSmoke:
         monkeypatch.setattr(mrs, "_get_available_gpu_ids", lambda: ["0"])
         monkeypatch.setattr(
             mrs, "_run_one_smoke_cell",
-            lambda *a, **k: ([{"loss": 0.5}, {"loss": 0.4}], 8.0, True, False),
+            lambda *a, **k: ([{"loss": 0.5}, {"loss": 0.4}], 8.0, True, False, 0, ""),
         )
         v = mrs.run_metric_reality_smoke(ctx=object(), code_dir=tmp_path, cells=cells)
         assert v["ok"] is True
@@ -164,7 +167,129 @@ class TestRunSmoke:
         monkeypatch.setattr(mrs, "_get_available_gpu_ids", lambda: ["0"])
         monkeypatch.setattr(
             mrs, "_run_one_smoke_cell",
-            lambda *a, **k: ([{"loss": 0.0}, {"loss": 0.0}], 8.0, True, False),
+            lambda *a, **k: ([{"loss": 0.0}, {"loss": 0.0}], 8.0, True, False, 0, ""),
         )
         v = mrs.run_metric_reality_smoke(ctx=object(), code_dir=tmp_path, cells=cells)
         assert v["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# _run_one_smoke_cell (real subprocess — no GPU needed; stub ignores GPU)
+# ---------------------------------------------------------------------------
+
+class TestRunOneSmokeCell:
+    def test_crash_surfaces_traceback_and_rc(self, tmp_path):
+        """A cell that crashes must return exit-code + traceback tail in the 6-tuple."""
+        stub = tmp_path / "cell.py"
+        stub.write_text(
+            textwrap.dedent("""\
+                import sys
+                sys.stderr.write("BOOM-CRASH-MARKER\\n")
+                sys.exit(3)
+            """),
+            encoding="utf-8",
+        )
+        out_dir = tmp_path / "out"
+        cell = {"id": "c0"}
+        trace, peak_vram, launched, timed_out, returncode, output_tail = _run_one_smoke_cell(
+            cell, stub, "0", out_dir, timeout_s=30
+        )
+        assert launched is True
+        assert timed_out is False
+        assert returncode == 3
+        assert "BOOM-CRASH-MARKER" in output_tail
+
+    def test_clean_exit_no_trace(self, tmp_path):
+        """A cell that exits 0 without writing any trace file."""
+        stub = tmp_path / "cell.py"
+        stub.write_text(
+            textwrap.dedent("""\
+                import sys
+                sys.exit(0)
+            """),
+            encoding="utf-8",
+        )
+        out_dir = tmp_path / "out"
+        cell = {"id": "c0"}
+        trace, peak_vram, launched, timed_out, returncode, output_tail = _run_one_smoke_cell(
+            cell, stub, "0", out_dir, timeout_s=30
+        )
+        assert launched is True
+        assert timed_out is False
+        assert returncode == 0
+        assert trace is None
+
+
+# ---------------------------------------------------------------------------
+# FIX 3 — crash detail propagates end-to-end through run_metric_reality_smoke.
+# ---------------------------------------------------------------------------
+
+class TestCrashDetailPropagation:
+    def test_crash_marker_and_exit_code_reach_verdict_detail(self, tmp_path, monkeypatch):
+        """A crashing cell's traceback + exit code must reach the SmokeVerdict detail
+        (proves the diagnosis reaches repair_context — the point of Fix A)."""
+        (tmp_path / "train_cell.py").write_text(
+            textwrap.dedent("""\
+                import sys
+                sys.stderr.write("BOOM-PROPAGATE-7\\n")
+                raise SystemExit(3)
+            """),
+            encoding="utf-8",
+        )
+        (tmp_path / "cells.json").write_text(
+            '{"cells":[{"id":"c0"}]}', encoding="utf-8"
+        )
+        monkeypatch.setenv("OPENRESEARCH_METRIC_REALITY_SMOKE", "1")
+        monkeypatch.setattr(mrs, "_get_available_gpu_ids", lambda: ["0"])
+        v = mrs.run_metric_reality_smoke(ctx=object(), code_dir=tmp_path, cells=None)
+        assert v["ok"] is False
+        assert v["failure_class"] == "smoke_metrics_unreal"
+        assert "BOOM-PROPAGATE-7" in v["detail"]
+        assert "exit 3" in v["detail"]
+
+
+# ---------------------------------------------------------------------------
+# FIX 1 — token-aware loss (pure evaluate_smoke_trace).
+# ---------------------------------------------------------------------------
+
+class TestTokenAwareLoss:
+    def test_train_loss_recognized_and_varying_passes(self):
+        v = mrs.evaluate_smoke_trace(
+            [{"train_loss": 0.5}, {"train_loss": 0.4}], peak_vram_gb=8.0
+        )
+        assert v["ok"] is True
+
+    def test_train_loss_all_zero_fails(self):
+        # Teeth preserved: an all-zero recognized loss is still rejected.
+        v = mrs.evaluate_smoke_trace([{"train_loss": 0.0}, {"train_loss": 0.0}], None)
+        assert v["ok"] is False
+
+    def test_val_loss_no_grad_fails_with_training_signal_hint(self):
+        # val_loss is NOT a training loss; with no grad evidence the no-signal
+        # rejection fires.
+        v = mrs.evaluate_smoke_trace([{"val_loss": 0.5}, {"val_loss": 0.4}], None)
+        assert v["ok"] is False
+        detail = v["detail"].lower()
+        assert "training-loss key" in detail or "backprop" in detail
+
+
+# ---------------------------------------------------------------------------
+# FIX 2 — grad evidence sufficiency (pure evaluate_smoke_trace).
+# ---------------------------------------------------------------------------
+
+class TestGradEvidenceSufficiency:
+    def test_no_loss_positive_grad_passes(self):
+        v = mrs.evaluate_smoke_trace(
+            [{"reward": 0.0, "grad_norm": 0.7}, {"reward": 0.0, "grad_norm": 0.6}], None
+        )
+        assert v["ok"] is True
+
+    def test_no_loss_zero_grad_fails(self):
+        # grad present but 0 → Requirement 4 rejects <=0 grad.
+        v = mrs.evaluate_smoke_trace([{"reward": 0.0, "grad_norm": 0.0}], None)
+        assert v["ok"] is False
+
+    def test_no_loss_no_grad_fails_with_actionable_hint(self):
+        v = mrs.evaluate_smoke_trace([{"reward": 0.5}, {"reward": 0.6}], None)
+        assert v["ok"] is False
+        assert "log a per-step loss (or grad_norm)" in v["detail"]

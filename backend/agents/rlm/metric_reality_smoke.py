@@ -25,7 +25,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 
 logger = logging.getLogger(__name__)
@@ -95,6 +95,55 @@ def _is_loss_key(k: str) -> bool:
     return bool(_LOSS_KEY_RE.search(k))
 
 
+# Tokens that disqualify a "*loss" key from counting as the OPTIMISED training
+# objective: eval-split losses (val/test/dev) prove nothing about backprop, and
+# loss_scale is an AMP gradient-scaling factor, not a loss.
+_NON_TRAINING_LOSS_TOKENS = frozenset(
+    {"val", "valid", "validation", "eval", "test", "dev", "holdout", "scale"}
+)
+
+
+def _is_primary_loss_key(k: str) -> bool:
+    """True iff ``k`` names the optimised training loss (what backprop minimises).
+
+    Token-aware: ``train_loss``/``ce_loss``/``mse_loss``/``reconstruction_loss`` are
+    recognised (the exact-match ``_PRIMARY_LOSS_KEYS`` missed every ``*_loss`` name,
+    and the word-boundary fallback regex missed them too because ``_`` is a word
+    char), while eval-split losses (``val_loss``/``test_loss``) and the AMP
+    ``loss_scale`` factor are excluded — a varying val_loss on a frozen model is not
+    proof of training.
+    """
+    lk = k.lower()
+    if lk in _PRIMARY_LOSS_KEYS:
+        return True
+    toks = re.split(r"[^a-z0-9]+", lk)
+    if "loss" not in toks:
+        return False
+    return not any(t in _NON_TRAINING_LOSS_TOKENS for t in toks)
+
+
+def _grad_param_values(step_records: list[dict]) -> tuple[list[float], list[float]]:
+    """Collect grad_norm and param_delta_* values across step records (floats only)."""
+    grads: list[float] = []
+    deltas: list[float] = []
+    for rec in step_records:
+        for k, v in rec.items():
+            if not isinstance(k, str):
+                continue
+            lk = k.lower()
+            if "grad_norm" in lk:
+                try:
+                    grads.append(float(v))
+                except (TypeError, ValueError):
+                    pass
+            if "param_delta" in lk:
+                try:
+                    deltas.append(float(v))
+                except (TypeError, ValueError):
+                    pass
+    return grads, deltas
+
+
 def _get_float(d: dict, key_pred) -> list[float]:
     """Return list of floats for keys in d that satisfy key_pred (excluding config keys)."""
     from backend.agents.rlm.zero_metrics_detection import _is_excluded_key  # noqa: PLC0415
@@ -113,17 +162,28 @@ def _get_float(d: dict, key_pred) -> list[float]:
 
 
 def _primary_loss_series(step_records: list[dict]) -> list[float]:
-    """Per-step series of the PRIMARY loss (first present primary key per record)."""
+    """Per-step series of the PRIMARY loss (first present primary key per record).
+
+    Canonical ``_PRIMARY_LOSS_KEYS`` win by priority; otherwise the first token-loss
+    key (sorted, deterministic) is used so ``train_loss``-style traces are covered.
+    """
     series: list[float] = []
     for rec in step_records:
-        lk_map = {k.lower(): v for k, v in rec.items() if isinstance(k, str)}
+        str_keys = [k for k in rec.keys() if isinstance(k, str)]
+        lowered = {k.lower(): k for k in str_keys}
+        chosen: str | None = None
         for pk in _PRIMARY_LOSS_KEYS:
-            if pk in lk_map:
-                try:
-                    series.append(float(lk_map[pk]))
-                except (TypeError, ValueError):
-                    pass
-                break  # first present primary key wins for this step
+            if pk in lowered:
+                chosen = lowered[pk]
+                break
+        if chosen is None:
+            cands = sorted(k for k in str_keys if _is_primary_loss_key(k))
+            chosen = cands[0] if cands else None
+        if chosen is not None:
+            try:
+                series.append(float(rec[chosen]))
+            except (TypeError, ValueError):
+                pass
     return series
 
 
@@ -170,6 +230,11 @@ def evaluate_smoke_trace(
             "detail": "smoke trace has 0 step records — trainer produced no per-step metrics",
         }
 
+    # Grad/param evidence is collected once: it both gates the no-loss-key path
+    # (FIX 2) and drives the Requirement-4 sanity check below.
+    grad_norms, param_deltas = _grad_param_values(step_records)
+    has_grad_evidence = bool(grad_norms or param_deltas)
+
     # Requirement 2: PRIMARY loss present and >0; varied across steps when >=2 records.
     # With a single record, loss>0 alone catches the v6 disconnected-loss (0.0) failure;
     # the constant-across-steps check needs >=2 records and is skipped for one record.
@@ -199,18 +264,28 @@ def evaluate_smoke_trace(
         for rec in step_records:
             all_loss.extend(_get_float(rec, _is_loss_key))
         if not all_loss:
-            return {
-                "ok": False,
-                "failure_class": "smoke_metrics_unreal",
-                "detail": "smoke trace has no loss-like key (loss/l_grpo/pg_loss/kl/nll) in step records",
-            }
-        if all(v == 0.0 for v in all_loss):
+            # No training-loss key at all. Accept iff there is POSITIVE backprop
+            # evidence (grad_norm/param_delta, validated finite & >0 by Requirement 4
+            # below); otherwise reject with an actionable, paper-agnostic hint. The
+            # post-run zero-metrics + evidence guards remain the backstop.
+            if not has_grad_evidence:
+                return {
+                    "ok": False,
+                    "failure_class": "smoke_metrics_unreal",
+                    "detail": (
+                        "smoke trace has step records but no training-loss key and no "
+                        "grad_norm/param_delta — log a per-step loss (or grad_norm) so "
+                        "the smoke can verify backprop"
+                    ),
+                }
+            # grad evidence present: fall through; Requirement 4 is the gate.
+        elif all(v == 0.0 for v in all_loss):
             return {
                 "ok": False,
                 "failure_class": "smoke_metrics_unreal",
                 "detail": f"smoke trace: all {len(all_loss)} loss values are 0.0 — loss is disconnected",
             }
-        if len(all_loss) >= 2 and len(set(all_loss)) == 1:
+        elif len(all_loss) >= 2 and len(set(all_loss)) == 1:
             return {
                 "ok": False,
                 "failure_class": "smoke_metrics_unreal",
@@ -232,23 +307,8 @@ def evaluate_smoke_trace(
         }
 
     # Requirement 4: grad_norm / param_delta_norm finite and >0 when present.
-    all_grad_norms: list[float] = []
-    all_param_deltas: list[float] = []
-    for rec in step_records:
-        for k, v in rec.items():
-            if not isinstance(k, str):
-                continue
-            lk = k.lower()
-            if "grad_norm" in lk:
-                try:
-                    all_grad_norms.append(float(v))
-                except (TypeError, ValueError):
-                    pass
-            if "param_delta" in lk:
-                try:
-                    all_param_deltas.append(float(v))
-                except (TypeError, ValueError):
-                    pass
+    all_grad_norms = grad_norms
+    all_param_deltas = param_deltas
     if all_grad_norms:
         bad = [v for v in all_grad_norms if not math.isfinite(v) or v <= 0.0]
         if bad:
@@ -306,20 +366,32 @@ def _select_smoke_representatives(cells: list[dict], max_cells: int) -> list[dic
 # Single-cell smoke runner
 # ---------------------------------------------------------------------------
 
+class _SmokeCellResult(NamedTuple):
+    trace: dict | list | None
+    peak_vram_gb: float | None
+    launched: bool
+    timed_out: bool
+    returncode: int | None
+    output_tail: str
+
+
 def _run_one_smoke_cell(
     cell: dict,
     cell_script: Path,
     gpu_id: str,
     output_dir: Path,
     timeout_s: float,
-) -> tuple[dict | list | None, float | None, bool, bool]:
-    """Run one cell for ~2 steps; return (trace, peak_vram_gb, launched, timed_out).
+) -> _SmokeCellResult:
+    """Run one cell for ~2 steps; return (trace, peak_vram_gb, launched, timed_out, returncode, output_tail).
 
     `launched` is True whenever the subprocess actually started; False ONLY when it
     could not be spawned (OSError) — a harness fail-open signal.
     `timed_out` is True when the subprocess hit `timeout_s` and was killed — for a
     slow-rollout env that is INCONCLUSIVE (the caller fails open), not broken code; a
     NATURAL exit (timed_out False) with no/bad trace is still judged (codex Area-4).
+    `returncode` is the subprocess exit code (None if not yet set or timed-out kill).
+    `output_tail` is the last 4000 characters of combined stdout+stderr — the traceback
+    end is what matters for crash diagnosis.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -366,18 +438,19 @@ def _run_one_smoke_cell(
         logger.debug("metric_reality_smoke: subprocess won't spawn: %s", exc)
         if _stop is not None:
             _stop.set()
-        return None, None, False, False  # launched=False — spawn-fail fail-open signal
+        return _SmokeCellResult(None, None, False, False, None, "")  # launched=False — spawn-fail fail-open signal
 
     timed_out = False
+    captured_out = ""
     try:
-        proc.communicate(timeout=timeout_s)
+        captured_out, _ = proc.communicate(timeout=timeout_s)
     except subprocess.TimeoutExpired:
         timed_out = True
         proc.kill()
         try:
-            proc.communicate(timeout=5)
+            captured_out, _ = proc.communicate(timeout=5)
         except Exception:  # noqa: BLE001
-            pass
+            captured_out = ""
     finally:
         if _stop is not None:
             _stop.set()
@@ -398,7 +471,8 @@ def _run_one_smoke_cell(
             except Exception:  # noqa: BLE001
                 continue
 
-    return trace, peak_vram_gib, True, timed_out  # launched=True even when trace is None
+    output_tail = (captured_out or "")[-4000:]
+    return _SmokeCellResult(trace, peak_vram_gib, True, timed_out, proc.returncode, output_tail)  # launched=True even when trace is None
 
 
 # ---------------------------------------------------------------------------
@@ -481,7 +555,7 @@ def run_metric_reality_smoke(
             cell_out = tmp / f"cell_{i}"
             cell_id = cell.get("id", f"rep_{i}")
 
-            trace, peak_vram, launched, timed_out = _run_one_smoke_cell(
+            trace, peak_vram, launched, timed_out, returncode, output_tail = _run_one_smoke_cell(
                 cell, cell_script, gpu_id, cell_out, timeout
             )
 
@@ -511,10 +585,17 @@ def run_metric_reality_smoke(
                 else:
                     # Natural exit with no per-step trace — a trainer that completes
                     # without logging is JUDGED (codex Area-4 intent preserved).
-                    failures.append(
-                        f"[{cell_id}] executor exited without writing any per-step trace — "
-                        f"write metrics.json/smoke_trace.json incrementally per step"
-                    )
+                    if returncode not in (0, None):
+                        failures.append(
+                            f"[{cell_id}] crashed (exit {returncode}) before writing a per-step trace. "
+                            f"Fix the error shown below, then write metrics.json/smoke_trace.json incrementally per step.\n"
+                            f"--- last output ---\n{output_tail}"
+                        )
+                    else:
+                        failures.append(
+                            f"[{cell_id}] exited (rc={returncode}) without writing any per-step trace — "
+                            f"write metrics.json/smoke_trace.json incrementally per step"
+                        )
                 continue
 
             # >=1 record (natural exit, or a timeout that still produced a partial

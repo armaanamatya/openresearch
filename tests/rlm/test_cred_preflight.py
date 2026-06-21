@@ -243,28 +243,37 @@ class TestAzureOpenAI:
 
 
 class TestAzureFoundry:
+    # The foundry branch now resolves creds via
+    # foundry_endpoint.resolve_foundry_credentials() (os.environ -> Settings/.env),
+    # so these patch that single source of truth to stay hermetic against a live
+    # .env (which carries a real AZURE_FOUNDRY_* key on dev machines).
+    @staticmethod
+    def _patch_creds(monkeypatch, endpoint: str, deployment: str, api_key: str):
+        import backend.agents.runtime.foundry_endpoint as fe
+        monkeypatch.setattr(
+            fe, "resolve_foundry_credentials",
+            lambda: (endpoint, deployment, api_key),
+        )
+
     def test_missing_key_returns_false(self, monkeypatch):
-        monkeypatch.delenv("AZURE_FOUNDRY_API_KEY", raising=False)
+        self._patch_creds(monkeypatch, "https://my-resource.services.ai.azure.com/openai/v1", "grok-4.3", "")
         ok, msg = validate_root_credentials("azure-foundry")
         assert ok is False
         assert "AZURE_FOUNDRY_API_KEY" in msg
 
     def test_key_present_no_endpoint_fail_open(self, monkeypatch):
-        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "some-key")
-        monkeypatch.delenv("AZURE_FOUNDRY_ENDPOINT", raising=False)
+        self._patch_creds(monkeypatch, "", "grok-4.3", "some-key")
         ok, msg = validate_root_credentials("azure-foundry")
         assert ok is True
 
     def test_valid_credentials_returns_true(self, monkeypatch):
-        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "valid-key")
-        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", "https://my-resource.services.ai.azure.com/openai/v1")
+        self._patch_creds(monkeypatch, "https://my-resource.services.ai.azure.com/openai/v1", "grok-4.3", "valid-key")
         with patch("urllib.request.urlopen", return_value=_url_open_ok()):
             ok, msg = validate_root_credentials("azure-foundry")
         assert ok is True
 
     def test_401_returns_false(self, monkeypatch):
-        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "bad-key")
-        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", "https://my-resource.services.ai.azure.com/openai/v1")
+        self._patch_creds(monkeypatch, "https://my-resource.services.ai.azure.com/openai/v1", "grok-4.3", "bad-key")
         with patch("urllib.request.urlopen", side_effect=_http_error(401)):
             ok, msg = validate_root_credentials("azure-foundry")
         assert ok is False

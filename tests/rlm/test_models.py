@@ -472,6 +472,41 @@ class TestAzureFoundryRoot:
         assert "azure-foundry" in _MODEL_LABELS
 
 
+class TestCredProvider:
+    """RootModel.cred_provider returns the correct credential family for the preflight.
+
+    The credential family may differ from rlm_backend when the transport is
+    OpenAI-compatible but the actual secret is a non-OpenAI key.
+    """
+
+    def test_azure_foundry_cred_provider(self, monkeypatch):
+        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", "https://r.services.ai.azure.com/openai/v1")
+        monkeypatch.setenv("AZURE_FOUNDRY_DEPLOYMENT", "grok-4.3")
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "sk-foundry-test")
+        from backend.agents.rlm.models import resolve_root_model
+
+        assert resolve_root_model("foundry").cred_provider == "azure-foundry"
+        assert resolve_root_model("azure-foundry").cred_provider == "azure-foundry"
+
+    def test_featherless_cred_provider(self, monkeypatch):
+        monkeypatch.setenv("FEATHERLESS_API_KEY", "fl-test-key")
+        from backend.agents.rlm.models import resolve_root_model
+
+        assert resolve_root_model("qwen3-coder-featherless").cred_provider == "featherless"
+
+    def test_gpt5_cred_provider(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        from backend.agents.rlm.models import resolve_root_model
+
+        assert resolve_root_model("gpt-5").cred_provider == "openai"
+
+    def test_claude_cred_provider(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        from backend.agents.rlm.models import resolve_root_model
+
+        assert resolve_root_model("claude").cred_provider == "anthropic"
+
+
 class TestNormalizeFoundryBaseUrl:
     """Foundry base-url normalization accepts whatever the operator pastes.
 

@@ -1639,8 +1639,10 @@ def validate_root_credentials(
     # Azure AI Foundry (OpenAI-compatible custom endpoint)
     # ------------------------------------------------------------------
     if p in ("azure-foundry", "azure_foundry", "foundry"):
-        api_key = _os.environ.get("AZURE_FOUNDRY_API_KEY", "").strip()
-        endpoint = _os.environ.get("AZURE_FOUNDRY_ENDPOINT", "").strip()
+        from backend.agents.runtime.foundry_endpoint import resolve_foundry_credentials  # noqa: PLC0415
+        endpoint, _deployment, api_key = resolve_foundry_credentials()
+        api_key = (api_key or "").strip()
+        endpoint = (endpoint or "").strip()  # already normalized to …/openai/v1
         if not api_key:
             return (
                 False,

@@ -30,6 +30,7 @@ REQUIRE_SPOT="${OPENRESEARCH_REQUIRE_SPOT:-true}"
 MIN_GPUS="${OPENRESEARCH_SDAR_MIN_GPUS:-8}"
 CPU_MACHINE_TYPE="${OPENRESEARCH_GCP_CPU_MACHINE_TYPE:-e2-standard-16}"
 GPU_MACHINE_TYPE="${OPENRESEARCH_GCP_GPU_MACHINE_TYPE:-a2-highgpu-8g}"
+PROVISIONING_MODEL="${OPENRESEARCH_GCP_PROVISIONING_MODEL:-SPOT}"
 
 export CLOUDSDK_CONFIG
 
@@ -42,15 +43,18 @@ ssh_base=(gcloud compute ssh "$REMOTE_USER@$INSTANCE" --zone "$ZONE" --project "
 # `$stage` and aborting an already-SUCCESSFUL prepare under `set -u`. Null-safe via
 # the `[@]:-` expansion so an empty array doesn't trip `set -u` either.
 #
-# `return 0` is REQUIRED: when _CLEANUP_DIRS is empty, `${arr[@]:-}` yields one
-# empty string, so the loop's only iteration runs `[[ -n "" ]] && rm` — a false
-# test (status 1) as the trap's last command. bash 5.2 lets a non-zero EXIT-trap
-# last-command status override the script's 0 exit, so without this every action
-# that stages no temp dir (status/start/stop/monitor/launch) spuriously exits 1 on
-# success — which silently breaks `start && … prepare` chaining. A 0-status trap
-# never masks a real failure: errexit's non-zero exit code is preserved.
+# Preserve the incoming exit status across cleanup. Capturing `$?` at trap entry
+# and returning it solves BOTH failure modes: (1) when _CLEANUP_DIRS is empty,
+# `${arr[@]:-}` yields one empty string, so the loop's only iteration runs
+# `[[ -n "" ]] && rm` — a false test (status 1) that bash 5.2 would otherwise let
+# override a clean 0 exit (spuriously failing status/start/stop/monitor/launch and
+# breaking `start && … prepare` chaining); returning the captured rc discards that
+# stray test status. (2) a bare `return 0` does the OPPOSITE — it MASKS a real
+# failure: an rsync that aborts sync_repo under errexit would report rc=0 and a
+# launch would proceed onto stale code. Returning the captured rc preserves
+# errexit's non-zero code so a broken prepare is visible.
 _CLEANUP_DIRS=()
-_cleanup() { local d; for d in "${_CLEANUP_DIRS[@]:-}"; do [[ -n "$d" ]] && rm -rf "$d"; done; return 0; }
+_cleanup() { local rc=$?; local d; for d in "${_CLEANUP_DIRS[@]:-}"; do [[ -n "$d" ]] && rm -rf "$d"; done; return "$rc"; }
 trap _cleanup EXIT
 
 status_only() {
@@ -65,6 +69,11 @@ describe_instance() {
 }
 
 ensure_spot() {
+  # When PROVISIONING_MODEL=STANDARD an on-demand run is intentional; skip.
+  if [[ "${PROVISIONING_MODEL}" == "STANDARD" ]]; then
+    echo "[ensure_spot] PROVISIONING_MODEL=STANDARD — on-demand run, skipping spot enforcement"
+    return 0
+  fi
   if [[ "${REQUIRE_SPOT,,}" != "true" ]]; then
     return
   fi
@@ -76,6 +85,61 @@ ensure_spot() {
     echo "set OPENRESEARCH_REQUIRE_SPOT=false only for an intentional on-demand run" >&2
     exit 1
   fi
+}
+
+# ensure_provisioning_model <SPOT|STANDARD>: if the VM is already on <model>, return
+# immediately. Otherwise stop the VM (if RUNNING) and wait for TERMINATED, then
+# apply gcloud compute instances set-scheduling with the appropriate flags.
+# SPOT: TERMINATE on maintenance (required by GCP). STANDARD: MIGRATE on maintenance.
+ensure_provisioning_model() {
+  local want="$1"
+  local cur
+  cur="$("${gcloud_base[@]}" compute instances describe "$INSTANCE" --zone "$ZONE" --format='value(scheduling.provisioningModel)' 2>/dev/null || true)"
+  if [[ "$cur" == "$want" ]]; then
+    echo "[provisioning-model] already $want — no change"
+    return 0
+  fi
+  echo "[provisioning-model] current=${cur:-unknown} want=$want"
+  local s
+  s="$(status_only 2>/dev/null || true)"
+  if [[ "$s" == "RUNNING" ]]; then
+    echo "[provisioning-model] stopping VM to flip provisioning model..."
+    "${gcloud_base[@]}" compute instances stop "$INSTANCE" --zone "$ZONE"
+    local deadline
+    deadline=$((SECONDS + 300))
+    while (( SECONDS < deadline )); do
+      s="$(status_only 2>/dev/null || true)"
+      if [[ "$s" == "TERMINATED" ]]; then break; fi
+      sleep 10
+    done
+    if [[ "$s" != "TERMINATED" ]]; then
+      echo "ERROR: VM did not reach TERMINATED within 300s; cannot flip provisioning model" >&2
+      exit 1
+    fi
+  fi
+  echo "[provisioning-model] setting provisioning model to $want..."
+  if [[ "$want" == "STANDARD" ]]; then
+    # GPU machine types (a2-highgpu-8g) CANNOT live-migrate, so on-host-maintenance
+    # must be TERMINATE even for an on-demand instance — MIGRATE is rejected when
+    # flipping to the a2 type. A SPOT instance carries two fields STANDARD rejects:
+    # preemptible=true (clear with --no-preemptible; else "for preemptible, only
+    # allowed model is SPOT") and instanceTerminationAction (clear with
+    # --clear-instance-termination-action; else "cannot specify a termination action
+    # for the standard provisioning model"). All flags verified live 2026-06-20.
+    "${gcloud_base[@]}" compute instances set-scheduling "$INSTANCE" \
+      --zone "$ZONE" \
+      --provisioning-model=STANDARD \
+      --no-preemptible \
+      --maintenance-policy=TERMINATE \
+      --clear-instance-termination-action
+  else
+    "${gcloud_base[@]}" compute instances set-scheduling "$INSTANCE" \
+      --zone "$ZONE" \
+      --provisioning-model=SPOT \
+      --maintenance-policy=TERMINATE \
+      --instance-termination-action=STOP
+  fi
+  echo "[provisioning-model] done — now $want"
 }
 
 current_machine_type() {
@@ -201,7 +265,11 @@ sync_repo() {
     requirements.txt pyproject.toml CHANGELOG.md CLAUDE.md gcp_info.md issues.md
   )
   [[ -f .env ]] && files+=(.env)
-  rsync -a \
+  # --ignore-missing-args: optional root docs (gcp_info.md, issues.md) are not
+  # always present in a given working tree; skip an absent source instead of
+  # aborting the whole sync under errexit (the required dirs backend/scripts/...
+  # always exist, so this can't silently drop real code).
+  rsync -a --ignore-missing-args \
     --exclude '__pycache__/' \
     --exclude '*.pyc' \
     --exclude '.git/' \
@@ -232,7 +300,17 @@ remote_check() {
 }
 
 remote_prepare() {
-  ensure_machine_type "$CPU_MACHINE_TYPE"
+  # On-demand (STANDARD) cannot stage on a cheap CPU type: a GPU instance must use
+  # onHostMaintenance=TERMINATE while an e2 STANDARD instance must use MIGRATE, and
+  # there is no valid intermediate to flip between them (GPU can't MIGRATE; e2
+  # STANDARD can't TERMINATE). So for on-demand, stage on the GPU machine type
+  # itself (a few $ of GPU billing during sync/warm) rather than the CPU type. SPOT
+  # is unaffected — a preemptible e2 CAN use TERMINATE, so the cheap CPU flip works.
+  if [[ "$PROVISIONING_MODEL" == "STANDARD" ]]; then
+    ensure_machine_type "$GPU_MACHINE_TYPE"
+  else
+    ensure_machine_type "$CPU_MACHINE_TYPE"
+  fi
   start_vm
   sync_repo
   # System build prerequisites for source-built Python deps. Ubuntu 24.04 ships
@@ -273,6 +351,7 @@ monitor_run() {
 }
 
 launch_run() {
+  ensure_provisioning_model "$PROVISIONING_MODEL"
   ensure_machine_type "$GPU_MACHINE_TYPE"
   start_vm
   # GPU-COST GATE: never start a GPU run until env + data + GPUs are verified
