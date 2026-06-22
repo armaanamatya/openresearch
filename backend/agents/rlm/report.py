@@ -1388,6 +1388,77 @@ def _has_experiment_evidence(project_dir: Path) -> bool:
     return False
 
 
+def _adaptation_delta(repo_dir: Path, code_dir: Path) -> dict:
+    """Count files changed/added/removed between repo/ (pristine) and code/ (adapted).
+
+    Compares by relative path + sha256 content. ``.git/`` is ignored. Pure +
+    fail-soft: a missing dir yields zeros for that side.
+    """
+    import hashlib
+
+    def _index(root: Path) -> dict[str, str]:
+        out: dict[str, str] = {}
+        if not root.is_dir():
+            return out
+        for p in root.rglob("*"):
+            rel = p.relative_to(root)
+            if ".git" in rel.parts or not p.is_file():
+                continue
+            try:
+                out[rel.as_posix()] = hashlib.sha256(p.read_bytes()).hexdigest()
+            except OSError:
+                continue
+        return out
+
+    repo_idx = _index(Path(repo_dir))
+    code_idx = _index(Path(code_dir))
+    changed = sum(1 for k in repo_idx.keys() & code_idx.keys() if repo_idx[k] != code_idx[k])
+    added = len(code_idx.keys() - repo_idx.keys())
+    removed = len(repo_idx.keys() - code_idx.keys())
+    return {"files_changed": changed, "files_added": added, "files_removed": removed}
+
+
+def _build_reproduction_block(project_dir: Path) -> dict | None:
+    """Build final_report.reproduction, or None when no repo was used / flag off.
+
+    ``execution.ran`` is sourced from the EVIDENCE layer (_has_experiment_evidence)
+    so it cannot be forged by a green-looking report. Returns None unless
+    OPENRESEARCH_USE_AUTHOR_REPO is on AND rlm_state/repo_spec.json carries a
+    non-null url (a real repo run).
+    """
+    import os as _os
+
+    if _os.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() not in (
+        "1", "true", "yes", "on",
+    ):
+        return None
+    project_dir = Path(project_dir)
+    spec_path = project_dir / "rlm_state" / "repo_spec.json"
+    if not spec_path.exists():
+        return None
+    try:
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(spec, dict) or not spec.get("url"):
+        return None
+
+    ran = _has_experiment_evidence(project_dir)
+    status = "success" if ran else "failed"
+    return {
+        "mode": spec.get("mode") or "adapt",
+        "repo_url": spec.get("url"),
+        "commit_sha": spec.get("commit_sha"),
+        "provider": "github",
+        "execution": {
+            "ran": ran,
+            "status": status,
+            "metrics_produced": ran,
+        },
+        "adaptation": _adaptation_delta(project_dir / "repo", project_dir / "code"),
+    }
+
+
 def _has_partial_timeout_evidence(project_dir: Path) -> bool:
     """True iff ``experiment_runs.jsonl`` has a HARNESS-finalized partial row:
     non-empty dict ``metrics`` AND (``failure_class == "partial_timeout"`` or
@@ -2054,6 +2125,19 @@ def write_final_report_rlm(
             json_content = json.dumps(_d, indent=2)
     except Exception:  # noqa: BLE001 — degradation ledger is best-effort
         logger.warning("report: degradations_taken ledger failed (non-fatal)", exc_info=True)
+
+    # --- #62: reproduction block (execution + provenance + adaptation delta) ---
+    # Same serialized-dict pattern as the stamps above — RLMFinalReport needs no
+    # new field. Attached ONLY on a repo run (flag on + repo_spec.json url set);
+    # omitted otherwise → byte-for-byte today. execution.ran is evidence-gated.
+    try:
+        _repro_block = _build_reproduction_block(project_dir)
+        if _repro_block is not None:
+            _d = json.loads(json_content)
+            _d["reproduction"] = _repro_block
+            json_content = json.dumps(_d, indent=2)
+    except Exception:  # noqa: BLE001 — reproduction stamp is best-effort, never blocks
+        logger.warning("report: reproduction block attach failed (non-fatal)", exc_info=True)
 
     _atomic_write(json_path, json_content)
 
