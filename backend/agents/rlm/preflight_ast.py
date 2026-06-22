@@ -1279,6 +1279,21 @@ def _file_uses_env_contract(tree: ast.AST) -> bool:
     return False
 
 
+def _is_vendored_reference(code_file: Path, rel: str, repo_dir: Path) -> bool:
+    """True iff code_file is a byte-identical copy of repo_dir/rel — an unmodified
+    vendored author reference (repo-first adapt mode), not authored code. Fail-soft:
+    any error returns False (flag conservatively)."""
+    try:
+        if not repo_dir.is_dir():
+            return False
+        repo_file = repo_dir / rel
+        if not repo_file.is_file():
+            return False
+        return repo_file.read_bytes() == code_file.read_bytes()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _base_is_valid_env_base(base: ast.expr) -> bool:
     """Return True if an ``ast`` base-class expression names a contract-satisfying
     base — ``BaseEnv``, ``AgenticEnv``, or a harness-shipped concrete env.
@@ -1343,6 +1358,11 @@ def _check_env_interface_contract(
         return  # this paper does not use the contract — skip entirely.
 
     # Step 2: flag non-subclassing, non-implementing ``*Env`` classes.
+    # In repo-first adapt mode the run dir contains both code/ and repo/; a file
+    # that is byte-identical to its repo/ counterpart is an unmodified vendored
+    # author reference that the harness never instantiates directly — exempt it.
+    repo_dir = code_dir.parent / "repo"
+
     for path, tree in parsed:
         try:
             rel = path.relative_to(code_dir).as_posix()
@@ -1363,6 +1383,12 @@ def _check_env_interface_contract(
             if any(m in members for m in _REQUIRED_ENV_METHODS):
                 continue
             lineno = getattr(node, "lineno", 0)
+            if _is_vendored_reference(path, rel, repo_dir):
+                logger.debug(
+                    "preflight_ast: env-interface check exempting vendored reference %s",
+                    rel,
+                )
+                continue
             out.append(PreflightViolation(
                 file=rel,
                 line=lineno,

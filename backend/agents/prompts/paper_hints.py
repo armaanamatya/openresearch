@@ -45,7 +45,18 @@ PAPER_HINTS: dict[str, PaperHint] = {
             "is lambda = 0.1 and the gate sharpness is beta = 10; the GRPO loss "
             "is ADDED to the gated self-distillation loss (both terms required). "
             "Use the real pretrained Qwen weights from HuggingFace, not "
-            "surrogates."
+            "surrogates. "
+            "Never wrap loss.backward()/optimizer.step() in a bare `except Exception` "
+            "that swallows the error and continues — let an OOM propagate (the harness "
+            "shrink-retries) or explicitly shrink the batch and retry; a swallowed "
+            "exception that exits 0 with empty metrics is a silent-OOM anti-pattern "
+            "the preflight rejects. "
+            "Emit GRPO baseline cells (not only SDAR cells) for each model x env so "
+            "the rubric's baseline-comparison leaves can score. "
+            "Give every ablation/variant cell a DISTINCT (model_key, env, baseline) "
+            "triple in cells.json — e.g. baseline=sdar_ucb / sdar_random / sdar_full "
+            "for the retrieval ablations — so each lands under its own rubric leaf "
+            "(a duplicate triple collapses cells)."
         ),
         default_scope=ScopeSpec(
             models=[

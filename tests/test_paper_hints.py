@@ -73,6 +73,32 @@ class TestSdarHintStructure:
         assert "lambda" in sdar.guidance.lower()
         assert "beta" in sdar.guidance.lower()
 
+    def test_guidance_warns_silent_oom_antipattern(self, sdar):
+        """Guidance must warn against swallowed backward/step exceptions (silent-OOM)."""
+        g = sdar.guidance
+        assert "silent-OOM" in g or "silent_oom" in g.lower(), (
+            "SDAR guidance must name the silent-OOM anti-pattern"
+        )
+        assert "except" in g.lower(), (
+            "SDAR guidance must mention bare except blocks as the root cause"
+        )
+
+    def test_guidance_requires_grpo_baseline_cells(self, sdar):
+        """Guidance must instruct the agent to emit GRPO baseline cells."""
+        assert "GRPO baseline" in sdar.guidance or "grpo baseline" in sdar.guidance.lower(), (
+            "SDAR guidance must instruct agent to emit GRPO baseline cells"
+        )
+
+    def test_guidance_requires_distinct_cell_triples(self, sdar):
+        """Guidance must instruct the agent to use distinct (model, env, baseline) triples."""
+        g = sdar.guidance
+        assert "DISTINCT" in g or "distinct" in g.lower(), (
+            "SDAR guidance must require distinct cell triples"
+        )
+        assert "triple" in g.lower(), (
+            "SDAR guidance must reference the (model_key, env, baseline) triple concept"
+        )
+
     def test_default_scope_has_three_models(self, sdar):
         assert sdar.default_scope is not None
         assert len(sdar.default_scope.models) == 3

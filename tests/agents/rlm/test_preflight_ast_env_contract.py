@@ -368,3 +368,107 @@ def train(env):
     assert _env_contract_hits(out) == [], (
         f"Subclass of a shipped env must not be flagged: {out}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Case 6 (2026-06-22): vendored reference env exemption (repo-first adapt mode)
+#
+# A *Env that's byte-identical to the author's repo/ copy is an unmodified
+# vendored reference — it's exempt even if it doesn't subclass BaseEnv.
+# The four invariants:
+#   (a) No repo/ dir (non-repo-first run) → exemption never fires → flagged.
+#   (b) Authored non-conforming *Env (no repo counterpart) → still flagged.
+#   (c) Modified copy (different bytes vs repo/) → still flagged.
+#   (d) Byte-identical copy of repo/<rel> → exempt (not flagged).
+# ---------------------------------------------------------------------------
+
+_NONCONFORMING_ENV_BODY = """\
+class AuthorEnv:
+    def reset(self):
+        return "obs"
+"""
+
+_TRAIN_IN_PLAY = """\
+def train(env):
+    return env.build_student_prompt("obs")
+"""
+
+
+def test_vendored_reference_no_repo_dir_still_flagged(tmp_path: Path) -> None:
+    """(a) No repo/ sibling dir — exemption never fires — the non-conforming
+    env is flagged exactly as before (byte-identical to before)."""
+    code_dir = tmp_path / "code"
+    _write(code_dir, "sdar/envs/author_env.py", _NONCONFORMING_ENV_BODY)
+    _write(code_dir, "sdar/train.py", _TRAIN_IN_PLAY)
+    # No repo/ dir at all.
+
+    out: list[PreflightViolation] = []
+    _check_env_interface_contract(code_dir, out)
+    hits = _env_contract_hits(out)
+    assert len(hits) == 1 and hits[0].class_name == "AuthorEnv", (
+        f"Without repo/ the check must still flag AuthorEnv: {out}"
+    )
+
+
+def test_vendored_reference_no_repo_counterpart_still_flagged(tmp_path: Path) -> None:
+    """(b) repo/ exists but contains no counterpart file — executor-authored env,
+    still flagged."""
+    code_dir = tmp_path / "code"
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()  # empty repo
+
+    _write(code_dir, "sdar/envs/author_env.py", _NONCONFORMING_ENV_BODY)
+    _write(code_dir, "sdar/train.py", _TRAIN_IN_PLAY)
+
+    out: list[PreflightViolation] = []
+    _check_env_interface_contract(code_dir, out)
+    hits = _env_contract_hits(out)
+    assert len(hits) == 1 and hits[0].class_name == "AuthorEnv", (
+        f"No repo counterpart → still flagged: {out}"
+    )
+
+
+def test_vendored_reference_modified_copy_still_flagged(tmp_path: Path) -> None:
+    """(c) The file exists in repo/ but code/ has a modified version (executor
+    adapted it → must conform). Still flagged."""
+    code_dir = tmp_path / "code"
+    repo_dir = tmp_path / "repo"
+
+    _write(code_dir, "sdar/envs/author_env.py", _NONCONFORMING_ENV_BODY)
+    _write(code_dir, "sdar/train.py", _TRAIN_IN_PLAY)
+
+    # repo/ has the original; code/ has an extra comment → different bytes.
+    (repo_dir / "sdar" / "envs").mkdir(parents=True)
+    (repo_dir / "sdar" / "envs" / "author_env.py").write_text(
+        _NONCONFORMING_ENV_BODY + "# original\n", encoding="utf-8"
+    )
+
+    out: list[PreflightViolation] = []
+    _check_env_interface_contract(code_dir, out)
+    hits = _env_contract_hits(out)
+    assert len(hits) == 1 and hits[0].class_name == "AuthorEnv", (
+        f"Modified copy → not exempt, still flagged: {out}"
+    )
+
+
+def test_vendored_reference_byte_identical_is_exempt(tmp_path: Path) -> None:
+    """(d) code/ file is byte-identical to repo/<rel> — the unmodified vendored
+    author reference is exempt (not flagged)."""
+    code_dir = tmp_path / "code"
+    repo_dir = tmp_path / "repo"
+
+    _write(code_dir, "sdar/envs/author_env.py", _NONCONFORMING_ENV_BODY)
+    _write(code_dir, "sdar/train.py", _TRAIN_IN_PLAY)
+
+    # repo/ has the exact same bytes.
+    (repo_dir / "sdar" / "envs").mkdir(parents=True)
+    (repo_dir / "sdar" / "envs" / "author_env.py").write_text(
+        _NONCONFORMING_ENV_BODY, encoding="utf-8"
+    )
+
+    out: list[PreflightViolation] = []
+    _check_env_interface_contract(code_dir, out)
+    hits = _env_contract_hits(out)
+    assert hits == [], (
+        f"Byte-identical vendored reference must be exempt (not flagged): {out}"
+    )
