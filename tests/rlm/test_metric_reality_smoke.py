@@ -8,6 +8,7 @@ Covers the pure evaluate_smoke_trace contract + the three review fixes:
 
 from __future__ import annotations
 
+import math
 import textwrap
 
 import backend.agents.rlm.metric_reality_smoke as mrs
@@ -293,3 +294,67 @@ class TestGradEvidenceSufficiency:
         v = mrs.evaluate_smoke_trace([{"reward": 0.5}, {"reward": 0.6}], None)
         assert v["ok"] is False
         assert "log a per-step loss (or grad_norm)" in v["detail"]
+
+
+# ---------------------------------------------------------------------------
+# RL-aware smoke — GRPO/PPO objectives legitimately log ~0 loss/grad on a tiny
+# degenerate slice (group-relative advantage collapses to 0). The supervised
+# loss>0/varies + grad>0 teeth must NOT fire for RL; only non-finite is fatal.
+# The VRAM floor + finite checks stay; supervised teeth are a REGRESSION guard.
+# ---------------------------------------------------------------------------
+
+class TestRLAwareSmoke:
+    def test_rl_detector(self):
+        assert mrs._is_rl_objective([{"l_grpo": 0.0}]) is True
+        assert mrs._is_rl_objective([{"grpo_loss": 0.1}]) is True
+        # reward alone is NOT an RL/PG loss marker.
+        assert mrs._is_rl_objective([{"reward": 0.0, "loss": 0.1}]) is False
+        assert mrs._is_rl_objective([{"train_loss": 0.1}]) is False
+        # a ppo token anywhere in a key counts.
+        assert mrs._is_rl_objective([{"ppo_clip": 0.1}]) is True
+
+    def test_rl_zero_loss_passes(self):
+        # Degenerate RL slice: l_grpo/loss/grad_norm all 0.0 is LEGITIMATE.
+        v = mrs.evaluate_smoke_trace(
+            [
+                {"l_grpo": 0.0, "loss": 0.0, "grad_norm": 0.0},
+                {"l_grpo": 0.0, "loss": 0.0, "grad_norm": 0.0},
+            ],
+            peak_vram_gb=8.0,
+        )
+        assert v["ok"] is True
+
+    def test_rl_constant_loss_passes(self):
+        v = mrs.evaluate_smoke_trace(
+            [
+                {"l_grpo": 0.5, "grad_norm": 0.0},
+                {"l_grpo": 0.5, "grad_norm": 0.0},
+            ],
+            peak_vram_gb=8.0,
+        )
+        assert v["ok"] is True
+
+    def test_rl_nonfinite_loss_fails(self):
+        # Non-finite loss is fatal even for RL (diverged / not real).
+        v = mrs.evaluate_smoke_trace(
+            [{"l_grpo": math.nan, "loss": math.nan}], peak_vram_gb=8.0
+        )
+        assert v["ok"] is False
+
+    def test_rl_low_vram_fails(self):
+        # VRAM floor teeth preserved for RL.
+        v = mrs.evaluate_smoke_trace([{"l_grpo": 0.0, "loss": 0.0}], peak_vram_gb=0.1)
+        assert v["ok"] is False
+
+    def test_supervised_zero_loss_still_fails(self):
+        # REGRESSION guard: supervised all-zero loss still rejected.
+        v = mrs.evaluate_smoke_trace(
+            [{"train_loss": 0.0}, {"train_loss": 0.0}], peak_vram_gb=8.0
+        )
+        assert v["ok"] is False
+
+    def test_supervised_constant_loss_still_fails(self):
+        v = mrs.evaluate_smoke_trace(
+            [{"train_loss": 0.5}, {"train_loss": 0.5}], peak_vram_gb=8.0
+        )
+        assert v["ok"] is False

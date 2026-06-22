@@ -144,6 +144,36 @@ def _grad_param_values(step_records: list[dict]) -> tuple[list[float], list[floa
     return grads, deltas
 
 
+# RL/policy-gradient loss markers. For these objectives a per-step loss/gradient of
+# ~0 on a tiny degenerate slice is LEGITIMATE (GRPO/PPO group-relative advantage
+# collapses to 0 with too few rollouts), so the supervised "loss>0 and varies" checks
+# must NOT fire. Detection is conservative — only an explicit PG/GRPO marker counts (a
+# supervised paper never logs these), so supervised smokes keep their full teeth.
+_RL_OBJECTIVE_TOKENS = frozenset({"grpo", "ppo", "reinforce", "rlhf"})
+_RL_LOSS_KEYS = frozenset({"l_grpo", "pg_loss", "policy_loss", "grpo_loss"})
+
+
+def _is_rl_objective(step_records: list[dict]) -> bool:
+    """True iff the trace is an RL/policy-gradient objective (GRPO/PPO/REINFORCE/RLHF).
+
+    Conservative: requires an explicit PG/GRPO loss marker key — a legitimately ~0 or
+    constant RL loss on a degenerate tiny slice must not be judged "disconnected" the
+    way a supervised loss would be.
+    """
+    for rec in step_records:
+        if not isinstance(rec, dict):
+            continue
+        for k in rec:
+            if not isinstance(k, str):
+                continue
+            lk = k.lower()
+            if lk in _RL_LOSS_KEYS:
+                return True
+            if any(t in _RL_OBJECTIVE_TOKENS for t in re.split(r"[^a-z0-9]+", lk)):
+                return True
+    return False
+
+
 def _get_float(d: dict, key_pred) -> list[float]:
     """Return list of floats for keys in d that satisfy key_pred (excluding config keys)."""
     from backend.agents.rlm.zero_metrics_detection import _is_excluded_key  # noqa: PLC0415
@@ -234,30 +264,47 @@ def evaluate_smoke_trace(
     # (FIX 2) and drives the Requirement-4 sanity check below.
     grad_norms, param_deltas = _grad_param_values(step_records)
     has_grad_evidence = bool(grad_norms or param_deltas)
+    rl_objective = _is_rl_objective(step_records)
 
     # Requirement 2: PRIMARY loss present and >0; varied across steps when >=2 records.
     # With a single record, loss>0 alone catches the v6 disconnected-loss (0.0) failure;
     # the constant-across-steps check needs >=2 records and is skipped for one record.
     primary = _primary_loss_series(step_records)
     if primary:
-        if all(v == 0.0 for v in primary):
+        if not any(math.isfinite(v) for v in primary):
             return {
                 "ok": False,
                 "failure_class": "smoke_metrics_unreal",
                 "detail": (
-                    f"smoke trace: the primary loss is 0.0 across all {len(primary)} step(s) — "
-                    f"loss is not connected to the model graph"
+                    f"smoke trace: the primary loss is non-finite across all {len(primary)} step(s) "
+                    f"(NaN/inf) — training diverged or the loss is not real"
                 ),
             }
-        if len(primary) >= 2 and len(set(primary)) == 1:
-            return {
-                "ok": False,
-                "failure_class": "smoke_metrics_unreal",
-                "detail": (
-                    f"smoke trace: the primary loss is constant across {len(primary)} steps "
-                    f"(value={primary[0]}) — training is not updating the model"
-                ),
-            }
+        # Supervised objectives must show a >0, step-varying loss (the v6 teeth). For
+        # RL/policy-gradient (GRPO/PPO) this is RELAXED: the group-relative advantage —
+        # and therefore the loss and gradient — legitimately collapses to ~0 on a 1-2
+        # rollout slice, so a 0/constant RL loss is NOT proof of a disconnected graph.
+        # RL real-training proof comes from the VRAM floor + a finite loss + the loop
+        # completing; fake-catching defers to the post-run zero-metrics/evidence guards.
+        if not rl_objective:
+            if all(v == 0.0 for v in primary):
+                return {
+                    "ok": False,
+                    "failure_class": "smoke_metrics_unreal",
+                    "detail": (
+                        f"smoke trace: the primary loss is 0.0 across all {len(primary)} step(s) — "
+                        f"loss is not connected to the model graph"
+                    ),
+                }
+            if len(primary) >= 2 and len(set(primary)) == 1:
+                return {
+                    "ok": False,
+                    "failure_class": "smoke_metrics_unreal",
+                    "detail": (
+                        f"smoke trace: the primary loss is constant across {len(primary)} steps "
+                        f"(value={primary[0]}) — training is not updating the model"
+                    ),
+                }
     else:
         # Fallback: no PRIMARY loss key present — use the lenient pooled loss check.
         all_loss: list[float] = []
@@ -279,13 +326,13 @@ def evaluate_smoke_trace(
                     ),
                 }
             # grad evidence present: fall through; Requirement 4 is the gate.
-        elif all(v == 0.0 for v in all_loss):
+        elif (not rl_objective) and all(v == 0.0 for v in all_loss):
             return {
                 "ok": False,
                 "failure_class": "smoke_metrics_unreal",
                 "detail": f"smoke trace: all {len(all_loss)} loss values are 0.0 — loss is disconnected",
             }
-        elif len(all_loss) >= 2 and len(set(all_loss)) == 1:
+        elif (not rl_objective) and len(all_loss) >= 2 and len(set(all_loss)) == 1:
             return {
                 "ok": False,
                 "failure_class": "smoke_metrics_unreal",
@@ -310,7 +357,12 @@ def evaluate_smoke_trace(
     all_grad_norms = grad_norms
     all_param_deltas = param_deltas
     if all_grad_norms:
-        bad = [v for v in all_grad_norms if not math.isfinite(v) or v <= 0.0]
+        # RL grad legitimately == 0 on a degenerate slice; only non-finite is fatal.
+        bad = (
+            [v for v in all_grad_norms if not math.isfinite(v)]
+            if rl_objective
+            else [v for v in all_grad_norms if not math.isfinite(v) or v <= 0.0]
+        )
         if bad:
             return {
                 "ok": False,
@@ -321,7 +373,11 @@ def evaluate_smoke_trace(
                 ),
             }
     if all_param_deltas:
-        bad = [v for v in all_param_deltas if not math.isfinite(v) or v <= 0.0]
+        bad = (
+            [v for v in all_param_deltas if not math.isfinite(v)]
+            if rl_objective
+            else [v for v in all_param_deltas if not math.isfinite(v) or v <= 0.0]
+        )
         if bad:
             return {
                 "ok": False,
