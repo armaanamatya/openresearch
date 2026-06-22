@@ -11,6 +11,7 @@ def _write_repo_spec(project_dir: Path, url="https://github.com/me/mine", mode="
     (rlm_state / "repo_spec.json").write_text(json.dumps({
         "url": url, "source": "user", "mode": mode, "reason": "t",
         "commit_sha": "abc1234", "path": str(project_dir / "repo"),
+        "clone_succeeded": True,
     }), encoding="utf-8")
 
 
@@ -60,6 +61,18 @@ def test_execution_ran_false_without_evidence(tmp_path, monkeypatch):
     assert block is not None
     assert block["execution"]["ran"] is False
     assert block["execution"]["status"] == "failed"
+
+
+def test_clone_failed_returns_none(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENRESEARCH_USE_AUTHOR_REPO", "1")
+    rlm_state = tmp_path / "rlm_state"
+    rlm_state.mkdir(parents=True)
+    (rlm_state / "repo_spec.json").write_text(json.dumps({
+        "url": "https://github.com/me/mine", "source": "user", "mode": "scratch",
+        "reason": "clone failed", "commit_sha": None, "path": None,
+        "clone_succeeded": False,
+    }), encoding="utf-8")
+    assert _build_reproduction_block(tmp_path) is None
 
 
 def test_adaptation_delta_counts(tmp_path):

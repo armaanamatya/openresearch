@@ -1104,11 +1104,14 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
     from backend.agents.rlm import primitive_cache as _cache
     _sandbox_mode_val = getattr(ctx, "sandbox_mode", None)
     _sandbox_key = getattr(_sandbox_mode_val, "value", str(_sandbox_mode_val) if _sandbox_mode_val is not None else None)
+    _repo_on = os.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() in ("1", "true", "yes", "on")
     _payload = {
         "method_spec": method_spec,
         # gpu_mode + sandbox_mode both affect Dockerfile shape, so both are cache keys.
         "gpu_mode": getattr(ctx, "gpu_mode", None),
         "sandbox_mode": _sandbox_key,
+        "repo_first": _repo_on,
+        "repo_commit": (_load_repo_spec(ctx.project_dir).get("commit_sha") if _repo_on else None),
     }
     _cached = _cache.maybe_get(ctx.project_dir, "detect_environment", payload=_payload)
     if _cached is not None:
@@ -1995,12 +1998,16 @@ def _repo_artifact_index(project_dir: "Path", plan_artifact_index: "dict | None"
     """Merge the TRUSTED repo metadata into artifact_index, repo fields winning.
 
     The root's plan["artifact_index"] is untrusted; the repo_spec.json written at
-    run setup is authoritative. Returns the plan's dict unchanged when no repo was used.
+    run setup is authoritative. Returns the plan's dict unchanged when no repo was used
+    or when the master flag is off.
     """
+    import os as _os
     from pathlib import Path as _Path
     base = dict(plan_artifact_index or {})
+    if _os.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() not in ("1", "true", "yes", "on"):
+        return base
     spec = _load_repo_spec(project_dir)
-    if spec.get("url"):
+    if spec.get("url") and spec.get("clone_succeeded"):
         base.update({
             "repo_url": spec.get("url"),
             "commit_sha": spec.get("commit_sha"),
@@ -2025,24 +2032,36 @@ def _should_seed_code_from_repo(mode: str, repo_dir: "Path", code_dir: "Path") -
 
 
 def _seed_code_from_repo(repo_dir: "Path", code_dir: "Path") -> int:
-    """Copy repo_dir -> code_dir excluding .git/; return the count of files copied."""
+    """Copy repo_dir -> code_dir excluding .git/ and symlinks; return count of files copied."""
     import shutil as _shutil
     from pathlib import Path as _Path
     repo_dir = _Path(repo_dir)
     code_dir = _Path(code_dir)
     code_dir.mkdir(parents=True, exist_ok=True)
+    repo_root = repo_dir.resolve()
     copied = 0
     for src in sorted(repo_dir.rglob("*")):
         rel = src.relative_to(repo_dir)
         if ".git" in rel.parts:
+            continue
+        if src.is_symlink():        # never copy symlinks (could escape repo/)
+            continue
+        try:
+            resolved = src.resolve()
+            if resolved != repo_root and repo_root not in resolved.parents:
+                continue            # defensive: skip anything resolving outside repo/
+        except OSError:
             continue
         dst = code_dir / rel
         if src.is_dir():
             dst.mkdir(parents=True, exist_ok=True)
         elif src.is_file():
             dst.parent.mkdir(parents=True, exist_ok=True)
-            _shutil.copy2(src, dst)
-            copied += 1
+            try:
+                _shutil.copy2(src, dst)
+                copied += 1
+            except OSError:
+                continue
     return copied
 
 
@@ -2280,6 +2299,7 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
     _sandbox_key = getattr(ctx.sandbox_mode, "value", str(ctx.sandbox_mode) if ctx.sandbox_mode is not None else None)
     _gpu_key = getattr(getattr(ctx, "gpu_mode", None), "value", str(getattr(ctx, "gpu_mode", None)) if getattr(ctx, "gpu_mode", None) is not None else None)
     from backend.agents.baseline_knowledge import KNOWLEDGE_CHANNEL_VERSION as _KC_VER
+    _repo_on = os.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() in ("1", "true", "yes", "on")
     _payload = {
         "plan": plan,
         "repair_context": repair_context,
@@ -2287,6 +2307,8 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
         "sandbox_mode": _sandbox_key,
         "gpu_mode": _gpu_key,
         "knowledge_channel_version": _KC_VER,
+        "repo_first": _repo_on,
+        "repo_commit": (_load_repo_spec(ctx.project_dir).get("commit_sha") if _repo_on else None),
     }
     _cached = _cache.maybe_get(ctx.project_dir, "implement_baseline", payload=_payload)
     if _cached is not None:
@@ -8356,16 +8378,13 @@ def inspect_repository(
         if target.is_dir():
             entries = sorted(p.name + ("/" if p.is_dir() else "") for p in target.iterdir())
             return {"status": "ok", "kind": "dir", "path": path or ".", "entries": entries[:500]}
-        raw = target.read_text(encoding="utf-8", errors="replace")
+        with target.open("rb") as _fh:
+            _data = _fh.read(max_bytes + 1)
+        truncated = len(_data) > max_bytes
+        raw = _data[:max_bytes].decode("utf-8", errors="replace")
         if grep:
-            lines = [ln for ln in raw.splitlines() if grep in ln]
-            content = "\n".join(lines)
-        else:
-            content = raw
-        truncated = len(content.encode("utf-8")) > max_bytes
-        if truncated:
-            content = content.encode("utf-8")[:max_bytes].decode("utf-8", errors="ignore")
-        return {"status": "ok", "kind": "file", "path": path, "content": content, "truncated": truncated}
+            raw = "\n".join(ln for ln in raw.splitlines() if grep in ln)
+        return {"status": "ok", "kind": "file", "path": path, "content": raw, "truncated": truncated}
     except Exception as exc:  # noqa: BLE001 — a read tool must never break the run
         return {"status": "error", "error": str(exc)[:300]}
 

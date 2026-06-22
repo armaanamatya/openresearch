@@ -1440,7 +1440,7 @@ def _build_reproduction_block(project_dir: Path) -> dict | None:
         spec = json.loads(spec_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(spec, dict) or not spec.get("url"):
+    if not isinstance(spec, dict) or not spec.get("url") or not spec.get("clone_succeeded"):
         return None
 
     ran = _has_experiment_evidence(project_dir)

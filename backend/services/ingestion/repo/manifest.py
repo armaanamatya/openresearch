@@ -88,8 +88,16 @@ def build_manifest(
     file_tree: list[str] = []
     key_files: dict[str, str] = {}
     try:
+        repo_root = repo_dir.resolve()
         for abs_path in sorted(repo_dir.rglob("*")):
+            if abs_path.is_symlink():
+                continue
             if not abs_path.is_file():
+                continue
+            try:
+                if abs_path.resolve() != repo_root and repo_root not in abs_path.resolve().parents:
+                    continue
+            except OSError:
                 continue
             rel = abs_path.relative_to(repo_dir)
             if _is_excluded(rel):

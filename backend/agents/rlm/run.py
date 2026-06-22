@@ -629,6 +629,15 @@ def _resolve_and_clone_repo(
                     url=spec.url, source=spec.source, mode="scratch",
                     reason=f"clone failed for {spec.url}; proceeding scratch",
                 )
+                if emit is not None:
+                    try:
+                        from backend.agents.rlm.sse_bridge import build_run_warning_event
+                        emit(build_run_warning_event(
+                            code="repo_clone_failed",
+                            message=f"clone failed for {spec.url}; proceeding scratch",
+                        ))
+                    except Exception:  # noqa: BLE001
+                        pass
         # Persist the deterministic source of truth (atomic write).
         rlm_state = project_dir / "rlm_state"
         rlm_state.mkdir(parents=True, exist_ok=True)
@@ -636,6 +645,7 @@ def _resolve_and_clone_repo(
             "url": spec.url, "source": spec.source, "mode": spec.mode,
             "reason": spec.reason, "commit_sha": commit_sha,
             "path": str(project_dir / "repo") if repo_files else None,
+            "clone_succeeded": bool(repo_files),
         }
         tmp = rlm_state / "repo_spec.json.tmp"
         tmp.write_text(_json.dumps(payload, indent=2), encoding="utf-8")

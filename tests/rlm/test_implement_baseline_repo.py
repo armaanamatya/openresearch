@@ -17,6 +17,7 @@ def _write_repo_spec(project_dir: Path, **kw):
         "url": "https://github.com/me/mine", "source": "user", "mode": "adapt",
         "reason": "test", "commit_sha": "abc1234",
         "path": str(project_dir / "repo"),
+        "clone_succeeded": True,
     }
     payload.update(kw)
     (rlm_state / "repo_spec.json").write_text(json.dumps(payload), encoding="utf-8")
@@ -34,13 +35,40 @@ def test_load_repo_spec_reads_disk(tmp_path):
     assert spec["commit_sha"] == "abc1234"
 
 
-def test_artifact_index_from_repo_spec_overrides_empty_plan(tmp_path):
+def test_artifact_index_from_repo_spec_overrides_empty_plan(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENRESEARCH_USE_AUTHOR_REPO", "1")
     _write_repo_spec(tmp_path)
     ai = _repo_artifact_index(tmp_path, plan_artifact_index={})
     assert ai["repo_url"] == "https://github.com/me/mine"
     assert ai["commit_sha"] == "abc1234"
     assert ai["mode"] == "adapt"
     assert ai["path"].endswith("repo")
+
+
+def test_artifact_index_flag_off_returns_plan(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENRESEARCH_USE_AUTHOR_REPO", raising=False)
+    _write_repo_spec(tmp_path)
+    ai = _repo_artifact_index(tmp_path, {"x": 1})
+    assert ai == {"x": 1}
+
+
+def test_seed_skips_escaping_symlink(tmp_path):
+    # Real file inside repo + a symlink that points outside repo/
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    real_file = repo / "train.py"
+    real_file.write_text("print(1)\n", encoding="utf-8")
+    # Target outside the repo
+    outside = tmp_path / "secret.txt"
+    outside.write_text("secret\n", encoding="utf-8")
+    evil_link = repo / "evil.py"
+    evil_link.symlink_to(outside)
+
+    code = tmp_path / "code"
+    n = _seed_code_from_repo(repo, code)
+    assert n == 1  # only train.py, not the symlink target
+    assert (code / "train.py").exists()
+    assert not (code / "evil.py").exists()
 
 
 def test_seed_copies_tree_excluding_git(tmp_path):

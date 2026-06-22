@@ -65,3 +65,19 @@ def test_as_context_round_trips_simple(tmp_path):
     assert ctx["size_mb"] == 1.5
     assert ctx["lfs_skipped"] is True
     assert "train.py" in ctx["file_tree"]
+
+
+def test_build_manifest_skips_escaping_symlink(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "README.md").write_text("# hi\n", encoding="utf-8")
+    # A file outside the repo that a symlink inside would point at.
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret\n", encoding="utf-8")
+    evil_link = repo / "evil.txt"
+    evil_link.symlink_to(outside)
+
+    m = build_manifest(repo, commit_sha=None)
+    assert "README.md" in m.file_tree
+    assert "evil.txt" not in m.file_tree
+    assert "evil.txt" not in m.key_files

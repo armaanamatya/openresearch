@@ -65,7 +65,7 @@ def _runpod_upload_relpaths(local_root: "Path") -> list[str]:
         if not p.is_file():
             continue
         rel = p.relative_to(local_root)
-        if any(part in _RUNPOD_EXCLUDED_DIR_PARTS for part in rel.parts[:-1]):
+        if any(part in _RUNPOD_EXCLUDED_DIR_PARTS for part in rel.parts):
             continue
         out.append(rel.as_posix())
     return out
@@ -877,7 +877,7 @@ class RunpodBackend(RuntimeBackend):
         for local_path in sorted(local_root.rglob("*")):
             rel = local_path.relative_to(local_root)
             # #62: keep repo/ (and the other build-only dirs) host-only.
-            if any(part in _RUNPOD_EXCLUDED_DIR_PARTS for part in rel.parts[:-1]):
+            if any(part in _RUNPOD_EXCLUDED_DIR_PARTS for part in rel.parts):
                 continue
             rel_posix = rel.as_posix()
             remote_path = _join_posix(remote_root, rel_posix)
