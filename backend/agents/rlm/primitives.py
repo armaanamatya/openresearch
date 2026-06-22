@@ -8067,7 +8067,27 @@ def recommend_next_tool(situation: str, *, ctx: "RunContext") -> dict:
 
     The root calls this when uncertain about how to proceed. The recommendation
     comes from a single llm_query call (no recursion, bounded cost).
+
+    Deterministic next-action card (feature #18, ``OPENRESEARCH_ACTION_CARDS``,
+    default OFF): when the next action is mechanically determined by lifecycle
+    state (e.g. no baseline yet → ``implement_baseline``), short-circuit the PAID
+    LLM call and return a deterministic card instead. Fail-soft: any error or an
+    ambiguous state falls through to today's LLM path (byte-for-byte unchanged
+    when the flag is off).
     """
+    try:
+        from backend.agents.rlm.action_card import (
+            action_cards_enabled,
+            build_action_card,
+        )
+
+        if action_cards_enabled():
+            card = build_action_card(situation, ctx)
+            if card is not None:
+                return card
+    except Exception:  # noqa: BLE001 — short-circuit must never break the primitive
+        pass
+
     prompt = (
         "You are advising an RLM root model on which tool to use next.\n\n"
         f"CURRENT SITUATION:\n{situation}\n\n"
