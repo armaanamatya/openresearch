@@ -46,14 +46,20 @@
 
 ## Phase 2 — typed cells/results and metric semantics (L)
 
-- [ ] Add `dimensions` to cell manifests and results; retain the current three-axis
-  projection for SDAR.
-- [ ] Make aggregation preserve dimensions rather than coercing arbitrary concepts
-  into `baseline`.
-- [ ] Drive metric-range, direction, split, denominator, and seed-stat diagnostics
-  from `MetricContract` in warning-only mode.
-- [ ] Exercise SDAR, image classification, and a non-model/environment/baseline
-  sweep in hermetic tests.
+- [ ] **STAGED (design-heavy execution surgery — not started).** Add `dimensions` to
+  cell manifests and results; retain the current three-axis projection for SDAR.
+  Touches `cell_matrix`/`gpu_cell_runner`/`train_cell` + the cross-process cell seam —
+  must be additive + warning-only and is its own gated slice. Held for review.
+- [ ] **STAGED (design-heavy).** Make aggregation preserve dimensions rather than
+  coercing arbitrary concepts into `baseline` (`cell_matrix.aggregate_cell_metrics`).
+  Depends on the dimensions item above; held for review.
+- [~] Drive metric-range, direction, split, denominator, and seed-stat diagnostics
+  from `MetricContract` in warning-only mode — **range + declared-but-absent done**
+  (`semantic_contract.diagnose_metrics`, fail-soft, never rejects a run); direction/
+  split/denominator/seed-stat diagnostics are a follow-on (the contract fields exist).
+- [x] Exercise SDAR, image classification, and a non-model/environment/baseline
+  sweep in hermetic tests (`test_diagnose_metrics_across_paper_shapes` + nested/flat/
+  sweep shapes in `tests/rlm/test_semantic_contract.py`, 16 total).
 
 ## Phase 3 — canonical evidence bundle and coverage matrix (L)
 

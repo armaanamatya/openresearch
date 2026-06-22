@@ -253,12 +253,64 @@ def build_contract(
     return c
 
 
+# ---------------------------------------------------------------------------
+# MetricContract diagnostics (Phase 2) — WARNING-ONLY. Compares observed metrics
+# against their declared contracts and returns advisory strings. It NEVER raises,
+# rejects a run, or mutates a score/verdict (design §Rollout: "warning-only first").
+# ---------------------------------------------------------------------------
+def _collect_numeric(obj: object, out: dict[str, list[float]]) -> None:
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(v, bool):
+                continue
+            if isinstance(v, (int, float)):
+                out.setdefault(str(k), []).append(float(v))
+            else:
+                _collect_numeric(v, out)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            _collect_numeric(v, out)
+
+
+def diagnose_metrics(
+    contracts: list[MetricContract], metrics: object
+) -> list[str]:
+    """Warning-only check of observed ``metrics`` against their ``MetricContract``s.
+
+    Returns advisory strings (declared-but-absent, below-min, above-max). Fail-soft:
+    any internal error returns an empty list. Does not reject a run or change a score.
+    """
+    try:
+        found: dict[str, list[float]] = {}
+        _collect_numeric(metrics, found)
+        warnings: list[str] = []
+        for mc in contracts or []:
+            ident = mc.identifier
+            values = found.get(ident)
+            if not values:
+                warnings.append(f"metric '{ident}' declared in contract but absent from metrics")
+                continue
+            for v in values:
+                if mc.value_min is not None and v < mc.value_min:
+                    warnings.append(
+                        f"metric '{ident}'={v} below declared min {mc.value_min}"
+                    )
+                if mc.value_max is not None and v > mc.value_max:
+                    warnings.append(
+                        f"metric '{ident}'={v} above declared max {mc.value_max}"
+                    )
+        return warnings
+    except Exception:  # noqa: BLE001 -- diagnostics must never break a run
+        return []
+
+
 __all__ = [
     "SEMANTIC_CONTRACT_VERSION",
     "enabled",
     "persist",
     "load",
     "build_contract",
+    "diagnose_metrics",
     "SourceSpan",
     "Provenance",
     "Dimension",

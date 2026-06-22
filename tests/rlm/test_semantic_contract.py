@@ -149,3 +149,47 @@ def test_build_contract_rubric_gap_is_honest():
     from backend.agents.rlm import semantic_contract as sc
     c = sc.build_contract(rubric={"categories": [{"name": "x"}]})
     assert "rubric_metric_contracts" in c.unresolved  # not invented, flagged
+
+
+# --- MetricContract diagnostics (warning-only) -----------------------------
+def test_diagnose_metrics_flags_out_of_range_and_absent():
+    from backend.agents.rlm import semantic_contract as sc
+    contracts = [
+        MetricContract(identifier="success_rate", value_min=0.0, value_max=1.0),
+        MetricContract(identifier="reward", value_min=0.0, value_max=100.0),
+        MetricContract(identifier="missing_metric"),
+    ]
+    metrics = {"per_model": {"Qwen3-1.7B": {"alfworld": {"success_rate": 1.4, "reward": 12.0}}}}
+    warns = sc.diagnose_metrics(contracts, metrics)
+    assert any("success_rate" in w and "above declared max" in w for w in warns)
+    assert any("missing_metric" in w and "absent" in w for w in warns)
+    # reward is in-range -> no warning for it
+    assert not any("reward" in w for w in warns)
+
+
+def test_diagnose_metrics_is_warning_only_and_failsoft():
+    from backend.agents.rlm import semantic_contract as sc
+    # clean metrics -> no warnings
+    assert sc.diagnose_metrics(
+        [MetricContract(identifier="acc", value_min=0.0, value_max=1.0)],
+        {"acc": 0.91},
+    ) == []
+    # weird (non-dict) input -> never raises; the declared metric is simply absent
+    out = sc.diagnose_metrics([MetricContract(identifier="x")], object())
+    assert isinstance(out, list) and any("absent" in w for w in out)
+    # no contracts -> nothing to diagnose, empty
+    assert sc.diagnose_metrics([], {"acc": 0.5}) == []
+    # bools are not treated as numeric metrics -> 'flag' is absent
+    assert sc.diagnose_metrics(
+        [MetricContract(identifier="flag", value_max=0.0)], {"flag": True}
+    ) == ["metric 'flag' declared in contract but absent from metrics"]
+
+
+def test_diagnose_metrics_across_paper_shapes():
+    from backend.agents.rlm import semantic_contract as sc
+    # vision (flat), SDAR (nested per_model), and a generic sweep all work
+    vision = {"top1_acc": 0.93}
+    sweep = {"runs": [{"f1": 0.7}, {"f1": 1.9}]}
+    assert sc.diagnose_metrics([MetricContract(identifier="top1_acc", value_max=1.0)], vision) == []
+    warns = sc.diagnose_metrics([MetricContract(identifier="f1", value_max=1.0)], sweep)
+    assert any("f1" in w and "1.9" in w for w in warns)
