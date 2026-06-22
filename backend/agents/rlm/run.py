@@ -576,6 +576,7 @@ def _resolve_and_clone_repo(
     repo_url: "str | None",
     blacklist: "set[str]",
     discovered: "list[Any]",
+    emit: "Any" = None,
 ) -> "tuple[dict[str, Any] | None, Any]":
     """Resolve a RepoSpec, clone it (flag-gated), persist rlm_state/repo_spec.json.
 
@@ -596,6 +597,14 @@ def _resolve_and_clone_repo(
 
         mode_override = os.environ.get("OPENRESEARCH_REPRODUCTION_MODE", "adapt") or "adapt"
         spec = RepoResolver.resolve(repo_url, discovered, set(blacklist), mode_override)
+        if emit is not None:
+            try:
+                from backend.agents.rlm.sse_bridge import build_repo_resolved_event
+                emit(build_repo_resolved_event(
+                    url=spec.url, source=spec.source, mode=spec.mode, reason=spec.reason,
+                ))
+            except Exception:  # noqa: BLE001 — narration is best-effort
+                pass
         commit_sha: "str | None" = None
         repo_files: "dict[str, Any] | None" = None
         if spec.url:
@@ -603,6 +612,16 @@ def _resolve_and_clone_repo(
             if manifest is not None:
                 repo_files = manifest.as_context()
                 commit_sha = manifest.commit_sha
+                if emit is not None:
+                    try:
+                        from backend.agents.rlm.sse_bridge import build_repo_cloned_event
+                        emit(build_repo_cloned_event(
+                            commit_sha=manifest.commit_sha,
+                            size_mb=manifest.size_mb,
+                            key_files=list(manifest.key_files.keys()),
+                        ))
+                    except Exception:  # noqa: BLE001
+                        pass
             else:
                 # Clone failed -> fall back to scratch, but record that we tried.
                 from backend.services.ingestion.repo.resolver import RepoSpec
@@ -668,6 +687,7 @@ def _build_context(
     repo_url: "str | None" = None,
     blacklist: "set[str] | None" = None,
     discovered: "list[Any] | None" = None,
+    emit: "Any" = None,
 ) -> dict[str, Any]:
     """Assemble the offloaded RLM ``context`` dict from the workspace claim map.
 
@@ -706,6 +726,7 @@ def _build_context(
     if project_dir is not None:
         _repo_files, _ = _resolve_and_clone_repo(
             project_dir, repo_url, blacklist or set(), discovered or [],
+            emit=emit,
         )
 
     return {
@@ -2909,6 +2930,7 @@ async def run_pipeline_rlm(
         repo_url=_repo_url,
         blacklist=set(getattr(ctx, "blocked_terms", ()) or ()),
         discovered=_discovered,
+        emit=emit,
     )
 
     # arXiv runs arrive with no rubric_spec — derive a PaperBench-shaped rubric

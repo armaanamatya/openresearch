@@ -536,6 +536,40 @@ def build_run_complete_event(
     }
 
 
+def build_repo_resolved_event(
+    *,
+    url: str | None,
+    source: str,
+    mode: str,
+    reason: str,
+) -> dict:
+    """Build a ``repo_resolved`` control event (corpus-free). #62."""
+    return {
+        "event": "repo_resolved",
+        "timestamp": _now_iso(),
+        "url": url,
+        "source": source,
+        "mode": mode,
+        "reason": reason,
+    }
+
+
+def build_repo_cloned_event(
+    *,
+    commit_sha: str | None,
+    size_mb: float,
+    key_files: list[str],
+) -> dict:
+    """Build a ``repo_cloned`` control event (corpus-free). #62."""
+    return {
+        "event": "repo_cloned",
+        "timestamp": _now_iso(),
+        "commit_sha": commit_sha,
+        "size_mb": size_mb,
+        "key_files": list(key_files or []),
+    }
+
+
 # ---------------------------------------------------------------------------
 # on_subcall_* callback builders
 # ---------------------------------------------------------------------------
@@ -927,6 +961,8 @@ __all__ = [
     "build_experiment_progress_event",
     "build_iteration_heartbeat_event",
     "build_repair_dispatched",
+    "build_repo_cloned_event",
+    "build_repo_resolved_event",
     "build_rubric_score_event",
     "build_run_complete_event",
     "build_run_warning_event",

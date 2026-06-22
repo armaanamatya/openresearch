@@ -212,6 +212,10 @@ class StartRunRequest(BaseModel):
     # truth. When set, the listed keys take precedence over .env *for
     # this run's subprocess only* (never written to disk).
     provider_credentials: ProviderCredentials | None = Field(default=None, repr=False)
+    # #62: optional official-code-repository URL (github: shorthand or full URL).
+    # Threaded into the run context; resolved/cloned only when
+    # OPENRESEARCH_USE_AUTHOR_REPO is on. None => existing behavior.
+    repo_url: str | None = None
 
 
 class TelemetryRecordPublic(BaseModel):
@@ -1768,6 +1772,8 @@ def _python_script(
         # Lane Q — when True the cmd_reproduce Namespace gets minimize_compute=True,
         # which threads through the ExecutionProfile to the agent's prompt.
         "minimize_compute": bool(request.minimize_compute),
+        # #62: official code repository URL → consumed by run_pipeline_rlm.
+        "repo_url": request.repo_url,
     }
     return f"""
 import asyncio
@@ -1791,6 +1797,9 @@ runs_root = Path(config["runs_root"])
 output_dir = runs_root / project_id
 output_dir.mkdir(parents=True, exist_ok=True)
 status_path = output_dir / "demo_status.json"
+import os as _os_cfg
+if config.get("repo_url"):
+    _os_cfg.environ["OPENRESEARCH_REPO_URL"] = config["repo_url"]
 
 DEMO_WORKSPACE = {{
     "project_id": "prj_e2e_test",

@@ -645,6 +645,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             minimize_compute=request.minimize_compute,
             provider_credentials=request.provider_credentials,
             estimate_id=request.estimate_id,
+            repo_url=request.repo_url,
         )
         return await service.start_uploaded_run(
             run_request,
@@ -685,6 +686,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             minimize_compute=_optional_form_bool(form, "minimizeCompute"),
             provider_credentials=_optional_form_provider_credentials(form),
             estimate_id=_optional_form_value(form, "estimateId"),
+            repo_url=_optional_form_value(form, "repoUrl"),
         )
         return await service.start_uploaded_run(
             run_request,
@@ -1152,6 +1154,8 @@ class StartArxivRunRequest(BaseModel):
     # Budget estimate coupling — the cached estimate's p90 numbers are used
     # as default budget caps for the actual run.
     estimate_id: str | None = None
+    # #62: optional official-code-repository URL (github: shorthand or full URL).
+    repo_url: str | None = None
 
 
 class ApprovalEvaluateRequest(BaseModel):

@@ -1777,6 +1777,8 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
                 "paper_hints blocked_resources entry or pass --blacklist.",
                 file=sys.stderr,
             )
+    if getattr(args, "repo_url", None):
+        _os.environ["OPENRESEARCH_REPO_URL"] = args.repo_url
     if getattr(args, "scope_spec", None):
         print(
             f"[scope] Effective scope: models={_effective_scope.models or '∅'}, "
@@ -2515,6 +2517,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Comma-separated blocked URLs/terms, or a path to a newline-delimited "
             "PaperBench blacklist file."
+        ),
+    )
+    reproduce.add_argument(
+        "--repo-url",
+        dest="repo_url",
+        default=None,
+        help=(
+            "Official code repository URL for the paper (github: shorthand or full "
+            "URL). Resolved + cloned only when OPENRESEARCH_USE_AUTHOR_REPO is set; "
+            "wins over an auto-discovered repo."
         ),
     )
     reproduce.add_argument(
