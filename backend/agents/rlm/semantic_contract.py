@@ -179,11 +179,86 @@ def load(project_dir: Path | str) -> SemanticReproductionContract | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Input adapter — build a contract from EXISTING sources (effective scope,
+# PaperHint invariants, generated rubric) WITHOUT touching their consumers.
+# Duck-typed (getattr) so this module stays decoupled + inert. Anything that
+# can't be grounded is named in `unresolved`; the adapter never invents a fact.
+# ---------------------------------------------------------------------------
+def _dataset_label(d: object) -> str:
+    for attr in ("name", "dataset", "id", "slug"):
+        v = getattr(d, attr, None)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return str(d)
+
+
+def build_contract(
+    *, paper_hint: object = None, scope: object = None, rubric: object = None
+) -> SemanticReproductionContract:
+    """Map existing sources into a SemanticReproductionContract (additive, fail-soft).
+
+    Reads the effective ``scope`` (model/dataset/seed axes), ``paper_hint`` invariants +
+    guidance, and (presence of) a generated ``rubric``. Each source it cannot ground is
+    recorded in ``unresolved`` rather than invented. Pure — mutates nothing it reads.
+    """
+    c = SemanticReproductionContract()
+    unresolved: list[str] = []
+
+    # effective scope -> typed dimensions (generalizes SDAR model/env/baseline + seed)
+    models = list(getattr(scope, "models", None) or [])
+    if models:
+        c.dimensions.append(Dimension(name="model", values=[str(m) for m in models]))
+        c.variants.extend(str(m) for m in models)
+    else:
+        unresolved.append("models")
+    datasets = [
+        _dataset_label(d) for d in (getattr(scope, "datasets", None) or [])
+    ]
+    datasets = [d for d in datasets if d]
+    if datasets:
+        c.dimensions.append(Dimension(name="dataset", values=datasets))
+    else:
+        unresolved.append("datasets")
+    seeds = list(getattr(scope, "seeds", None) or [])
+    if seeds:
+        c.dimensions.append(
+            Dimension(name="seed", kind="numeric", values=[str(s) for s in seeds])
+        )
+    else:
+        unresolved.append("seeds")
+
+    # PaperHint invariants -> algorithm invariants; guidance -> a requirement
+    for inv in (getattr(paper_hint, "invariants", None) or []):
+        mm = getattr(inv, "must_match", None) or []
+        c.algorithm_invariants.append(
+            AlgorithmInvariant(
+                name=str(getattr(inv, "name", "") or "invariant"),
+                statement=str(getattr(inv, "rationale", "") or ""),
+                must_match=(str(mm[0]) if mm else None),
+            )
+        )
+    guidance = getattr(paper_hint, "guidance", "") or ""
+    if guidance.strip():
+        c.requirements.append(guidance.strip()[:500])
+    elif paper_hint is None:
+        unresolved.append("paper_hint")
+
+    # generated rubric -> metric contracts are NOT yet extracted (later plan task);
+    # be honest about the gap rather than invent metric semantics.
+    if rubric:
+        unresolved.append("rubric_metric_contracts")
+
+    c.unresolved = sorted(set(unresolved))
+    return c
+
+
 __all__ = [
     "SEMANTIC_CONTRACT_VERSION",
     "enabled",
     "persist",
     "load",
+    "build_contract",
     "SourceSpan",
     "Provenance",
     "Dimension",

@@ -32,10 +32,17 @@
   contract resolves to `None` so consumers keep current behaviour — the implicit legacy
   fallback; default OFF via `OPENRESEARCH_REPRO_CONTRACT`; tests cover roundtrip,
   missing, torn-json, wrong-version, and non-collision with the planner contract file).
-- [ ] Adapt PaperHint, YAML invariants, generated rubric, and effective scope as
-  contract inputs without deleting their current consumers.
-- [ ] Add unit tests for source/confidence preservation, missing fields, and
-  unchanged behavior when `OPENRESEARCH_REPRO_CONTRACT` is off.
+- [x] Adapt PaperHint, YAML invariants, generated rubric, and effective scope as
+  contract inputs without deleting their current consumers (`semantic_contract.build_contract`
+  — duck-typed, additive, pure: effective scope → typed model/dataset/seed `dimensions`,
+  PaperHint `invariants` → `algorithm_invariants`, guidance → a `requirement`; touches no
+  existing consumer. FIRST CUT — generated-rubric → `metric_contracts` extraction is
+  honestly flagged in `unresolved` (`rubric_metric_contracts`) and deferred to the Phase-2
+  MetricContract task rather than invented).
+- [x] Add unit tests for source/confidence preservation, missing fields, and
+  unchanged behavior when `OPENRESEARCH_REPRO_CONTRACT` is off (source/confidence roundtrip,
+  missing-source→`unresolved`, and off-state is byte-identical by construction — the module
+  is inert/unconsumed; tests in `tests/rlm/test_semantic_contract.py`, 13 total).
 
 ## Phase 2 — typed cells/results and metric semantics (L)
 

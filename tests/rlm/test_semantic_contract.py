@@ -118,3 +118,34 @@ def test_does_not_collide_with_legacy_planner_contract_file(tmp_path):
     sc.persist(tmp_path, SemanticReproductionContract())
     assert (tmp_path / "rlm_state" / "semantic_contract.json").exists()
     assert not (tmp_path / "rlm_state" / "reproduction_contract.json").exists()
+
+
+# --- input adapter (build from existing sources) ---------------------------
+def test_build_contract_from_scope_and_paperhint():
+    from backend.agents.rlm import semantic_contract as sc
+    from backend.agents.prompts.paper_hints import lookup_paper_hint
+
+    hint = lookup_paper_hint("2605.15155")  # SDAR — has invariants + a default_scope
+    assert hint is not None
+    scope = hint.default_scope
+    c = sc.build_contract(paper_hint=hint, scope=scope)
+    # scope axes became typed dimensions
+    dim_names = {d.name for d in c.dimensions}
+    assert "model" in dim_names
+    # SDAR's algorithmic invariants were carried over (e.g. the sigmoid gate)
+    assert any("sigmoid" in inv.name or "gate" in inv.name.lower()
+               for inv in c.algorithm_invariants)
+
+
+def test_build_contract_marks_missing_sources_unresolved():
+    from backend.agents.rlm import semantic_contract as sc
+    c = sc.build_contract()  # nothing supplied
+    # every axis + the hint are honestly unresolved, none invented
+    assert {"models", "datasets", "seeds", "paper_hint"} <= set(c.unresolved)
+    assert c.dimensions == [] and c.algorithm_invariants == []
+
+
+def test_build_contract_rubric_gap_is_honest():
+    from backend.agents.rlm import semantic_contract as sc
+    c = sc.build_contract(rubric={"categories": [{"name": "x"}]})
+    assert "rubric_metric_contracts" in c.unresolved  # not invented, flagged
