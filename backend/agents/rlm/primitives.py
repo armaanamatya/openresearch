@@ -1015,6 +1015,67 @@ def extract_hyperparameters(text_slice: str, *, ctx: "RunContext") -> dict:
     return result
 
 
+def _merge_repo_deps_into_spec(spec_dict: dict, repo_dir: "Path") -> dict:
+    """Merge a cloned repo's declared deps into an EnvironmentSpec dict.
+
+    Repo-declared deps take priority (ground truth) over inferred ones. Reads
+    requirements*.txt (one ``name[==/>=/...]version`` per line), and the bare
+    package names from setup.py / pyproject.toml / environment*.yml. Pure +
+    fail-soft: an unreadable/garbage file is skipped; returns spec_dict unchanged
+    when repo_dir has no recognizable manifest.
+    """
+    import re as _re
+    from pathlib import Path as _Path
+
+    repo_dir = _Path(repo_dir)
+    if not repo_dir.is_dir():
+        return spec_dict
+    repo_pkgs: dict[str, str] = {}
+
+    # requirements*.txt — the highest-signal, version-pinned source.
+    for req in sorted(repo_dir.glob("requirements*.txt")):
+        try:
+            for line in req.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.split("#", 1)[0].strip()
+                if not line or line.startswith("-"):
+                    continue
+                m = _re.match(r"^([A-Za-z0-9._-]+)\s*([<>=!~].*)?$", line)
+                if m:
+                    repo_pkgs[m.group(1)] = (m.group(2) or "").strip()
+        except OSError:
+            continue
+
+    # Bare names from pyproject/setup/environment (no version → empty string).
+    for name in ("pyproject.toml", "setup.py"):
+        f = repo_dir / name
+        if f.is_file():
+            try:
+                text = f.read_text(encoding="utf-8", errors="replace")
+                for m in _re.finditer(r"[\"']([A-Za-z0-9._-]+)\s*(?:[<>=!~][^\"']*)?[\"']", text):
+                    repo_pkgs.setdefault(m.group(1), "")
+            except OSError:
+                pass
+    for env_yml in list(repo_dir.glob("environment*.yml")) + list(repo_dir.glob("environment*.yaml")):
+        try:
+            for line in env_yml.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.strip().lstrip("-").strip()
+                m = _re.match(r"^([A-Za-z0-9._-]+)\s*(?:[<>=!~=].*)?$", line)
+                if m and m.group(1) not in {"dependencies", "name", "channels", "pip"}:
+                    repo_pkgs.setdefault(m.group(1), "")
+        except OSError:
+            continue
+
+    if not repo_pkgs:
+        return spec_dict
+    merged = dict(spec_dict)
+    pip = dict(merged.get("pip_packages") or {})
+    for name, ver in repo_pkgs.items():
+        if ver or name not in pip:  # repo pin wins; bare name fills a gap
+            pip[name] = ver if ver else pip.get(name, "")
+    merged["pip_packages"] = pip
+    return merged
+
+
 def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
     """Infer the runtime environment; return an EnvironmentSpec dict.
 
@@ -1066,6 +1127,15 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
         sandbox_mode=_sandbox_key,
     )
     spec_dict = spec.model_dump()
+    # #62: when a repo was cloned (flag on), merge its declared deps — ground
+    # truth over prose-inferred deps. Byte-identical when no repo/ exists.
+    import os as _os_repo
+    if _os_repo.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    ):
+        _repo_dir = ctx.project_dir / "repo"
+        if _repo_dir.is_dir():
+            spec_dict = _merge_repo_deps_into_spec(spec_dict, _repo_dir)
     # Runtime-hardware truth (2026-06-09): papers older than the GPU era never
     # *mention* GPUs, so the paper-derived assumption reads "CPU only (no GPU
     # required)" — and the agent then plans timid CPU-scale experiments on a
@@ -1907,6 +1977,75 @@ def _drive_baseline_child(
     )
 
 
+def _load_repo_spec(project_dir: "Path") -> dict:
+    """Read rlm_state/repo_spec.json (the deterministic trusted source). {} if absent."""
+    import json as _json
+    from pathlib import Path as _Path
+    p = _Path(project_dir) / "rlm_state" / "repo_spec.json"
+    if not p.exists():
+        return {}
+    try:
+        data = _json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _repo_artifact_index(project_dir: "Path", plan_artifact_index: "dict | None") -> dict:
+    """Merge the TRUSTED repo metadata into artifact_index, repo fields winning.
+
+    The root's plan["artifact_index"] is untrusted; the repo_spec.json written at
+    run setup is authoritative. Returns the plan's dict unchanged when no repo was used.
+    """
+    from pathlib import Path as _Path
+    base = dict(plan_artifact_index or {})
+    spec = _load_repo_spec(project_dir)
+    if spec.get("url"):
+        base.update({
+            "repo_url": spec.get("url"),
+            "commit_sha": spec.get("commit_sha"),
+            "path": spec.get("path") or str(_Path(project_dir) / "repo"),
+            "mode": spec.get("mode") or "adapt",
+        })
+    return base
+
+
+def _should_seed_code_from_repo(mode: str, repo_dir: "Path", code_dir: "Path") -> bool:
+    """True iff ADAPT mode, the repo exists, and code/ is empty (first call)."""
+    from pathlib import Path as _Path
+    if (mode or "").strip().lower() != "adapt":
+        return False
+    repo_dir = _Path(repo_dir)
+    code_dir = _Path(code_dir)
+    if not repo_dir.is_dir():
+        return False
+    if code_dir.exists() and any(code_dir.iterdir()):
+        return False
+    return True
+
+
+def _seed_code_from_repo(repo_dir: "Path", code_dir: "Path") -> int:
+    """Copy repo_dir -> code_dir excluding .git/; return the count of files copied."""
+    import shutil as _shutil
+    from pathlib import Path as _Path
+    repo_dir = _Path(repo_dir)
+    code_dir = _Path(code_dir)
+    code_dir.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for src in sorted(repo_dir.rglob("*")):
+        rel = src.relative_to(repo_dir)
+        if ".git" in rel.parts:
+            continue
+        dst = code_dir / rel
+        if src.is_dir():
+            dst.mkdir(parents=True, exist_ok=True)
+        elif src.is_file():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            _shutil.copy2(src, dst)
+            copied += 1
+    return copied
+
+
 def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = False) -> dict:
     """Generate the baseline code from a reproduction plan; return a typed envelope.
 
@@ -1977,7 +2116,7 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
         else:
             contract = ReproductionContract(**_contract_dict)
 
-    artifact_index = plan.get("artifact_index")
+    artifact_index = _repo_artifact_index(ctx.project_dir, plan.get("artifact_index"))
 
     # An optional plan["repair_context"] (a failed run_experiment result) puts
     # the code-writing agent into fix-existing-code mode — the root passes it
@@ -2298,6 +2437,23 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
 
     code_dir = ctx.runs_root / ctx.project_id / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
+
+    # #62: ADAPT mode, first call only (code/ empty) — seed the authors' code into
+    # code/ so the sub-agent ADAPTS rather than rewrites. Re-entrant repair calls
+    # never re-seed (code/ already non-empty). Flag-gated; byte-identical off.
+    import os as _os_repo
+    if _os_repo.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    ):
+        _rspec = _load_repo_spec(ctx.project_dir)
+        _repo_dir = ctx.project_dir / "repo"
+        if _should_seed_code_from_repo(_rspec.get("mode", "adapt"), _repo_dir, code_dir):
+            _n = _seed_code_from_repo(_repo_dir, code_dir)
+            logger.info("implement_baseline[%s]: seeded code/ from repo/ (%d files)", ctx.project_id, _n)
+            _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                "code": "repo_code_seeded",
+                "message": f"adapt-mode: seeded code/ from the authors' repo ({_n} files)",
+            })
 
     # Route-retention (2026-06-11): remember whether a cells manifest existed
     # before this (repair) implementation so its silent disappearance — the
@@ -8158,6 +8314,62 @@ def read_context_map(*, ctx: "RunContext") -> dict:
         return {}
 
 
+def inspect_repository(
+    path: str = "",
+    grep: "str | None" = None,
+    reclone_url: "str | None" = None,
+    max_bytes: int = 65536,
+    *,
+    ctx: "RunContext",
+) -> dict:
+    """Bounded read of the cloned author repo at runs/<id>/repo/ (the 18th primitive).
+
+    Off-state (OPENRESEARCH_USE_AUTHOR_REPO unset) -> ``{"status": "disabled"}`` —
+    mirrors read_context_map's no-op so the registry count stays stable and the
+    off-state is inert. On-state: list a subtree, read a bounded file, optionally
+    grep within a file, or (reclone_url) re-resolve + re-clone a different repo.
+    Never raises (fail-soft): an error returns ``{"status": "error", "error": ...}``.
+    Path traversal outside repo/ is refused.
+    """
+    import os as _os
+    if _os.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() not in (
+        "1", "true", "yes", "on",
+    ):
+        return {"status": "disabled"}
+    try:
+        repo_dir = (ctx.project_dir / "repo").resolve()
+        if reclone_url:
+            from backend.services.ingestion.repo.provisioner import RepoProvisioner
+            from backend.services.ingestion.repo.resolver import RepoResolver
+            spec = RepoResolver.resolve(reclone_url, [], set(), None)
+            manifest = RepoProvisioner.clone(spec, ctx.project_dir / "repo")
+            if manifest is None:
+                return {"status": "error", "error": f"reclone failed for {reclone_url}"}
+            return {"status": "ok", "kind": "reclone", "commit_sha": manifest.commit_sha}
+
+        target = (repo_dir / path).resolve() if path else repo_dir
+        # Refuse traversal outside repo/.
+        if repo_dir != target and repo_dir not in target.parents:
+            return {"status": "error", "error": "path escapes repo/"}
+        if not target.exists():
+            return {"status": "error", "error": f"not found: {path or '.'}"}
+        if target.is_dir():
+            entries = sorted(p.name + ("/" if p.is_dir() else "") for p in target.iterdir())
+            return {"status": "ok", "kind": "dir", "path": path or ".", "entries": entries[:500]}
+        raw = target.read_text(encoding="utf-8", errors="replace")
+        if grep:
+            lines = [ln for ln in raw.splitlines() if grep in ln]
+            content = "\n".join(lines)
+        else:
+            content = raw
+        truncated = len(content.encode("utf-8")) > max_bytes
+        if truncated:
+            content = content.encode("utf-8")[:max_bytes].decode("utf-8", errors="ignore")
+        return {"status": "ok", "kind": "file", "path": path, "content": content, "truncated": truncated}
+    except Exception as exc:  # noqa: BLE001 — a read tool must never break the run
+        return {"status": "error", "error": str(exc)[:300]}
+
+
 PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "understand_section": understand_section,
     "extract_hyperparameters": extract_hyperparameters,
@@ -8176,6 +8388,7 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "resolve_gpu_requirements": resolve_gpu_requirements,
     "codex_repair": codex_repair,
     "read_context_map": read_context_map,  # PEEK-lite, OPENRESEARCH_CONTEXT_MAP
+    "inspect_repository": inspect_repository,  # #62, OPENRESEARCH_USE_AUTHOR_REPO
 }
 
 PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
@@ -8272,4 +8485,11 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "extract_hyperparameters, and detect_environment so you can avoid "
         "re-deriving them. Returns {} when disabled or empty. NAVIGATION ONLY — "
         "never cite as report evidence.",
+    "inspect_repository": "inspect_repository(path='', grep=None, reclone_url=None, "
+        "max_bytes=65536) -> dict — bounded read of the authors' cloned repo at "
+        "runs/<id>/repo/ (enabled by OPENRESEARCH_USE_AUTHOR_REPO). List a subtree "
+        "(path='' or a dir), read a bounded file (path='train.py'), grep within a "
+        "file (grep='def main'), or re-point to a different repo (reclone_url=...). "
+        "Returns {status:'disabled'} when the flag is off. NAVIGATION/ADAPTATION "
+        "aid — code/ is what runs; the report's evidence gate remains the backstop.",
 }

@@ -2732,6 +2732,14 @@ async def run_with_sdk(
         "artifact_index": artifact_index or {},
     }
 
+    # #62: surface the trusted artifact_index mode so the prompt can branch on it.
+    _repro_mode = str((artifact_index or {}).get("mode") or "")
+    if _repro_mode == "reference":
+        context["reference_repo_note"] = (
+            "The authors' reference implementation is available read-only at repo/. "
+            "Consult it for exact details, but write your own code/ from scratch."
+        )
+
     # θ: extract metrics_shape from the reproduction_contract when not explicitly
     # passed. This path handles calls where the contract is available but the
     # caller hasn't extracted the shape separately (e.g. implement_baseline in

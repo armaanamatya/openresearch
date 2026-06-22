@@ -10,6 +10,7 @@ EXPECTED = {
     "resolve_gpu_requirements",  # dynamic-GPU spec 2026-05-23
     "codex_repair",  # optional Codex CLI repo-editing subagent, default off
     "read_context_map",  # PEEK-lite intra-run context map, OPENRESEARCH_CONTEXT_MAP
+    "inspect_repository",  # repo-first reproduction (#62), OPENRESEARCH_USE_AUTHOR_REPO
 }
 
 
