@@ -133,11 +133,16 @@ ensure_provisioning_model() {
       --maintenance-policy=TERMINATE \
       --clear-instance-termination-action
   else
+    # Flipping FROM STANDARD to SPOT: --provisioning-model=SPOT alone errors
+    # "preemptible=false and provisioning_model=SPOT is contradicting" because the
+    # instance still carries preemptible=false; both flags must be set together. And
+    # --instance-termination-action cannot be combined with --preemptible. Verified
+    # live 2026-06-22 (the bare-SPOT form failed on every STANDARD->SPOT flip).
     "${gcloud_base[@]}" compute instances set-scheduling "$INSTANCE" \
       --zone "$ZONE" \
+      --preemptible \
       --provisioning-model=SPOT \
-      --maintenance-policy=TERMINATE \
-      --instance-termination-action=STOP
+      --maintenance-policy=TERMINATE
   fi
   echo "[provisioning-model] done — now $want"
 }
