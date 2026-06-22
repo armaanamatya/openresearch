@@ -571,7 +571,104 @@ def _extract_arxiv_id_from_project_dir(project_dir: Path) -> str | None:
     return None
 
 
-def _build_context(workspace_claim_map: dict[str, Any]) -> dict[str, Any]:
+def _resolve_and_clone_repo(
+    project_dir: "Path",
+    repo_url: "str | None",
+    blacklist: "set[str]",
+    discovered: "list[Any]",
+) -> "tuple[dict[str, Any] | None, Any]":
+    """Resolve a RepoSpec, clone it (flag-gated), persist rlm_state/repo_spec.json.
+
+    Returns ``(repo_files_context_or_None, RepoSpec_or_None)``. Fail-soft: any
+    error returns ``(None, None)`` and the run proceeds scratch. Byte-identical
+    off-state: when OPENRESEARCH_USE_AUTHOR_REPO is unset this returns immediately
+    without resolving, cloning, or writing repo_spec.json.
+    """
+    import json as _json
+
+    if os.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() not in (
+        "1", "true", "yes", "on"
+    ):
+        return None, None
+    try:
+        from backend.services.ingestion.repo.provisioner import RepoProvisioner
+        from backend.services.ingestion.repo.resolver import RepoResolver
+
+        mode_override = os.environ.get("OPENRESEARCH_REPRODUCTION_MODE", "adapt") or "adapt"
+        spec = RepoResolver.resolve(repo_url, discovered, set(blacklist), mode_override)
+        commit_sha: "str | None" = None
+        repo_files: "dict[str, Any] | None" = None
+        if spec.url:
+            manifest = RepoProvisioner.clone(spec, project_dir / "repo")
+            if manifest is not None:
+                repo_files = manifest.as_context()
+                commit_sha = manifest.commit_sha
+            else:
+                # Clone failed -> fall back to scratch, but record that we tried.
+                from backend.services.ingestion.repo.resolver import RepoSpec
+                spec = RepoSpec(
+                    url=spec.url, source=spec.source, mode="scratch",
+                    reason=f"clone failed for {spec.url}; proceeding scratch",
+                )
+        # Persist the deterministic source of truth (atomic write).
+        rlm_state = project_dir / "rlm_state"
+        rlm_state.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "url": spec.url, "source": spec.source, "mode": spec.mode,
+            "reason": spec.reason, "commit_sha": commit_sha,
+            "path": str(project_dir / "repo") if repo_files else None,
+        }
+        tmp = rlm_state / "repo_spec.json.tmp"
+        tmp.write_text(_json.dumps(payload, indent=2), encoding="utf-8")
+        os.replace(tmp, rlm_state / "repo_spec.json")
+        return repo_files, spec
+    except Exception:  # noqa: BLE001 — repo resolution must never break a run
+        logger.warning("repo resolve/clone failed (non-fatal)", exc_info=True)
+        return None, None
+
+
+def _load_discovered_artifacts(workspace_service: "Any", workspace_id: "str | None") -> "list[Any]":
+    """Best-effort fetch of the materialized discovered_artifacts for RepoResolver.
+
+    Returns [] on any miss (RepoResolver also accepts an empty list → scratch).
+    Never raises.
+    """
+    if workspace_service is None or not workspace_id:
+        return []
+    try:
+        # materialize_view returns a WorkspaceView; .get(name) -> Cited[Any] | None,
+        # whose .value is the {"project_id","artifacts","count"} payload that
+        # _preload_artifacts wrote.
+        view = workspace_service.materialize_view(workspace_id)
+        cited = view.get("discovered_artifacts")
+        payload = getattr(cited, "value", None) if cited is not None else None
+        raw = payload.get("artifacts") if isinstance(payload, dict) else None
+        if not raw:
+            return []
+        from types import SimpleNamespace
+        # RepoResolver only reads .kind(.value)/.locator/.url/.confidence — a
+        # lightweight namespace is enough and avoids re-validating the pydantic model.
+        out = []
+        for a in raw:
+            out.append(SimpleNamespace(
+                kind=SimpleNamespace(value=a.get("kind", "")),
+                locator=a.get("locator", ""),
+                url=a.get("url", ""),
+                confidence=a.get("confidence", 0.0),
+            ))
+        return out
+    except Exception:  # noqa: BLE001 — discovery is an optional input
+        return []
+
+
+def _build_context(
+    workspace_claim_map: dict[str, Any],
+    *,
+    project_dir: "Path | None" = None,
+    repo_url: "str | None" = None,
+    blacklist: "set[str] | None" = None,
+    discovered: "list[Any] | None" = None,
+) -> dict[str, Any]:
     """Assemble the offloaded RLM ``context`` dict from the workspace claim map.
 
     ``workspace_claim_map`` shape (see ``pipeline._write_workspace_claim_map``):
@@ -603,6 +700,14 @@ def _build_context(workspace_claim_map: dict[str, Any]) -> dict[str, Any]:
     paper_id = pb_meta.get("id") or pb.get("paper_id") or ""
     paper_title = pb_meta.get("title") or (entries[0].get("title", "") if entries else "")
 
+    # #62: resolve + clone the paper's linked repo (master flag-gated). Off-state
+    # leaves repo_files None and writes no repo_spec.json — byte-identical to today.
+    _repo_files: "dict[str, Any] | None" = None
+    if project_dir is not None:
+        _repo_files, _ = _resolve_and_clone_repo(
+            project_dir, repo_url, blacklist or set(), discovered or [],
+        )
+
     return {
         "paper_text": "\n\n".join(sections),
         "paper_metadata": {
@@ -612,7 +717,7 @@ def _build_context(workspace_claim_map: dict[str, Any]) -> dict[str, Any]:
             "source_ids": [e.get("source_id", "") for e in entries],
         },
         "supplementary_text": None,
-        "repo_files": None,
+        "repo_files": _repo_files,
         "prior_work_refs": [],
         "rubric_spec": workspace_claim_map.get("rubric_spec") or {},
     }
@@ -2196,6 +2301,7 @@ async def run_pipeline_rlm(
     workspace_id: str | None = None,
     hybrid_repair_only: bool = False,
     phase1_weak_clusters: list | None = None,
+    repo_url: str | None = None,
 ) -> RLMRunResult:
     """Run one paper reproduction in ``rlm`` mode.
 
@@ -2791,7 +2897,19 @@ async def run_pipeline_rlm(
     )
 
     # 6. The offloaded corpus + 7. the system prompt.
-    context_dict = _build_context(workspace_claim_map)
+    # #62: thread the resolved blacklist (ctx.blocked_terms) + a discovered-artifact
+    # list (when a workspace handle is available) + the repo_url so _build_context
+    # can resolve/clone the paper's repo. Falls back to OPENRESEARCH_REPO_URL env
+    # (set by the CLI/API plumbing in Task 10) when no explicit kwarg was passed.
+    _repo_url = repo_url or os.environ.get("OPENRESEARCH_REPO_URL", "").strip() or None
+    _discovered = _load_discovered_artifacts(workspace_service, workspace_id)
+    context_dict = _build_context(
+        workspace_claim_map,
+        project_dir=project_dir,
+        repo_url=_repo_url,
+        blacklist=set(getattr(ctx, "blocked_terms", ()) or ()),
+        discovered=_discovered,
+    )
 
     # arXiv runs arrive with no rubric_spec — derive a PaperBench-shaped rubric
     # from the paper so the run is scorable (bundle runs already carry one).
