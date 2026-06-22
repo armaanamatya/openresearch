@@ -1,6 +1,7 @@
 <!-- doc-meta: status=generated-artifact; captured=2026-06-08 -->
 # Best runs
 
+End-to-end reproductions from the OpenResearch agent — clean single runs (All-CNN, Adam, ResNet, VAE) and one multi-attempt campaign on the hard SDAR stress paper. PDF in, scored reproduction out, no human in the loop on the coding side.
 > **Generated artifacts — point-in-time showcase, not current docs.** These are
 > reproductions captured **2026-05-26 → 2026-06-10**; the numbers reflect the
 > agent and rubric as of those commits, not necessarily today's behavior. They are
