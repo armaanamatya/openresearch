@@ -19,8 +19,13 @@
 - [x] Run hermetic paired A/B coverage across SDAR-like RL, vision, and JAX-sweep
   planner inputs; ON preserved the public planner result and added only the
   contract artifact/context attachment (`97efffee`).
-- [ ] Add versioned Pydantic schemas for `ReproductionContract`, source links,
-  unresolved fields, capability profile, `MetricContract`, and dimensions.
+- [x] Add versioned Pydantic schemas for `ReproductionContract`, source links,
+  unresolved fields, capability profile, `MetricContract`, and dimensions
+  (`backend/agents/rlm/semantic_contract.py` — additive + inert: `SourceSpan`,
+  `Provenance`(source spans + 0..1 confidence), `Dimension`, `MetricContract`,
+  `AlgorithmInvariant`, `ResourceIdentity`, `CapabilityProfile`,
+  `SemanticReproductionContract` v1 with an `unresolved` list; tests
+  `tests/rlm/test_semantic_contract.py`).
 - [ ] Implement fail-soft contract persistence under `rlm_state/` and an explicit
   legacy fallback resolver.
 - [ ] Adapt PaperHint, YAML invariants, generated rubric, and effective scope as
