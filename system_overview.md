@@ -29,10 +29,11 @@ programmatically via slices and recursive sub-calls. Twelve core domain primitiv
 `build_environment`, `plan_reproduction`, `implement_baseline`, `run_experiment`,
 `verify_against_rubric`, `propose_improvements`, `record_candidate_outcome`,
 `check_user_messages`, `respond_to_user`) — plus the orchestration/aux primitives
-`heartbeat`, `recommend_next_tool`, `resolve_gpu_requirements`, `codex_repair`, and
+`heartbeat`, `recommend_next_tool`, `resolve_gpu_requirements`, `codex_repair`,
 `read_context_map` (the intra-run orientation cache, advertised only under
-`OPENRESEARCH_CONTEXT_MAP`), for **17** registered in total — are exposed as REPL
-callables in `backend/agents/rlm/primitives.py`. The root decides what to call and
+`OPENRESEARCH_CONTEXT_MAP`), and `inspect_repository` (repo-first deep-read,
+gated on `OPENRESEARCH_USE_AUTHOR_REPO`), for **18** registered in total — are
+exposed as REPL callables in `backend/agents/rlm/primitives.py`. The root decides what to call and
 in what order by writing Python — there is no fixed stage order and no gate
 control-flow.
 The last two primitives are the **chat-steering surface** (see below) and are
@@ -56,6 +57,26 @@ status snapshot (`demo_status.json`), per-iteration checkpoints (`rlm_state/`),
 `final_report.{json,md}`, `dashboard_events.jsonl`, `cost_ledger.jsonl`,
 `experiment_runs.jsonl`, the reproduced `code/`, and Hermes audit artifacts.
 SQLite (`OPENRESEARCH_DATABASE_URL`) is the event/persistence store.
+
+## Repo-first reproduction path (`OPENRESEARCH_USE_AUTHOR_REPO`)
+
+When a paper links an official implementation, `run.py::_build_context()` runs
+`RepoResolver` (discovers the canonical GitHub URL from the paper metadata or
+ingested text) then `RepoProvisioner.clone` (shallow, LFS-skipped by default,
+commit-SHA pinned, bounded by `OPENRESEARCH_REPO_CLONE_TIMEOUT_S` /
+`OPENRESEARCH_REPO_CLONE_MAX_MB`), writing the pristine clone to
+`runs/<id>/repo/` and persisting the trusted `rlm_state/repo_spec.json`. The
+constant-size `repo_files` manifest is surfaced to the root via the 18th
+primitive `inspect_repository`; `detect_environment` merges the cloned repo's
+dependency files; `implement_baseline` seeds `code/` from it (adapt mode, the
+default) or reimplements clean-room (`OPENRESEARCH_REPRODUCTION_MODE=reference`).
+`final_report.reproduction` carries the execution axis (evidence-gated via
+`_has_experiment_evidence`); the replication axis is the existing
+`reproducibility.replication_verdict` under `OPENRESEARCH_TWO_AXIS_VERDICT`.
+`repo/` is host-only across all sandboxes (excluded from every cloud upload
+set) — only `code/` crosses to a GPU backend. Off by default: unset
+`OPENRESEARCH_USE_AUTHOR_REPO` ⇒ no resolve/clone, byte-identical to prior
+behaviour.
 
 ## Paper ingestion
 
