@@ -1007,6 +1007,19 @@ def _autodrive_enabled() -> bool:
     )
 
 
+def _lifecycle_drive_enabled() -> bool:
+    """Whether the full lifecycle-chain drive is enabled on degenerate detection.
+
+    Reads ``OPENRESEARCH_LIFECYCLE_DRIVE`` (truthy ``1``/``true``/``yes``);
+    default OFF.
+    """
+    return os.environ.get("OPENRESEARCH_LIFECYCLE_DRIVE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
 # Lifecycle stages the harness can DRIVE itself (Task 6). A degenerate root
 # stuck before one of these has done strictly less than the harness can do for
 # it, so the backstop drives exactly ONE step and hands control back.
@@ -1145,6 +1158,9 @@ def _make_degenerate_loop_callback(
     autodrive_enabled: bool,
     tools: dict | None = None,
     oauth_root: bool = False,
+    drive_enabled: bool = False,
+    paper_text: str | None = None,
+    rubric_spec: dict | None = None,
 ):
     """Return the ``on_degenerate_refusal_loop`` callback.
 
@@ -1191,6 +1207,82 @@ def _make_degenerate_loop_callback(
             logger.exception(
                 "run_pipeline_rlm: degenerate-loop warning emit failed"
             )
+
+        # Lifecycle-drive branch (OPENRESEARCH_LIFECYCLE_DRIVE=1, default OFF).
+        # When enabled: for a drivable stage with paper+rubric supplied and the
+        # per-run once-only cap unspent, drive the full lifecycle chain directly
+        # and hand back to the root so its next FINAL_VAR is accepted with a real
+        # score.  Inert when drive_enabled=False (gate's first conjunct fails) →
+        # existing logic runs UNCHANGED.
+        if (
+            drive_enabled
+            and stage in _AUTODRIVE_DRIVABLE_STAGES
+            and tools is not None
+            and paper_text
+            and rubric_spec
+            and getattr(ctx, "_lifecycle_drive_count", 0) == 0
+        ):
+            remaining = None
+            try:
+                remaining = ctx.remaining_s()
+            except Exception:  # noqa: BLE001
+                remaining = None
+            near_wall_clock = (
+                remaining is not None and remaining <= _WALL_CLOCK_FLOOR_S
+            )
+            already_terminal = bool(getattr(ctx, "_terminal_stop_reason", None))
+            if not near_wall_clock and not already_terminal:
+                # Set the once-only cap BEFORE driving so a crash can't re-drive.
+                try:
+                    ctx._lifecycle_drive_count = 1
+                except Exception:  # noqa: BLE001
+                    pass
+                summary = None
+                try:
+                    from backend.agents.rlm.lifecycle_driver import drive_lifecycle_chain  # noqa: PLC0415
+                    summary = drive_lifecycle_chain(
+                        tools=tools,
+                        ctx=ctx,
+                        paper_text=paper_text,
+                        rubric_spec=rubric_spec,
+                        start_stage=stage,
+                        emit=emit,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "run_pipeline_rlm: lifecycle_drive failed (stage=%s)", stage
+                    )
+                    summary = None
+                try:
+                    emit(
+                        build_run_warning_event(
+                            level="warn",
+                            code="lifecycle_drive",
+                            message=(
+                                f"Lifecycle drive completed (stage={stage}, "
+                                f"driven={list((summary or {}).get('driven') or [])}, "
+                                f"stopped_at={(summary or {}).get('stopped_at')}, "
+                                f"rubric_score={(summary or {}).get('rubric_score')})"
+                            ),
+                            data={
+                                "stage": stage,
+                                "driven": list((summary or {}).get("driven") or []),
+                                "stopped_at": (summary or {}).get("stopped_at"),
+                                "rubric_score": (summary or {}).get("rubric_score"),
+                            },
+                        )
+                    )
+                except Exception:  # noqa: BLE001 — emit must never block
+                    logger.exception(
+                        "run_pipeline_rlm: lifecycle_drive summary emit failed"
+                    )
+                if summary and "run_experiment" in (summary.get("driven") or []):
+                    # HANDBACK — a real run_experiment fired; the root's next
+                    # FINAL_VAR will be accepted and the existing finalize /
+                    # best-of-run path ships the driven score.
+                    return
+                # Driven but run_experiment didn't complete → fall through to the
+                # existing autodrive / early-abort logic below (honest terminal).
 
         # Task 6 — flag-gated OAuth auto-drive backstop. Drive ONE missing
         # lifecycle step (then hand control back to the root) ONLY when the flag
@@ -3287,6 +3379,9 @@ async def run_pipeline_rlm(
         # same wrapped primitives the root uses (ctx re-supplied by the wrapper).
         tools=custom_tools,
         oauth_root=oauth_root,
+        drive_enabled=_lifecycle_drive_enabled(),
+        paper_text=context_dict.get("paper_text"),
+        rubric_spec=context_dict.get("rubric_spec"),
     )
     # P3 fix-first repair loop (2026-06-20): wire the two new hooks that engage
     # the evidence-fingerprint-based repair loop and the external validator gate.

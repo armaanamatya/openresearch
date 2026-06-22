@@ -960,6 +960,7 @@ def apply_forced_iteration_patch() -> None:
                         policy.on_refusal(message)
                     except Exception:
                         logger.exception("forced_iteration: on_refusal (two-exp) raised")
+                print(f"[forced-iteration] {message}")
                 policy.on_iteration_advance()
                 return _build_block_message(variable_name, message)
 
@@ -996,6 +997,7 @@ def apply_forced_iteration_patch() -> None:
 
             # PR-μ Solution C: reset per-iteration trackers since the root will
             # start a fresh iteration after the refusal block message lands.
+            print(f"[forced-iteration] {message}")
             policy.on_iteration_advance()
             return _build_block_message(variable_name, message)
 

@@ -19,6 +19,9 @@
 #   scripts/sdar_gcp_e2e.sh setenv       # write root/smoke/project-id/autodrive overrides on the VM
 #   scripts/sdar_gcp_e2e.sh launch       # GREEN-gated launch (detached) via gcp_sdar_preflight.sh
 #   scripts/sdar_gcp_e2e.sh monitor      # poll every 150s: GPU-training / terminal / preempt / degenerate
+#                                        #   each tick also prints last 4 rendered events + live.log tail
+#   scripts/sdar_gcp_e2e.sh logs         # live-stream process stdout + .exec_live.log (streams until timeout/Ctrl-C)
+#   scripts/sdar_gcp_e2e.sh events       # one-shot readable dump of last EVENTS_N (default 40) dashboard events
 #   scripts/sdar_gcp_e2e.sh inspect      # cheap CPU flip, pull final_report+code+state to /tmp/sdar_inspect, stop
 #   scripts/sdar_gcp_e2e.sh down         # stop the VM (halt billing)
 #   scripts/sdar_gcp_e2e.sh status       # one-line VM + run snapshot
@@ -27,6 +30,8 @@
 # PROV  : spot (cheap, can preempt) | ondemand (no preempt, ~3x cost, often STOCKED OUT in us-central1-b)
 # SMOKE : 0 (off — bypass the pre-GPU smoke; matches local) | 1 (on — exercises the RL-aware smoke fix)
 # USE_REPO: 1 (#62 default ON for SDAR — clone github.com/ZJU-REAL/SDAR + seed code/ in adapt mode) | 0 (from scratch)
+# EFFORT : low|medium|high|xhigh|max (oauth root reasoning effort; default high — fixes the reasoning_tokens:0 degenerate loop)
+# ROOT_MODEL: optional oauth root model pin (e.g. opus); empty = default sonnet
 set -euo pipefail
 
 export CLOUDSDK_CONFIG="${CLOUDSDK_CONFIG:-/home/abheekp/.config/gcloud}"
@@ -46,6 +51,9 @@ SMOKE="${SMOKE:-0}"
 PROJECT_ID="${PROJECT_ID:-sdar_gcp_e2e}"
 AUTODRIVE="${AUTODRIVE:-0}"
 USE_REPO="${USE_REPO:-1}"
+EFFORT="${EFFORT:-high}"        # OPENRESEARCH_ROOT_EFFORT for the oauth CLI root: low|medium|high|xhigh|max
+ROOT_MODEL="${ROOT_MODEL:-}"    # optional oauth root model pin (e.g. "opus"); empty = default sonnet
+DRIVE="${DRIVE:-0}"            # OPENRESEARCH_LIFECYCLE_DRIVE: 1 = harness DRIVES plan/implement/run/verify when the root degenerates
 
 G=(gcloud --project "$PROJECT")
 ZP=(--zone "$ZONE" --project "$PROJECT")
@@ -98,10 +106,13 @@ set_env() {
     echo 'export OPENRESEARCH_METRIC_REALITY_SMOKE=$SMOKE' >> runs/.cache/sdar_gcp.env
     echo 'export OPENRESEARCH_SDAR_PROJECT_ID=$PROJECT_ID' >> runs/.cache/sdar_gcp.env
     echo 'export OPENRESEARCH_OAUTH_AUTODRIVE=$AUTODRIVE' >> runs/.cache/sdar_gcp.env
+    echo 'export OPENRESEARCH_ROOT_EFFORT=$EFFORT' >> runs/.cache/sdar_gcp.env
+    echo 'export REPROLAB_RLM_ROOT_MODEL_NAME=$ROOT_MODEL' >> runs/.cache/sdar_gcp.env
     echo 'export OPENRESEARCH_SDAR_NO_AUTOSTOP=0' >> runs/.cache/sdar_gcp.env
     echo 'export OPENRESEARCH_USE_AUTHOR_REPO=$USE_REPO' >> runs/.cache/sdar_gcp.env
+    echo 'export OPENRESEARCH_LIFECYCLE_DRIVE=$DRIVE' >> runs/.cache/sdar_gcp.env
     set -a; . runs/.cache/sdar_gcp.env >/dev/null 2>&1; set +a
-    echo \"EFFECTIVE: ROOT=\$OPENRESEARCH_SDAR_ROOT SMOKE=\$OPENRESEARCH_METRIC_REALITY_SMOKE PID=\$OPENRESEARCH_SDAR_PROJECT_ID AUTODRIVE=\$OPENRESEARCH_OAUTH_AUTODRIVE USE_REPO=\$OPENRESEARCH_USE_AUTHOR_REPO\"
+    echo \"EFFECTIVE: ROOT=\$OPENRESEARCH_SDAR_ROOT SMOKE=\$OPENRESEARCH_METRIC_REALITY_SMOKE PID=\$OPENRESEARCH_SDAR_PROJECT_ID AUTODRIVE=\$OPENRESEARCH_OAUTH_AUTODRIVE USE_REPO=\$OPENRESEARCH_USE_AUTHOR_REPO EFFORT=\$OPENRESEARCH_ROOT_EFFORT ROOTMODEL=\$REPROLAB_RLM_ROOT_MODEL_NAME DRIVE=\$OPENRESEARCH_LIFECYCLE_DRIVE\"
     grep -q '^CLAUDE_CODE_OAUTH_TOKEN=' .env && echo 'oauth token: present' || echo 'oauth token: MISSING (claude-oauth root/exec will fail)'
   }"
 }
@@ -115,16 +126,36 @@ launch() {
 }
 
 monitor() {
-  local R i s g
+  local R R_recent R_live i s g deg_msg
   R='cd '"$REMOTE_DIR"'; P=runs/'"$PROJECT_ID"'; echo "XR=$(cat $P/experiment_runs.jsonl 2>/dev/null|wc -l) DEG=$(grep -c root_degenerate $P/dashboard_events.jsonl 2>/dev/null||echo 0) DONE=$(grep -cE "run_complete|run_fatal|run_interrupted" $P/dashboard_events.jsonl 2>/dev/null||echo 0) CELLS=$([ -f $P/code/cells.json ] && echo y || echo n) GPU=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null|sort -rn|head -1)"'
+  # recent events block: last 4 rendered events + last line of .exec_live.log if present
+  R_recent='cd '"$REMOTE_DIR"'; P=runs/'"$PROJECT_ID"'; python3 scripts/render_run_events.py --tail 4 "$P/dashboard_events.jsonl" 2>/dev/null; L="$P/code/.exec_live.log"; [ -f "$L" ] && echo "live.log: $(tail -1 "$L" 2>/dev/null)"'
+  # degenerate warning message fetch
+  R_deg='cd '"$REMOTE_DIR"'; P=runs/'"$PROJECT_ID"'; grep -o "\"message\":\"[^\"]*\"" "$P/dashboard_events.jsonl" 2>/dev/null | tail -5'
   for i in $(seq 1 200); do
     s="$(status_only)"; [[ "$s" != RUNNING ]] && { echo "[$i] VM=$s (preempted/stopped)"; return 0; }
     out="$(ssh_ "$R" 55 2>/dev/null || true)"; echo "[$i $(date -u +%H:%MZ)] $(echo "$out"|tr '\n' ' ')"
-    echo "$out" | grep -q 'DEG=[1-9]'  && { echo ">>> DEGENERATE (root)"; return 0; }
+    # print recent events block after each tick
+    ssh_ "$R_recent" 30 2>/dev/null | sed 's/^/  /' || true
+    if echo "$out" | grep -q 'DEG=[1-9]'; then
+      deg_msg="$(ssh_ "$R_deg" 20 2>/dev/null | grep -i 'degenerate\|forced_iteration\|root_degenerate' | tail -3 | sed 's/^/  /' || true)"
+      echo ">>> DEGENERATE (root)${deg_msg:+$'\n'"$deg_msg"}"; return 0
+    fi
     echo "$out" | grep -q 'DONE=[1-9]' && { echo ">>> TERMINAL — run 'inspect'"; return 0; }
     g="$(echo "$out" | sed -n 's/.*GPU=//p' | grep -oE '^[0-9]+' || true)"; [[ "${g:-0}" -gt 60 ]] 2>/dev/null && { echo ">>> GPU TRAINING (util=$g) — real grid reached"; return 0; }
     sleep 150
   done
+}
+
+logs() {
+  echo "streaming VM stdout + live training log (Ctrl-C or ${LOGS_TIMEOUT:-1800}s timeout) ..."
+  ssh_ "cd $REMOTE_DIR && tail -n 60 -f runs/sdar_gcp_run.out runs/$PROJECT_ID/code/.exec_live.log 2>/dev/null" "${LOGS_TIMEOUT:-1800}"
+}
+
+events() {
+  local n="${EVENTS_N:-40}"
+  echo "last $n dashboard events for $PROJECT_ID:"
+  ssh_ "cd $REMOTE_DIR && python3 scripts/render_run_events.py --tail $n runs/$PROJECT_ID/dashboard_events.jsonl 2>/dev/null" 60
 }
 
 inspect() {
@@ -155,10 +186,12 @@ case "${1:-status}" in
   setenv)        set_env ;;
   launch)        launch ;;
   monitor)       monitor ;;
+  logs)          logs ;;
+  events)        events ;;
   inspect)       inspect ;;
   down)          "${G[@]}" compute instances stop "$INSTANCE" --zone "$ZONE" 2>&1 | tail -1; echo "status=$(status_only)" ;;
   poll-ondemand) poll_ondemand ;;
   status)        echo "VM: $(config_line)" ;;
   run)           { [[ "$PROV" == ondemand ]] && poll_ondemand || { start_gpu && sync_code; }; } && set_env && launch && monitor ;;
-  *)             echo "unknown action: $1 (up|setenv|launch|monitor|inspect|down|poll-ondemand|status|run)" >&2; exit 2 ;;
+  *)             echo "unknown action: $1 (up|setenv|launch|monitor|logs|events|inspect|down|poll-ondemand|status|run)" >&2; exit 2 ;;
 esac

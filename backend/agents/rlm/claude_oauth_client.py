@@ -149,6 +149,57 @@ _ROOT_DISALLOWED_TOOLS = (
     "WebFetch", "WebSearch", "Task", "NotebookEdit",
 )
 
+_VALID_EFFORT_LEVELS: frozenset[str] = frozenset({"low", "medium", "high", "xhigh", "max"})
+
+
+def _root_effort() -> str:
+    """Reasoning-effort level for the CLI root completion (override with ``OPENRESEARCH_ROOT_EFFORT``).
+
+    Valid values: ``low`` | ``medium`` | ``high`` | ``xhigh`` | ``max``.
+    Defaults to ``high``.  An unrecognised value is silently replaced with
+    ``high`` (fail-soft — must never raise).
+    """
+    import os
+
+    raw = os.environ.get("OPENRESEARCH_ROOT_EFFORT", "high").strip().lower()
+    if raw not in _VALID_EFFORT_LEVELS:
+        logger.warning(
+            "OPENRESEARCH_ROOT_EFFORT=%r is not a valid effort level %s — "
+            "falling back to 'high'",
+            raw,
+            tuple(sorted(_VALID_EFFORT_LEVELS)),
+        )
+        return "high"
+    return raw
+
+
+def _build_root_cli_cmd(*, model: str, system: str, effort: str) -> list[str]:
+    """Build the ``claude`` CLI argv list for a root completion.
+
+    Returns the full argument list.  The user prompt is passed via STDIN by
+    the caller — it is never included here (ARG_MAX safety).
+
+    Args:
+        model:  Claude model id.
+        system: System-prompt text.  ``--system-prompt`` is appended
+                only when non-empty.
+        effort: Effort level string (one of ``_VALID_EFFORT_LEVELS``).
+    """
+    cmd: list[str] = [
+        _claude_cli_bin(),
+        "--print",
+        "--output-format", "json",
+        "--model", model,
+        "--disallowed-tools", *_ROOT_DISALLOWED_TOOLS,
+        "--effort", effort,
+    ]
+    if system:
+        # --system-prompt REPLACES Claude Code's default agent identity so the
+        # root sees only our RLM prompt.  --append-system-prompt subordinates it
+        # to Claude Code's 'complete-and-finish' identity → premature FINAL_VAR.
+        cmd += ["--system-prompt", system]
+    return cmd
+
 
 class ClaudeOauthClient(BaseLM):
     """rlm ``BaseLM`` that routes completions through Claude Agent SDK + OAuth.
@@ -334,15 +385,7 @@ class ClaudeOauthClient(BaseLM):
         import json as _json
         import subprocess
 
-        cmd = [
-            _claude_cli_bin(),
-            "--print",
-            "--output-format", "json",
-            "--model", model,
-            "--disallowed-tools", *_ROOT_DISALLOWED_TOOLS,
-        ]
-        if system:
-            cmd += ["--append-system-prompt", system]
+        cmd = _build_root_cli_cmd(model=model, system=system, effort=_root_effort())
 
         try:
             proc = subprocess.run(
