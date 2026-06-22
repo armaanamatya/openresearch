@@ -4129,6 +4129,38 @@ def _persist_experiment_result(
     if _fclass and _fclass != "ok":
         result.setdefault("failure_class", _fclass)
         result.setdefault("suggested_fix", _fsuggest)
+
+    # Durable failure capsule (default OFF via OPENRESEARCH_FAILURE_CAPSULES).
+    # On a failure, atomically persist a bounded/redacted capsule of the REAL
+    # evidence (traceback tail, log tail, command + env fingerprints, artifact
+    # paths, error signature) and stamp its rendered text onto the result dict.
+    # The root sets plan['repair_context'] to this failed result, so the text
+    # flows into the next implementer prompt — the agent repairs from concrete
+    # evidence, not a generic message. Fully fail-soft: never breaks the run.
+    if not result.get("success"):
+        try:
+            from backend.agents.rlm import failure_capsule as _fcap
+            if _fcap.capsules_enabled():
+                _cap = _fcap.build_capsule(
+                    result,
+                    command=str(result.get("command") or "") or None,
+                    env=dict(os.environ),
+                    artifacts=[
+                        str(p) for p in (
+                            (result.get("metrics") or {}).get("artifact_paths")
+                            or result.get("artifacts")
+                            or []
+                        )
+                    ] or None,
+                    project_id=getattr(ctx, "project_id", None),
+                )
+                _fcap.persist_capsule(ctx.project_dir, _cap)
+                _cap_text = _fcap.render_capsule_text(_cap)
+                if _cap_text:
+                    result.setdefault("failure_capsule_text", _cap_text)
+        except Exception:  # noqa: BLE001 — capsule path must NEVER break the run
+            logger.debug("failure_capsule: build/persist failed", exc_info=True)
+
     _with_outcome(result, _classify_run_experiment_outcome(result))
 
     # P2 manifest: bind metric→artifact (metrics_sha256) + name the backend.
