@@ -82,6 +82,16 @@ class Settings(BaseSettings):
     # keys.
     provider_fallback_disabled: bool = False
 
+    # GitHub-repo-first reproduction (#62, default-OFF; spec
+    # 2026-06-21-github-repo-first-reproduction-design.md). Unset => byte-identical
+    # to today: no resolve/clone, repo_files stays None, inspect_repository returns
+    # disabled, detect_environment/implement_baseline/report unchanged.
+    use_author_repo: bool = False           # OPENRESEARCH_USE_AUTHOR_REPO (master)
+    reproduction_mode: str = "adapt"        # OPENRESEARCH_REPRODUCTION_MODE: adapt | reference
+    repo_clone_timeout_s: int = 300         # OPENRESEARCH_REPO_CLONE_TIMEOUT_S
+    repo_clone_max_mb: int = 2048           # OPENRESEARCH_REPO_CLONE_MAX_MB (post-clone size cap)
+    repo_clone_lfs: bool = False            # OPENRESEARCH_REPO_CLONE_LFS (off => GIT_LFS_SKIP_SMUDGE=1)
+
     # External provider API keys. We read both the unprefixed names that
     # the upstream SDKs (anthropic, openai) and most CI conventions use,
     # AND the OPENRESEARCH_-prefixed forms, because some deployments reserve
