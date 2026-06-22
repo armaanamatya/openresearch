@@ -18,7 +18,7 @@ Callables re-supply ``ctx`` internally (they are closed-over by
 
 from __future__ import annotations
 
-__all__ = ["drive_lifecycle_chain"]
+__all__ = ["drive_lifecycle_chain", "run_lifecycle_primary"]
 
 from typing import Any
 
@@ -62,6 +62,16 @@ def _call(tool_fn, *args) -> dict:
     return result
 
 
+def _is_repairable(result: dict) -> bool:
+    """True when run_experiment signals a repairable outcome (canonical label)."""
+    return isinstance(result, dict) and result.get("outcome") == "repairable"
+
+
+def _is_fatal(result: dict) -> bool:
+    """True when a primitive result signals an unrecoverable fatal outcome."""
+    return isinstance(result, dict) and result.get("outcome") == "fatal"
+
+
 def _is_explicit_failure(result: dict) -> bool:
     """Return True ONLY when the result has an explicit ``ok=False`` key.
 
@@ -100,6 +110,7 @@ def drive_lifecycle_chain(
     start_stage: str,
     emit: Any,
     min_remaining_s: float = 300.0,
+    max_repair_iterations: int = 2,
 ) -> dict:
     """Execute the mandatory lifecycle chain starting at *start_stage*.
 
@@ -124,6 +135,8 @@ def drive_lifecycle_chain(
         Exceptions from ``emit`` are swallowed.
     min_remaining_s:
         Stop before a step if ``ctx.remaining_s()`` is below this threshold.
+    max_repair_iterations:
+        Cap on bounded repair attempts after a repairable run_experiment.
 
     Returns
     -------
@@ -133,6 +146,9 @@ def drive_lifecycle_chain(
         ``stopped_reason`` – reason string, or None
         ``final_result`` – the last step's raw result dict, or None
         ``rubric_score`` – ``verify.get("overall_score")`` if verify ran, else None
+        ``repaired``     – number of bounded repair attempts made (0 when none)
+        ``last_run_ok``  – True when the final run_experiment was not repairable,
+                           False when it was; None when run_experiment did not run
     """
     # Canonical no-op return shape.
     summary: dict = {
@@ -140,7 +156,11 @@ def drive_lifecycle_chain(
         "stopped_at": None,
         "stopped_reason": None,
         "final_result": None,
+        "fatal_result": None,
         "rubric_score": None,
+        "verify_result": None,
+        "repaired": 0,
+        "last_run_ok": None,
     }
 
     # "can_finalize" or any unknown stage → nothing to drive.
@@ -178,6 +198,7 @@ def drive_lifecycle_chain(
     pcm: dict = {}
     env_spec: dict = {}
     contract: dict = {}
+    plan: dict = {}
     code_path: str = str(ctx.project_dir / "code")
     verify_result: dict | None = None
     last_result: dict | None = None
@@ -218,6 +239,12 @@ def drive_lifecycle_chain(
         if _is_explicit_failure(result):
             summary["stopped_at"] = name
             summary["stopped_reason"] = result.get("error", "ok=False")
+            return result, True
+
+        if _is_fatal(result):
+            summary["fatal_result"] = result
+            summary["stopped_at"] = name
+            summary["stopped_reason"] = result.get("error") or "fatal"
             return result, True
 
         return result, False
@@ -263,12 +290,29 @@ def drive_lifecycle_chain(
             code_path = impl_result["code_path"]
 
     # ------------------------------------------------------------------
-    # Step 5: run_experiment
+    # Step 5: run_experiment (with bounded repair loop)
     # ------------------------------------------------------------------
     if run_experiment:
         last_result, stop = _step("run_experiment", code_path, "")
         if stop:
             return summary
+        repair_count = 0
+        while _is_repairable(last_result) and repair_count < max_repair_iterations:
+            repair_count += 1
+            # Re-implement with the failed run as repair_context (the exact shape
+            # implement_baseline consumes), then re-run. _step gates wall-clock +
+            # fail-soft before each call.
+            plan["repair_context"] = last_result
+            impl_result, stop = _step("implement_baseline", plan)
+            if stop:
+                return summary
+            if isinstance(impl_result.get("code_path"), str):
+                code_path = impl_result["code_path"]
+            last_result, stop = _step("run_experiment", code_path, "")
+            if stop:
+                return summary
+        summary["repaired"] = repair_count
+        summary["last_run_ok"] = not _is_repairable(last_result)
 
     # ------------------------------------------------------------------
     # Step 6: verify_against_rubric
@@ -283,5 +327,154 @@ def drive_lifecycle_chain(
     # ------------------------------------------------------------------
     if verify_result is not None:
         summary["rubric_score"] = verify_result.get("overall_score")
+        summary["verify_result"] = verify_result
 
+    return summary
+
+
+def run_lifecycle_primary(
+    *,
+    tools: dict,
+    ctx: Any,
+    paper_text: str,
+    rubric_spec: dict,
+    emit: Any,
+    target_score: float | None = None,
+    max_repair_iterations: int = 2,
+    max_improve_iterations: int = 2,
+    min_remaining_s: float = 300.0,
+) -> dict:
+    """Harness-owned proactive reproduction: drive the full backbone (+repair) to a
+    scored baseline, then climb toward target via propose_improvements.
+
+    Fail-soft, wall-clock-aware. Returns a summary dict with keys:
+        ``driven``          – aggregate list of primitive names executed
+        ``rubric_score``    – best-of-climb score, or None when no baseline was scored
+        ``verify_result``   – the latest verify result dict, or None
+        ``improved``        – number of improvement iterations attempted
+        ``stopped_reason``  – reason string, or None
+    """
+    summary: dict = {
+        "driven": [],
+        "rubric_score": None,
+        "verify_result": None,
+        "improved": 0,
+        "stopped_reason": None,
+        "fatal_result": None,
+        "stopped_at": None,
+    }
+
+    # ------------------------------------------------------------------
+    # Phase 1: Backbone (understand → implement → run → verify) + repair.
+    # ------------------------------------------------------------------
+    base = drive_lifecycle_chain(
+        tools=tools,
+        ctx=ctx,
+        paper_text=paper_text,
+        rubric_spec=rubric_spec,
+        start_stage=_STAGE_NEED_BASELINE,
+        emit=emit,
+        min_remaining_s=min_remaining_s,
+        max_repair_iterations=max_repair_iterations,
+    )
+
+    summary["driven"].extend(base.get("driven") or [])
+    summary["rubric_score"] = base.get("rubric_score")
+    summary["verify_result"] = base.get("verify_result")
+    summary["stopped_reason"] = base.get("stopped_reason")
+    summary["fatal_result"] = base.get("fatal_result")
+    summary["stopped_at"] = base.get("stopped_at")
+
+    # If the backbone never reached a score there is nothing to climb.
+    if base.get("verify_result") is None:
+        summary["stopped_reason"] = base.get("stopped_reason") or "no_baseline_score"
+        return summary
+
+    # ------------------------------------------------------------------
+    # Phase 2: Improvement climb.
+    # ------------------------------------------------------------------
+    if max_improve_iterations <= 0:
+        return summary
+
+    verify_result: dict = base["verify_result"]
+    score: float | None = verify_result.get("overall_score")
+    target: float | None = verify_result.get("target_score") or target_score
+    improved = 0
+
+    while (
+        score is not None
+        and target is not None
+        and score < target
+        and improved < max_improve_iterations
+    ):
+        # Wall-clock gate.
+        if not _wallclock_ok(ctx, min_remaining_s):
+            summary["stopped_reason"] = "low_wallclock"
+            break
+
+        improved += 1
+
+        # --- propose_improvements (fail-soft) ---
+        hyps: list = []
+        try:
+            propose_fn = _get_tool(tools, "propose_improvements")
+            if propose_fn is not None:
+                raw = _call(propose_fn, verify_result, {"overall_score": score, "target_score": target})
+                if isinstance(raw, list):
+                    hyps = raw
+                elif isinstance(raw, dict) and "_raw" in raw and isinstance(raw["_raw"], list):
+                    hyps = raw["_raw"]
+        except Exception:  # noqa: BLE001
+            hyps = []
+
+        valid = [h for h in hyps if isinstance(h, dict) and h.get("hypothesis") and h.get("success") is not False]
+        if not valid:
+            break
+
+        chosen = valid[0]
+
+        # --- implement_baseline with improvement patch (fail-soft) ---
+        try:
+            impl_fn = _get_tool(tools, "implement_baseline")
+            if impl_fn is None:
+                break
+            impl_result = _call(impl_fn, {"repair_context": {"improvement": chosen, "prior_verify": verify_result}})
+            if _is_explicit_failure(impl_result):
+                break
+        except Exception:  # noqa: BLE001
+            break
+
+        # --- run + repair + re-verify (reuse drive_lifecycle_chain at need_experiment) ---
+        sub = drive_lifecycle_chain(
+            tools=tools,
+            ctx=ctx,
+            paper_text=paper_text,
+            rubric_spec=rubric_spec,
+            start_stage=_STAGE_NEED_EXPERIMENT,
+            emit=emit,
+            min_remaining_s=min_remaining_s,
+            max_repair_iterations=max_repair_iterations,
+        )
+        summary["driven"].extend(sub.get("driven") or [])
+
+        if sub.get("fatal_result"):
+            summary["fatal_result"] = sub.get("fatal_result")
+            summary["stopped_at"] = sub.get("stopped_at")
+            summary["stopped_reason"] = sub.get("stopped_reason") or "improve_fatal"
+            break
+        if sub.get("verify_result") is None or sub.get("last_run_ok") is False:
+            summary["stopped_reason"] = sub.get("stopped_reason") or "improve_subdrive_no_progress"
+            break
+
+        new_verify = sub.get("verify_result") or verify_result
+        new_score = new_verify.get("overall_score")
+
+        # Best-of-climb: never regress the reported score.
+        if new_score is not None and (score is None or new_score >= score):
+            score = new_score
+            verify_result = new_verify
+
+    summary["improved"] = improved
+    summary["rubric_score"] = score
+    summary["verify_result"] = verify_result
     return summary

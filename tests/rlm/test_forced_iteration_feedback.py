@@ -272,3 +272,29 @@ def test_format_iteration_surfaces_guidance_to_next_prompt() -> None:
         f"Next-step directive absent from next-turn prompt messages.\n"
         f"User message contents: {user_contents!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# reset_repair_state clears the repair-floor trigger
+# ---------------------------------------------------------------------------
+
+
+def test_reset_repair_state_clears_trigger() -> None:
+    """reset_repair_state() must clear _last_repair_failure_class and _repair_iter_count.
+
+    After a lifecycle-driver handback the policy's stale repairable marker must
+    not bounce the root's FINAL_VAR into an unwanted repair loop.
+    """
+    policy = ForcedIterationPolicy(min_iterations=2)
+    # Simulate state left by record_repair_attempt()
+    policy._last_repair_failure_class = "preflight_blocked"
+    policy._repair_iter_count = 1
+
+    policy.reset_repair_state()
+
+    assert policy._last_repair_failure_class is None, (
+        f"Expected None, got {policy._last_repair_failure_class!r}"
+    )
+    assert policy._repair_iter_count == 0, (
+        f"Expected 0, got {policy._repair_iter_count}"
+    )

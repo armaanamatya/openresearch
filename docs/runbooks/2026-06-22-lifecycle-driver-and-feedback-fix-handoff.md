@@ -105,7 +105,17 @@ it. So the harness must.
 
 Decisive signal (`lifecycle_drive` event + `XR>0` after `DEG`) **confirmed**, keyless `claude-oauth`.
 
-## THE GAP — next step: bounded repair-handling
+## THE GAP — bounded repair-handling — IMPLEMENTED (increment 1, unit-tested; GPU validation pending)
+
+> **STATUS 2026-06-22 (this session):** implemented + unit-tested (37 driver/policy/wiring
+> tests, full suite 3072 green, ruff clean). `drive_lifecycle_chain` now drives a **bounded
+> repair loop** (`max_repair_iterations`, default `OPENRESEARCH_MIN_REPAIR_ITERATIONS`=2), and
+> the run.py handback calls a new `ForcedIterationPolicy.reset_repair_state()` so a
+> harness-driven repair is **accepted** instead of bouncing the root's next `FINAL_VAR` off the
+> policy's repair floor (the subtlety the original spec missed). All flag-gated behind
+> `LIFECYCLE_DRIVE` → byte-identical off. **Next:** GPU re-validate `DRIVE=1` (real score, not 0),
+> then the increment-2 full inversion (harness-owned `LifecycleController` as the proactive
+> primary path). Code: `lifecycle_driver.py`, `forced_iteration.py`, `run.py`.
 
 The driven `run_experiment` returned `success=false,
 failure_class=preflight_blocked, outcome=repairable` — the executor's first-try

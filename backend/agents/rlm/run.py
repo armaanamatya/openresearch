@@ -1020,6 +1020,84 @@ def _lifecycle_drive_enabled() -> bool:
     )
 
 
+def _drive_max_repair() -> int:
+    """Repair-attempt cap for the lifecycle driver (mirrors MIN_REPAIR_ITERATIONS, default 2)."""
+    raw = os.environ.get("OPENRESEARCH_MIN_REPAIR_ITERATIONS", "").strip()
+    return int(raw) if raw.isdigit() and int(raw) > 0 else 2
+
+
+def _lifecycle_primary_enabled() -> bool:
+    """Whether the harness-owned primary lifecycle mode is active.
+
+    Reads ``OPENRESEARCH_LIFECYCLE_PRIMARY`` (truthy ``1``/``true``/``yes``);
+    default OFF.  When ON, the harness drives backbone→repair→improve→finalize
+    and the rlm.completion root loop is skipped entirely.
+    """
+    return os.environ.get("OPENRESEARCH_LIFECYCLE_PRIMARY", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _drive_max_improve() -> int:
+    """Max improvement iterations for the primary lifecycle driver (default 2; 0 = backbone only)."""
+    raw = os.environ.get("OPENRESEARCH_LIFECYCLE_MAX_IMPROVE", "").strip()
+    return int(raw) if raw.isdigit() else 2
+
+
+def _synth_result_from_summary(summary: dict, ctx: Any) -> Any:
+    """Build a minimal RLMChatCompletion from a primary-mode driver summary.
+
+    Returns None when no rubric score is available — _finalize will ship the
+    'failed' shell and attempt a regrade-from-disk.
+
+    The response JSON is deliberately minimal: build_final_report's metric-
+    projection (OPENRESEARCH_METRIC_PROVENANCE) fills baseline_metrics from
+    disk, and the evidence-gate + verdict-cap can only downgrade an optimistic
+    verdict, so a generous initial claim is safe.
+    """
+    import json as _json
+    try:
+        from rlm.core.types import RLMChatCompletion, UsageSummary
+    except Exception:  # noqa: BLE001 — rlms not importable in test isolation
+        return None
+
+    score = summary.get("rubric_score")
+    if score is None:
+        return None
+
+    improved = summary.get("improved", 0)
+    target = ctx.latest_rubric_target
+    verdict = "reproduced" if (target is not None and score >= target) else "partial"
+
+    desc = "Harness-driven lifecycle (primary mode): drove understand→implement→run→verify"
+    if improved:
+        desc += f", climbed {improved} improvement(s)"
+
+    report_dict = {
+        "verdict": verdict,
+        "reproduction_summary": desc,
+        "baseline_metrics": {},
+        "rubric": {
+            "overall_score": score,
+            "target_score": target,
+            "meets_target": bool(target is not None and score >= target),
+        },
+    }
+
+    try:
+        return RLMChatCompletion(
+            root_model="harness",
+            prompt="",
+            response=_json.dumps(report_dict),
+            usage_summary=UsageSummary(model_usage_summaries={}),
+            execution_time=0.0,
+        )
+    except Exception:  # noqa: BLE001 — constructor awkward → None fallback
+        return None
+
+
 # Lifecycle stages the harness can DRIVE itself (Task 6). A degenerate root
 # stuck before one of these has done strictly less than the harness can do for
 # it, so the backstop drives exactly ONE step and hands control back.
@@ -1247,6 +1325,7 @@ def _make_degenerate_loop_callback(
                         rubric_spec=rubric_spec,
                         start_stage=stage,
                         emit=emit,
+                        max_repair_iterations=_drive_max_repair(),
                     )
                 except Exception:  # noqa: BLE001
                     logger.exception(
@@ -1279,7 +1358,14 @@ def _make_degenerate_loop_callback(
                 if summary and "run_experiment" in (summary.get("driven") or []):
                     # HANDBACK — a real run_experiment fired; the root's next
                     # FINAL_VAR will be accepted and the existing finalize /
-                    # best-of-run path ships the driven score.
+                    # best-of-run path ships the driven score. Reset the repair
+                    # floor first: the harness itself drove the bounded repair
+                    # loop, so the policy's stale repairable marker must not
+                    # bounce the root's FINAL_VAR into churn.
+                    try:
+                        policy.reset_repair_state()
+                    except Exception:  # noqa: BLE001 — never block handback on policy reset
+                        logger.exception("run_pipeline_rlm: reset_repair_state on handback failed")
                     return
                 # Driven but run_experiment didn't complete → fall through to the
                 # existing autodrive / early-abort logic below (honest terminal).
@@ -3604,60 +3690,82 @@ async def run_pipeline_rlm(
             with forced_iteration_policy(iteration_policy):
                 return rlm.completion(context_dict, active_prompt)
 
-        result_obj = await asyncio.to_thread(_run_completion_on_worker)
+        if _lifecycle_primary_enabled():
+            from backend.agents.rlm.lifecycle_driver import run_lifecycle_primary
+            summary = await asyncio.to_thread(
+                run_lifecycle_primary,
+                tools=custom_tools,
+                ctx=ctx,
+                paper_text=context_dict.get("paper_text", ""),
+                rubric_spec=context_dict.get("rubric_spec", {}),
+                emit=emit,
+                target_score=ctx.latest_rubric_target,
+                max_repair_iterations=_drive_max_repair(),
+                max_improve_iterations=_drive_max_improve(),
+            )
+            _fatal = summary.get("fatal_result")
+            if _fatal:
+                raise _FatalPrimitiveAbort(
+                    primitive_name=str(summary.get("stopped_at") or "run_experiment"),
+                    result=_fatal,
+                )
+            result_obj = _synth_result_from_summary(summary, ctx)
+            run_failed = summary.get("rubric_score") is None
+        else:
+            result_obj = await asyncio.to_thread(_run_completion_on_worker)
 
-        # C3 — Drain the module-level ClaudeOauthClient root-usage sink and
-        # ledger cache tokens for the root reasoning turns.
-        #
-        # Double-count design (documented here, tested in tests/rlm/test_root_usage_ledger.py):
-        #
-        #   - tokens_total.json is generated exclusively from cost_ledger.jsonl via
-        #     _aggregate_tokens_total(); the rlm usage_summary NEVER feeds tokens_total.
-        #   - final_report.cost.llm_usd is sourced from result.usage_summary
-        #     (in _cost_dict()) — it does NOT read the cost ledger for the root.
-        #   - Therefore: adding a rlm_root row to the ledger with the full
-        #     input/output/cache tokens does NOT double-count in final_report.cost.llm_usd.
-        #     It does add these tokens to tokens_total.json, which is the desired
-        #     behaviour — the root's tokens were previously absent from tokens_total.
-        #   - For OAuth runs estimated_usd stays $0 (correct: real cost is $0).
-        #     Use equivalent_cost_usd() from pricing.py for the hypothetical API cost.
-        if root_model.rlm_backend == "anthropic-oauth":
-            try:
-                from backend.agents.rlm.claude_oauth_client import drain_root_usage
-                from backend.agents.resilience.cost import CostLedgerEntry
+            # C3 — Drain the module-level ClaudeOauthClient root-usage sink and
+            # ledger cache tokens for the root reasoning turns.
+            #
+            # Double-count design (documented here, tested in tests/rlm/test_root_usage_ledger.py):
+            #
+            #   - tokens_total.json is generated exclusively from cost_ledger.jsonl via
+            #     _aggregate_tokens_total(); the rlm usage_summary NEVER feeds tokens_total.
+            #   - final_report.cost.llm_usd is sourced from result.usage_summary
+            #     (in _cost_dict()) — it does NOT read the cost ledger for the root.
+            #   - Therefore: adding a rlm_root row to the ledger with the full
+            #     input/output/cache tokens does NOT double-count in final_report.cost.llm_usd.
+            #     It does add these tokens to tokens_total.json, which is the desired
+            #     behaviour — the root's tokens were previously absent from tokens_total.
+            #   - For OAuth runs estimated_usd stays $0 (correct: real cost is $0).
+            #     Use equivalent_cost_usd() from pricing.py for the hypothetical API cost.
+            if root_model.rlm_backend == "anthropic-oauth":
+                try:
+                    from backend.agents.rlm.claude_oauth_client import drain_root_usage
+                    from backend.agents.resilience.cost import CostLedgerEntry
 
-                root_usage_by_model = drain_root_usage()
-                for _model, _u in root_usage_by_model.items():
-                    if _u.get("calls", 0) == 0:
-                        continue
-                    _entry = CostLedgerEntry.from_usage(
-                        agent_id="rlm_root",
-                        attempt_index=0,
-                        provider="anthropic",  # type: ignore[arg-type]
-                        model=_model,
-                        usage={
-                            "input_tokens": _u.get("input_tokens", 0),
-                            "output_tokens": _u.get("output_tokens", 0),
-                            "cache_creation_input_tokens": _u.get("cache_creation_input_tokens", 0),
-                            "cache_read_input_tokens": _u.get("cache_read_input_tokens", 0),
-                            "reasoning_tokens": 0,
-                        },
-                    )
-                    if ctx.cost_ledger is not None:
-                        ctx.cost_ledger.append(_entry)
-                    # Also write directly to the ledger file (mirrors
-                    # record_subagent_usage_to_path for resilience when
-                    # ctx.cost_ledger has no path attached).
-                    _ledger_path = project_dir / "cost_ledger.jsonl"
-                    if ctx.cost_ledger is None or ctx.cost_ledger.path is None:
-                        import json as _json_ledger
-                        _ledger_path.parent.mkdir(parents=True, exist_ok=True)
-                        with _ledger_path.open("a", encoding="utf-8") as _fh:
-                            _fh.write(_json_ledger.dumps(_entry.to_json(), sort_keys=True) + "\n")
-                    else:
-                        ctx.cost_ledger.flush()
-            except Exception:  # noqa: BLE001 — ledgering is best-effort
-                logger.warning("run_pipeline_rlm: drain_root_usage ledger failed", exc_info=True)
+                    root_usage_by_model = drain_root_usage()
+                    for _model, _u in root_usage_by_model.items():
+                        if _u.get("calls", 0) == 0:
+                            continue
+                        _entry = CostLedgerEntry.from_usage(
+                            agent_id="rlm_root",
+                            attempt_index=0,
+                            provider="anthropic",  # type: ignore[arg-type]
+                            model=_model,
+                            usage={
+                                "input_tokens": _u.get("input_tokens", 0),
+                                "output_tokens": _u.get("output_tokens", 0),
+                                "cache_creation_input_tokens": _u.get("cache_creation_input_tokens", 0),
+                                "cache_read_input_tokens": _u.get("cache_read_input_tokens", 0),
+                                "reasoning_tokens": 0,
+                            },
+                        )
+                        if ctx.cost_ledger is not None:
+                            ctx.cost_ledger.append(_entry)
+                        # Also write directly to the ledger file (mirrors
+                        # record_subagent_usage_to_path for resilience when
+                        # ctx.cost_ledger has no path attached).
+                        _ledger_path = project_dir / "cost_ledger.jsonl"
+                        if ctx.cost_ledger is None or ctx.cost_ledger.path is None:
+                            import json as _json_ledger
+                            _ledger_path.parent.mkdir(parents=True, exist_ok=True)
+                            with _ledger_path.open("a", encoding="utf-8") as _fh:
+                                _fh.write(_json_ledger.dumps(_entry.to_json(), sort_keys=True) + "\n")
+                        else:
+                            ctx.cost_ledger.flush()
+                except Exception:  # noqa: BLE001 — ledgering is best-effort
+                    logger.warning("run_pipeline_rlm: drain_root_usage ledger failed", exc_info=True)
 
     except _FatalPrimitiveAbort as exc:
         fatal_abort = exc

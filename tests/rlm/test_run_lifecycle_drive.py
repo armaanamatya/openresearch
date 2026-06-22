@@ -298,3 +298,47 @@ def test_byte_identical_off_autodrive_still_works() -> None:
     assert "implement_baseline" in recommend_calls[0]
     # No terminal stop (autodrive returned early).
     assert ctx._terminal_stop_reason is None
+
+
+# ---------------------------------------------------------------------------
+# 8. Handback calls policy.reset_repair_state() when run_experiment was driven
+# ---------------------------------------------------------------------------
+
+def test_handback_calls_reset_repair_state() -> None:
+    """When run_experiment is in the driven list, handback must call reset_repair_state.
+
+    This ensures the policy's stale repairable marker is cleared so the root's
+    next FINAL_VAR is not bounced by an unmet repair floor.
+    """
+    emitted: list[dict] = []
+    ctx = _fake_ctx()
+
+    reset_calls: list = []
+
+    policy = ForcedIterationPolicy(min_iterations=2)
+    # Spy on reset_repair_state without replacing it
+    _orig_reset = policy.reset_repair_state
+
+    def _spy_reset():
+        reset_calls.append(True)
+        _orig_reset()
+
+    policy.reset_repair_state = _spy_reset  # type: ignore[method-assign]
+
+    summary = {
+        "driven": ["run_experiment", "verify_against_rubric"],
+        "stopped_at": None,
+        "stopped_reason": None,
+        "final_result": {},
+        "rubric_score": 0.7,
+    }
+
+    with patch("backend.agents.rlm.lifecycle_driver.drive_lifecycle_chain", return_value=summary):
+        cb = _make_cb(emit=emitted.append, ctx=ctx, policy=policy, drive_enabled=True)
+        cb(_payload("need_experiment"))
+
+    assert len(reset_calls) == 1, (
+        f"reset_repair_state must be called exactly once on handback, got {len(reset_calls)}"
+    )
+    # Also confirm handback: no terminal stop set
+    assert ctx._terminal_stop_reason is None

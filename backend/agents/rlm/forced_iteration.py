@@ -391,6 +391,20 @@ class ForcedIterationPolicy:
         self._repair_noprogress_count = 0
         self._last_repair_fingerprint = None
 
+    def reset_repair_state(self) -> None:
+        """Unconditionally clear the repair-floor trigger (harness-drive handback).
+
+        Distinct from clear_repair_trigger (which is fix-first-gated): the lifecycle
+        driver has itself driven the bounded repair loop, so the root's next
+        FINAL_VAR must not bounce off a now-stale repairable marker / unmet
+        MIN_REPAIR floor. Only invoked from the lifecycle-drive handback (run.py),
+        so byte-identical when lifecycle-drive is off.
+        """
+        self._last_repair_failure_class = None
+        self._repair_iter_count = 0
+        self._repair_noprogress_count = 0
+        self._last_repair_fingerprint = None
+
     def note_terminal_failure(self, failure_class: str) -> None:
         """Record an un-repairable terminal failure (e.g. ``oom_shrink_exhausted``).
 
