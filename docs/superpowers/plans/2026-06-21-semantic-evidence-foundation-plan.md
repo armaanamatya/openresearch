@@ -26,8 +26,12 @@
   `AlgorithmInvariant`, `ResourceIdentity`, `CapabilityProfile`,
   `SemanticReproductionContract` v1 with an `unresolved` list; tests
   `tests/rlm/test_semantic_contract.py`).
-- [ ] Implement fail-soft contract persistence under `rlm_state/` and an explicit
-  legacy fallback resolver.
+- [x] Implement fail-soft contract persistence under `rlm_state/` and an explicit
+  legacy fallback resolver (`semantic_contract.persist`/`load` → a DISTINCT
+  `rlm_state/semantic_contract.json`, atomic + fail-soft; a missing/torn/wrong-version
+  contract resolves to `None` so consumers keep current behaviour — the implicit legacy
+  fallback; default OFF via `OPENRESEARCH_REPRO_CONTRACT`; tests cover roundtrip,
+  missing, torn-json, wrong-version, and non-collision with the planner contract file).
 - [ ] Adapt PaperHint, YAML invariants, generated rubric, and effective scope as
   contract inputs without deleting their current consumers.
 - [ ] Add unit tests for source/confidence preservation, missing fields, and

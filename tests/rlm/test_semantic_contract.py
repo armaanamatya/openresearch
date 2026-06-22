@@ -74,3 +74,47 @@ def test_dimension_generalizes_axes():
     c = SemanticReproductionContract(dimensions=[d], unresolved=["baseline_set"])
     assert c.dimensions[0].kind == "categorical"
     assert "baseline_set" in c.unresolved
+
+
+# --- fail-soft persistence -------------------------------------------------
+def test_persist_then_load_roundtrip(tmp_path):
+    from backend.agents.rlm import semantic_contract as sc
+
+    c = SemanticReproductionContract(requirements=["reproduce Table 3"], unresolved=["seeds"])
+    p = sc.persist(tmp_path, c)
+    assert p is not None and p.name == "semantic_contract.json"
+    loaded = sc.load(tmp_path)
+    assert loaded is not None
+    assert loaded.requirements == ["reproduce Table 3"]
+    assert loaded.unresolved == ["seeds"]
+
+
+def test_load_missing_returns_none(tmp_path):
+    from backend.agents.rlm import semantic_contract as sc
+    assert sc.load(tmp_path) is None  # absent → caller keeps current behaviour
+
+
+def test_load_torn_state_is_failsoft(tmp_path):
+    from backend.agents.rlm import semantic_contract as sc
+    target = tmp_path / "rlm_state"
+    target.mkdir()
+    (target / "semantic_contract.json").write_text("{ this is not valid json")
+    assert sc.load(tmp_path) is None  # never raises
+
+
+def test_wrong_schema_version_ignored(tmp_path):
+    from backend.agents.rlm import semantic_contract as sc
+    target = tmp_path / "rlm_state"
+    target.mkdir()
+    (target / "semantic_contract.json").write_text('{"schema_version": 999, "contract": {}}')
+    assert sc.load(tmp_path) is None
+
+
+def test_does_not_collide_with_legacy_planner_contract_file(tmp_path):
+    # The semantic contract uses a DISTINCT filename so it can't disturb the legacy
+    # reproduction_contract.json the planner store owns.
+    from backend.agents.rlm import semantic_contract as sc
+
+    sc.persist(tmp_path, SemanticReproductionContract())
+    assert (tmp_path / "rlm_state" / "semantic_contract.json").exists()
+    assert not (tmp_path / "rlm_state" / "reproduction_contract.json").exists()
