@@ -13,7 +13,7 @@
 # See docs/runbooks/2026-06-22-sdar-gcp-e2e-and-rl-smoke-fix-handoff.md.
 #
 # Usage (env-parameterised):
-#   ROOT=claude-oauth PROV=spot SMOKE=0 PROJECT_ID=sdar_gcp_<id> AUTODRIVE=0 \
+#   ROOT=claude-oauth PROV=spot SMOKE=0 PROJECT_ID=sdar_gcp_<id> AUTODRIVE=0 USE_REPO=1 \
 #     scripts/sdar_gcp_e2e.sh run        # up + setenv + launch + monitor (the common path)
 #   scripts/sdar_gcp_e2e.sh up           # flip a2/<PROV>, start (spot) or poll (ondemand), sync
 #   scripts/sdar_gcp_e2e.sh setenv       # write root/smoke/project-id/autodrive overrides on the VM
@@ -26,6 +26,7 @@
 # ROOT  : claude-oauth (true local config; may degenerate) | foundry (gpt-chat; arg-churn) | gpt-5/claude (need a funded key)
 # PROV  : spot (cheap, can preempt) | ondemand (no preempt, ~3x cost, often STOCKED OUT in us-central1-b)
 # SMOKE : 0 (off — bypass the pre-GPU smoke; matches local) | 1 (on — exercises the RL-aware smoke fix)
+# USE_REPO: 1 (#62 default ON for SDAR — clone github.com/ZJU-REAL/SDAR + seed code/ in adapt mode) | 0 (from scratch)
 set -euo pipefail
 
 export CLOUDSDK_CONFIG="${CLOUDSDK_CONFIG:-/home/abheekp/.config/gcloud}"
@@ -44,6 +45,7 @@ PROV="${PROV:-spot}"
 SMOKE="${SMOKE:-0}"
 PROJECT_ID="${PROJECT_ID:-sdar_gcp_e2e}"
 AUTODRIVE="${AUTODRIVE:-0}"
+USE_REPO="${USE_REPO:-1}"
 
 G=(gcloud --project "$PROJECT")
 ZP=(--zone "$ZONE" --project "$PROJECT")
@@ -97,8 +99,9 @@ set_env() {
     echo 'export OPENRESEARCH_SDAR_PROJECT_ID=$PROJECT_ID' >> runs/.cache/sdar_gcp.env
     echo 'export OPENRESEARCH_OAUTH_AUTODRIVE=$AUTODRIVE' >> runs/.cache/sdar_gcp.env
     echo 'export OPENRESEARCH_SDAR_NO_AUTOSTOP=0' >> runs/.cache/sdar_gcp.env
+    echo 'export OPENRESEARCH_USE_AUTHOR_REPO=$USE_REPO' >> runs/.cache/sdar_gcp.env
     set -a; . runs/.cache/sdar_gcp.env >/dev/null 2>&1; set +a
-    echo \"EFFECTIVE: ROOT=\$OPENRESEARCH_SDAR_ROOT SMOKE=\$OPENRESEARCH_METRIC_REALITY_SMOKE PID=\$OPENRESEARCH_SDAR_PROJECT_ID AUTODRIVE=\$OPENRESEARCH_OAUTH_AUTODRIVE\"
+    echo \"EFFECTIVE: ROOT=\$OPENRESEARCH_SDAR_ROOT SMOKE=\$OPENRESEARCH_METRIC_REALITY_SMOKE PID=\$OPENRESEARCH_SDAR_PROJECT_ID AUTODRIVE=\$OPENRESEARCH_OAUTH_AUTODRIVE USE_REPO=\$OPENRESEARCH_USE_AUTHOR_REPO\"
     grep -q '^CLAUDE_CODE_OAUTH_TOKEN=' .env && echo 'oauth token: present' || echo 'oauth token: MISSING (claude-oauth root/exec will fail)'
   }"
 }

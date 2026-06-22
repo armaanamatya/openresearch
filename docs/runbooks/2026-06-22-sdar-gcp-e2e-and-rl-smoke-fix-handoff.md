@@ -100,7 +100,16 @@ without the detector it would loop to the 16-refusal cap with the same 0-cell re
 
 Wraps the VM flips, start, sync, env overrides, launch, monitor, inspect, teardown. Params via env:
 `ROOT` (claude-oauth|foundry|gpt-5|claude), `PROV` (spot|ondemand), `SMOKE` (0|1),
-`PROJECT_ID` (fresh each run — never reuse a completed dir), `AUTODRIVE` (0|1).
+`PROJECT_ID` (fresh each run — never reuse a completed dir), `AUTODRIVE` (0|1),
+`USE_REPO` (0|1, **default 1**).
+
+**GitHub-repo-first (#62, default ON for SDAR via `USE_REPO=1`).** The harness auto-discovers the
+SDAR repo from the paper (`github.com/ZJU-REAL/SDAR`), clones it host-only into `runs/<id>/repo/`,
+and seeds `code/` from it in adapt mode so the agent reproduces from the authors' real code (the
+`BASELINE_EXTRA_GUIDANCE` still applies on top). The clone never reaches the GPU layer — only the
+adapted `code/` is uploaded. `USE_REPO=0` reverts to from-scratch; `OPENRESEARCH_REPRODUCTION_MODE=reference`
+makes the repo read-only. NOTE: unvalidated on real hardware — this SDAR run is the first exercise of
+the flag-ON path; watch the `repo_resolved`/`repo_cloned` events + `final_report.reproduction` block.
 
 ```bash
 # Recommended: smoke-off full grid, claude-oauth (true local config), spot, all-in-one:

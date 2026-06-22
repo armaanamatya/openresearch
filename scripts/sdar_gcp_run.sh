@@ -119,7 +119,20 @@ SDAR_GUIDANCE_EOF
 #   OPENRESEARCH_SDAR_MODELS=executor=foundry,grader=gpt-5,verifier=gpt-5
 export OPENRESEARCH_SDAR_MODELS="${OPENRESEARCH_SDAR_MODELS:-executor=foundry,grader=foundry,verifier=foundry}"
 
-echo "[sdar_gcp_run] project_id=$PROJECT_ID root=$OPENRESEARCH_SDAR_ROOT deployment=$AZURE_FOUNDRY_DEPLOYMENT models=$OPENRESEARCH_SDAR_MODELS grader_samples=$OPENRESEARCH_GRADER_SAMPLES"
+# GitHub-repo-first reproduction (#62). SDAR links an official repo
+# (github.com/ZJU-REAL/SDAR), auto-discovered from the paper text, so default
+# this ON for the SDAR run: the harness clones it into runs/<id>/repo/, exposes
+# the manifest as the root's repo_files, and seeds code/ from it (adapt mode) so
+# the agent reproduces FROM the authors' real code instead of from scratch. The
+# clone is host-only (never uploaded to the GPU layer — only the adapted code/
+# ships); size/timeout/LFS caps apply (OPENRESEARCH_REPO_CLONE_*). The detailed
+# BASELINE_EXTRA_GUIDANCE above still applies on top of the seeded code.
+# Override OPENRESEARCH_USE_AUTHOR_REPO=0 to reproduce from scratch (prior path);
+# OPENRESEARCH_REPRODUCTION_MODE=reference makes the repo read-only (consult, not seed).
+export OPENRESEARCH_USE_AUTHOR_REPO="${OPENRESEARCH_USE_AUTHOR_REPO:-1}"
+export OPENRESEARCH_REPRODUCTION_MODE="${OPENRESEARCH_REPRODUCTION_MODE:-adapt}"
+
+echo "[sdar_gcp_run] project_id=$PROJECT_ID root=$OPENRESEARCH_SDAR_ROOT deployment=$AZURE_FOUNDRY_DEPLOYMENT models=$OPENRESEARCH_SDAR_MODELS grader_samples=$OPENRESEARCH_GRADER_SAMPLES use_author_repo=$OPENRESEARCH_USE_AUTHOR_REPO repro_mode=$OPENRESEARCH_REPRODUCTION_MODE"
 
 # self_stop <reason>: best-effort GCS upload, then halt the VM to stop GPU billing.
 # The boot disk (with all run artifacts) persists after shutdown; flip back to the
