@@ -99,6 +99,19 @@ class TestSdarHintStructure:
             "SDAR guidance must reference the (model_key, env, baseline) triple concept"
         )
 
+    def test_guidance_explains_grpo_reward_signal(self, sdar):
+        """Guidance must explain GRPO needs reward variance / wired env reward (the l_grpo=0 ceiling)."""
+        g = sdar.guidance.lower()
+        assert "reward" in g and ("variance" in g or "mean_reward" in g or "l_grpo" in g), (
+            "SDAR guidance must explain GRPO reward-variance / reward-wiring"
+        )
+
+    def test_guidance_requires_webshop_server(self, sdar):
+        """Guidance must instruct starting the WebShop server before its cells."""
+        g = sdar.guidance
+        assert "WebShop" in g or "webshop" in g.lower(), "SDAR guidance must mention WebShop"
+        assert "3000" in g, "SDAR guidance must name the WebShop server endpoint (127.0.0.1:3000)"
+
     def test_default_scope_has_three_models(self, sdar):
         assert sdar.default_scope is not None
         assert len(sdar.default_scope.models) == 3

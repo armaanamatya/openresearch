@@ -56,7 +56,18 @@ PAPER_HINTS: dict[str, PaperHint] = {
             "Give every ablation/variant cell a DISTINCT (model_key, env, baseline) "
             "triple in cells.json — e.g. baseline=sdar_ucb / sdar_random / sdar_full "
             "for the retrieval ablations — so each lands under its own rubric leaf "
-            "(a duplicate triple collapses cells)."
+            "(a duplicate triple collapses cells). "
+            "GRPO learns only from reward VARIANCE within each rollout group — wire "
+            "the per-episode reward from env.step() into the GRPO advantage (never "
+            "leave it hardcoded 0); if mean_reward stays 0.0 across all steps the "
+            "policy gets no signal, l_grpo collapses to 0, and the OPSD gate never "
+            "activates. A tiny model on the cost-bounded scope needs enough rollout "
+            "steps per cell to occasionally succeed and earn non-zero reward. "
+            "The WebShop environment needs its local server reachable at "
+            "http://127.0.0.1:3000 BEFORE any WebShop cell — start it in "
+            "build_environment/detect_environment (the repo's web_agent_site server) "
+            "and health-check it; if it cannot start, drop WebShop from scope rather "
+            "than letting its cells fail."
         ),
         default_scope=ScopeSpec(
             models=[
