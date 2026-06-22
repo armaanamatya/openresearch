@@ -6,7 +6,6 @@ Tests are socket-hermetic (no network I/O); clients are duck-typed fakes.
 
 from pathlib import Path
 
-import pytest
 
 
 def _make_tree(root: Path):

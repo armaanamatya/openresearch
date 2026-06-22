@@ -1,4 +1,3 @@
-import importlib
 
 from backend.config import Settings
 

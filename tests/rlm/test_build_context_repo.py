@@ -1,6 +1,5 @@
 import json
 
-import pytest
 
 import backend.agents.rlm.run as run_mod
 from backend.services.ingestion.repo.manifest import RepoManifest

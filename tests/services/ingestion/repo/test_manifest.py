@@ -4,7 +4,6 @@ from backend.services.ingestion.repo.manifest import (
     MAX_CONTEXT_BYTES,
     MAX_DEPTH,
     MAX_FILES,
-    RepoManifest,
     build_manifest,
 )
 

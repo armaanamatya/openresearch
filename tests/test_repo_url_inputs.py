@@ -1,6 +1,4 @@
-import os
 
-import pytest
 
 from backend.services.events.live_runs import StartRunRequest
 

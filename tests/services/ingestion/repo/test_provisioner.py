@@ -1,7 +1,6 @@
 import subprocess
 from pathlib import Path
 
-import pytest
 
 from backend.services.ingestion.repo.provisioner import RepoProvisioner
 from backend.services.ingestion.repo.resolver import RepoSpec

@@ -1,4 +1,3 @@
-import pytest
 
 from backend.agents.rlm.sse_bridge import (
     build_repo_resolved_event,
