@@ -20,6 +20,7 @@
 #   scripts/sdar_gcp_e2e.sh launch       # GREEN-gated launch (detached) via gcp_sdar_preflight.sh
 #   scripts/sdar_gcp_e2e.sh monitor      # poll every 150s: GPU-training / terminal / preempt / degenerate
 #                                        #   each tick also prints last 4 rendered events + live.log tail
+#   scripts/sdar_gcp_e2e.sh watch        # lifecycle-aware verbose watcher (sdar_gcp_watch.sh); auto-stops VM on terminal
 #   scripts/sdar_gcp_e2e.sh logs         # live-stream process stdout + .exec_live.log (streams until timeout/Ctrl-C)
 #   scripts/sdar_gcp_e2e.sh events       # one-shot readable dump of last EVENTS_N (default 40) dashboard events
 #   scripts/sdar_gcp_e2e.sh inspect      # cheap CPU flip, pull final_report+code+state to /tmp/sdar_inspect, stop
@@ -54,6 +55,7 @@ USE_REPO="${USE_REPO:-1}"
 EFFORT="${EFFORT:-high}"        # OPENRESEARCH_ROOT_EFFORT for the oauth CLI root: low|medium|high|xhigh|max
 ROOT_MODEL="${ROOT_MODEL:-}"    # optional oauth root model pin (e.g. "opus"); empty = default sonnet
 DRIVE="${DRIVE:-0}"            # OPENRESEARCH_LIFECYCLE_DRIVE: 1 = harness DRIVES plan/implement/run/verify when the root degenerates
+PRIMARY="${PRIMARY:-0}"        # OPENRESEARCH_LIFECYCLE_PRIMARY: 1 = harness OWNS the lifecycle (proactive primary mode), root loop skipped
 
 G=(gcloud --project "$PROJECT")
 ZP=(--zone "$ZONE" --project "$PROJECT")
@@ -111,8 +113,9 @@ set_env() {
     echo 'export OPENRESEARCH_SDAR_NO_AUTOSTOP=0' >> runs/.cache/sdar_gcp.env
     echo 'export OPENRESEARCH_USE_AUTHOR_REPO=$USE_REPO' >> runs/.cache/sdar_gcp.env
     echo 'export OPENRESEARCH_LIFECYCLE_DRIVE=$DRIVE' >> runs/.cache/sdar_gcp.env
+    echo 'export OPENRESEARCH_LIFECYCLE_PRIMARY=$PRIMARY' >> runs/.cache/sdar_gcp.env
     set -a; . runs/.cache/sdar_gcp.env >/dev/null 2>&1; set +a
-    echo \"EFFECTIVE: ROOT=\$OPENRESEARCH_SDAR_ROOT SMOKE=\$OPENRESEARCH_METRIC_REALITY_SMOKE PID=\$OPENRESEARCH_SDAR_PROJECT_ID AUTODRIVE=\$OPENRESEARCH_OAUTH_AUTODRIVE USE_REPO=\$OPENRESEARCH_USE_AUTHOR_REPO EFFORT=\$OPENRESEARCH_ROOT_EFFORT ROOTMODEL=\$REPROLAB_RLM_ROOT_MODEL_NAME DRIVE=\$OPENRESEARCH_LIFECYCLE_DRIVE\"
+    echo \"EFFECTIVE: ROOT=\$OPENRESEARCH_SDAR_ROOT SMOKE=\$OPENRESEARCH_METRIC_REALITY_SMOKE PID=\$OPENRESEARCH_SDAR_PROJECT_ID AUTODRIVE=\$OPENRESEARCH_OAUTH_AUTODRIVE USE_REPO=\$OPENRESEARCH_USE_AUTHOR_REPO EFFORT=\$OPENRESEARCH_ROOT_EFFORT ROOTMODEL=\$REPROLAB_RLM_ROOT_MODEL_NAME DRIVE=\$OPENRESEARCH_LIFECYCLE_DRIVE PRIMARY=\$OPENRESEARCH_LIFECYCLE_PRIMARY\"
     grep -q '^CLAUDE_CODE_OAUTH_TOKEN=' .env && echo 'oauth token: present' || echo 'oauth token: MISSING (claude-oauth root/exec will fail)'
   }"
 }
@@ -186,6 +189,10 @@ case "${1:-status}" in
   setenv)        set_env ;;
   launch)        launch ;;
   monitor)       monitor ;;
+  watch)         VERBOSE="${VERBOSE:-1}" OPENRESEARCH_GCP_ZONE="$ZONE" OPENRESEARCH_GCP_INSTANCE="$INSTANCE" \
+                   OPENRESEARCH_GCP_PROJECT="$PROJECT" OPENRESEARCH_GCP_SSH_USER="$SSH_USER" \
+                   OPENRESEARCH_REMOTE_DIR="$REMOTE_DIR" PROJECT_ID="$PROJECT_ID" \
+                   bash "$HERE/scripts/sdar_gcp_watch.sh" ;;
   logs)          logs ;;
   events)        events ;;
   inspect)       inspect ;;
@@ -193,5 +200,5 @@ case "${1:-status}" in
   poll-ondemand) poll_ondemand ;;
   status)        echo "VM: $(config_line)" ;;
   run)           { [[ "$PROV" == ondemand ]] && poll_ondemand || { start_gpu && sync_code; }; } && set_env && launch && monitor ;;
-  *)             echo "unknown action: $1 (up|setenv|launch|monitor|logs|events|inspect|down|poll-ondemand|status|run)" >&2; exit 2 ;;
+  *)             echo "unknown action: $1 (up|setenv|launch|monitor|watch|logs|events|inspect|down|poll-ondemand|status|run)" >&2; exit 2 ;;
 esac
