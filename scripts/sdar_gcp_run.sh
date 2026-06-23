@@ -145,6 +145,16 @@ self_stop() {
     echo "[sdar_gcp_run] autostop disabled (OPENRESEARCH_SDAR_NO_AUTOSTOP=1); leaving VM running for debug"
     return 0
   fi
+  # Fast-crash guard: an early non-zero exit (e.g. an import error in the first seconds)
+  # should NOT shut the VM down — that nukes scarce on-demand GPU capacity AND leaves the
+  # disk unreadable for debugging (a real incident: a missing module crashed the run in <1s
+  # and self_stop powered off the only A100-80GB we could get). Keep the VM up on a fast
+  # error so the failure is diagnosable and the capacity is held for a relaunch; a clean
+  # finish, a wall-clock timeout, or a slow error still self-stops to halt billing.
+  if [[ "$reason" == error* ]] && (( SECONDS < ${OPENRESEARCH_SDAR_FASTCRASH_S:-600} )); then
+    echo "[sdar_gcp_run] FAST CRASH after ${SECONDS}s (< ${OPENRESEARCH_SDAR_FASTCRASH_S:-600}s) — leaving VM UP for debug and to hold capacity; stop it manually ('down') once inspected"
+    return 0
+  fi
   if [[ -n "${OPENRESEARCH_SDAR_REPORT_GCS:-}" ]]; then
     echo "[sdar_gcp_run] uploading run artifacts to $OPENRESEARCH_SDAR_REPORT_GCS/$PROJECT_ID/ ..."
     gsutil -m cp \
