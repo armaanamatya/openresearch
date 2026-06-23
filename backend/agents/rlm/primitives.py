@@ -1788,32 +1788,53 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
                     })
                     data["compute_scope"] = None
             else:
-                # String, None, or any non-dict — coerce to None rather than aborting.
-                if cs_dict is not None:
-                    logger.warning(
-                        "plan_reproduction: compute_scope is not a dict (%s) — dropping",
-                        type(cs_dict).__name__,
-                    )
-                    _emit_dashboard_event(ctx, event_type="run_warning", payload={
-                        "code": "compute_scope_invalid",
-                        "message": (
-                            f"compute_scope must be a dict or null; got "
-                            f"{type(cs_dict).__name__!r}: {str(cs_dict)[:200]}"
-                        ),
-                    })
-                    # Agent-visible feedback (2026-06-09): this fired on 15/15
-                    # Adam+All-CNN attempts because the dashboard warning never
-                    # reaches the root. Put the exact expected shape ON the
-                    # returned plan so the agent can self-correct, and the
-                    # compute-adjusted grading path stops being silently lost.
-                    data.setdefault("warnings", []).append(
-                        "compute_scope was a string and was DROPPED. If you "
-                        "reduced compute vs the paper, resend it as a JSON "
-                        "object: {\"is_clipped\": true, \"paper_epochs\": N, "
-                        "\"actual_epochs\": M, \"rationale\": \"...\", "
-                        "\"metric_floors\": [{...}]} — otherwise omit it."
-                    )
-                data["compute_scope"] = None
+                # String, None, or any non-dict — try to recover a JSON-object
+                # string first (LLMs sometimes JSON-encode the dict); drop otherwise.
+                recovered = False
+                if isinstance(cs_dict, str):
+                    import json as _json
+                    try:
+                        parsed = _json.loads(cs_dict.strip())
+                        if isinstance(parsed, dict):
+                            # Fall through to the same validation path as a real dict.
+                            try:
+                                data["compute_scope"] = _ComputeScope(**parsed).model_dump()
+                                recovered = True
+                            except _PydanticValidationError as _ve:
+                                logger.warning(
+                                    "plan_reproduction: compute_scope JSON-string "
+                                    "parsed but failed validation (%s) — dropping",
+                                    _ve,
+                                )
+                    except (ValueError, TypeError):
+                        pass  # not valid JSON — fall through to drop+warn below
+
+                if not recovered:
+                    if cs_dict is not None:
+                        logger.warning(
+                            "plan_reproduction: compute_scope is not a dict (%s) — dropping",
+                            type(cs_dict).__name__,
+                        )
+                        _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                            "code": "compute_scope_invalid",
+                            "message": (
+                                f"compute_scope must be a dict or null; got "
+                                f"{type(cs_dict).__name__!r}: {str(cs_dict)[:200]}"
+                            ),
+                        })
+                        # Agent-visible feedback (2026-06-09): this fired on 15/15
+                        # Adam+All-CNN attempts because the dashboard warning never
+                        # reaches the root. Put the exact expected shape ON the
+                        # returned plan so the agent can self-correct, and the
+                        # compute-adjusted grading path stops being silently lost.
+                        data.setdefault("warnings", []).append(
+                            "compute_scope was a string and was DROPPED. If you "
+                            "reduced compute vs the paper, resend it as a JSON "
+                            "object: {\"is_clipped\": true, \"paper_epochs\": N, "
+                            "\"actual_epochs\": M, \"rationale\": \"...\", "
+                            "\"metric_floors\": [{...}]} — otherwise omit it."
+                        )
+                    data["compute_scope"] = None
         else:
             # Not in the response (max mode or no instruction sent) — leave as None.
             data["compute_scope"] = None

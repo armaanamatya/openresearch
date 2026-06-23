@@ -67,7 +67,14 @@ PAPER_HINTS: dict[str, PaperHint] = {
             "http://127.0.0.1:3000 BEFORE any WebShop cell — start it in "
             "build_environment/detect_environment (the repo's web_agent_site server) "
             "and health-check it; if it cannot start, drop WebShop from scope rather "
-            "than letting its cells fail."
+            "than letting its cells fail. "
+            "On a memory-constrained GPU (<=48GB), a 3B+ model in full fine-tuning "
+            "GRPO will OOM — full fine-tuning needs ~16-20GB per billion params "
+            "(bf16 weights+grads, Adam optimizer states, and the frozen reference "
+            "model). Use gradient checkpointing and a conservative per-cell batch "
+            "size, and LoRA or FSDP sharding if needed; set each cell's est_vram_gb "
+            "to your realistic estimate so the capacity-gate sizes the grid correctly "
+            "instead of OOM-retrying."
         ),
         default_scope=ScopeSpec(
             models=[

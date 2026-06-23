@@ -211,6 +211,45 @@ class TestPaperHintsTableShape:
 OMNIZIP_ID = "2511.14582"
 
 
+class TestSdarMemoryConstrainedGuidance:
+    """F-2 — SDAR guidance must warn about full-FT OOM on memory-constrained GPUs."""
+
+    @pytest.fixture
+    def sdar(self) -> PaperHint:
+        h = lookup_paper_hint(SDAR_ID)
+        assert h is not None
+        return h
+
+    def test_guidance_warns_full_ft_oom_on_small_gpu(self, sdar):
+        """Guidance must explain full fine-tuning needs ~16-20 GB per billion params."""
+        g = sdar.guidance.lower()
+        # Must mention the per-billion-params VRAM cost.
+        assert "per billion" in g or "billion param" in g or "billion params" in g, (
+            "SDAR guidance must mention per-billion-params VRAM cost for full fine-tuning"
+        )
+
+    def test_guidance_recommends_gradient_checkpointing(self, sdar):
+        """Guidance must recommend gradient checkpointing for memory-constrained GPUs."""
+        g = sdar.guidance.lower()
+        assert "gradient checkpointing" in g or "grad-checkpoint" in g or "grad_checkpoint" in g, (
+            "SDAR guidance must recommend gradient checkpointing"
+        )
+
+    def test_guidance_mentions_batch_size_or_lora(self, sdar):
+        """Guidance must mention conservative batch size or LoRA/FSDP sharding."""
+        g = sdar.guidance.lower()
+        assert "batch size" in g or "lora" in g or "fsdp" in g, (
+            "SDAR guidance must mention conservative batch size or LoRA/FSDP for OOM mitigation"
+        )
+
+    def test_guidance_asks_agent_to_set_est_vram_gb(self, sdar):
+        """Guidance must ask the agent to set est_vram_gb so the capacity gate works."""
+        g = sdar.guidance
+        assert "est_vram_gb" in g, (
+            "SDAR guidance must instruct agent to set est_vram_gb in cells.json"
+        )
+
+
 class TestOmniZipHint:
     """OmniZip (2511.14582) — training-free audio-guided token compression."""
 
