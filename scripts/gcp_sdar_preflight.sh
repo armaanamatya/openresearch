@@ -280,7 +280,7 @@ sync_repo() {
     --exclude '.git/' \
     --exclude '.venv/' \
     --exclude 'backend/venv/' \
-    --exclude 'runs/' \
+    --exclude '/runs/' \
     --exclude 'frontend/node_modules/' \
     --exclude 'frontend/.next/' \
     backend scripts docs docker infra \

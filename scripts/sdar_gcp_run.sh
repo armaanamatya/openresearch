@@ -167,7 +167,7 @@ timeout --signal=TERM --kill-after=180 "$OPENRESEARCH_SDAR_OUTER_WALL_S" \
     --mode rlm --sandbox local --model "$OPENRESEARCH_SDAR_ROOT" \
     --models "$OPENRESEARCH_SDAR_MODELS" \
     --paper-hint 2605.15155 \
-    --gpu-mode max --gpu-parallelism multi --vram-gb 40 \
+    --gpu-mode max --gpu-parallelism multi --vram-gb "${OPENRESEARCH_SDAR_VRAM_GB:-40}" \
     --no-force-single-gpu --max-wall-clock 86400 \
     --project-id "$PROJECT_ID"
 rc=$?

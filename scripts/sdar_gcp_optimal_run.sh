@@ -34,6 +34,7 @@ POLL_INTERVAL="${POLL_INTERVAL:-600}"
 MAX_POLLS="${MAX_POLLS:-288}"            # 288 * 600s = 48h ceiling
 ROOT="${ROOT:-claude-oauth}"
 RUN_EXPERIMENT_TIMEOUT_S="${RUN_EXPERIMENT_TIMEOUT_S:-2400}"
+SDAR_VRAM_GB="${SDAR_VRAM_GB:-40}"     # per-GPU VRAM the run reports to the capacity gate (80 for a2-ultragpu)
 
 G=(gcloud --project "$PROJECT")
 ZP=(--zone "$ZONE" --project "$PROJECT")
@@ -48,15 +49,34 @@ log "=== SDAR optimal on-demand runner: project_id=$PROJECT_ID root=$ROOT zone=$
 #        live run, and stopping one is exactly what cascaded a lost run + lost capacity. --
 got=0
 read -r _st _mt _pm < <("${G[@]}" compute instances describe "$INSTANCE" --zone "$ZONE" \
-  --format='value(status,machineType.basename(),scheduling.provisioningModel)' 2>/dev/null || echo "UNKNOWN x x")
+  --format='value(status,machineType.basename(),scheduling.provisioningModel)' 2>/dev/null || echo "MISSING x x")
 if [[ "$_st" == "RUNNING" ]]; then
   if [[ "$_mt" == "$GPU_MT" && "$_pm" == "STANDARD" ]]; then
     log "VM already RUNNING on $GPU_MT/STANDARD — using it as-is (NOT stopping; it may hold a live run)"; got=1
   else
     log "FATAL: VM RUNNING with unexpected config ($_mt/$_pm), not $GPU_MT/STANDARD — refusing to stop a possibly-live VM; resolve manually"; exit 5
   fi
+elif [[ "$_st" == "MISSING" && -n "${CREATE_IMAGE:-}" ]]; then
+  # CREATE-poll: the instance does not exist (e.g. an a2-ultragpu that cannot be pre-created
+  # while stocked out). Repeatedly try to CREATE it on-demand until capacity returns. On-demand
+  # by default (no --preemptible); GPU types require --maintenance-policy=TERMINATE.
+  log "instance $INSTANCE absent; CREATE-polling $GPU_MT in $ZONE (image $CREATE_IMAGE) every ${POLL_INTERVAL}s"
+  for i in $(seq 1 "$MAX_POLLS"); do
+    out="$("${G[@]}" compute instances create "$INSTANCE" --zone "$ZONE" --machine-type "$GPU_MT" \
+      --image-family "$CREATE_IMAGE" --image-project "${CREATE_IMAGE_PROJECT:-deeplearning-platform-release}" \
+      --maintenance-policy TERMINATE --boot-disk-size "${CREATE_DISK_GB:-400}" --boot-disk-type pd-ssd \
+      --metadata install-nvidia-driver=True --no-restart-on-failure 2>&1)"
+    if [[ "$(status_)" == "RUNNING" ]]; then log "[$i] CAPACITY — created $INSTANCE ($GPU_MT in $ZONE)"; got=1; break; fi
+    if echo "$out" | grep -qiE 'STOCKOUT|enough resources|EXHAUSTED|currently unavailable'; then
+      log "[$i] stocked out; sleeping ${POLL_INTERVAL}s"; sleep "$POLL_INTERVAL"
+    else
+      log "[$i] non-stockout create error: $(echo "$out" | tail -2)"; sleep "$POLL_INTERVAL"
+    fi
+  done
+  [[ "$got" == 1 ]] || { log "FATAL: no $GPU_MT capacity to create in $MAX_POLLS polls; giving up"; exit 2; }
+  wait_ssh
 fi
-if [[ "$got" != 1 ]]; then
+if [[ "$got" != 1 && "$_st" != "MISSING" ]]; then
   # Not RUNNING → wait for a stable TERMINATED, then flip machine-type FIRST (a CPU/e2
   # STANDARD type can't use --maintenance-policy=TERMINATE; only GPU types can), then flip
   # to on-demand STANDARD, then ASSERT it took (a silent flip failure leaves it SPOT and it
@@ -130,6 +150,8 @@ ssh_ "cd $REMOTE_DIR && {
   echo 'export OPENRESEARCH_ROOT_EFFORT=high'                                   >> runs/.cache/sdar_gcp.env
   echo 'export OPENRESEARCH_PREFLIGHT_SMOKE=0'                                  >> runs/.cache/sdar_gcp.env
   echo 'export OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S=$RUN_EXPERIMENT_TIMEOUT_S' >> runs/.cache/sdar_gcp.env
+  echo 'export OPENRESEARCH_SDAR_VRAM_GB=$SDAR_VRAM_GB'                          >> runs/.cache/sdar_gcp.env
+  [ -n '$LIFECYCLE_MAX_IMPROVE' ] && echo 'export OPENRESEARCH_LIFECYCLE_MAX_IMPROVE=$LIFECYCLE_MAX_IMPROVE' >> runs/.cache/sdar_gcp.env
   echo 'export OPENRESEARCH_GRADER_SAMPLES=3'                                   >> runs/.cache/sdar_gcp.env
   echo 'export OPENRESEARCH_SDAR_NO_AUTOSTOP=0'                                 >> runs/.cache/sdar_gcp.env
   echo 'unset OPENRESEARCH_BASELINE_EXTRA_GUIDANCE'                             >> runs/.cache/sdar_gcp.env
@@ -138,7 +160,14 @@ ssh_ "cd $REMOTE_DIR && {
   grep -q '^CLAUDE_CODE_OAUTH_TOKEN=.' .env && echo 'oauth token: present' || echo 'oauth token: MISSING'
 }" 60
 
-# --- 4. launch (GREEN-gated; the capacity-bounded guidance ships via the local ----------
+# Stage the run's implementer guidance into the path the preflight launch SCPs. GUIDANCE_FILE
+# (relative to the repo root) lets one runner serve both the smallest-two and full-scope runs.
+if [[ -n "${GUIDANCE_FILE:-}" && -f "$HERE/$GUIDANCE_FILE" ]]; then
+  cp "$HERE/$GUIDANCE_FILE" "$HERE/runs/.cache/sdar_scope_guidance.txt"
+  log "staged implementer guidance from $GUIDANCE_FILE"
+fi
+
+# --- 4. launch (GREEN-gated; the guidance ships via the local --------------------------
 #        runs/.cache/sdar_scope_guidance.txt that gcp_sdar_preflight.sh launch SCPs). -----
 log "launching SDAR reproduction (GREEN-gated) ..."
 launch_once() {

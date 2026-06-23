@@ -72,6 +72,47 @@ def _is_fatal(result: dict) -> bool:
     return isinstance(result, dict) and result.get("outcome") == "fatal"
 
 
+def _has_gradeable_evidence(result: dict) -> bool:
+    """True when a run_experiment result contains metrics worth grading.
+
+    A non-success result from a partial grid (some cells ok, others OOM'd or
+    failed) still carries real per-model metrics that deserve a rubric grade —
+    the run should ship a real score rather than ``None``.
+
+    Conservative: any non-empty ``metrics`` dict is considered gradeable.
+    If the dict contains a ``per_model`` sub-dict, at least one entry with
+    ``status == "ok"`` is required for that stricter check; plain flat-scalar
+    metrics are assumed gradeable (better to over-verify than under-verify).
+    """
+    if not isinstance(result, dict):
+        return False
+    metrics = result.get("metrics")
+    if not isinstance(metrics, dict) or not metrics:
+        return False
+    per_model = metrics.get("per_model")
+    if isinstance(per_model, dict) and per_model:
+        # Has structured per_model — require at least one cell with status==ok.
+        for model_data in per_model.values():
+            if not isinstance(model_data, dict):
+                continue
+            # per_model[model] may be flat or nested under per_dataset/baseline.
+            if model_data.get("status") == "ok":
+                return True
+            for env_data in model_data.values():
+                if not isinstance(env_data, dict):
+                    continue
+                if env_data.get("status") == "ok":
+                    return True
+                for leaf in env_data.values():
+                    if isinstance(leaf, dict) and leaf.get("status") == "ok":
+                        return True
+        # per_model present but no ok cell found — still grade on non-empty metrics
+        # so a partial but non-empty aggregate doesn't silently produce None score.
+        return True
+    # Flat scalar metrics (non-SDAR papers) — any non-empty dict is gradeable.
+    return True
+
+
 def _is_explicit_failure(result: dict) -> bool:
     """Return True ONLY when the result has an explicit ``ok=False`` key.
 
@@ -295,6 +336,28 @@ def drive_lifecycle_chain(
     if run_experiment:
         last_result, stop = _step("run_experiment", code_path, "")
         if stop:
+            # Even when run_experiment stopped the chain (fatal, ok=False, exception,
+            # wall-clock), if the partial result carries gradeable metrics we must
+            # still verify — otherwise a 3-of-6-cell partial grid ships None score.
+            if run_verify and _has_gradeable_evidence(last_result):
+                _safe_emit(
+                    emit,
+                    {
+                        "event": "lifecycle_drive_step",
+                        "stage": start_stage,
+                        "primitive": "verify_against_rubric",
+                        "note": "partial_evidence_verify",
+                    },
+                )
+                _vfn = _get_tool(tools, "verify_against_rubric")
+                if _vfn is not None:
+                    try:
+                        _vr = _call(_vfn, {}, rubric_spec)
+                        summary["driven"].append("verify_against_rubric")
+                        summary["rubric_score"] = _vr.get("overall_score")
+                        summary["verify_result"] = _vr
+                    except Exception:  # noqa: BLE001 — fail-soft; partial evidence, not fatal
+                        pass
             return summary
         repair_count = 0
         while _is_repairable(last_result) and repair_count < max_repair_iterations:
@@ -310,6 +373,26 @@ def drive_lifecycle_chain(
                 code_path = impl_result["code_path"]
             last_result, stop = _step("run_experiment", code_path, "")
             if stop:
+                # Same partial-evidence check inside the repair loop.
+                if run_verify and _has_gradeable_evidence(last_result):
+                    _safe_emit(
+                        emit,
+                        {
+                            "event": "lifecycle_drive_step",
+                            "stage": start_stage,
+                            "primitive": "verify_against_rubric",
+                            "note": "partial_evidence_verify",
+                        },
+                    )
+                    _vfn2 = _get_tool(tools, "verify_against_rubric")
+                    if _vfn2 is not None:
+                        try:
+                            _vr2 = _call(_vfn2, {}, rubric_spec)
+                            summary["driven"].append("verify_against_rubric")
+                            summary["rubric_score"] = _vr2.get("overall_score")
+                            summary["verify_result"] = _vr2
+                        except Exception:  # noqa: BLE001
+                            pass
                 return summary
         summary["repaired"] = repair_count
         summary["last_run_ok"] = not _is_repairable(last_result)
@@ -457,24 +540,35 @@ def run_lifecycle_primary(
         )
         summary["driven"].extend(sub.get("driven") or [])
 
+        # Best-of-climb: apply the sub-drive's score (if any) BEFORE deciding
+        # whether to break — this ensures a partial-evidence verify from the
+        # sub-drive (e.g. a partial OOM grid that still produced real metrics)
+        # is captured even when last_run_ok is False or the sub-drive was fatal.
+        sub_verify = sub.get("verify_result")
+        if sub_verify is not None:
+            sub_score = sub_verify.get("overall_score")
+            if sub_score is not None and (score is None or sub_score >= score):
+                score = sub_score
+                verify_result = sub_verify
+
         if sub.get("fatal_result"):
             summary["fatal_result"] = sub.get("fatal_result")
             summary["stopped_at"] = sub.get("stopped_at")
             summary["stopped_reason"] = sub.get("stopped_reason") or "improve_fatal"
             break
-        if sub.get("verify_result") is None or sub.get("last_run_ok") is False:
+
+        if sub_verify is None or sub.get("last_run_ok") is False:
+            # No gradeable evidence from this climb step, or experiment still
+            # repairable — do not continue improving with a broken implementation.
             summary["stopped_reason"] = sub.get("stopped_reason") or "improve_subdrive_no_progress"
             break
 
-        new_verify = sub.get("verify_result") or verify_result
-        new_score = new_verify.get("overall_score")
-
-        # Best-of-climb: never regress the reported score.
-        if new_score is not None and (score is None or new_score >= score):
-            score = new_score
-            verify_result = new_verify
-
     summary["improved"] = improved
+    # ``score`` and ``verify_result`` track the BEST outcome across the backbone
+    # and all climb iterations.  The backbone's values were the starting point;
+    # any climb iteration that produced a better score has already updated them
+    # above. We therefore write these unconditionally (best-of-run is guaranteed
+    # by the >= check in the sub_score update block and the non-regress loop).
     summary["rubric_score"] = score
     summary["verify_result"] = verify_result
     return summary
