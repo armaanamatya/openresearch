@@ -15,9 +15,11 @@ Verifies that:
 from __future__ import annotations
 
 import io
+import os
 import sys
 from unittest.mock import patch
 
+import pytest
 
 
 def test_token_env_satisfies_oauth_check(monkeypatch):
