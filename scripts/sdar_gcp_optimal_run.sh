@@ -65,7 +65,7 @@ elif [[ "$_st" == "MISSING" && -n "${CREATE_IMAGE:-}" ]]; then
   for i in $(seq 1 "$MAX_POLLS"); do
     out="$("${G[@]}" compute instances create "$INSTANCE" --zone "$ZONE" --machine-type "$GPU_MT" \
       --image-family "$CREATE_IMAGE" --image-project "${CREATE_IMAGE_PROJECT:-deeplearning-platform-release}" \
-      --maintenance-policy TERMINATE --boot-disk-size "${CREATE_DISK_GB:-400}" --boot-disk-type pd-ssd \
+      --maintenance-policy TERMINATE --boot-disk-size "${CREATE_DISK_GB:-1000}" --boot-disk-type pd-ssd \
       --metadata install-nvidia-driver=True --no-restart-on-failure 2>&1)"
     if [[ "$(status_)" == "RUNNING" ]]; then log "[$i] CAPACITY — created $INSTANCE ($GPU_MT in $ZONE)"; got=1; break; fi
     if echo "$out" | grep -qiE 'STOCKOUT|enough resources|EXHAUSTED|currently unavailable'; then
