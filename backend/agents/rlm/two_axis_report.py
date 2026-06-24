@@ -271,12 +271,22 @@ def _verdict_to_payload(v, fidelity_score: float) -> dict[str, Any]:
     }
 
 
-def compute_and_attach(report: dict[str, Any], run_dir: Path) -> bool:
+def compute_and_attach(
+    report: dict[str, Any],
+    run_dir: Path,
+    *,
+    no_learning_signal: bool = False,
+) -> bool:
     """Compute the two-axis verdict and attach it to ``report`` in place.
 
     Returns ``True`` iff the two-axis verdict was applied (the caller must then
     SKIP the legacy ``reconcile_verdict_with_score``).  Returns ``False`` when
     disabled or on any error (legacy behaviour preserved).
+
+    Args:
+        no_learning_signal: Forwarded to ``compute_reproducibility_verdict``; when
+            True forces ``replication_verdict="inconclusive"`` (F3 gate).  Default
+            False ⇒ byte-identical to prior behaviour.
     """
     if not is_enabled():
         return False
@@ -291,6 +301,7 @@ def compute_and_attach(report: dict[str, Any], run_dir: Path) -> bool:
             certificate=certificate,
             claims=claims,
             min_seeds_for_contradiction=_min_seeds_for_contradiction(),
+            no_learning_signal=no_learning_signal,
         )
         report["reproducibility"] = _verdict_to_payload(verdict, fidelity_score)
         # Top-level mirrors for the leaderboard / UI (cheap to read).

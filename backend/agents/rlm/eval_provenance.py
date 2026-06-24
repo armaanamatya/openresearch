@@ -1,0 +1,453 @@
+"""
+Eval-metric provenance guard — verifiable held-out measurement check.
+
+Pure stdlib module — no third-party imports.  Detects run_experiment results
+whose result-claiming rate metric (accuracy/success_rate/f1/em/…) cannot be
+recomputed from persisted per-example eval records, or whose reported value
+does not match the mean of those records.
+
+The motivating case is the SDAR pipeline where ``accuracy = mean_success × 100``
+and ``success ≡ reward``, so a true success of ~0.0083 is reported as
+``accuracy ≈ 0.83``.  Every existing guard misses this: the value is in [0,1],
+non-zero, and uses a real key.
+
+Design:
+  - Producer API (``record_eval``): agent-facing, copied into ``code/`` by the
+    harness.  Computes mean(outcomes), persists an ``eval_provenance.json``
+    sidecar, and RETURNS the metric value for the agent to write into
+    ``metrics.json``.  Fail-soft — never raises from the training script.
+  - Guard API (``eval_provenance_should_veto``): harness-facing, disk-based.
+    Scans cell-level ``metrics.json`` files under the ``outputs/`` subtree,
+    checks that each result-claiming rate metric is backed by a verifiable
+    ``eval_provenance.json``, and vetoes if the recomputed mean disagrees with
+    the reported value (tolerance: 1e-3).
+  - Flag default-OFF: ``OPENRESEARCH_EVAL_PROVENANCE_GUARD``.
+  - Fail-soft everywhere: any exception → safe fallback.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+from pathlib import Path
+from typing import Any
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+RATE_METRIC_KEYS: frozenset[str] = frozenset({
+    "accuracy",
+    "success_rate",
+    "success",
+    "f1",
+    "em",
+    "exact_match",
+    "precision",
+    "recall",
+    "pass_rate",
+})
+
+SCHEMA_VERSION: int = 1
+
+_RECORDS_SAMPLE_CAP: int = 64   # store at most this many per-example records in the sidecar
+_RATE_EPS: float = 1e-4          # tolerance above 1.0 (a value of 1.0 is fine)
+_RECOMPUTE_TOL: float = 1e-3     # |reported − recomputed| tolerance
+
+
+# ---------------------------------------------------------------------------
+# Feature flag
+# ---------------------------------------------------------------------------
+
+def eval_provenance_guard_enabled() -> bool:
+    """True iff ``OPENRESEARCH_EVAL_PROVENANCE_GUARD`` is in {'1','true','yes','on'}."""
+    return os.environ.get(
+        "OPENRESEARCH_EVAL_PROVENANCE_GUARD", ""
+    ).strip().lower() in ("1", "true", "yes", "on")
+
+
+# ---------------------------------------------------------------------------
+# Producer API  (agent-facing; copied into code/ by the harness)
+# ---------------------------------------------------------------------------
+
+def record_eval(
+    output_dir: str | Path,
+    *,
+    model_key: str,
+    env: str,
+    baseline: str,
+    metric_name: str,
+    records: list[dict[str, Any]],
+    held_out: bool = True,
+    seed: int | None = None,
+    train_ids: list | None = None,
+) -> float:
+    """Compute the eval metric as mean of per-example outcomes, persist a
+    verifiable ``<output_dir>/eval_provenance.json`` sidecar, and RETURN the
+    metric value for the agent to write into ``metrics.json``.
+
+    Fail-soft — never raises from the training script.
+
+    Args:
+        output_dir:   Directory to write ``eval_provenance.json`` into
+                      (created if absent).
+        model_key:    Model identifier (e.g. ``"qwen3-1.7b"``).
+        env:          Environment/dataset name (e.g. ``"alfworld"``).
+        baseline:     Baseline name (e.g. ``"grpo"``).
+        metric_name:  Metric key (e.g. ``"success_rate"``).
+        records:      List of per-example dicts, each with a numeric
+                      ``"outcome"`` in [0, 1].  Example::
+
+                          [{"id": "ep_0", "outcome": 1.0,
+                            "prediction": "...", "gold": "..."},
+                           {"id": "ep_1", "outcome": 0.0, ...}]
+
+        held_out:     Whether evaluation was on a held-out slice (default True).
+        seed:         Optional RNG seed stamped into the sidecar.
+        train_ids:    Optional list of task ids used during training (e.g. game-file
+                      paths for ALFWorld, "source:index" strings for Search-QA).
+                      Persisted so the guard can check eval/train disjointness.
+                      Omitted from the sidecar when None.
+
+    Returns:
+        ``mean(outcome)`` across all valid records (0.0 if records are
+        empty or all invalid).
+    """
+    # --- Validate and coerce records ---
+    valid_outcomes: list[float] = []
+    try:
+        if isinstance(records, (list, tuple)):
+            for rec in records:
+                try:
+                    v = float(rec["outcome"]) if isinstance(rec, dict) else float(rec)
+                    if math.isfinite(v):
+                        valid_outcomes.append(v)
+                except (TypeError, KeyError, ValueError):
+                    pass
+    except Exception:  # noqa: BLE001 — fail-soft
+        valid_outcomes = []
+
+    value: float = sum(valid_outcomes) / len(valid_outcomes) if valid_outcomes else 0.0
+
+    # --- Build sidecar payload ---
+    try:
+        capped_records: list[dict[str, Any]] = []
+        records_truncated = False
+        try:
+            all_recs = list(records) if isinstance(records, (list, tuple)) else []
+            # Keep the OUTCOME of EVERY record so the guard can recompute the exact
+            # mean at any N (floats are tiny); cap only the heavy prediction/gold text
+            # to the first _RECORDS_SAMPLE_CAP records to bound the sidecar size.
+            for i, rec in enumerate(all_recs):
+                if isinstance(rec, dict):
+                    slim: dict[str, Any] = {}
+                    if "id" in rec:
+                        slim["id"] = rec["id"]
+                    if "outcome" in rec:
+                        slim["outcome"] = rec["outcome"]
+                    if i < _RECORDS_SAMPLE_CAP:
+                        for field in ("prediction", "gold"):
+                            if field in rec:
+                                slim[field] = rec[field]
+                    else:
+                        records_truncated = True  # heavy text dropped for this record
+                    capped_records.append(slim)
+                else:
+                    # non-dict record — store the raw value (it IS the outcome)
+                    capped_records.append(rec)
+        except Exception:  # noqa: BLE001
+            capped_records = []
+            records_truncated = False
+
+        payload: dict[str, Any] = {
+            "schema_version": SCHEMA_VERSION,
+            "model_key": model_key,
+            "env": env,
+            "baseline": baseline,
+            "metric_name": metric_name,
+            "metric_value": value,
+            "n_eval": len(valid_outcomes),
+            "held_out": held_out,
+            "seed": seed,
+            "records": capped_records,
+            "records_truncated": records_truncated,
+        }
+
+        # Persist train_ids for the disjointness check (omit key when not supplied).
+        try:
+            if train_ids is not None:
+                all_train_ids = list(train_ids)
+                payload["train_ids"] = [str(tid) for tid in all_train_ids[:_RECORDS_SAMPLE_CAP]]
+                payload["n_train"] = len(all_train_ids)
+        except Exception:  # noqa: BLE001 — fail-soft
+            pass
+
+        out_dir = Path(output_dir)
+        target = out_dir / "eval_provenance.json"
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        except Exception:  # noqa: BLE001 — fail-soft: return the computed value regardless
+            pass
+    except Exception:  # noqa: BLE001 — fail-soft
+        pass
+
+    return value
+
+
+# ---------------------------------------------------------------------------
+# Guard API  (harness-facing; disk-based)
+# ---------------------------------------------------------------------------
+
+def _find_rate_metric(m: dict[str, Any]) -> tuple[str, float] | None:
+    """Return (key, value) for the first top-level rate-metric key with a
+    finite positive numeric value, or None if none found."""
+    for k, v in m.items():
+        if k.lower() not in RATE_METRIC_KEYS:
+            continue
+        # A boolean (e.g. "success": true used as a per-cell status flag) is NOT a
+        # rate metric — float(True) == 1.0 would otherwise demand a sidecar. Skip it.
+        if isinstance(v, bool):
+            continue
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(fv) and fv > 0.0:
+            return (k, fv)
+    return None
+
+
+def eval_provenance_should_veto(code_dir: str | Path) -> tuple[bool, str | None]:
+    """Disk-based veto.  Returns ``(True, message)`` iff the guard is ENABLED
+    and at least one result-claiming cell fails verification.
+
+    Pure / fail-soft: any error → ``(False, None)``.
+
+    The guard processes only ``metrics.json`` files that are:
+      * inside an ``outputs/`` subtree (i.e. ``"outputs"`` in their path parts), AND
+      * contain a ``"status"`` key (marking them as cell-level results).
+
+    A cell is checked only when its status is a success-equivalent string.  A
+    cell with no rate-metric key (e.g. RL-reward-only) is conservatively exempt.
+    """
+    if not eval_provenance_guard_enabled():
+        return (False, None)
+
+    try:
+        code_dir = Path(code_dir)
+        if not code_dir.is_dir():
+            return (False, None)
+    except Exception:  # noqa: BLE001
+        return (False, None)
+
+    _SUCCESS_STATUSES = frozenset({"ok", "success", "succeeded", "completed"})
+    violations: list[str] = []
+
+    try:
+        for metrics_path in code_dir.rglob("metrics.json"):
+            try:
+                # Only cell-level results (inside an outputs/ subtree with a status key)
+                if "outputs" not in metrics_path.parts:
+                    continue
+
+                # Load metrics
+                try:
+                    m = json.loads(metrics_path.read_text(encoding="utf-8"))
+                except Exception:  # noqa: BLE001
+                    continue
+
+                if not isinstance(m, dict):
+                    continue
+
+                # Only process success-status cells
+                status = str(m.get("status", "")).lower()
+                if status not in _SUCCESS_STATUSES:
+                    continue
+
+                # Find the first result-claiming rate metric with a positive value
+                pair = _find_rate_metric(m)
+                if pair is None:
+                    # No rate metric key — conservatively exempt (RL-reward-only cells)
+                    continue
+
+                rate_key, reported = pair
+                cell_label = str(metrics_path.parent)
+
+                # Look for eval_provenance.json in the same directory
+                prov_path = metrics_path.parent / "eval_provenance.json"
+                if not prov_path.exists():
+                    violations.append(
+                        f"{cell_label}: claims {rate_key}={reported:.4f} but has no"
+                        f" eval_provenance.json (the metric is not verifiable as a real"
+                        f" held-out measurement)"
+                    )
+                    if len(violations) >= 3:
+                        break
+                    continue
+
+                # Load and validate the sidecar
+                try:
+                    sc = json.loads(prov_path.read_text(encoding="utf-8"))
+                except Exception:  # noqa: BLE001
+                    # Sidecar unreadable — treat as absent
+                    violations.append(
+                        f"{cell_label}: eval_provenance.json is unreadable"
+                    )
+                    if len(violations) >= 3:
+                        break
+                    continue
+
+                if not isinstance(sc, dict):
+                    violations.append(
+                        f"{cell_label}: eval_provenance.json has unexpected format"
+                    )
+                    if len(violations) >= 3:
+                        break
+                    continue
+
+                records = sc.get("records")
+                if not isinstance(records, list) or len(records) == 0:
+                    violations.append(
+                        f"{cell_label}: empty eval records in eval_provenance.json"
+                    )
+                    if len(violations) >= 3:
+                        break
+                    continue
+
+                # Validate per-example outcomes
+                outcomes: list[float] = []
+                out_of_range = False
+                for rec in records:
+                    try:
+                        if isinstance(rec, dict):
+                            ov = float(rec["outcome"])
+                        else:
+                            ov = float(rec)
+                        if not math.isfinite(ov):
+                            out_of_range = True
+                            break
+                        if ov < 0.0 or ov > 1.0 + _RATE_EPS:
+                            out_of_range = True
+                            break
+                        outcomes.append(ov)
+                    except (TypeError, KeyError, ValueError):
+                        pass  # skip uncoercible records
+
+                if out_of_range:
+                    violations.append(
+                        f"{cell_label}: per-example outcome out of [0,1] in"
+                        f" eval_provenance.json (outcomes must be fractions, not"
+                        f" counts or ×100-scaled values)"
+                    )
+                    if len(violations) >= 3:
+                        break
+                    continue
+
+                if not outcomes:
+                    violations.append(
+                        f"{cell_label}: no valid numeric outcomes in eval_provenance.json"
+                    )
+                    if len(violations) >= 3:
+                        break
+                    continue
+
+                recomputed = sum(outcomes) / len(outcomes)
+
+                # Core check: reported value must match mean(outcomes)
+                if abs(reported - recomputed) > _RECOMPUTE_TOL:
+                    violations.append(
+                        f"{cell_label}: reported {rate_key}={reported:.4f} !="
+                        f" mean(eval records)={recomputed:.4f}"
+                        f" (difference {abs(reported - recomputed):.4f} > tol {_RECOMPUTE_TOL};"
+                        f" likely reward×100 or other non-held-out scaling)"
+                    )
+                    if len(violations) >= 3:
+                        break
+                    continue
+
+                # Cross-check with sidecar's own metric_value field (if present)
+                sc_metric_value = sc.get("metric_value")
+                if sc_metric_value is not None:
+                    try:
+                        sc_mv = float(sc_metric_value)
+                        if abs(reported - sc_mv) > _RECOMPUTE_TOL:
+                            violations.append(
+                                f"{cell_label}: metrics.json disagrees with"
+                                f" eval_provenance.metric_value"
+                                f" ({rate_key}={reported:.4f} vs sidecar={sc_mv:.4f})"
+                            )
+                            if len(violations) >= 3:
+                                break
+                    except (TypeError, ValueError):
+                        pass  # non-numeric metric_value — skip cross-check
+
+                # Disjointness check: eval set must not overlap the training set.
+                # Conservative: only fires when BOTH train_ids (non-empty) AND at
+                # least one record carries an "id" field are present — missing
+                # either side is not a violation (old runs without ids are safe).
+                try:
+                    sc_train_ids = sc.get("train_ids")
+                    if isinstance(sc_train_ids, list) and sc_train_ids:
+                        eval_ids = {
+                            str(rec["id"])
+                            for rec in records
+                            if isinstance(rec, dict) and "id" in rec
+                        }
+                        if eval_ids:
+                            train_id_set = {str(tid) for tid in sc_train_ids}
+                            overlap = eval_ids & train_id_set
+                            if overlap:
+                                violations.append(
+                                    f"{cell_label}: eval set overlaps the training set"
+                                    f" ({len(overlap)} shared task id(s)) — the metric"
+                                    f" is in-sample, not held-out"
+                                )
+                                if len(violations) >= 3:
+                                    break
+                except Exception:  # noqa: BLE001 — fail-soft
+                    pass
+
+            except Exception:  # noqa: BLE001 — per-cell fail-soft
+                continue
+
+    except Exception:  # noqa: BLE001 — outer scan fail-soft
+        return (False, None)
+
+    if violations:
+        return (True, "; ".join(violations))
+    return (False, None)
+
+
+# ---------------------------------------------------------------------------
+# Repair message
+# ---------------------------------------------------------------------------
+
+def eval_provenance_repair_message(detail: str) -> str:
+    """Actionable repair directive naming ``detail`` and instructing the agent
+    to use ``record_eval`` from ``eval_provenance`` to produce a verifiable
+    held-out metric.  Mirrors the tone and shape of ``zero_metrics_repair_message``.
+    """
+    try:
+        detail_str = str(detail).strip() if detail else "(no detail)"
+        return (
+            f"fabrication_suspected: eval-metric provenance check failed — {detail_str}. "
+            f"Re-implement: compute each cell's eval metric on a HELD-OUT slice vs gold "
+            f"using real model outputs. Call "
+            f"`record_eval(output_dir, model_key=..., env=..., baseline=..., "
+            f"metric_name='success_rate', records=["
+            f"{{'id':..., 'outcome':0/1 or f1, 'prediction':..., 'gold':...}}, ...])` "
+            f"from `eval_provenance`, and write its returned fraction (in [0,1]) to "
+            f"metrics.json. "
+            f"Do NOT scale by 100/128. Do NOT set success ≡ reward. "
+            f"Each per-example outcome must be a real measurement in [0,1] "
+            f"(e.g. 1.0 if the model's answer matches gold, 0.0 otherwise; "
+            f"token-F1 for extractive QA; exact-match for MATH)."
+        )
+    except Exception:  # noqa: BLE001
+        return (
+            "fabrication_suspected: eval-metric provenance check failed. "
+            "Re-implement: compute eval metrics on a held-out slice, call record_eval "
+            "from eval_provenance, and write the returned fraction (in [0,1]) to metrics.json."
+        )

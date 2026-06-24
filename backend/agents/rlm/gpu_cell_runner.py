@@ -47,6 +47,102 @@ from pathlib import Path
 from queue import Empty, Queue
 from typing import Any
 
+# ---------------------------------------------------------------------------
+# Post-cell checkpoint GC
+# ---------------------------------------------------------------------------
+
+def cell_checkpoint_gc_enabled() -> bool:
+    """Return True iff OPENRESEARCH_CELL_CHECKPOINT_GC is in {'1','true','yes','on'}.
+
+    Default OFF — unset/empty/any other value is a no-op so that existing runs
+    and all currently-passing tests are byte-for-byte identical when the flag is
+    absent.
+    """
+    return os.environ.get("OPENRESEARCH_CELL_CHECKPOINT_GC", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+# Weight-blob suffixes that are safe to delete after a cell's metrics are captured.
+# NEVER delete evidence files (metrics.json, provenance.json, training_curves.*, …).
+_WEIGHT_SUFFIXES: frozenset[str] = frozenset({".pt", ".bin", ".safetensors", ".ckpt"})
+
+# Evidence filenames that must NEVER be deleted, regardless of suffix.
+_EVIDENCE_NAMES: frozenset[str] = frozenset({
+    "metrics.json",
+    "provenance.json",
+    "eval_provenance.json",
+    "training_curves.json",
+    "training_curves.png",
+    "config_used.json",
+    "cell_manifest.json",
+    "env_health.jsonl",
+    "commands.log",
+})
+
+
+def _gc_cell_weights(cell_output_dir: "str | Path") -> int:
+    """Delete large model-weight artifacts in a COMPLETED cell's output dir.
+
+    Keeps all evidence files (metrics.json, provenance.json, …).  Only files
+    whose suffix is in _WEIGHT_SUFFIXES AND whose name is not in _EVIDENCE_NAMES
+    are candidates.  Also cleans the ``checkpoints/`` subdir when present.
+
+    Returns the number of files removed.  Fail-soft: any per-file error is
+    swallowed so a single bad unlink never aborts the rest and never propagates
+    into the grid.  No-op when ``cell_checkpoint_gc_enabled()`` is False (the
+    default).
+    """
+    if not cell_checkpoint_gc_enabled():
+        return 0
+
+    cell_dir = Path(cell_output_dir)
+    if not cell_dir.is_dir():
+        return 0
+
+    removed = 0
+    freed_bytes = 0
+
+    # Collect candidate paths: top-level dir + checkpoints/ subdir (non-recursive
+    # beyond one level — weight files never live deeper in the agent's layout).
+    candidate_dirs: list[Path] = [cell_dir]
+    ckpt_subdir = cell_dir / "checkpoints"
+    if ckpt_subdir.is_dir():
+        candidate_dirs.append(ckpt_subdir)
+
+    for search_dir in candidate_dirs:
+        try:
+            entries = list(search_dir.iterdir())
+        except Exception:  # noqa: BLE001 — unreadable dir; skip silently
+            continue
+        for entry in entries:
+            if not entry.is_file():
+                continue
+            # Never touch evidence files.
+            if entry.name in _EVIDENCE_NAMES:
+                continue
+            # Only delete recognised weight-blob suffixes.
+            if entry.suffix.lower() not in _WEIGHT_SUFFIXES:
+                continue
+            try:
+                fsize = entry.stat().st_size
+                entry.unlink()
+                removed += 1
+                freed_bytes += fsize
+            except Exception:  # noqa: BLE001 — one bad unlink never stops the rest
+                logger.warning(
+                    "gpu_cell_runner: cell_gc: failed to delete %s — skipping", entry
+                )
+
+    if removed:
+        logger.info(
+            "gpu_cell_runner: cell_gc: dir=%s freed=%d files (%.1f MiB)",
+            cell_dir,
+            removed,
+            freed_bytes / (1024 * 1024),
+        )
+    return removed
+
 try:  # sandbox-flat: cell_scheduler.py is copied next to this file (see _HARNESS_CODE_HELPERS).
     from cell_scheduler import (
         CELL_MANIFEST_NAME,
@@ -911,6 +1007,18 @@ def run_matrix(
 
             if returncode == 0:
                 metrics = _load_metrics(output_dir)
+
+                # Post-cell checkpoint GC: delete large weight files now that
+                # metrics.json has been read into `metrics`.  Only fires when
+                # OPENRESEARCH_CELL_CHECKPOINT_GC is on AND metrics were
+                # successfully captured (don't GC a cell whose weights might
+                # aid a repair).  Fail-soft: any error inside _gc_cell_weights
+                # is already swallowed; the outer try/except is an extra belt.
+                if metrics is not None:
+                    try:
+                        _gc_cell_weights(output_dir)
+                    except Exception:  # noqa: BLE001 — GC must never break the grid
+                        pass
 
                 # Part-2 VRAM fabrication check: a successful cell that used
                 # near-zero GPU memory cannot have trained a real LLM — flag it.

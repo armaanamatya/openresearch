@@ -62,13 +62,39 @@ appear at a mask-``0`` position.
 
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Protocol, Tuple
 
 if TYPE_CHECKING:  # hints only — never imported at runtime (keeps the module dep-free)
     from sdar_env_base import AgenticEnv  # noqa: F401
 
-__all__ = ["Turn", "Trajectory", "rollout_episode"]
+__all__ = ["Turn", "Trajectory", "rollout_episode", "_append_env_health"]
+
+
+# ---------------------------------------------------------------------------
+# F2 env-liveness producer — harness-owned, agent-cannot-suppress
+# ---------------------------------------------------------------------------
+
+def _append_env_health(record: dict[str, Any]) -> None:
+    """Append one JSON episode-health line to ``$OPENRESEARCH_CELL_OUTPUT_DIR/env_health.jsonl``.
+
+    No-op when ``OPENRESEARCH_CELL_OUTPUT_DIR`` is unset (so non-cell callers and
+    unit tests that don't set the var are unaffected).  Fully fail-soft: any
+    write or serialisation error is silently swallowed — a liveness-write failure
+    must never break the rollout.
+    """
+    try:
+        out_dir = os.environ.get("OPENRESEARCH_CELL_OUTPUT_DIR", "")
+        if not out_dir:
+            return
+        line = json.dumps(record, default=str)
+        health_path = os.path.join(out_dir, "env_health.jsonl")
+        with open(health_path, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except Exception:  # noqa: BLE001 — fail-soft, never break the rollout
+        pass
 
 
 # A tokenizer is anything exposing ``.encode(text) -> list[int]`` OR being callable
@@ -319,6 +345,24 @@ def rollout_episode(
     info["response_lengths"] = response_lengths
     info["terminal_reward"] = terminal_reward
     info["shaped_reward"] = shaped_sum
+
+    # F2 env-liveness producer — harness-owned, agent-cannot-suppress.
+    # Append one episode record so the gate can detect a dead env server.
+    # Fail-soft: _append_env_health never raises; no-op if env var is unset.
+    _n_turns = len(turns)
+    _unavailable = bool(info.get("unavailable", False))
+    _served = _n_turns >= 1 and not _unavailable
+    try:
+        _env_name = str(getattr(env, "env_name", None) or type(env).__name__ or "")
+    except Exception:  # noqa: BLE001
+        _env_name = ""
+    _append_env_health({
+        "env": _env_name,
+        "n_turns": _n_turns,
+        "reward": float(reward),
+        "unavailable": _unavailable,
+        "served": _served,
+    })
 
     return Trajectory(
         turns=turns,

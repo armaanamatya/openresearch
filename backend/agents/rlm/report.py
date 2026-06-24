@@ -1782,6 +1782,7 @@ def write_final_report_rlm(
     run_experiment_calls: int | None = None,
     run_experiment_ok_calls: int | None = None,
     run_experiment_partial_timeout_calls: int | None = None,
+    no_learning_signal: bool = False,
 ) -> tuple[Path, Path]:
     """Write `final_report.json` and `final_report.md` atomically.
 
@@ -2026,7 +2027,7 @@ def write_final_report_rlm(
         from backend.agents.rlm.two_axis_report import compute_and_attach as _attach_two_axis
         _report_dict = report.model_dump()
         _gate_approved_verdict = report.verdict
-        if _attach_two_axis(_report_dict, project_dir):
+        if _attach_two_axis(_report_dict, project_dir, no_learning_signal=no_learning_signal):
             # Gate-order hardening (audit 2026-06-10): two-axis runs AFTER the
             # evidence gate and projects the verdict from ROOT-WRITABLE
             # rlm_state/ artifacts (fidelity_certificate.json, repro_spec.json)

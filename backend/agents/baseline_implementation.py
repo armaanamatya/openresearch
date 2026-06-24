@@ -71,6 +71,7 @@ _HARNESS_CODE_HELPERS: tuple[str, ...] = (
     "alfworld_env.py",
     "webshop_env.py",
     "provenance.py",  # D2: emit_provenance / emit_figure_sidecar — legibility for the grader
+    "eval_provenance.py",  # eval-metric provenance producer (record_eval) — verifiable held-out metric sidecar
     "convergence_evidence.py",  # Module A: structured convergence/sweep evidence (rubric_guard consults it)
     "fair_comparison.py",  # Module B: identical-init snapshot + verifiable init fingerprint
 )

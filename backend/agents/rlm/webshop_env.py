@@ -233,6 +233,11 @@ class WebShopEnv(AgenticEnv):
     no method raises.
     """
 
+    #: Canonical env-axis name (matches the cells.json / per_model env key and the
+    #: rubric leaf text). The F2 env-liveness producer labels each episode-health
+    #: record with it, and a dead-env exclusion's ``item`` is matched on it.
+    env_name: str = "webshop"
+
     #: WebShop episodes are short web-navigation rollouts; 15 turns is the
     #: conventional cap (a few searches + clicks + the buy).
     max_turns: int = 15
@@ -453,9 +458,17 @@ class WebShopEnv(AgenticEnv):
         return idx
 
     def _fetch_landing(self) -> str:
-        """GET the per-session instruction/search page; degrade on failure."""
+        """GET the per-session instruction/search page; degrade on failure.
+
+        When the server is unavailable (no URL or bad response), leave the env
+        in a terminal-unavailable state (``_done=True``, ``last_info["unavailable"]=True``)
+        so ``rollout_episode`` records 0 served turns instead of burning the full
+        turn budget on degraded no-op steps.
+        """
         if not self.base_url:
-            self._unavailable_reason = "WEBSHOP_URL is not set"
+            reason = "WEBSHOP_URL is not set"
+            self._unavailable_reason = reason
+            self._finish(0.0, info={"unavailable": True, "reason": reason})
             return (
                 "[WebShop unavailable] No server URL configured. "
                 "Emit search[<query>] once the server is up."
@@ -464,9 +477,9 @@ class WebShopEnv(AgenticEnv):
         # server also accepts a goal index query.  Either response is coerced.
         resp = self._get(f"/{urllib.parse.quote(self._session_id)}?goal_idx={self._goal_idx}")
         if not getattr(resp, "ok", False):
-            self._unavailable_reason = (
-                f"landing GET returned status {getattr(resp, 'status', 0)}"
-            )
+            reason = f"landing GET returned status {getattr(resp, 'status', 0)}"
+            self._unavailable_reason = reason
+            self._finish(0.0, info={"unavailable": True, "reason": reason})
             return (
                 "[WebShop degraded] Could not load the instruction page "
                 f"(status {getattr(resp, 'status', 0)}). Try search[<query>]."

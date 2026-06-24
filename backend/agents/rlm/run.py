@@ -3985,15 +3985,10 @@ def _finalize(
     except Exception:  # noqa: BLE001 — producers are best-effort; never block finalize
         logger.warning("_finalize: two-axis producers failed (non-fatal)", exc_info=True)
 
-    # E1 (NEGATIVE_LESSONS): mine agent-correctable failure_class rows from this
-    # run's experiment_runs.jsonl into runs/_lessons/<arxiv_id>.json so the NEXT
-    # run of the same paper injects them into implementer guidance. Flag-gated
-    # (OPENRESEARCH_NEGATIVE_LESSONS) + fail-soft; off / no arxiv_id → no-op (today).
-    try:
-        from backend.agents.rlm import lesson_distiller as _ld
-        _ld.mine_lessons(project_dir, project_dir.parent, getattr(ctx, "arxiv_id", None))
-    except Exception:  # noqa: BLE001 — lesson mining must never block finalize
-        logger.warning("_finalize: negative-lessons mining failed (non-fatal)", exc_info=True)
+    # E1 NEGATIVE_LESSONS mining runs exactly ONCE — in the MUSE-lite block AFTER
+    # write_final_report_rlm below (this pre-write duplicate call was removed
+    # 2026-06-24; mine_lessons reads experiment_runs.jsonl, which is complete at
+    # either position, so a single post-write call suffices and halves the I/O).
 
     # Finalize-time freshness re-grade (2026-06-13): if the complete on-disk
     # grid landed AFTER the last verify_against_rubric and the recorded grade is
@@ -4013,6 +4008,29 @@ def _finalize(
     except Exception:  # noqa: BLE001 — re-grade is advisory, never blocks finalize
         logger.warning("_finalize: finalize_regrade failed (non-fatal)", exc_info=True)
 
+    # F3 no-learning-signal (flag-gated, default OFF): if EVERY judgeable training
+    # curve is flat (reward never rose AND loss never descended), the run is
+    # under-powered / mis-wired, not a real reproduction. Force replication_verdict
+    # to 'inconclusive' (threaded into write_final_report_rlm below) + emit a loud
+    # warning. Deterministic — reads code/metrics.json curves, NEVER the LLM grade.
+    # Fail-soft; default-OFF ⇒ byte-identical.
+    _no_learning_signal = False
+    try:
+        from backend.agents.rlm import no_learning_signal as _nls
+        if not run_failed and _nls.no_learning_signal_enabled():
+            _nls_flag, _nls_detail = _nls.detect_no_learning_signal(project_dir / "code")
+            if _nls_flag:
+                _no_learning_signal = True
+                try:
+                    emit(build_run_warning_event(
+                        level="warn", code="no_learning_signal",
+                        message=_nls.no_learning_repair_message(_nls_detail or ""),
+                    ))
+                except Exception:  # noqa: BLE001
+                    logger.debug("_finalize: no_learning_signal emit failed", exc_info=True)
+    except Exception:  # noqa: BLE001 — the no-learning detector must never block finalize
+        logger.warning("_finalize: no_learning_signal detection failed (non-fatal)", exc_info=True)
+
     # P2.3 — OFFLINE adversarial validation panel (report-stamping only). Extracted to
     # _run_finalize_validation_panel so the fatal-abort + hard-stop paths run it too.
     # Runs BEFORE write_final_report_rlm so the verdict is on disk for the stamp chokepoint.
@@ -4022,7 +4040,8 @@ def _finalize(
     json_path, _md_path = write_final_report_rlm(
         report, project_dir, run_experiment_calls=run_experiment_call_count(ctx),
         run_experiment_ok_calls=run_experiment_success_count(ctx),
-        run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx)
+        run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx),
+        no_learning_signal=_no_learning_signal,
     )
     _notify_run_terminal(project_dir)
 

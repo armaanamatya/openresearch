@@ -3066,6 +3066,33 @@ def _scalar_rewards(mv: dict) -> list[float]:
     return out
 
 
+def _model_result_leaves(mv: dict) -> list[dict]:
+    """Result leaves under a ``per_model[model]`` value, handling BOTH shapes.
+
+    Flat monolithic: ``mv`` itself carries ``status`` → ``[mv]``.
+    Nested cells-route: ``mv = {env: {baseline: leaf}}`` → the innermost dicts
+    carrying a ``status`` key.
+
+    Fix (BUG-2026-06-24): the old guard read ``mv['status']`` directly, so for the
+    nested cells-route shape (every SDAR-style run) it skipped EVERY model and was a
+    silent dead letter.  Descending to the leaves restores the intended check.
+    """
+    if "status" in mv:
+        return [mv]
+    leaves: list[dict] = []
+    for ev in mv.values():
+        if not isinstance(ev, dict):
+            continue
+        if "status" in ev:
+            leaves.append(ev)
+        else:
+            leaves.extend(
+                leaf for leaf in ev.values()
+                if isinstance(leaf, dict) and "status" in leaf
+            )
+    return leaves
+
+
 def _degenerate_training_violation(metrics: dict, *, epsilon: float = 1e-6) -> tuple[str, str] | None:
     """Flag a model the agent marked succeeded that shows NO learning signal.
 
@@ -3073,33 +3100,47 @@ def _degenerate_training_violation(metrics: dict, *, epsilon: float = 1e-6) -> t
     unambiguous cases fire), per-model so a mixed run names the offender:
       (1) status=ok but an EXPLICIT 0 optimizer steps — 'completed' without training;
       (2) status=ok but EVERY recorded reward MAGNITUDE is ~0 (|reward| <= epsilon
-          across the whole curve + scalar reward fields) — broken matching / no signal.
+          across ALL of the model's leaves) — broken matching / no signal anywhere.
+    Handles BOTH the flat ``per_model[model]=leaf`` and the nested cells-route
+    ``per_model[model]={env:{baseline:leaf}}`` shapes (via ``_model_result_leaves``).
+    Condition (2) is judged at the MODEL level so a model with ANY non-zero leaf is
+    never flagged — byte-identical to the monolithic single-leaf semantics, so this
+    introduces no new false-positive on a partial run that learned on some env.
     Uses ``abs`` so a legitimately NEGATIVE reward (step/length/KL penalties are
     normal in RL) is NOT mistaken for "no reward"; and does NOT flag a constant but
     non-zero curve (that can be a converged plateau, not degeneracy). Only judges
-    models whose status is in :data:`_OK_STATUSES`.
+    leaves whose status is in :data:`_OK_STATUSES`.
     """
     per_model = metrics.get("per_model")
     if not isinstance(per_model, dict):
         return None
     for m, mv in per_model.items():
-        if not isinstance(mv, dict) or str(mv.get("status", "")).lower() not in _OK_STATUSES:
+        if not isinstance(mv, dict):
             continue
-        # (1) claimed success but explicitly zero optimizer steps.
-        if _max_train_steps(mv) == 0:
-            return ("degenerate_training",
-                    f"degenerate_training: model {m!r} status=ok but ran 0 optimizer steps "
-                    "— it 'completed' without training. Ensure the loop runs optimizer.step() "
-                    "and records steps/reward.")
-        # (2) every recorded reward magnitude ~0 — no signal at all.
-        rewards = _reward_curve(mv) + _scalar_rewards(mv)
+        ok_leaves = [
+            lf for lf in _model_result_leaves(mv)
+            if str(lf.get("status", "")).lower() in _OK_STATUSES
+        ]
+        if not ok_leaves:
+            continue
+        # (1) claimed success but explicitly zero optimizer steps (any leaf).
+        for lf in ok_leaves:
+            if _max_train_steps(lf) == 0:
+                return ("degenerate_training",
+                        f"degenerate_training: model {m!r} status=ok but ran 0 optimizer steps "
+                        "— it 'completed' without training. Ensure the loop runs optimizer.step() "
+                        "and records steps/reward.")
+        # (2) every recorded reward magnitude ~0 across ALL the model's leaves — no signal anywhere.
+        rewards: list[float] = []
+        for lf in ok_leaves:
+            rewards += _reward_curve(lf) + _scalar_rewards(lf)
         if rewards and max(abs(x) for x in rewards) <= epsilon:
             return ("degenerate_training",
                     f"degenerate_training: model {m!r} status=ok but EVERY recorded reward "
-                    f"is ~0 ({len(rewards)} value(s)) — training produced no signal. Fix the "
-                    "reward/answer-matching so it is non-zero BEFORE the RL loop (extract the "
-                    "answer span; token-F1 over the full gold-alias list; print zero-shot "
-                    "accuracy first), and confirm optimizer.step() actually runs.")
+                    f"is ~0 ({len(rewards)} value(s)) across all cells — training produced no "
+                    "signal. Fix the reward/answer-matching so it is non-zero BEFORE the RL loop "
+                    "(extract the answer span; token-F1 over the full gold-alias list; print "
+                    "zero-shot accuracy first), and confirm optimizer.step() actually runs.")
     return None
 
 
@@ -5912,6 +5953,53 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         matrix_result, kept, capacity_gaps=cap_gaps, dataset_gaps=ds_gaps,
         models_skipped=models_skipped, environments_skipped=envs_skipped,
         budget_dropped=_staged_out.get("dropped_cells_full") if _staged_out is not None else None)
+    # F2 env-liveness (flag-gated, default OFF): a cell whose env served NO real
+    # episodes (server unreachable / all zero-turn — the WebShop silent-zero) is an
+    # env-SETUP failure, not an honest ok r=0 result. The harness-owned rollout wrote
+    # per-cell env_health.jsonl the agent cannot suppress; detect dead envs and add a
+    # VERIFIED env_setup_failed Exclusion to ctx.env_setup_exclusions, which
+    # _apply_operator_scope (next line) folds into the scope on the SAME fairness
+    # footing as a run-start provisioning failure — excluded from the strict score,
+    # never scored as a fake 0 that pollutes the grade / a baseline comparison. Fail-soft.
+    try:
+        from backend.agents.rlm.env_liveness import (  # noqa: PLC0415
+            dead_envs as _el_dead,
+            env_liveness_gate_enabled as _el_enabled,
+        )
+        if _el_enabled():
+            from pathlib import Path as _ElPath  # noqa: PLC0415
+
+            from backend.agents.rlm import exclusion as _el_excl  # noqa: PLC0415
+            _el_dead_list = _el_dead(_ElPath(getattr(ctx, "project_dir", "") or ".") / "code")
+            if _el_dead_list:
+                _el_excls = list(getattr(ctx, "env_setup_exclusions", None) or [])
+                for _el_env, _el_reason in _el_dead_list:
+                    try:
+                        _el_excls.append(_el_excl.Exclusion(
+                            item=str(_el_env),
+                            axis=_el_excl.AXIS_ENVIRONMENT,
+                            kind=_el_excl.KIND_ENV_SETUP_FAILED,
+                            reason=_el_reason,
+                            verified=True,
+                            evidence="env-liveness: 0 episodes served (env_health.jsonl)",
+                        ))
+                    except Exception:  # noqa: BLE001 — one malformed record must not block the rest
+                        continue
+                ctx.env_setup_exclusions = _el_excls
+                for _el_env, _el_reason in _el_dead_list:
+                    try:
+                        _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                            "code": "env_unavailable", "message": _el_reason,
+                        })
+                    except Exception:  # noqa: BLE001
+                        pass
+                logger.warning(
+                    "run_experiment[%s]: env-liveness flagged dead env(s) as "
+                    "env_setup_failed (excluded from scoring): %s",
+                    getattr(ctx, "run_id", "?"), [e for e, _ in _el_dead_list],
+                )
+    except Exception:  # noqa: BLE001 — env-liveness must never crash the cells route
+        logger.debug("cells route: env-liveness gate failed", exc_info=True)
     metrics = _apply_operator_scope(metrics, ctx)
     logs = _summarize_cell_logs(kept, matrix_result, gpus)
 
@@ -6904,6 +6992,40 @@ def run_experiment(
                     )
         except Exception:  # noqa: BLE001 — the metric-semantics guard must never crash the run
             logger.debug("run_experiment: metric-semantics guard failed", exc_info=True)
+
+    # Eval-metric provenance guard (flag-gated, default OFF). A result-claiming rate
+    # metric (accuracy/success_rate/f1/em) must be recomputable from persisted per-example
+    # eval records (eval_provenance.json beside the cell's metrics.json); a value that is
+    # not the mean of real [0,1] outcomes (e.g. reward×100) is degraded to the repairable
+    # fabrication_suspected. Complements metric_semantics (range) — catches an in-range,
+    # non-zero, real-keyed metric that is NOT a real held-out measurement. Fail-soft.
+    if result.get("success"):
+        try:
+            from pathlib import Path as _EpPath  # noqa: PLC0415
+            from backend.agents.rlm.eval_provenance import (  # noqa: PLC0415
+                eval_provenance_should_veto,
+                eval_provenance_repair_message,
+            )
+            _ep_code = None
+            _ep_pd = getattr(ctx, "project_dir", None)
+            if _ep_pd is not None:
+                _ep_code = _EpPath(_ep_pd) / "code"
+            if _ep_code is not None:
+                _ep_veto, _ep_detail = eval_provenance_should_veto(_ep_code)
+                if _ep_veto:
+                    _ep_msg = eval_provenance_repair_message(_ep_detail or "")
+                    result = {
+                        **result,
+                        "success": False,
+                        "failure_class": "fabrication_suspected",
+                        "error": _ep_msg,
+                    }
+                    _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                        "code": "fabrication_suspected", "message": _ep_msg,
+                    })
+                    logger.warning("run_experiment[%s]: %s", getattr(ctx, "run_id", "?"), _ep_msg)
+        except Exception:  # noqa: BLE001 — the eval-provenance guard must never crash the run
+            logger.debug("run_experiment: eval-provenance guard failed", exc_info=True)
 
     # Unified evidence-audit veto (Pillar-1 wiring, spec 2026-06-20 §3). Flag-gated INSIDE
     # result_is_fabricated (OPENRESEARCH_EVIDENCE_AUDIT, default OFF → returns None → this is

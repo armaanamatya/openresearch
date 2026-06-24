@@ -36,6 +36,8 @@ ROOT="${ROOT:-claude-oauth}"
 RUN_EXPERIMENT_TIMEOUT_S="${RUN_EXPERIMENT_TIMEOUT_S:-2400}"
 SDAR_VRAM_GB="${SDAR_VRAM_GB:-40}"     # per-GPU VRAM the run reports to the capacity gate (80 for a2-ultragpu)
 LIFECYCLE_MAX_IMPROVE="${LIFECYCLE_MAX_IMPROVE:-}"   # OPENRESEARCH_LIFECYCLE_MAX_IMPROVE override; empty = harness default (set -u safe)
+EVAL_PROVENANCE_GUARD="${OPENRESEARCH_EVAL_PROVENANCE_GUARD:-}"  # S1 eval-metric provenance guard; empty = default OFF (byte-identical)
+REUSE_RUBRIC="${OPENRESEARCH_REUSE_RUBRIC:-}"                    # A/B: pin the pre-seeded rubric so the grader doesn't drift; empty = default
 
 G=(gcloud --project "$PROJECT")
 ZP=(--zone "$ZONE" --project "$PROJECT")
@@ -154,6 +156,8 @@ ssh_ "cd $REMOTE_DIR && {
   echo 'export OPENRESEARCH_SDAR_VRAM_GB=$SDAR_VRAM_GB'                          >> runs/.cache/sdar_gcp.env
   [ -n '$LIFECYCLE_MAX_IMPROVE' ] && echo 'export OPENRESEARCH_LIFECYCLE_MAX_IMPROVE=$LIFECYCLE_MAX_IMPROVE' >> runs/.cache/sdar_gcp.env
   echo 'export OPENRESEARCH_GRADER_SAMPLES=3'                                   >> runs/.cache/sdar_gcp.env
+  [ -n '$EVAL_PROVENANCE_GUARD' ] && echo 'export OPENRESEARCH_EVAL_PROVENANCE_GUARD=$EVAL_PROVENANCE_GUARD' >> runs/.cache/sdar_gcp.env
+  [ -n '$REUSE_RUBRIC' ] && echo 'export OPENRESEARCH_REUSE_RUBRIC=$REUSE_RUBRIC' >> runs/.cache/sdar_gcp.env
   echo 'export OPENRESEARCH_SDAR_NO_AUTOSTOP=0'                                 >> runs/.cache/sdar_gcp.env
   echo 'unset OPENRESEARCH_BASELINE_EXTRA_GUIDANCE'                             >> runs/.cache/sdar_gcp.env
   set -a; . runs/.cache/sdar_gcp.env >/dev/null 2>&1; set +a
