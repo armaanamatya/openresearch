@@ -106,6 +106,72 @@ class TestComputeScopeStringSanitized:
         )
         assert result.get("outcome") == "ok" or result.get("success") is not False
 
+    def test_compute_scope_json_object_string_is_recovered(self, tmp_path):
+        """Fix H: a JSON-object string compute_scope must be recovered+validated, not dropped.
+
+        When the LLM emits compute_scope as a JSON-encoded dict string rather than
+        a dict, plan_reproduction must parse it and carry through the validated
+        ComputeScope rather than silently dropping it.
+        """
+        import json as _json
+        from backend.agents.rlm.primitives import plan_reproduction
+
+        ctx, _ = _make_ctx(tmp_path)
+        valid_scope = {
+            "is_clipped": True,
+            "paper_epochs": 100,
+            "actual_epochs": 10,
+            "rationale": "cost-bounded run",
+            "metric_floors": [],
+        }
+        ctx.llm_client = _stub_llm_complete({
+            "reproduction_definition": "Train on CIFAR",
+            "dataset_plan": "Use CIFAR-10",
+            "compute_scope": _json.dumps(valid_scope),   # <-- JSON object as STRING
+        })
+
+        result = plan_reproduction(
+            {"core_contribution": "image classification"},
+            {"framework": "pytorch"},
+            ctx=ctx,
+        )
+
+        # Must not return a failure envelope.
+        assert result.get("outcome") == "ok" or result.get("success") is not False, (
+            f"plan_reproduction returned failure: {result}"
+        )
+        # compute_scope must NOT be None — the JSON-string must have been recovered.
+        cs = result.get("compute_scope")
+        assert cs is not None, (
+            "compute_scope should be recovered from a JSON-object string, not dropped"
+        )
+        assert cs.get("is_clipped") is True
+        assert cs.get("paper_epochs") == 100
+        assert cs.get("actual_epochs") == 10
+
+    def test_compute_scope_prose_string_is_still_dropped(self, tmp_path):
+        """Fix H invariant: a non-JSON prose string must still be dropped+warned."""
+        from backend.agents.rlm.primitives import plan_reproduction
+
+        ctx, _ = _make_ctx(tmp_path)
+        ctx.llm_client = _stub_llm_complete({
+            "reproduction_definition": "Reproduce paper",
+            "dataset_plan": "Use dataset",
+            "compute_scope": "reduced to 5 epochs for cost",   # prose, not JSON
+        })
+
+        result = plan_reproduction(
+            {"core_contribution": "classification"},
+            {"framework": "pytorch"},
+            ctx=ctx,
+        )
+        assert result.get("outcome") == "ok" or result.get("success") is not False
+        # Prose string → must remain None after sanitization.
+        cs = result.get("compute_scope")
+        assert cs is None, (
+            f"Prose compute_scope must be dropped to None, got: {cs!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Bug 3 — error envelope must not be coerced into ReproductionContract

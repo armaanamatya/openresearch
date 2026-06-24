@@ -120,6 +120,7 @@ _SETTINGS_DEFAULTS: dict[str, Any] = {
     "azure_files_cache_enabled": True,
     # P1-fix-5: aligns with config.py default of 4.
     "azure_max_nodes": 4,
+    "azure_gpus_per_node": 1,
     "azure_per_gpu_vram_gb": 80.0,
     "azure_gpu_usd_per_hour": 3.67,
     "azure_pending_timeout_seconds": 1500,
@@ -152,6 +153,7 @@ _SETTINGS_DEFAULTS: dict[str, Any] = {
     "gcp_node_pool_name": "gpua100",
     "gcp_base_image": "",
     "gcp_max_nodes": 4,
+    "gcp_gpus_per_node": 1,
     "gcp_gpu_usd_per_hour": 3.67,
     "gcp_pending_timeout_seconds": 900,
     "gcp_gpu_skus": ["gcp_a100_80x8"],  # dormant fallback; keep == config.gcp_gpu_skus default (live Settings always wins; this only guards the get_settings()-failed path from re-introducing the nodeSelector mismatch)
@@ -706,6 +708,12 @@ def _build_job_manifest(
         gpu_count_str = str(getattr(gpu_plan, "gpu_count", 1))
     else:
         gpu_count_str = "1"
+
+    # Plumb the leased GPU count into the cell so the in-pod entrypoint can
+    # torchrun-wrap a >1-GPU distributed cell
+    # (gke_cell_entrypoint.resolve_cell_gpu_count). Additive + default 1 → every
+    # single-GPU cell (incl. the AKS path) is byte-for-byte unchanged where unread.
+    env_vars.append({"name": "OPENRESEARCH_CELL_GPU_COUNT", "value": gpu_count_str})
 
     # P0-fix-3: node selector uses the infra pool label reprolab/sku in ALL paths.
     # With gpu_plan → target that SKU's pool; without → fall back to the default SKU.
@@ -1501,6 +1509,7 @@ def run_matrix(
     blob_container: str = _cloud_setting("blob_container", "reprolab-artifacts") or "reprolab-artifacts"
     # P1-fix-5: align with config.py default of 4 (was incorrectly 8 here).
     cloud_max_nodes: int = int(_cloud_setting("max_nodes", 4))
+    cloud_gpus_per_node: int = int(_cloud_setting("gpus_per_node", 1))
     gpu_usd_per_hour: float = float(_cloud_setting("gpu_usd_per_hour", 3.67))
     pending_timeout_s: float = float(_cloud_setting("pending_timeout_seconds", 900))
     provisioned_skus: list[str] = list(_cloud_setting("gpu_skus", []) or [])
@@ -1546,10 +1555,16 @@ def run_matrix(
     # Overall deadline.
     overall_deadline: float | None = deadline_from_timeout(overall_timeout_s)
 
-    # Parallelism.
+    # Parallelism. Total schedulable GPUs = max_nodes × gpus_per_node; each cell
+    # Job requests _cell_gpu_count GPUs (gpu_plan, default 1), so up to
+    # total_gpus // _cell_gpu_count cells run at once — K8s packs single-GPU cells
+    # onto a multi-GPU node. Default gpus_per_node=1 ⇒ min(max_nodes, len(cells)),
+    # byte-identical to before.
+    _total_gpus = max(1, cloud_max_nodes * cloud_gpus_per_node)
+    _cell_gpu_count = max(1, int(getattr(gpu_plan, "gpu_count", 1) or 1))
     parallelism = min(
-        max_parallel or cloud_max_nodes,
-        cloud_max_nodes,
+        max_parallel or _total_gpus,
+        _total_gpus // _cell_gpu_count,
         len(cells),
     )
     parallelism = max(1, parallelism)

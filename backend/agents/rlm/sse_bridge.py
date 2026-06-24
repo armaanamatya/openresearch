@@ -536,6 +536,40 @@ def build_run_complete_event(
     }
 
 
+def build_repo_resolved_event(
+    *,
+    url: str | None,
+    source: str,
+    mode: str,
+    reason: str,
+) -> dict:
+    """Build a ``repo_resolved`` control event (corpus-free). #62."""
+    return {
+        "event": "repo_resolved",
+        "timestamp": _now_iso(),
+        "url": url,
+        "source": source,
+        "mode": mode,
+        "reason": reason,
+    }
+
+
+def build_repo_cloned_event(
+    *,
+    commit_sha: str | None,
+    size_mb: float,
+    key_files: list[str],
+) -> dict:
+    """Build a ``repo_cloned`` control event (corpus-free). #62."""
+    return {
+        "event": "repo_cloned",
+        "timestamp": _now_iso(),
+        "commit_sha": commit_sha,
+        "size_mb": size_mb,
+        "key_files": list(key_files or []),
+    }
+
+
 # ---------------------------------------------------------------------------
 # on_subcall_* callback builders
 # ---------------------------------------------------------------------------
@@ -881,6 +915,7 @@ def build_run_warning_event(
     level: str = "warn",
     code: str,
     message: str,
+    data: dict | None = None,
 ) -> dict:
     """Build a ``run_warning`` dashboard event.
 
@@ -893,14 +928,25 @@ def build_run_warning_event(
         level:   Severity string, typically ``"warn"`` or ``"error"``.
         code:    Machine-readable tag, e.g. ``"sdk_aclose_loop"``.
         message: Human-readable description surfaced in the UI chip.
+        data:    Optional structured fields merged into the flat event (e.g.
+                 ``{"signature", "count", "required_stage", "stage"}`` for the
+                 degenerate-refusal-loop warning).  ``None`` keeps the event
+                 byte-for-byte identical for every existing caller; the
+                 reserved keys ``event``/``timestamp``/``level``/``code``/
+                 ``message`` are never overwritten.
     """
-    return {
+    event = {
         "event": "run_warning",
         "timestamp": _now_iso(),
         "level": level,
         "code": code,
         "message": message,
     }
+    if data:
+        for key, value in data.items():
+            if key not in event:
+                event[key] = value
+    return event
 
 
 __all__ = [
@@ -915,6 +961,8 @@ __all__ = [
     "build_experiment_progress_event",
     "build_iteration_heartbeat_event",
     "build_repair_dispatched",
+    "build_repo_cloned_event",
+    "build_repo_resolved_event",
     "build_rubric_score_event",
     "build_run_complete_event",
     "build_run_warning_event",

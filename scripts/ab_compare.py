@@ -123,9 +123,12 @@ def validate_stamped_pair(control: dict, bes: dict) -> str | None:
 
     Enforced contract (the "stamped arm" contract):
       1. BOTH arms carry an ``experiment_arm`` stamp (no ``unstamped`` control);
-      2. each arm's ``rubric_tree.json`` exists and their sha256 are identical;
-      3. the two arms' recorded ``scope`` are equal.
+      2. each arm's run-dir archive is complete (all BES required artifacts present);
+      3. each arm's ``rubric_tree.json`` exists and their sha256 are identical;
+      4. the two arms' recorded ``scope`` are equal.
     """
+    from backend.agents.rlm.archive_completeness import check_bes_archive
+
     if not control.get("_stamped"):
         return (
             "control arm is unstamped (no experiment_arm.arm) — re-run the control "
@@ -135,6 +138,23 @@ def validate_stamped_pair(control: dict, bes: dict) -> str | None:
         return (
             "bes arm is unstamped (no experiment_arm.arm) — re-run the bes arm "
             "with OPENRESEARCH_AB_ARM=bes so the pair is explicitly labelled"
+        )
+
+    # Archive-completeness gate: a BES efficacy delta requires a complete archive
+    # for each arm (the Adam lesson — an incomplete archive makes the Δ folklore).
+    c_archive = check_bes_archive(Path(control["_run_dir"]))
+    if not c_archive.complete:
+        return (
+            f"control arm {control['project_id']} has an incomplete run-dir archive "
+            f"(missing: {', '.join(c_archive.missing)}) — a BES efficacy delta "
+            "requires all required artifacts to be present"
+        )
+    b_archive = check_bes_archive(Path(bes["_run_dir"]))
+    if not b_archive.complete:
+        return (
+            f"bes arm {bes['project_id']} has an incomplete run-dir archive "
+            f"(missing: {', '.join(b_archive.missing)}) — a BES efficacy delta "
+            "requires all required artifacts to be present"
         )
 
     c_sha = _rubric_tree_sha256(control["_run_dir"])

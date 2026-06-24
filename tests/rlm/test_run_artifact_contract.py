@@ -115,6 +115,17 @@ def rlm_offline_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("OPENRESEARCH_RLM_STUB_PRIMITIVES", "1")
         monkeypatch.setenv("OPENRESEARCH_RLM_ROOT_MODEL", "gpt-5")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake-not-used")
+        # This scripted root never calls run_experiment (it only ingests +
+        # assembles a report), so the forced-iteration policy's
+        # "no experiment ever run" check (BUG-NEW-046) would refuse every
+        # FINAL_VAR — and each refused FINAL_VAR is a no-``repl``-block turn,
+        # tripping the degenerate-loop detector (run.py::_FatalBackendGateLogger)
+        # before the run can finalize. Cap the per-run iteration budget at 1 so
+        # the policy ACCEPTS the first post-Turn-1 FINAL_VAR (budget exhausted)
+        # and the run terminates cleanly on Turn 2, well before the streak hits
+        # OPENRESEARCH_DEGENERATE_REFUSAL_THRESHOLD. Keeps the offline two-turn
+        # script realistic while still exercising the full finalize path.
+        monkeypatch.setenv("OPENRESEARCH_MAX_RLM_ITERATIONS", "1")
 
         db_url = f"sqlite:///{base / 'contract_test.db'}"
 

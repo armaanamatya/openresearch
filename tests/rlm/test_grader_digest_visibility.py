@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import os
 
-import pytest
 
 from backend.evals.paperbench import leaf_scorer
 from backend.evals.paperbench.leaf_scorer import _gather_evidence, _latest_metrics_path

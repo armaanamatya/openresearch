@@ -82,6 +82,16 @@ class Settings(BaseSettings):
     # keys.
     provider_fallback_disabled: bool = False
 
+    # GitHub-repo-first reproduction (#62, default-OFF; spec
+    # 2026-06-21-github-repo-first-reproduction-design.md). Unset => byte-identical
+    # to today: no resolve/clone, repo_files stays None, inspect_repository returns
+    # disabled, detect_environment/implement_baseline/report unchanged.
+    use_author_repo: bool = False           # OPENRESEARCH_USE_AUTHOR_REPO (master)
+    reproduction_mode: str = "adapt"        # OPENRESEARCH_REPRODUCTION_MODE: adapt | reference
+    repo_clone_timeout_s: int = 300         # OPENRESEARCH_REPO_CLONE_TIMEOUT_S
+    repo_clone_max_mb: int = 2048           # OPENRESEARCH_REPO_CLONE_MAX_MB (post-clone size cap)
+    repo_clone_lfs: bool = False            # OPENRESEARCH_REPO_CLONE_LFS (off => GIT_LFS_SKIP_SMUDGE=1)
+
     # External provider API keys. We read both the unprefixed names that
     # the upstream SDKs (anthropic, openai) and most CI conventions use,
     # AND the OPENRESEARCH_-prefixed forms, because some deployments reserve
@@ -121,6 +131,70 @@ class Settings(BaseSettings):
             "OPENAI_ADMIN_KEY",
             "OPENRESEARCH_OPENAI_ADMIN_KEY",
             "REPROLAB_OPENAI_ADMIN_KEY",
+        ),
+    )
+    # Azure OpenAI credentials. Mirrors the openai/anthropic key fields above:
+    # read both the bare ``AZURE_OPENAI_*`` names the Azure SDK uses and the
+    # Azure portal's "KEY 1" / "KEY 2" labels. Azure issues two interchangeable
+    # keys for zero-downtime rotation — KEY 1 is primary, KEY 2 the fallback.
+    # First match wins, so an explicit AZURE_OPENAI_API_KEY beats KEY1, which
+    # beats KEY2. configure_azure_openai_credentials() bridges these into the
+    # canonical AZURE_OPENAI_* process env the runtime/grader/accelerator read.
+    azure_openai_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "AZURE_OPENAI_API_KEY",
+            "AZURE_OPENAI_KEY1",
+            "AZURE_OPENAI_KEY2",
+            "OPENRESEARCH_AZURE_OPENAI_API_KEY",
+        ),
+    )
+    azure_openai_endpoint: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "AZURE_OPENAI_ENDPOINT",
+            "OPENRESEARCH_AZURE_OPENAI_ENDPOINT",
+        ),
+    )
+    azure_openai_deployment: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "AZURE_OPENAI_DEPLOYMENT",
+            "OPENRESEARCH_AZURE_OPENAI_DEPLOYMENT",
+        ),
+    )
+    azure_openai_api_version: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "AZURE_OPENAI_API_VERSION",
+            "OPENRESEARCH_AZURE_OPENAI_API_VERSION",
+        ),
+    )
+    # Azure AI Foundry — a generic OpenAI-compatible custom endpoint
+    # (``https://<resource>.services.ai.azure.com/openai/v1``) serving any
+    # deployed model (e.g. Grok). Distinct from the classic Azure OpenAI surface
+    # above: this is the v1 OpenAI-compatible path the standard OpenAI SDK speaks
+    # to with a Bearer key. The ``azure-foundry`` root model reads these at
+    # resolve time, so swapping the deployed model is a .env change, not code.
+    azure_foundry_endpoint: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "AZURE_FOUNDRY_ENDPOINT",
+            "OPENRESEARCH_AZURE_FOUNDRY_ENDPOINT",
+        ),
+    )
+    azure_foundry_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "AZURE_FOUNDRY_API_KEY",
+            "OPENRESEARCH_AZURE_FOUNDRY_API_KEY",
+        ),
+    )
+    azure_foundry_deployment: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "AZURE_FOUNDRY_DEPLOYMENT",
+            "OPENRESEARCH_AZURE_FOUNDRY_DEPLOYMENT",
         ),
     )
     codex_cli_path: str = ""
@@ -167,14 +241,17 @@ class Settings(BaseSettings):
     # defaults remain controlled separately by argparse flags. Local launchers
     # set this to runpod for GPU-backed dev runs; deployments can set it to
     # docker or local in env.
-    default_sandbox: Literal["auto", "local", "docker", "runpod", "azure", "gcp"] = "runpod"
+    # "gke" is a first-class alias for "gcp" (SandboxMode._missing_ maps it to the
+    # gcp member); accepted here so OPENRESEARCH_DEFAULT_SANDBOX=gke boots and the
+    # start.sh gcp/gke preflight branch is reachable.
+    default_sandbox: Literal["auto", "local", "docker", "runpod", "azure", "gcp", "gke"] = "runpod"
 
     # Optional hard override for every run's sandbox mode, regardless of what
     # the client requested. Empty means "honor the request/default_sandbox".
     # Deployments that must forbid RunPod should set OPENRESEARCH_FORCE_SANDBOX to
     # "docker" or "local" explicitly; the code default must stay empty so a
     # missing/commented .env line does not silently rewrite sandbox=runpod.
-    force_sandbox: Literal["", "auto", "local", "docker", "runpod", "azure", "gcp"] = ""
+    force_sandbox: Literal["", "auto", "local", "docker", "runpod", "azure", "gcp", "gke"] = ""
 
     # Force the LLM provider for every run regardless of what the client
     # requested — analogous to force_sandbox. The UI hard-codes provider=
@@ -252,6 +329,7 @@ class Settings(BaseSettings):
     azure_node_pool_name: str = Field(default="gpua100", description="GPU node pool name (scale-to-zero)")
     azure_per_gpu_vram_gb: float = Field(default=80.0, ge=1.0, description="VRAM per GPU in the node pool (A100=80)")
     azure_max_nodes: int = Field(default=4, ge=1, description="Node pool max-nodes (orchestrator-side concurrency cap)")
+    azure_gpus_per_node: int = Field(default=1, ge=1, description="GPUs per AKS GPU node — see gcp_gpus_per_node.")
     # Empty means the operator MUST set OPENRESEARCH_AZURE_BASE_IMAGE to a PINNED
     # ACR tag (e.g. myregistry.azurecr.io/reprolab:20260603-abc1234). The runner
     # errors clearly on empty rather than defaulting to a floating :latest tag.
@@ -368,6 +446,7 @@ class Settings(BaseSettings):
     gcp_node_pool_name: str = Field(default="gpua100", description="GPU node pool name (scale-to-zero)")
     gcp_per_gpu_vram_gb: float = Field(default=80.0, ge=1.0, description="VRAM per GPU in the node pool (A100=80)")
     gcp_max_nodes: int = Field(default=4, ge=1, description="Node pool max-nodes (orchestrator-side concurrency cap)")
+    gcp_gpus_per_node: int = Field(default=1, ge=1, description="GPUs per GKE GPU node — set to the node SKU's GPU count (e.g. 8 for a2-highgpu-8g) so that many single-GPU cells run concurrently per node. Default 1 = today's one-cell-per-node behaviour.")
     # Empty means the operator MUST set OPENRESEARCH_GCP_BASE_IMAGE to a PINNED
     # Artifact Registry tag. The runner errors clearly on empty rather than
     # defaulting to a floating :latest tag.

@@ -25,14 +25,13 @@ import json
 import logging
 import os
 import re
-import shutil
 import signal
 import socket
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from rlm import RLM
 
@@ -47,6 +46,7 @@ from backend.agents.rlm.checkpoint import IterationCheckpointer
 from backend.agents.rlm.context import RunContext
 from backend.agents.rlm.repl_snapshot import ReplSnapshotWriter
 from backend.agents.rlm.models import (
+    AZURE_FOUNDRY_KEY,
     RootModel,
     register_featherless_context_limits,
     resolve_root_model,
@@ -81,10 +81,15 @@ from backend.agents.rlm._oauth_backend_patch import (
 )
 from backend.agents.rlm.forced_iteration import (
     _TERMINAL_FAILURE_CLASSES,
+    _WALL_CLOCK_FLOOR_S,
     ForcedIterationPolicy,
+    _current_policy,
+    _default_degenerate_threshold,
     apply_forced_iteration_patch,
     forced_iteration_policy,
 )
+from backend.agents.rlm.root_progress import infer_required_stage
+from backend.agents.rlm.root_validation import classify_root_model
 # BUG-LR-011: restore globals()/locals() inside rlm's LocalREPL sandbox
 # (upstream blacklists them alongside eval/exec/compile/input — incorrect).
 from backend.agents.rlm import safe_builtins_patch as _safe_builtins_patch  # noqa: F401
@@ -105,6 +110,10 @@ from backend.agents.rlm import rlm_query_misuse_patch as _rlm_query_misuse_patch
 # 2026-05-29 lost two sub-RLMs to this. (The branch's BUG-NEW-033
 # rlm_query_misuse_patch is ported too — imported above, 2026-06-10.)
 from backend.agents.rlm import safe_subcall_traceback_patch as _safe_subcall_traceback_patch  # noqa: F401
+# 2026-06-18: accept ```python / ```py fences (not only ```repl) in root
+# responses — the upstream parser dropped grok-4.3's ```python blocks, so nothing
+# executed and the empty-code-block degenerate detector killed the run at iter 3.
+from backend.agents.rlm import code_fence_patch as _code_fence_patch  # noqa: F401
 # BUG-NEW-043 (belt+braces): the default recursion limit is 1000; the
 # mech-understanding paper's LaTeX-dense prompt blew it via some unknown deep
 # recursion path in the rlms stack. 10000 is defensive against the same kind
@@ -118,6 +127,30 @@ apply_anthropic_caching_patch()
 apply_forced_iteration_patch()
 
 logger = logging.getLogger(__name__)
+
+
+def _fixfirst_loop_engaged() -> bool:
+    """True iff the P3 fix-first repair loop should be engaged for this run.
+
+    The loop activates when EITHER the zero-metrics guard OR the external
+    adversarial validator is enabled, or any of the pre-GPU/report gates that
+    feed the same repair loop.  When none of these flags are set this returns
+    False and the policy is byte-identical to the pre-P3 behavior (no
+    evidence_fingerprint / validator_gate hooks are assigned).
+    """
+    from backend.agents.rlm.zero_metrics_detection import zero_metrics_guard_enabled  # noqa: PLC0415
+    from backend.agents.rlm.external_validator import external_validator_enabled  # noqa: PLC0415
+    from backend.agents.rlm.report_claim_gate import report_claim_gate_enabled  # noqa: PLC0415
+    _code_review = os.environ.get("OPENRESEARCH_CODE_REVIEW_GATE", "").strip() == "1"
+    _smoke = os.environ.get("OPENRESEARCH_METRIC_REALITY_SMOKE", "").strip() == "1"
+    return (
+        zero_metrics_guard_enabled()
+        or external_validator_enabled()
+        or report_claim_gate_enabled()
+        or _code_review
+        or _smoke
+    )
+
 
 # --- Tuning constants ------------------------------------------------------
 _MAX_ITERATIONS = 20          # paper Appendix A
@@ -273,7 +306,23 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
             )
         from backend.services.context.workspace.tools.openai_client import OpenAILlmClient
         model = sub_bk.get("model_name") or bk.get("model_name", "")
-        return OpenAILlmClient(model=model, api_key=bk["api_key"], base_url=bk["base_url"]), model
+        # Reasoning models served via Azure Foundry (e.g. Kimi-K2.6) emit
+        # reasoning_content BEFORE content; a 4096 cap shared with the thinking
+        # truncates a large rubric/plan into unparseable output (observed
+        # 2026-06-18: generate_rubric_tree failed all 3 attempts → rubric-less
+        # run). Give the Foundry primitive client ample headroom (a cap only —
+        # unused tokens cost nothing). Featherless / other openai+base_url roots
+        # keep the 4096 default → byte-identical.
+        _client_max_tokens = 32768 if root_model.key == AZURE_FOUNDRY_KEY else 4096
+        return (
+            OpenAILlmClient(
+                model=model,
+                api_key=bk["api_key"],
+                base_url=bk["base_url"],
+                max_tokens=_client_max_tokens,
+            ),
+            model,
+        )
 
     # 3. OpenRouter — also OpenAI-compatible; api_key from backend_kwargs (injected by resolve_root_model)
     if backend == "openrouter":
@@ -332,7 +381,7 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
 
 
 def _resolve_agent_runtime(
-    runtime: Any, provider: str | None
+    runtime: Any, provider: str | None, role_selection: Any = None
 ) -> tuple[Any, str | None, str]:
     """Resolve the sub-agent runtime + model for primitives (``implement_baseline``).
 
@@ -372,6 +421,24 @@ def _resolve_agent_runtime(
     """
     if runtime is not None:
         return runtime, None, "caller-supplied"
+
+    # Per-role executor override (2026-06-17): an explicit unified-surface
+    # executor pick builds the matching runtime directly (Azure now reachable via
+    # make_runtime). A legacy OPENRESEARCH_EXECUTOR=qwen/vllm/etc. stays None in the
+    # selection, so the executor-tier path below still handles it unchanged.
+    _exec_spec = getattr(role_selection, "executor", None) if role_selection is not None else None
+    if _exec_spec is not None:
+        from backend.agents.runtime.factory import make_runtime as _make_runtime
+        _exec_provider = {
+            "anthropic-oauth": "anthropic", "anthropic": "anthropic",
+            "openai": "openai", "azure": "azure",
+            "azure-foundry": "azure-foundry",
+        }[_exec_spec.provider]
+        return (
+            _make_runtime(_exec_provider, require_api_key=True),
+            _exec_spec.model,
+            f"role:executor:{_exec_spec.stamp}",
+        )
 
     # Executor tier (OPENRESEARCH_EXECUTOR): run the code-writing agent on a local Qwen
     # (vLLM) instead of Sonnet to save Sonnet usage. Health-probed with graceful
@@ -504,7 +571,134 @@ def _extract_arxiv_id_from_project_dir(project_dir: Path) -> str | None:
     return None
 
 
-def _build_context(workspace_claim_map: dict[str, Any]) -> dict[str, Any]:
+def _resolve_and_clone_repo(
+    project_dir: "Path",
+    repo_url: "str | None",
+    blacklist: "set[str]",
+    discovered: "list[Any]",
+    emit: "Any" = None,
+) -> "tuple[dict[str, Any] | None, Any]":
+    """Resolve a RepoSpec, clone it (flag-gated), persist rlm_state/repo_spec.json.
+
+    Returns ``(repo_files_context_or_None, RepoSpec_or_None)``. Fail-soft: any
+    error returns ``(None, None)`` and the run proceeds scratch. Byte-identical
+    off-state: when OPENRESEARCH_USE_AUTHOR_REPO is unset this returns immediately
+    without resolving, cloning, or writing repo_spec.json.
+    """
+    import json as _json
+
+    if os.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() not in (
+        "1", "true", "yes", "on"
+    ):
+        return None, None
+    try:
+        from backend.services.ingestion.repo.provisioner import RepoProvisioner
+        from backend.services.ingestion.repo.resolver import RepoResolver
+
+        mode_override = os.environ.get("OPENRESEARCH_REPRODUCTION_MODE", "adapt") or "adapt"
+        spec = RepoResolver.resolve(repo_url, discovered, set(blacklist), mode_override)
+        if emit is not None:
+            try:
+                from backend.agents.rlm.sse_bridge import build_repo_resolved_event
+                emit(build_repo_resolved_event(
+                    url=spec.url, source=spec.source, mode=spec.mode, reason=spec.reason,
+                ))
+            except Exception:  # noqa: BLE001 — narration is best-effort
+                pass
+        commit_sha: "str | None" = None
+        repo_files: "dict[str, Any] | None" = None
+        if spec.url:
+            manifest = RepoProvisioner.clone(spec, project_dir / "repo")
+            if manifest is not None:
+                repo_files = manifest.as_context()
+                commit_sha = manifest.commit_sha
+                if emit is not None:
+                    try:
+                        from backend.agents.rlm.sse_bridge import build_repo_cloned_event
+                        emit(build_repo_cloned_event(
+                            commit_sha=manifest.commit_sha,
+                            size_mb=manifest.size_mb,
+                            key_files=list(manifest.key_files.keys()),
+                        ))
+                    except Exception:  # noqa: BLE001
+                        pass
+            else:
+                # Clone failed -> fall back to scratch, but record that we tried.
+                from backend.services.ingestion.repo.resolver import RepoSpec
+                spec = RepoSpec(
+                    url=spec.url, source=spec.source, mode="scratch",
+                    reason=f"clone failed for {spec.url}; proceeding scratch",
+                )
+                if emit is not None:
+                    try:
+                        from backend.agents.rlm.sse_bridge import build_run_warning_event
+                        emit(build_run_warning_event(
+                            code="repo_clone_failed",
+                            message=f"clone failed for {spec.url}; proceeding scratch",
+                        ))
+                    except Exception:  # noqa: BLE001
+                        pass
+        # Persist the deterministic source of truth (atomic write).
+        rlm_state = project_dir / "rlm_state"
+        rlm_state.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "url": spec.url, "source": spec.source, "mode": spec.mode,
+            "reason": spec.reason, "commit_sha": commit_sha,
+            "path": str(project_dir / "repo") if repo_files else None,
+            "clone_succeeded": bool(repo_files),
+        }
+        tmp = rlm_state / "repo_spec.json.tmp"
+        tmp.write_text(_json.dumps(payload, indent=2), encoding="utf-8")
+        os.replace(tmp, rlm_state / "repo_spec.json")
+        return repo_files, spec
+    except Exception:  # noqa: BLE001 — repo resolution must never break a run
+        logger.warning("repo resolve/clone failed (non-fatal)", exc_info=True)
+        return None, None
+
+
+def _load_discovered_artifacts(workspace_service: "Any", workspace_id: "str | None") -> "list[Any]":
+    """Best-effort fetch of the materialized discovered_artifacts for RepoResolver.
+
+    Returns [] on any miss (RepoResolver also accepts an empty list → scratch).
+    Never raises.
+    """
+    if workspace_service is None or not workspace_id:
+        return []
+    try:
+        # materialize_view returns a WorkspaceView; .get(name) -> Cited[Any] | None,
+        # whose .value is the {"project_id","artifacts","count"} payload that
+        # _preload_artifacts wrote.
+        view = workspace_service.materialize_view(workspace_id)
+        cited = view.get("discovered_artifacts")
+        payload = getattr(cited, "value", None) if cited is not None else None
+        raw = payload.get("artifacts") if isinstance(payload, dict) else None
+        if not raw:
+            return []
+        from types import SimpleNamespace
+        # RepoResolver only reads .kind(.value)/.locator/.url/.confidence — a
+        # lightweight namespace is enough and avoids re-validating the pydantic model.
+        out = []
+        for a in raw:
+            out.append(SimpleNamespace(
+                kind=SimpleNamespace(value=a.get("kind", "")),
+                locator=a.get("locator", ""),
+                url=a.get("url", ""),
+                confidence=a.get("confidence", 0.0),
+            ))
+        return out
+    except Exception:  # noqa: BLE001 — discovery is an optional input
+        return []
+
+
+def _build_context(
+    workspace_claim_map: dict[str, Any],
+    *,
+    project_dir: "Path | None" = None,
+    repo_url: "str | None" = None,
+    blacklist: "set[str] | None" = None,
+    discovered: "list[Any] | None" = None,
+    emit: "Any" = None,
+) -> dict[str, Any]:
     """Assemble the offloaded RLM ``context`` dict from the workspace claim map.
 
     ``workspace_claim_map`` shape (see ``pipeline._write_workspace_claim_map``):
@@ -536,6 +730,15 @@ def _build_context(workspace_claim_map: dict[str, Any]) -> dict[str, Any]:
     paper_id = pb_meta.get("id") or pb.get("paper_id") or ""
     paper_title = pb_meta.get("title") or (entries[0].get("title", "") if entries else "")
 
+    # #62: resolve + clone the paper's linked repo (master flag-gated). Off-state
+    # leaves repo_files None and writes no repo_spec.json — byte-identical to today.
+    _repo_files: "dict[str, Any] | None" = None
+    if project_dir is not None:
+        _repo_files, _ = _resolve_and_clone_repo(
+            project_dir, repo_url, blacklist or set(), discovered or [],
+            emit=emit,
+        )
+
     return {
         "paper_text": "\n\n".join(sections),
         "paper_metadata": {
@@ -545,7 +748,7 @@ def _build_context(workspace_claim_map: dict[str, Any]) -> dict[str, Any]:
             "source_ids": [e.get("source_id", "") for e in entries],
         },
         "supplementary_text": None,
-        "repo_files": None,
+        "repo_files": _repo_files,
         "prior_work_refs": [],
         "rubric_spec": workspace_claim_map.get("rubric_spec") or {},
     }
@@ -691,6 +894,8 @@ def _write_demo_status(
     process_status: str | None = None,
     verdict: str | None = None,
     warnings: list[str] | None = None,
+    root_model_validated: bool | None = None,
+    root_model_risk: str | None = None,
 ) -> None:
     """Write (merge) ``runs/<id>/demo_status.json`` so the run is REST-retrievable.
 
@@ -743,6 +948,13 @@ def _write_demo_status(
     # terminal write; only replaced when this call explicitly supplies one.
     if warnings:
         payload["warnings"] = list(warnings)
+    # Root-validation gate stamp (oauth-root-reliability plan, P2). Written only
+    # when supplied so existing call sites stay byte-for-byte unchanged; the
+    # ``**existing`` merge carries them forward across later status writes.
+    if root_model_validated is not None:
+        payload["root_model_validated"] = bool(root_model_validated)
+    if root_model_risk is not None:
+        payload["root_model_risk"] = root_model_risk
     payload["primitiveProvider"] = primitive_provider  # T21 / review I8
     payload["process_status"] = process_status
     payload["verdict"] = verdict
@@ -781,6 +993,459 @@ def _outcome_value(value: object) -> str:
     return str(getattr(value, "value", value or ""))
 
 
+def _autodrive_enabled() -> bool:
+    """Whether the OAuth auto-drive behaviour is enabled (Task 6).
+
+    Reads ``OPENRESEARCH_OAUTH_AUTODRIVE`` (truthy ``1``/``true``/``yes``);
+    default OFF.  When ON, the degenerate-loop callback only emits the warning
+    and does NOT early-abort — Task 6 fills the auto-drive recovery branch.
+    """
+    return os.environ.get("OPENRESEARCH_OAUTH_AUTODRIVE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _lifecycle_drive_enabled() -> bool:
+    """Whether the full lifecycle-chain drive is enabled on degenerate detection.
+
+    Reads ``OPENRESEARCH_LIFECYCLE_DRIVE`` (truthy ``1``/``true``/``yes``);
+    default OFF.
+    """
+    return os.environ.get("OPENRESEARCH_LIFECYCLE_DRIVE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _drive_max_repair() -> int:
+    """Repair-attempt cap for the lifecycle driver (mirrors MIN_REPAIR_ITERATIONS, default 2)."""
+    raw = os.environ.get("OPENRESEARCH_MIN_REPAIR_ITERATIONS", "").strip()
+    return int(raw) if raw.isdigit() and int(raw) > 0 else 2
+
+
+def _lifecycle_primary_enabled() -> bool:
+    """Whether the harness-owned primary lifecycle mode is active.
+
+    Reads ``OPENRESEARCH_LIFECYCLE_PRIMARY`` (truthy ``1``/``true``/``yes``);
+    default OFF.  When ON, the harness drives backbone→repair→improve→finalize
+    and the rlm.completion root loop is skipped entirely.
+    """
+    return os.environ.get("OPENRESEARCH_LIFECYCLE_PRIMARY", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _drive_max_improve() -> int:
+    """Max improvement iterations for the primary lifecycle driver (default 2; 0 = backbone only)."""
+    raw = os.environ.get("OPENRESEARCH_LIFECYCLE_MAX_IMPROVE", "").strip()
+    return int(raw) if raw.isdigit() else 2
+
+
+def _synth_result_from_summary(summary: dict, ctx: Any) -> Any:
+    """Build a minimal RLMChatCompletion from a primary-mode driver summary.
+
+    Returns None when no rubric score is available — _finalize will ship the
+    'failed' shell and attempt a regrade-from-disk.
+
+    The response JSON is deliberately minimal: build_final_report's metric-
+    projection (OPENRESEARCH_METRIC_PROVENANCE) fills baseline_metrics from
+    disk, and the evidence-gate + verdict-cap can only downgrade an optimistic
+    verdict, so a generous initial claim is safe.
+    """
+    import json as _json
+    try:
+        from rlm.core.types import RLMChatCompletion, UsageSummary
+    except Exception:  # noqa: BLE001 — rlms not importable in test isolation
+        return None
+
+    score = summary.get("rubric_score")
+    if score is None:
+        return None
+
+    improved = summary.get("improved", 0)
+    target = ctx.latest_rubric_target
+    verdict = "reproduced" if (target is not None and score >= target) else "partial"
+
+    desc = "Harness-driven lifecycle (primary mode): drove understand→implement→run→verify"
+    if improved:
+        desc += f", climbed {improved} improvement(s)"
+
+    report_dict = {
+        "verdict": verdict,
+        "reproduction_summary": desc,
+        "baseline_metrics": {},
+        "rubric": {
+            "overall_score": score,
+            "target_score": target,
+            "meets_target": bool(target is not None and score >= target),
+        },
+    }
+
+    try:
+        return RLMChatCompletion(
+            root_model="harness",
+            prompt="",
+            response=_json.dumps(report_dict),
+            usage_summary=UsageSummary(model_usage_summaries={}),
+            execution_time=0.0,
+        )
+    except Exception:  # noqa: BLE001 — constructor awkward → None fallback
+        return None
+
+
+# Lifecycle stages the harness can DRIVE itself (Task 6). A degenerate root
+# stuck before one of these has done strictly less than the harness can do for
+# it, so the backstop drives exactly ONE step and hands control back.
+_AUTODRIVE_DRIVABLE_STAGES = frozenset(
+    {"need_baseline", "need_environment", "need_experiment"}
+)
+
+# Stage -> the structured directive the auto-drive backstop hands the root.
+# Sibling maps (kept separate by design — different audiences/formats): the
+# refusal-text map and the oauth REPL skeleton both live in
+# forced_iteration.ForcedIterationPolicy (_STAGE_DIRECTIVES / _oauth_command_skeleton).
+# If a primitive's call shape changes, update all three.
+_AUTODRIVE_DIRECTIVES = {
+    "need_baseline": (
+        "The reproduction loop is stuck before implement_baseline. Assemble the "
+        "plan (paper_claim_map + environment_spec + reproduction_contract) and "
+        "call implement_baseline(plan) next — do NOT call FINAL_VAR again."
+    ),
+    "need_environment": (
+        "Code exists but the environment is not built. Call "
+        "build_environment(env_spec) next — do NOT call FINAL_VAR again."
+    ),
+    "need_experiment": (
+        "Code and environment are ready but no experiment has run. Call "
+        "run_experiment(code_path, env_id) next — do NOT call FINAL_VAR again."
+    ),
+}
+
+
+def _autodrive_one_step(
+    *,
+    stage: str,
+    tools: dict,
+    ctx: "RunContext",
+    emit: "Callable[[dict], None]",
+    payload: dict,
+) -> None:
+    """Drive ONE missing lifecycle step on the root's behalf (Task 6 backstop).
+
+    Marks a postmortem trail (``rlm_state/root_autodrive.json`` + a
+    ``root_autodrive`` run_warning) and issues exactly ONE structured,
+    stage-specific directive via ``recommend_next_tool`` — then returns so
+    control flows back to the root.  See the inline v1-limitation note below for
+    why the harness issues a directive rather than executing
+    implement_baseline / build_environment / run_experiment itself.
+
+    Fires at most once per no-progress streak: the policy's ``_degenerate_fired``
+    latch is reset only by a state-changing primitive (implement_baseline /
+    build_environment / run_experiment), and ``recommend_next_tool`` is NOT one —
+    so issuing a directive does not itself re-arm the detector. (If the root
+    subsequently does real work and then degenerates again, that state-change
+    re-arms the latch and a fresh streak can fire a second directive — by
+    design.)
+
+    Every side effect (marker write, emit, directive dispatch) is independently
+    fail-soft: a backstop that crashes the run is worse than no backstop.  The
+    wrapped tool is called WITHOUT ``ctx`` — binding's wrapper pops/re-supplies
+    it — so only the ``situation`` arg is passed.
+    """
+    signature = payload.get("signature")
+    count = payload.get("count")
+    required_stage = payload.get("required_stage")
+
+    # 1a. Marker — postmortem trail.
+    try:
+        state_dir = ctx.project_dir / "rlm_state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        marker = state_dir / "root_autodrive.json"
+        marker.write_text(
+            json.dumps(
+                {
+                    "stage": stage,
+                    "signature": signature,
+                    "count": count,
+                    "required_stage": required_stage,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except Exception:  # noqa: BLE001 — marker is best-effort
+        logger.exception("_autodrive_one_step: marker write failed")
+
+    # 1b. Event — surface the backstop in the SSE stream.
+    try:
+        emit(
+            build_run_warning_event(
+                level="warn",
+                code="root_autodrive",
+                message=(
+                    f"Auto-drive backstop: issued a structured directive for "
+                    f"missing stage '{stage}'."
+                ),
+                data={
+                    "stage": stage,
+                    "signature": signature,
+                    "count": count,
+                    "required_stage": required_stage,
+                },
+            )
+        )
+    except Exception:  # noqa: BLE001 — emit must never block the drive
+        logger.exception("_autodrive_one_step: event emit failed")
+
+    # 2. Drive ONE step via a stage-specific structured directive.
+    #
+    # v1 LIMITATION (honest): implement_baseline(plan, *, ctx),
+    # build_environment(env_spec, *, ctx) and run_experiment(code_path, env_id,
+    # *, ...) all require root-assembled context (the plan / env_spec / code+env
+    # ids) that the root builds in the REPL and that is NOT persisted to a fixed
+    # disk location the harness can reconstruct. So the harness cannot faithfully
+    # synthesize their arguments and CANNOT truly execute them in v1 — calling
+    # them with no args would simply TypeError. The one primitive the harness can
+    # fully drive is `recommend_next_tool` (it takes only a `situation` string),
+    # so v1 issues exactly ONE structured, stage-specific directive that names the
+    # concrete next call the root must make. This is the "one final structured
+    # step" the plan permits; a TRUE harness-driven primitive execution needs the
+    # lifecycle-state-machine refactor in the plan's Follow-on (persist the
+    # plan/specs, then call the primitive directly here). The marker + event above
+    # plus the Task-3 escalated refusal message remain the operative backstop.
+    try:
+        entry = tools.get("recommend_next_tool")
+        if entry is not None and callable(entry.get("tool")):
+            entry["tool"](
+                situation=_AUTODRIVE_DIRECTIVES.get(stage, _AUTODRIVE_DIRECTIVES["need_baseline"])
+            )
+    except Exception:  # noqa: BLE001 — a failed drive must not crash the run
+        logger.exception("_autodrive_one_step: drive dispatch failed (stage=%s)", stage)
+
+
+def _make_degenerate_loop_callback(
+    *,
+    emit: "Callable[[dict], None]",
+    ctx: "RunContext",
+    policy: "ForcedIterationPolicy",
+    autodrive_enabled: bool,
+    tools: dict | None = None,
+    oauth_root: bool = False,
+    drive_enabled: bool = False,
+    paper_text: str | None = None,
+    rubric_spec: dict | None = None,
+):
+    """Return the ``on_degenerate_refusal_loop`` callback.
+
+    Default (autodrive OFF): emit a ``root_degenerate_refusal_loop``
+    run_warning + mark a terminal stop so the run finalizes fast (the next
+    FINAL_VAR is accepted via the ``root_degenerate_loop`` terminal class)
+    instead of churning to the 16-refusal cap / wall clock.  Wall-clock floor
+    and a pre-existing terminal stop take precedence.
+
+    AUTODRIVE ON (Task 6, ``OPENRESEARCH_OAUTH_AUTODRIVE=1``, experimental):
+    instead of early-aborting, for an oauth root stuck on a drivable lifecycle
+    stage the harness DRIVES exactly one missing step (``implement_baseline`` /
+    ``build_environment`` / ``run_experiment``) itself and hands control back to
+    the root.  Inert (emit-only) for a non-oauth root, a non-drivable stage,
+    near-wall-clock, an already-terminal stop, or when ``tools`` is unavailable.
+    """
+
+    def _on_degenerate(payload: dict) -> None:
+        signature = payload.get("signature")
+        count = payload.get("count")
+        stage = payload.get("required_stage")
+        try:
+            emit(
+                build_run_warning_event(
+                    level="warn",
+                    code="root_degenerate_refusal_loop",
+                    message=(
+                        f"Degenerate refusal loop: {count} no-progress FINAL_VAR "
+                        f"refusals (signature={signature}, required_stage={stage}). "
+                        "The root is looping without making lifecycle progress."
+                    ),
+                    data={
+                        "signature": signature,
+                        "count": count,
+                        # `required_stage` is the canonical payload key (Tasks 2/4);
+                        # `stage` is the alias the plan's Task 3 "payload.stage"
+                        # names — both carry the same inferred lifecycle stage.
+                        "required_stage": stage,
+                        "stage": stage,
+                    },
+                )
+            )
+        except Exception:  # noqa: BLE001 — emit must never block the policy
+            logger.exception(
+                "run_pipeline_rlm: degenerate-loop warning emit failed"
+            )
+
+        # Lifecycle-drive branch (OPENRESEARCH_LIFECYCLE_DRIVE=1, default OFF).
+        # When enabled: for a drivable stage with paper+rubric supplied and the
+        # per-run once-only cap unspent, drive the full lifecycle chain directly
+        # and hand back to the root so its next FINAL_VAR is accepted with a real
+        # score.  Inert when drive_enabled=False (gate's first conjunct fails) →
+        # existing logic runs UNCHANGED.
+        if (
+            drive_enabled
+            and stage in _AUTODRIVE_DRIVABLE_STAGES
+            and tools is not None
+            and paper_text
+            and rubric_spec
+            and getattr(ctx, "_lifecycle_drive_count", 0) == 0
+        ):
+            remaining = None
+            try:
+                remaining = ctx.remaining_s()
+            except Exception:  # noqa: BLE001
+                remaining = None
+            near_wall_clock = (
+                remaining is not None and remaining <= _WALL_CLOCK_FLOOR_S
+            )
+            already_terminal = bool(getattr(ctx, "_terminal_stop_reason", None))
+            if not near_wall_clock and not already_terminal:
+                # Set the once-only cap BEFORE driving so a crash can't re-drive.
+                try:
+                    ctx._lifecycle_drive_count = 1
+                except Exception:  # noqa: BLE001
+                    pass
+                summary = None
+                try:
+                    from backend.agents.rlm.lifecycle_driver import drive_lifecycle_chain  # noqa: PLC0415
+                    summary = drive_lifecycle_chain(
+                        tools=tools,
+                        ctx=ctx,
+                        paper_text=paper_text,
+                        rubric_spec=rubric_spec,
+                        start_stage=stage,
+                        emit=emit,
+                        max_repair_iterations=_drive_max_repair(),
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "run_pipeline_rlm: lifecycle_drive failed (stage=%s)", stage
+                    )
+                    summary = None
+                try:
+                    emit(
+                        build_run_warning_event(
+                            level="warn",
+                            code="lifecycle_drive",
+                            message=(
+                                f"Lifecycle drive completed (stage={stage}, "
+                                f"driven={list((summary or {}).get('driven') or [])}, "
+                                f"stopped_at={(summary or {}).get('stopped_at')}, "
+                                f"rubric_score={(summary or {}).get('rubric_score')})"
+                            ),
+                            data={
+                                "stage": stage,
+                                "driven": list((summary or {}).get("driven") or []),
+                                "stopped_at": (summary or {}).get("stopped_at"),
+                                "rubric_score": (summary or {}).get("rubric_score"),
+                            },
+                        )
+                    )
+                except Exception:  # noqa: BLE001 — emit must never block
+                    logger.exception(
+                        "run_pipeline_rlm: lifecycle_drive summary emit failed"
+                    )
+                if summary and "run_experiment" in (summary.get("driven") or []):
+                    # HANDBACK — a real run_experiment fired; the root's next
+                    # FINAL_VAR will be accepted and the existing finalize /
+                    # best-of-run path ships the driven score. Reset the repair
+                    # floor first: the harness itself drove the bounded repair
+                    # loop, so the policy's stale repairable marker must not
+                    # bounce the root's FINAL_VAR into churn.
+                    try:
+                        policy.reset_repair_state()
+                    except Exception:  # noqa: BLE001 — never block handback on policy reset
+                        logger.exception("run_pipeline_rlm: reset_repair_state on handback failed")
+                    return
+                # Driven but run_experiment didn't complete → fall through to the
+                # existing autodrive / early-abort logic below (honest terminal).
+
+        # Task 6 — flag-gated OAuth auto-drive backstop. Drive ONE missing
+        # lifecycle step (then hand control back to the root) ONLY when the flag
+        # is ON *and every drive-gate holds* (oauth root, a harness-drivable
+        # stage, wrapped tools present, not near the wall clock, no existing
+        # terminal stop). In EVERY other case control MUST fall through to the
+        # Task-4 early-abort below — autodrive=ON must never be LESS safe than
+        # autodrive=OFF. (A guard-fail used to ``return`` here, leaving the
+        # latched ``_degenerate_fired`` detector unable to re-fire, so the run
+        # churned on to the refusal cap: the exact degenerate behaviour this
+        # feature fixes.)
+        if (
+            autodrive_enabled
+            and oauth_root
+            and stage in _AUTODRIVE_DRIVABLE_STAGES
+            and tools is not None
+        ):
+            remaining = None
+            try:
+                remaining = ctx.remaining_s()
+            except Exception:  # noqa: BLE001
+                remaining = None
+            near_wall_clock = (
+                remaining is not None and remaining <= _WALL_CLOCK_FLOOR_S
+            )
+            already_terminal = bool(getattr(ctx, "_terminal_stop_reason", None))
+            if not near_wall_clock and not already_terminal:
+                _autodrive_one_step(
+                    stage=stage,
+                    tools=tools,
+                    ctx=ctx,
+                    emit=emit,
+                    payload=payload,
+                )
+                return
+            # Near the wall clock or already terminal → do NOT drive; fall
+            # through to the early-abort (it no-ops on those same conditions).
+
+        # Task-4 early-abort — reached when autodrive is OFF, OR autodrive is ON
+        # but a drive-gate failed (non-oauth root, un-drivable stage, no tools,
+        # near wall clock, or already terminal).
+        # Precedence guard: never override a near-wall-clock or an
+        # already-terminal stop.
+        remaining = None
+        try:
+            remaining = ctx.remaining_s()
+        except Exception:  # noqa: BLE001
+            remaining = None
+        if remaining is not None and remaining <= _WALL_CLOCK_FLOOR_S:
+            return
+        if getattr(ctx, "_terminal_stop_reason", None):
+            return
+
+        # Early-abort: mark terminal so the next FINAL_VAR is accepted and the
+        # run finalizes via the existing hard-stop path with a clear reason.
+        try:
+            ctx._terminal_stop_reason = {
+                "kind": "root_degenerate_loop",
+                "failure_class": "root_degenerate_loop",
+                "signature": signature,
+                "count": count,
+                "required_stage": stage,
+            }
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "run_pipeline_rlm: could not stamp degenerate terminal stop"
+            )
+        try:
+            policy.note_terminal_failure("root_degenerate_loop")
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "run_pipeline_rlm: note_terminal_failure(root_degenerate_loop) failed"
+            )
+
+    return _on_degenerate
+
+
 def _record_last_primitive_result_tools(
     custom_tools: dict,
     ctx: RunContext,
@@ -803,6 +1468,21 @@ def _record_last_primitive_result_tools(
     def _wrap_tool(name: str, tool: Any) -> Any:
         def _wrapped(*args: Any, **kwargs: Any) -> Any:
             result = tool(*args, **kwargs)
+            # Task 4: implement_baseline / build_environment are state-changing
+            # primitives — calling either is genuine lifecycle progress, so reset
+            # the no-progress refusal counter (the plan treats implement_baseline /
+            # build_environment / run_experiment all as progress; run_experiment
+            # resets via record_run_experiment()). This prevents a root that does
+            # real work between premature FINAL_VARs from falsely tripping the
+            # degenerate-loop detector. These two primitives do not carry an
+            # "outcome" key, so this sits ABOVE the outcome gate below.
+            if name in ("implement_baseline", "build_environment") and repair_policy_holder:
+                try:
+                    repair_policy_holder[0].record_state_change()
+                except Exception:  # noqa: BLE001 — never crash a tool wrapper
+                    logger.exception(
+                        "_record_last_primitive_result_tools: record_state_change failed"
+                    )
             if isinstance(result, dict) and "outcome" in result:
                 setattr(ctx, "_last_primitive_name", name)
                 setattr(ctx, "_last_primitive_result", result)
@@ -821,6 +1501,21 @@ def _record_last_primitive_result_tools(
                     except Exception:  # noqa: BLE001 — never crash a tool wrapper
                         logger.exception(
                             "_record_last_primitive_result_tools: record_repair_attempt failed"
+                        )
+                elif (
+                    name == "run_experiment"
+                    and _outcome_value(result.get("outcome")) not in ("repairable", "partial_evidence", "fatal")
+                    and repair_policy_holder
+                ):
+                    # P3 fix-first: a SUCCESS run_experiment clears the repair trigger so
+                    # the loop stops forcing repairs once real evidence lands on disk.
+                    # INERT (clear_repair_trigger is a no-op) unless evidence_fingerprint
+                    # is wired — byte-identical to today when both flags are off.
+                    try:
+                        repair_policy_holder[0].clear_repair_trigger()
+                    except Exception:  # noqa: BLE001 — never crash a tool wrapper
+                        logger.exception(
+                            "_record_last_primitive_result_tools: clear_repair_trigger failed"
                         )
                 # comp 4b (2026-05-31): a terminal capacity/OOM stop is NOT repairable
                 # by re-running the same config — notify the policy so forced_iteration
@@ -882,6 +1577,7 @@ class _FatalBackendGateLogger(OpenResearchRLMLogger):
 
     def log(self, iteration: Any) -> None:
         super().log(iteration)
+        self._register_iteration_progress(bool(getattr(iteration, "code_blocks", None)))
         fatal = _fatal_primitive_result(getattr(self, "_ctx", None))
         if fatal is not None:
             primitive_name, result = fatal
@@ -889,6 +1585,45 @@ class _FatalBackendGateLogger(OpenResearchRLMLogger):
                 primitive_name=primitive_name,
                 result=result,
             )
+
+    def _register_iteration_progress(self, has_code_block: bool) -> None:
+        """Abort a degenerate no-code-block loop (a root not driving the REPL).
+
+        A root that emits only prose (no ```repl``` block) for
+        OPENRESEARCH_DEGENERATE_REFUSAL_THRESHOLD consecutive iterations is not
+        making progress and would otherwise churn to the rlm iteration cap. Any
+        iteration with a code block resets the streak, so healthy runs are
+        byte-identical.
+        """
+        if has_code_block:
+            self._empty_iter_streak = 0
+            return
+        streak = getattr(self, "_empty_iter_streak", 0) + 1
+        self._empty_iter_streak = streak
+        if streak < _default_degenerate_threshold():
+            return
+        # best-effort: reuse the existing degenerate-loop run_warning emission
+        policy = _current_policy()
+        cb = getattr(policy, "on_degenerate_refusal_loop", None) if policy else None
+        if cb is not None:
+            try:
+                cb({"signature": "empty_code_block", "count": streak, "required_stage": None})
+            except Exception:  # noqa: BLE001 — emit must never block the abort
+                logger.exception("empty-iteration degenerate callback raised")
+        raise _FatalPrimitiveAbort(
+            primitive_name="root_degenerate_loop",
+            result={
+                "error": (
+                    f"root emitted {streak} consecutive iterations with no code "
+                    "block (pure prose) — it is not driving the RLM REPL loop"
+                ),
+                "failure_class": "root_degenerate_loop",
+                "suggested_fix": (
+                    "Use a validated agentic root (gpt-5 / claude / grok-4.3). "
+                    "Chat-only models (e.g. ChatGPT-latest) refuse the RLM REPL premise."
+                ),
+            },
+        )
 
 
 def _fatal_error_payload(abort: _FatalPrimitiveAbort) -> dict[str, Any]:
@@ -939,6 +1674,88 @@ def _notify_run_terminal(project_dir: Path) -> None:
         notify_run_terminal(project_dir)
     except Exception:  # noqa: BLE001 — a notification must never affect run outcome
         logger.debug("run-notify: terminal helper raised", exc_info=True)
+
+
+def _run_finalize_validation_panel(ctx: Any, report: Any, project_dir: Path) -> None:
+    """OFFLINE adversarial validation panel (report-stamping only), shared by every
+    ctx-bearing finalize path so the grok validator runs on the normal, fatal-abort,
+    AND hard-stop paths — not just the happy one. Gated by OPENRESEARCH_EXTERNAL_VALIDATOR
+    + ctx.validator_client (unset/None -> no-op -> byte-identical). Reuses a verdict the
+    P3 FINAL_VAR gate already persisted for this evidence (no duplicate panel). Fail-soft:
+    a panel failure must NEVER break finalize."""
+    try:
+        from backend.agents.rlm.external_validator import (  # noqa: PLC0415
+            external_validator_enabled,
+            run_validation_panel,
+            persist_verdict,
+        )
+        _val_client = getattr(ctx, "validator_client", None)
+        if external_validator_enabled() and _val_client is not None:
+            # Gather metrics from the report's baseline_metrics if present, else on-disk.
+            _val_metrics: dict = dict(report.baseline_metrics) if report.baseline_metrics else {}
+            if not _val_metrics:
+                _mpath = project_dir / "code" / "metrics.json"
+                if _mpath.exists():
+                    try:
+                        _val_metrics = json.loads(_mpath.read_text(encoding="utf-8"))
+                    except Exception:  # noqa: BLE001
+                        _val_metrics = {}
+            # Consume a verdict the P3 validator gate ALREADY persisted for THIS
+            # evidence (spec §7.1: the panel is invoked once at the FINAL_VAR-attempt
+            # and consumed — NOT re-run — by _finalize). Skipping the re-run avoids a
+            # duplicate LLM panel and a later stochastic verdict overwriting the gate's.
+            from backend.agents.rlm.external_validator import (  # noqa: PLC0415
+                evidence_fingerprint as _val_efp,
+                load_verdict as _load_verdict,
+            )
+            _already_validated = (
+                _load_verdict(project_dir, expect_fingerprint=_val_efp(_val_metrics)) is not None
+            )
+            if _already_validated:
+                logger.info("finalize-validation: reusing the validator verdict from the FINAL_VAR gate (no re-run)")
+            else:
+                # Gather leaf records from rubric_evaluation.json (best-effort).
+                _leaf_records: list[dict] = []
+                _eval_p = project_dir / "rubric_evaluation.json"
+                if _eval_p.exists():
+                    try:
+                        _eval_data = json.loads(_eval_p.read_text(encoding="utf-8"))
+                        _leaf_records = list(_eval_data.get("leaf_scores", {}).values())
+                    except Exception:  # noqa: BLE001
+                        _leaf_records = []
+                _val_tier = _validator_separation_tier(getattr(ctx, "role_selection", None))
+                _val_label = os.environ.get("OPENRESEARCH_VALIDATOR_MODEL", "").strip() or \
+                             os.environ.get("OPENRESEARCH_VALIDATOR_BACKEND", "").strip() or "validator"
+                # §4.5: thread report claims into the panel when OPENRESEARCH_VALIDATOR_CHECK_REPORT=1.
+                _report_claims_for_panel = None
+                if os.environ.get("OPENRESEARCH_VALIDATOR_CHECK_REPORT", "").strip() == "1":
+                    try:
+                        from backend.agents.rlm.claim_grounding import extract_result_claims as _erc  # noqa: PLC0415
+                        _summary = getattr(report, "reproduction_summary", "") or ""
+                        _rm = getattr(report, "reported_metrics", None)
+                        _rm_text = (
+                            _rm if isinstance(_rm, str) else
+                            (__import__("json").dumps(_rm, default=str) if _rm else "")
+                        )
+                        _report_claims_for_panel = _erc(_summary + "\n" + _rm_text)
+                    except Exception:  # noqa: BLE001
+                        _report_claims_for_panel = None
+                _verdict = run_validation_panel(
+                    validator_client=_val_client,
+                    panel_models=[_val_label],
+                    metrics=_val_metrics,
+                    project_dir=project_dir,
+                    leaf_records=_leaf_records,
+                    separation=_val_tier,
+                    report_claims=_report_claims_for_panel,
+                )
+                persist_verdict(project_dir, _verdict)
+                logger.info(
+                    "finalize-validation: validation panel complete — status=%s veto_set=%r separation=%s",
+                    _verdict.status, _verdict.veto_set, _verdict.separation,
+                )
+    except Exception:  # noqa: BLE001 — panel failure must never break finalize
+        logger.warning("finalize-validation: external validation panel failed (non-fatal)", exc_info=True)
 
 
 def _finalize_fatal_primitive_abort(
@@ -996,12 +1813,32 @@ def _finalize_fatal_primitive_abort(
         _fr.regrade_and_emit(ctx, report, emit)
     except Exception:  # noqa: BLE001
         logger.warning("_finalize_fatal_primitive_abort: regrade failed (non-fatal)", exc_info=True)
+    # Run the adversarial validator on the abort path too (gated; byte-identical when off) —
+    # a fabrication-guard abort must not skip the critic. Before write so the stamp sees it.
+    _run_finalize_validation_panel(ctx, report, project_dir)
     json_path, _md_path = write_final_report_rlm(
         report, project_dir, run_experiment_calls=run_experiment_call_count(ctx),
         run_experiment_ok_calls=run_experiment_success_count(ctx),
         run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx)
     )
     _notify_run_terminal(project_dir)
+
+    # Positive recipe admission (OPENRESEARCH_POSITIVE_RECIPES, default-OFF).
+    # Mirrors the mine_lessons pattern; fail-soft so a bookkeeping error never
+    # interrupts this finalize path.
+    try:
+        from backend.agents.rlm import recipe_library as _rl
+        from backend.agents.prompts.paper_hints import PAPER_HINTS as _PH
+        from backend.agents.rlm.external_validator import load_verdict as _load_verdict
+        if _rl.positive_recipes_enabled():
+            _report_dict = report.model_dump() if hasattr(report, "model_dump") else (report if isinstance(report, dict) else {})
+            _verdict = _load_verdict(project_dir)
+            _paper_class = _rl.derive_paper_class(
+                arxiv_id=getattr(ctx, "arxiv_id", None), paper_hints=_PH, rubric=_report_dict.get("rubric"),
+            )
+            _rl.admit_recipe(project_dir, project_dir.parent, report=_report_dict, validator_verdict=_verdict, paper_class=_paper_class)
+    except Exception:  # noqa: BLE001 — recipe bookkeeping must never break finalize
+        logger.debug("_finalize_fatal_primitive_abort: recipe admission skipped", exc_info=True)
 
     try:
         emit(
@@ -1111,6 +1948,10 @@ def _hard_stop_with_report(
     salvaged_score = _salvage_partial_report(
         report, project_dir, stop_kind=stop_kind, stop_detail=status_error,
     )
+    # Run the adversarial validator on the wall-clock/SIGTERM hard-stop path too (gated;
+    # byte-identical when off). ctx may be None here (the watchdog can fire pre-bind).
+    if ctx is not None:
+        _run_finalize_validation_panel(ctx, report, project_dir)
     try:
         # Evidence-gate trust counts (audit 2026-06-11): without these the
         # watchdog/SIGTERM path fell back to content-only trust — a forging
@@ -1126,6 +1967,21 @@ def _hard_stop_with_report(
     except Exception:  # noqa: BLE001
         logger.exception("run_pipeline_rlm: hard-stop could not write final report")
     _notify_run_terminal(project_dir)
+    # Positive recipe admission (OPENRESEARCH_POSITIVE_RECIPES, default-OFF).
+    # The ctx guard is load-bearing here: _hard_stop_with_report has ctx: Any = None.
+    try:
+        from backend.agents.rlm import recipe_library as _rl
+        from backend.agents.prompts.paper_hints import PAPER_HINTS as _PH
+        from backend.agents.rlm.external_validator import load_verdict as _load_verdict
+        if ctx is not None and _rl.positive_recipes_enabled():
+            _report_dict = report.model_dump() if hasattr(report, "model_dump") else (report if isinstance(report, dict) else {})
+            _verdict = _load_verdict(project_dir)
+            _paper_class = _rl.derive_paper_class(
+                arxiv_id=getattr(ctx, "arxiv_id", None), paper_hints=_PH, rubric=_report_dict.get("rubric"),
+            )
+            _rl.admit_recipe(project_dir, project_dir.parent, report=_report_dict, validator_verdict=_verdict, paper_class=_paper_class)
+    except Exception:  # noqa: BLE001 — recipe bookkeeping must never break finalize
+        logger.debug("_hard_stop_with_report: recipe admission skipped", exc_info=True)
     try:
         emit(
             build_run_complete_event(
@@ -1499,6 +2355,36 @@ def _ensure_local_data_root(sandbox_mode: object, runs_root: Path) -> None:
     )
 
 
+def _maybe_auto_arm_cell_resume(project_dir: Path) -> bool:
+    """Auto-arm cell-resume on a re-invoke of an UNFINISHED project (spot-restart safe).
+
+    On a spot VM a preemption stops the run; restarting + re-invoking with the
+    SAME --project-id should SKIP already-completed cells instead of redoing
+    them. ``gpu_cell_runner.run_matrix`` already does that when
+    ``OPENRESEARCH_RESUME_CELLS`` is truthy (it only skips a cell whose prior
+    ``cell_manifest.json`` is ``status=ok`` AND fingerprint-matches — so a
+    changed cells.json safely re-runs). This fills the gap: when a prior attempt
+    left state under *project_dir* but never produced ``final_report.json``,
+    arm resume automatically.
+
+    An explicit ``OPENRESEARCH_RESUME_CELLS`` (set to ANY value, incl. "0")
+    always wins — operator intent is never overridden. Returns True iff it
+    armed (set the env var to "1") this call.
+    """
+    if os.environ.get("OPENRESEARCH_RESUME_CELLS") is not None:
+        return False  # explicit operator setting wins (including "0")
+    if (project_dir / "final_report.json").exists():
+        return False  # already finished — nothing to resume
+    prior_attempt = (
+        (project_dir / "rlm_state").exists()
+        or (project_dir / "experiment_runs.jsonl").exists()
+    )
+    if not prior_attempt:
+        return False  # first attempt — no completed cells to skip
+    os.environ["OPENRESEARCH_RESUME_CELLS"] = "1"
+    return True
+
+
 def _load_reusable_rubric(project_dir: Path) -> dict | None:
     """OPENRESEARCH_REUSE_RUBRIC=1 → the pre-seeded generated_rubric.json, else None.
 
@@ -1528,6 +2414,84 @@ def _load_reusable_rubric(project_dir: Path) -> dict | None:
     return None
 
 
+def _validator_separation_tier(role_selection: Any) -> str:
+    """Compute the model-lineage separation tier between executor and validator.
+
+    Reads ``OPENRESEARCH_VALIDATOR_BACKEND`` and ``OPENRESEARCH_VALIDATOR_MODEL``
+    from the environment (no side effects) and constructs a synthetic
+    :class:`~backend.agents.rlm.role_models.RoleSpec` for the validator, then
+    delegates to :func:`~backend.agents.rlm.role_models.separation_strength`.
+
+    For the Azure×Azure case the executor's ACTUAL deployment
+    (``AZURE_OPENAI_DEPLOYMENT``) is substituted so that two different Azure
+    deployments read as "weak" rather than "degraded".
+
+    Returns one of: ``"independent"`` | ``"weak"`` | ``"degraded"`` | ``"unavailable"``.
+    """
+    backend = os.environ.get("OPENRESEARCH_VALIDATOR_BACKEND", "").strip().lower()
+    if not backend:
+        return "unavailable"
+    try:
+        from backend.agents.rlm.role_models import (  # noqa: PLC0415
+            RoleSpec,
+            _classify_model_family,
+            separation_strength,
+            PROVIDER_AZURE,
+            PROVIDER_ANTHROPIC_OAUTH,
+            PROVIDER_ANTHROPIC,
+            PROVIDER_OPENAI,
+            PROVIDER_AZURE_FOUNDRY,
+        )
+        import dataclasses  # noqa: PLC0415
+
+        _BACKEND_PROVIDER: dict[str, str] = {
+            "azure": PROVIDER_AZURE,
+            "oauth": PROVIDER_ANTHROPIC_OAUTH,
+            "claude-oauth": PROVIDER_ANTHROPIC_OAUTH,
+            "anthropic-oauth": PROVIDER_ANTHROPIC_OAUTH,
+            "anthropic": PROVIDER_ANTHROPIC,
+            "openai": PROVIDER_OPENAI,
+            "azure-foundry": PROVIDER_AZURE_FOUNDRY,
+            "foundry": PROVIDER_AZURE_FOUNDRY,
+            "grok": PROVIDER_AZURE_FOUNDRY,
+        }
+        val_provider = _BACKEND_PROVIDER.get(backend, backend)
+        # The actual validator model/deployment for the tier comparison. For the
+        # azure backend the OPENRESEARCH_VALIDATOR_MODEL override resolves to the
+        # deployment via the SINGLE shared resolver (ADR 2026-06-21, Decision 1) —
+        # no longer re-derived here.
+        val_model_override = (
+            os.environ.get("OPENRESEARCH_VALIDATOR_MODEL", "").strip() or None
+        )
+        if val_provider == PROVIDER_AZURE:
+            from backend.agents.rlm.grader_transport import (  # noqa: PLC0415
+                resolve_azure_deployment,
+            )
+
+            val_model = resolve_azure_deployment(val_model_override)
+        else:
+            val_model = val_model_override
+        val_spec = RoleSpec(
+            role="validator",
+            token=backend,
+            provider=val_provider,
+            model=val_model,
+            family=_classify_model_family(val_provider, val_model),
+        )
+        exec_spec = getattr(role_selection, "executor", None) if role_selection is not None else None
+        # For the Azure executor, substitute the ACTUAL deployment so that
+        # azure(deployA) × azure(deployB) reads as "weak", not "degraded".
+        if exec_spec is not None and exec_spec.provider == PROVIDER_AZURE:
+            exec_spec = dataclasses.replace(
+                exec_spec,
+                model=os.environ.get("AZURE_OPENAI_DEPLOYMENT", "").strip() or exec_spec.model,
+            )
+        return separation_strength(exec_spec, val_spec)
+    except Exception:  # noqa: BLE001 — tier computation is advisory; never crashes a run
+        logger.debug("_validator_separation_tier: failed, defaulting to unavailable", exc_info=True)
+        return "unavailable"
+
+
 async def run_pipeline_rlm(
     project_id: str,
     runs_root: Path,
@@ -1546,6 +2510,7 @@ async def run_pipeline_rlm(
     workspace_id: str | None = None,
     hybrid_repair_only: bool = False,
     phase1_weak_clusters: list | None = None,
+    repo_url: str | None = None,
 ) -> RLMRunResult:
     """Run one paper reproduction in ``rlm`` mode.
 
@@ -1569,6 +2534,12 @@ async def run_pipeline_rlm(
     # not buried behind a new partial run. Uses the default from Settings
     # (allow_lossy_paper_text=True) so all existing callers proceed unchanged.
     _settings_for_gate = get_settings()
+    # Bridge Azure OpenAI creds (canonical names + the portal KEY1/KEY2 aliases +
+    # .env) into the process env before any Azure consumer reads os.environ
+    # directly: the executor's make_runtime("azure"), the navigation accelerator,
+    # and grader_transport. No-op (byte-identical) when no AZURE_OPENAI_* is set.
+    from backend.agents.runtime.factory import configure_azure_openai_credentials
+    configure_azure_openai_credentials(_settings_for_gate)
     _allow_lossy = getattr(_settings_for_gate, "allow_lossy_paper_text", True)
     _paper_degraded_reason = _assert_paper_text_precondition(project_dir, allow_lossy=_allow_lossy)
 
@@ -1676,6 +2647,18 @@ async def run_pipeline_rlm(
 
     # 2. Root model (resolved before the primitive LLM client so the client
     #    can mirror a custom endpoint when the root uses one).
+    # The unified surface's planner pick drives the ACTUAL root model when
+    # --model is unset, so `--models planner=opus` == `--model opus` and the
+    # planner stamp matches what ran (no split between --model and --models).
+    # Explicit --model wins. Resolution still goes through resolve_root_model, so
+    # the root alias collapse (opus→claude-oauth) applies uniformly to both.
+    if not model:
+        from backend.agents.rlm.role_models import planner_token_from_surface
+        _planner_tok = planner_token_from_surface(
+            os.environ.get("OPENRESEARCH_ROLE_MODELS", "").strip() or None
+        )
+        if _planner_tok:
+            model = _planner_tok
     root_model = resolve_root_model(model)
     if not root_model.paper_validated:
         logger.warning(
@@ -1683,6 +2666,20 @@ async def run_pipeline_rlm(
             "(root_model_unvalidated) — results may not match paper expectations",
             root_model.key,
         )
+    # Root-validation gate stamp (oauth-root-reliability plan, P2): record the
+    # validated/risk verdict into demo_status.json so an operator can predict
+    # the degenerate-loop failure for this run. Fail-soft — a stamp failure
+    # must never abort the run; the merge forward-fills onto the running file.
+    try:
+        _root_validation = classify_root_model(root_model)
+        _write_demo_status(
+            project_dir,
+            "running",
+            root_model_validated=_root_validation.validated,
+            root_model_risk=_root_validation.risk,
+        )
+    except Exception:  # noqa: BLE001 — stamping must never block a run
+        logger.debug("run_pipeline_rlm: root-validation stamp skipped", exc_info=True)
 
     # 3. Primitive LLM client (see _build_llm_client on the usage caveat).
     llm_client, llm_model = _build_llm_client(provider, root_model)
@@ -1737,10 +2734,119 @@ async def run_pipeline_rlm(
             "openai" if os.environ.get("OPENAI_API_KEY") else "anthropic"
         )
 
+    # 3b. Per-role model selection (2026-06-17, dynamic Sonnet/Opus ⇄ gpt-4/gpt-5):
+    #     resolve the unified surface (OPENRESEARCH_ROLE_MODELS / --models) + legacy
+    #     per-role feeders into one RoleSelection. Unset → every sub-role inherits
+    #     today's behaviour, so this is byte-identical when unused.
+    from backend.agents.rlm.role_models import resolve_role_models, RoleModelError
+    try:
+        role_selection = resolve_role_models(
+            planner_token=root_model.key,
+            role_models_json=os.environ.get("OPENRESEARCH_ROLE_MODELS", "").strip() or None,
+            grader_backend_env=os.environ.get("OPENRESEARCH_GRADER_BACKEND", "").strip() or None,
+            grader_model_env=os.environ.get("OPENRESEARCH_GRADER_MODEL", "").strip() or None,
+            verifier_model_setting=(
+                getattr(get_settings(), "rubric_verifier_model", "")
+                or os.environ.get("OPENRESEARCH_RUBRIC_VERIFIER_MODEL", "")
+            ).strip() or None,
+            validator_model_setting=os.environ.get("OPENRESEARCH_VALIDATOR_MODEL", "").strip() or None,
+        )
+    except RoleModelError as _exc:
+        raise RuntimeError(f"invalid per-role model selection: {_exc}") from _exc
+
+    # Verifier transport: an overridden verifier role gets a dedicated
+    # sampler-capable client (reusing the grader transport); else None → the
+    # rubric judge inherits the planner client (today's behaviour). A Claude pick
+    # auto-resolves OAuth-vs-API-key by availability (api key ⇄ OAuth seamlessly).
+    from backend.agents.rlm.grader_transport import (
+        build_transport_client,
+        resolve_anthropic_subrole_backend,
+    )
+
+    def _subrole_backend(spec: Any) -> str:
+        # Claude tokens (opus/sonnet/haiku) → whichever Anthropic auth is present
+        # (honours llm_auth_strategy); openai/azure are key-only, pass through.
+        return resolve_anthropic_subrole_backend() if spec.is_claude else spec.provider
+
+    verifier_client = None
+    if role_selection.verifier is not None:
+        verifier_client, _verifier_label = build_transport_client(
+            backend=_subrole_backend(role_selection.verifier),
+            model=role_selection.verifier.model,
+            fallback_client=llm_client,
+            fallback_label=provider_label,
+            role_label="verifier",
+        )
+        logger.info("run_pipeline_rlm: verifier transport=%s", _verifier_label)
+
+    # Validator unified surface → feed OPENRESEARCH_VALIDATOR_BACKEND/_MODEL that
+    # build_validator_client + _validator_separation_tier read (only when the operator
+    # did not set VALIDATOR_BACKEND directly). Without this bridge, `--models
+    # validator=gpt-4o-azure` resolves a RoleSelection.validator but silently builds
+    # NO validator client — this makes the unified role surface actually wire one.
+    if role_selection.validator is not None and not os.environ.get("OPENRESEARCH_VALIDATOR_BACKEND", "").strip():
+        os.environ["OPENRESEARCH_VALIDATOR_BACKEND"] = _subrole_backend(role_selection.validator)
+        if role_selection.validator.model:
+            os.environ.setdefault("OPENRESEARCH_VALIDATOR_MODEL", role_selection.validator.model)
+
+    # Validator transport (P2.3 — fail-closed): when OPENRESEARCH_VALIDATOR_BACKEND
+    # is set, build an independent adversarial-panel client.  build_validator_client
+    # raises ValueError when the requested backend cannot be constructed (missing
+    # credential / unknown backend) — we convert to RuntimeError (fail-closed).
+    # When OPENRESEARCH_VALIDATOR_BACKEND is unset, build_validator_client returns the
+    # fallback unchanged; in that case the separation tier is "unavailable" and we
+    # leave validator_client=None to signal "no independent validator".
+    validator_client = None
+    _validator_label = provider_label
+    try:
+        from backend.agents.rlm.grader_transport import build_validator_client
+        _vc, _vlabel = build_validator_client(
+            fallback_client=llm_client,
+            fallback_label=provider_label,
+        )
+        if _vc is not llm_client:
+            validator_client = _vc
+            _validator_label = _vlabel
+            logger.info("run_pipeline_rlm: validator transport=%s", _validator_label)
+    except ValueError as _exc:
+        raise RuntimeError(f"validator setup failed (fail-closed): {_exc}") from _exc
+
+    # Separation tier (emitted as a run_warning when degraded/weak).
+    _validator_tier = _validator_separation_tier(role_selection)
+    if _validator_tier == "degraded":
+        emit(build_run_warning_event(
+            level="warn",
+            code="validator_separation_degraded",
+            message=(
+                "External validator and executor share the same model/deployment — "
+                "the LLM-suspicion portion is not independently grounded (separation=degraded). "
+                "The harness-side machine-check veto still stands."
+            ),
+        ))
+    elif _validator_tier == "weak":
+        emit(build_run_warning_event(
+            level="info",
+            code="validator_separation_weak",
+            message=(
+                "External validator and executor share the same model family but use "
+                "different deployments/models (separation=weak). "
+                "Same-provider weak separation is supported; the operator requested it explicitly."
+            ),
+        ))
+
+    # Grader unified surface → feed the existing OPENRESEARCH_GRADER_* path that
+    # leaf_scorer.build_grader_client reads (only when the operator did not set
+    # GRADER_BACKEND directly — then resolve_role_models already derived from it).
+    # A Claude grader pick auto-resolves OAuth-vs-key the same way the verifier does.
+    if role_selection.grader is not None and not os.environ.get("OPENRESEARCH_GRADER_BACKEND", "").strip():
+        os.environ["OPENRESEARCH_GRADER_BACKEND"] = _subrole_backend(role_selection.grader)
+        if role_selection.grader.model:
+            os.environ.setdefault("OPENRESEARCH_GRADER_MODEL", role_selection.grader.model)
+
     # 4. RunContext. The sub-agent runtime + model are resolved here so
     #    implement_baseline never falls through to a dead env-default key,
     #    and runs Sonnet rather than the registry's Opus default.
-    agent_runtime, agent_model, runtime_label = _resolve_agent_runtime(runtime, provider)
+    agent_runtime, agent_model, runtime_label = _resolve_agent_runtime(runtime, provider, role_selection)
     logger.info("run_pipeline_rlm: sub-agent runtime=%s", runtime_label)
     # Per-run VRAM override from --vram-gb CLI flag (set as env var by cli.py
     # before Settings construction; consumed here so RunContext carries it and
@@ -1781,6 +2887,9 @@ async def run_pipeline_rlm(
         model=llm_model,
         runtime=agent_runtime,
         agent_model=agent_model,
+        role_selection=role_selection,
+        verifier_client=verifier_client,
+        validator_client=validator_client,
         workspace_service=workspace_service,
         workspace_id=workspace_id,
         sandbox_mode=sandbox_mode,
@@ -1827,6 +2936,110 @@ async def run_pipeline_rlm(
         gpu_parallelism=_parse_gpu_parallelism(),
         gpu_visible_count=_visible_gpu_count(),
     )
+
+    # Fidelity advisories (never block): warn when a non-Claude model drives a
+    # sub-role on a fidelity-critical paper (a paper hint with invariants present).
+    for _msg in role_selection.fidelity_warnings(
+        fidelity_critical=bool(getattr(ctx, "paper_hint_invariants", None))
+    ):
+        emit(build_run_warning_event(level="warn", code="role_model_fidelity", message=_msg))
+
+    # 4a. Asset pre-provisioning (2026-06-18). For papers that declare heavy ML
+    # assets (pip stack, HF weights, datasets, WebShop), ensure they are warm in
+    # the shared cache BEFORE any GPU work. Gated on: local sandbox only, the
+    # paper hint carries an AssetSpec, and OPENRESEARCH_PRELOAD_ASSETS != "0".
+    # Required assets (requirements_files, models, webshop) abort the run on
+    # failure; datasets are best-effort and only logged. Complete no-op for every
+    # non-SDAR paper and every non-local sandbox.
+    _preload_hint = None
+    if (
+        getattr(ctx, "arxiv_id", None)
+        and getattr(ctx.sandbox_mode, "value", str(ctx.sandbox_mode or "")).lower() == "local"
+        and os.environ.get("OPENRESEARCH_PRELOAD_ASSETS", "1") != "0"
+    ):
+        try:
+            from backend.agents.prompts.paper_hints import lookup_paper_hint as _lookup_hint
+            _preload_hint = _lookup_hint(ctx.arxiv_id)
+        except Exception:  # noqa: BLE001 — hint lookup must never crash a run
+            logger.debug("run_pipeline_rlm: paper hint lookup failed", exc_info=True)
+            _preload_hint = None
+
+    if _preload_hint is not None and getattr(_preload_hint, "assets", None) is not None:
+        _asset_cache_root = runs_root / ".cache"
+        from backend.services.runtime.asset_provisioning import (
+            AssetProvisionError as _AssetProvisionError,
+            ensure_assets as _ensure_assets,
+        )
+        try:
+            _asset_report = _ensure_assets(
+                _preload_hint.assets,
+                cache_root=_asset_cache_root,
+            )
+            emit(build_run_warning_event(
+                level="info",
+                code="asset_preload",
+                message=(
+                    f"asset pre-provisioning complete: "
+                    f"ensured={_asset_report.ensured}, "
+                    f"skipped={_asset_report.skipped}, "
+                    f"failed={_asset_report.failed}"
+                ),
+            ))
+            logger.info(
+                "run_pipeline_rlm[%s]: asset preload — ensured=%s skipped=%s failed=%s",
+                project_id,
+                _asset_report.ensured,
+                _asset_report.skipped,
+                _asset_report.failed,
+            )
+        except _AssetProvisionError as _ape:
+            # A missing required asset is fatal: abort before GPU work starts.
+            logger.error(
+                "run_pipeline_rlm[%s]: asset preload FAILED (fatal): %s",
+                project_id,
+                _ape,
+                exc_info=True,
+            )
+            emit(build_run_warning_event(
+                level="error",
+                code="asset_preload_failed",
+                message=f"Required asset could not be provisioned: {_ape}",
+            ))
+            _write_demo_status(project_dir, "failed", error={"error": str(_ape)})
+            return RLMRunResult(
+                project_id=project_id,
+                status="failed",
+                iterations=0,
+                rubric_score=None,
+                cost_usd=None,
+                final_report_path=None,
+            )
+        except Exception:  # noqa: BLE001
+            # Unexpected errors are logged but must not abort (conservative fallback).
+            logger.warning(
+                "run_pipeline_rlm[%s]: asset preload raised unexpectedly (non-fatal)",
+                project_id,
+                exc_info=True,
+            )
+
+    # 4a-bis. Cell-resume auto-arm (2026-06-18, T1). On a spot-restart re-invoke
+    # with the same --project-id, skip already-completed cells instead of redoing
+    # them. Correctness-safe (resume only skips fingerprint-matched ok cells);
+    # an explicit OPENRESEARCH_RESUME_CELLS always wins. No-op on a first run.
+    if _maybe_auto_arm_cell_resume(project_dir):
+        emit(build_run_warning_event(
+            level="info",
+            code="resume_auto_armed",
+            message=(
+                "prior incomplete attempt detected for this project_id — auto-armed "
+                "OPENRESEARCH_RESUME_CELLS=1 so fingerprint-matched completed cells are "
+                "skipped on this resume"
+            ),
+        ))
+        logger.info(
+            "run_pipeline_rlm[%s]: cell-resume auto-armed (spot-restart resume)",
+            project_id,
+        )
 
     # 4b. Full-scope environment provisioning (2026-06-01). When the scope names
     # heavy RL envs (ALFWorld / WebShop) or Search-QA, stand them up ONCE in the
@@ -1893,7 +3106,20 @@ async def run_pipeline_rlm(
     )
 
     # 6. The offloaded corpus + 7. the system prompt.
-    context_dict = _build_context(workspace_claim_map)
+    # #62: thread the resolved blacklist (ctx.blocked_terms) + a discovered-artifact
+    # list (when a workspace handle is available) + the repo_url so _build_context
+    # can resolve/clone the paper's repo. Falls back to OPENRESEARCH_REPO_URL env
+    # (set by the CLI/API plumbing in Task 10) when no explicit kwarg was passed.
+    _repo_url = repo_url or os.environ.get("OPENRESEARCH_REPO_URL", "").strip() or None
+    _discovered = _load_discovered_artifacts(workspace_service, workspace_id)
+    context_dict = _build_context(
+        workspace_claim_map,
+        project_dir=project_dir,
+        repo_url=_repo_url,
+        blacklist=set(getattr(ctx, "blocked_terms", ()) or ()),
+        discovered=_discovered,
+        emit=emit,
+    )
 
     # arXiv runs arrive with no rubric_spec — derive a PaperBench-shaped rubric
     # from the paper so the run is scorable (bundle runs already carry one).
@@ -2144,6 +3370,70 @@ async def run_pipeline_rlm(
             return 0
         return count
 
+    def _code_path_exists() -> bool:
+        """Whether a usable baseline implementation exists on disk.
+
+        Minimal predicate (the degenerate case has NO code so this returns
+        False then): a non-empty ``code/commands.json`` JSON list AND ≥1
+        runnable source file under ``code/``.  Inlined rather than importing
+        the heavier ``primitives._harvest_baseline_artifacts`` to keep this
+        closure import-light and side-effect-free.
+        """
+        import json as _json
+
+        code_dir = ctx.project_dir / "code"
+        commands_path = code_dir / "commands.json"
+        try:
+            commands = _json.loads(commands_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        if not isinstance(commands, list) or not commands:
+            return False
+        runnable_suffixes = {".py", ".sh", ".bash", ".ps1"}
+        for file in code_dir.rglob("*"):
+            if not file.is_file() or file.name == "commands.json":
+                continue
+            if file.suffix.lower() in runnable_suffixes or file.name in {
+                "Dockerfile",
+                "Makefile",
+            }:
+                return True
+        return False
+
+    def _env_built() -> bool:
+        """Whether the environment build has succeeded for this run.
+
+        For ``docker``/``auto`` an explicit ``build_environment`` ok-row is
+        required; for ``local``/``runpod``/``azure``/``gcp`` env-build is a
+        no-op success → treat as built.
+        """
+        mode = getattr(ctx.sandbox_mode, "value", str(ctx.sandbox_mode or "")).lower()
+        if mode in ("docker", "auto"):
+            try:
+                return ctx.cost_ledger.session_call_count("build_environment") > 0
+            except Exception:  # noqa: BLE001
+                return False
+        return True
+
+    def _required_stage() -> str:
+        """Infer the next mandatory lifecycle stage (fail-soft).
+
+        Any error → ``"need_baseline"`` (the safe default — the degenerate
+        case has no code).
+        """
+        try:
+            return infer_required_stage(
+                primitives=[],
+                code_path_exists=_code_path_exists(),
+                env_built=_env_built(),
+                total_run_experiments=run_experiment_call_count(ctx),
+                total_verifications=1 if ctx.latest_rubric_score is not None else 0,
+            )
+        except Exception:  # noqa: BLE001 — never crash the policy
+            return "need_baseline"
+
+    oauth_root = root_model.rlm_backend == "anthropic-oauth"
+
     iteration_policy = ForcedIterationPolicy(
         min_iterations=min_iterations,
         rubric_snapshot=lambda: (
@@ -2158,7 +3448,177 @@ async def run_pipeline_rlm(
         on_repair_refusal=_emit_forced_repair_warning,
         max_rlm_iterations=_max_rlm_iterations,
         on_budget_exceeded=_emit_iteration_budget_exceeded,
+        required_stage=_required_stage,
+        oauth_root=oauth_root,
     )
+    # Task 4 — register the degenerate-refusal-loop callback. Built after the
+    # policy exists so it can close over it (note_terminal_failure). Default
+    # (autodrive OFF): emit the warning + mark a terminal stop so the run
+    # finalizes fast instead of churning to the 16-refusal cap.
+    iteration_policy.on_degenerate_refusal_loop = _make_degenerate_loop_callback(
+        emit=emit,
+        ctx=ctx,
+        policy=iteration_policy,
+        autodrive_enabled=_autodrive_enabled(),
+        # `custom_tools` here is the WRAPPED dict (binding tools wrapped by
+        # `_record_last_primitive_result_tools`) — so the backstop dispatches the
+        # same wrapped primitives the root uses (ctx re-supplied by the wrapper).
+        tools=custom_tools,
+        oauth_root=oauth_root,
+        drive_enabled=_lifecycle_drive_enabled(),
+        paper_text=context_dict.get("paper_text"),
+        rubric_spec=context_dict.get("rubric_spec"),
+    )
+    # P3 fix-first repair loop (2026-06-20): wire the two new hooks that engage
+    # the evidence-fingerprint-based repair loop and the external validator gate.
+    # Both are DEFAULT-OFF: when neither OPENRESEARCH_ZERO_METRICS_GUARD nor
+    # OPENRESEARCH_EXTERNAL_VALIDATOR is set, _fixfirst_loop_engaged() is False
+    # and neither hook is assigned — the policy is byte-identical to today.
+    # B1: evidence_fingerprint — engage the loop when either guard flag is on.
+    if _fixfirst_loop_engaged():
+        def _current_evidence_fingerprint() -> str:
+            """Hash the measured on-disk metrics. Changes on real progress; fail-soft -> ''."""
+            try:
+                from backend.agents.rlm.external_validator import evidence_fingerprint as _efp  # noqa: PLC0415
+                _mp = project_dir / "code" / "metrics.json"
+                _m = json.loads(_mp.read_text(encoding="utf-8")) if _mp.exists() else {}
+                return _efp(_m)
+            except Exception:  # noqa: BLE001 — never crash the policy
+                return ""
+        iteration_policy.evidence_fingerprint = _current_evidence_fingerprint
+
+    # B2: validator_gate — only when the external validator flag is on AND a
+    # validator client was built.  The closure caches the panel result by evidence
+    # fingerprint so the LLM panel runs AT MOST ONCE per distinct evidence state
+    # (cost guard — should_refuse may call the gate on every FINAL_VAR attempt).
+    from backend.agents.rlm.external_validator import external_validator_enabled as _ext_validator_enabled  # noqa: PLC0415
+    if _ext_validator_enabled() and getattr(ctx, "validator_client", None) is not None:
+        from backend.agents.rlm.external_validator import (  # noqa: PLC0415
+            run_validation_panel as _run_validation_panel,
+            persist_verdict as _persist_verdict,
+        )
+        _panel_cache: dict[str, tuple[bool, str]] = {}
+        _val_tier = _validator_separation_tier(role_selection)
+        _val_label = _validator_label  # captured from enclosing scope (built at line ~2312)
+
+        def _validator_gate() -> tuple[bool, str] | None:
+            """Run the adversarial panel, cached by evidence fingerprint (one run per state).
+
+            Returns (vetoed, directive) on a machine-verified veto, else None.
+            Fail-soft: any error returns None (panel never crashes the policy).
+            """
+            try:
+                from backend.agents.rlm.external_validator import evidence_fingerprint as _efp  # noqa: PLC0415
+                _mp = project_dir / "code" / "metrics.json"
+                _metrics = json.loads(_mp.read_text(encoding="utf-8")) if _mp.exists() else {}
+                _fp = _efp(_metrics)
+                if _fp in _panel_cache:  # cost guard — one panel run per evidence state
+                    return _panel_cache[_fp]
+                # Gather leaf records from rubric_evaluation.json (best-effort).
+                _leaf_records: list[dict] = []
+                try:
+                    _re_path = project_dir / "rubric_evaluation.json"
+                    if _re_path.exists():
+                        _re_data = json.loads(_re_path.read_text(encoding="utf-8"))
+                        _leaf_records = _re_data.get("leaf_scores") or _re_data.get("leaves") or []
+                except Exception:  # noqa: BLE001
+                    _leaf_records = []
+                _verdict = _run_validation_panel(
+                    validator_client=ctx.validator_client,
+                    panel_models=[_val_label],
+                    metrics=_metrics,
+                    project_dir=project_dir,
+                    leaf_records=_leaf_records,
+                    separation=_val_tier,
+                )
+                _persist_verdict(project_dir, _verdict)
+                _vetoed = _verdict.status == "vetoed"
+                _directive = ""
+                if _vetoed:
+                    _directive = (
+                        "FINAL_VAR refused: the external validator vetoed these result "
+                        f"claims as unsubstantiated: {', '.join(_verdict.veto_set[:6])}. "
+                        "Re-implement so each cited metric traces to real model outputs on "
+                        "real data (loss backprops from the model, reward reads env outcomes, "
+                        "eval scores against gold), then run_experiment + verify_against_rubric."
+                    )
+                    # Route the cited directive to leaf_triage so the next implementer
+                    # prompt carries the specific repair guidance (best-effort, fail-soft).
+                    try:
+                        from backend.agents.rlm import leaf_triage as _lt  # noqa: PLC0415
+                        if _lt.is_enabled():
+                            _plan = [
+                                {
+                                    "leaf_id": r,
+                                    "score": 0.0,
+                                    "repair_class": "validator_veto",
+                                    "cost": "targeted_rerun",
+                                    "directive": _directive,
+                                    "justification": "external validator machine-verified veto",
+                                }
+                                for r in _verdict.veto_set[:6]
+                            ]
+                            _lt.persist(project_dir, {"plan": _plan, "facts": {}, "summary": "external validator veto"})
+                    except Exception:  # noqa: BLE001 — leaf_triage is advisory only
+                        pass
+                _result: tuple[bool, str] = (_vetoed, _directive)
+                _panel_cache[_fp] = _result
+                return _result
+            except Exception:  # noqa: BLE001 — the validator must never crash the policy
+                logger.debug("_validator_gate: failed; treating as clean", exc_info=True)
+                return None
+
+        iteration_policy.validator_gate = _validator_gate
+
+    # §4.4 B — claim gate: wire only when the fix-first loop is engaged AND the
+    # report-claim gate flag is on. Stringifies the pending FINAL_VAR value
+    # (stashed by _intercepted_final_var), extracts result claims, and checks
+    # them against on-disk measured values. Returns (vetoed, directive) when
+    # ungrounded claims exist, else None. Fail-soft: any exception → None.
+    from backend.agents.rlm.report_claim_gate import report_claim_gate_enabled as _rcg_enabled  # noqa: PLC0415
+    if _rcg_enabled():
+        from backend.agents.rlm.claim_grounding import (  # noqa: PLC0415
+            check_claims_grounded as _check_claims_grounded,
+            extract_result_claims as _extract_result_claims,
+            flatten_measured_values as _flatten_measured_values,
+        )
+
+        def _claim_gate() -> tuple[bool, str] | None:
+            """Check the pending FINAL_VAR value's claims vs on-disk metrics.
+
+            Returns (True, directive) when ≥1 ungrounded result claim is found
+            and measured evidence is present, else None (clean or unverifiable).
+            Fail-soft: any error → None.
+            """
+            try:
+                _pending = iteration_policy.pending_final_value
+                if not _pending:
+                    return None
+                _claims = _extract_result_claims(_pending)
+                if not _claims:
+                    return None
+                _measured = _flatten_measured_values(project_dir)
+                if not _measured:
+                    return None  # no evidence → unverifiable, not ungrounded
+                _grounding = _check_claims_grounded(_claims, _measured)
+                _ungrounded = _grounding.get("ungrounded", [])
+                if not _ungrounded:
+                    return None
+                # Build a concise cited directive.
+                _first = _ungrounded[0]
+                _directive = (
+                    f"FINAL_VAR refused: your report claims {_first.value} "
+                    f"({_first.term}) but code/metrics.json has no matching "
+                    "measured value within 5%. Either run_experiment to produce "
+                    "that evidence or correct the report, then FINAL_VAR again."
+                )
+                return (True, _directive)
+            except Exception:  # noqa: BLE001 — never crash the policy
+                logger.debug("_claim_gate: failed; treating as clean", exc_info=True)
+                return None
+
+        iteration_policy.claim_gate = _claim_gate
+
     # PR-α followup: populate the late-binding holder so the tool wrapper
     # can call policy.record_repair_attempt() when run_experiment returns
     # a repairable outcome.  Slot 0 is set here; wrappers close over the list.
@@ -2230,60 +3690,82 @@ async def run_pipeline_rlm(
             with forced_iteration_policy(iteration_policy):
                 return rlm.completion(context_dict, active_prompt)
 
-        result_obj = await asyncio.to_thread(_run_completion_on_worker)
+        if _lifecycle_primary_enabled():
+            from backend.agents.rlm.lifecycle_driver import run_lifecycle_primary
+            summary = await asyncio.to_thread(
+                run_lifecycle_primary,
+                tools=custom_tools,
+                ctx=ctx,
+                paper_text=context_dict.get("paper_text", ""),
+                rubric_spec=context_dict.get("rubric_spec", {}),
+                emit=emit,
+                target_score=ctx.latest_rubric_target,
+                max_repair_iterations=_drive_max_repair(),
+                max_improve_iterations=_drive_max_improve(),
+            )
+            _fatal = summary.get("fatal_result")
+            if _fatal:
+                raise _FatalPrimitiveAbort(
+                    primitive_name=str(summary.get("stopped_at") or "run_experiment"),
+                    result=_fatal,
+                )
+            result_obj = _synth_result_from_summary(summary, ctx)
+            run_failed = summary.get("rubric_score") is None
+        else:
+            result_obj = await asyncio.to_thread(_run_completion_on_worker)
 
-        # C3 — Drain the module-level ClaudeOauthClient root-usage sink and
-        # ledger cache tokens for the root reasoning turns.
-        #
-        # Double-count design (documented here, tested in tests/rlm/test_root_usage_ledger.py):
-        #
-        #   - tokens_total.json is generated exclusively from cost_ledger.jsonl via
-        #     _aggregate_tokens_total(); the rlm usage_summary NEVER feeds tokens_total.
-        #   - final_report.cost.llm_usd is sourced from result.usage_summary
-        #     (in _cost_dict()) — it does NOT read the cost ledger for the root.
-        #   - Therefore: adding a rlm_root row to the ledger with the full
-        #     input/output/cache tokens does NOT double-count in final_report.cost.llm_usd.
-        #     It does add these tokens to tokens_total.json, which is the desired
-        #     behaviour — the root's tokens were previously absent from tokens_total.
-        #   - For OAuth runs estimated_usd stays $0 (correct: real cost is $0).
-        #     Use equivalent_cost_usd() from pricing.py for the hypothetical API cost.
-        if root_model.rlm_backend == "anthropic-oauth":
-            try:
-                from backend.agents.rlm.claude_oauth_client import drain_root_usage
-                from backend.agents.resilience.cost import CostLedgerEntry
+            # C3 — Drain the module-level ClaudeOauthClient root-usage sink and
+            # ledger cache tokens for the root reasoning turns.
+            #
+            # Double-count design (documented here, tested in tests/rlm/test_root_usage_ledger.py):
+            #
+            #   - tokens_total.json is generated exclusively from cost_ledger.jsonl via
+            #     _aggregate_tokens_total(); the rlm usage_summary NEVER feeds tokens_total.
+            #   - final_report.cost.llm_usd is sourced from result.usage_summary
+            #     (in _cost_dict()) — it does NOT read the cost ledger for the root.
+            #   - Therefore: adding a rlm_root row to the ledger with the full
+            #     input/output/cache tokens does NOT double-count in final_report.cost.llm_usd.
+            #     It does add these tokens to tokens_total.json, which is the desired
+            #     behaviour — the root's tokens were previously absent from tokens_total.
+            #   - For OAuth runs estimated_usd stays $0 (correct: real cost is $0).
+            #     Use equivalent_cost_usd() from pricing.py for the hypothetical API cost.
+            if root_model.rlm_backend == "anthropic-oauth":
+                try:
+                    from backend.agents.rlm.claude_oauth_client import drain_root_usage
+                    from backend.agents.resilience.cost import CostLedgerEntry
 
-                root_usage_by_model = drain_root_usage()
-                for _model, _u in root_usage_by_model.items():
-                    if _u.get("calls", 0) == 0:
-                        continue
-                    _entry = CostLedgerEntry.from_usage(
-                        agent_id="rlm_root",
-                        attempt_index=0,
-                        provider="anthropic",  # type: ignore[arg-type]
-                        model=_model,
-                        usage={
-                            "input_tokens": _u.get("input_tokens", 0),
-                            "output_tokens": _u.get("output_tokens", 0),
-                            "cache_creation_input_tokens": _u.get("cache_creation_input_tokens", 0),
-                            "cache_read_input_tokens": _u.get("cache_read_input_tokens", 0),
-                            "reasoning_tokens": 0,
-                        },
-                    )
-                    if ctx.cost_ledger is not None:
-                        ctx.cost_ledger.append(_entry)
-                    # Also write directly to the ledger file (mirrors
-                    # record_subagent_usage_to_path for resilience when
-                    # ctx.cost_ledger has no path attached).
-                    _ledger_path = project_dir / "cost_ledger.jsonl"
-                    if ctx.cost_ledger is None or ctx.cost_ledger.path is None:
-                        import json as _json_ledger
-                        _ledger_path.parent.mkdir(parents=True, exist_ok=True)
-                        with _ledger_path.open("a", encoding="utf-8") as _fh:
-                            _fh.write(_json_ledger.dumps(_entry.to_json(), sort_keys=True) + "\n")
-                    else:
-                        ctx.cost_ledger.flush()
-            except Exception:  # noqa: BLE001 — ledgering is best-effort
-                logger.warning("run_pipeline_rlm: drain_root_usage ledger failed", exc_info=True)
+                    root_usage_by_model = drain_root_usage()
+                    for _model, _u in root_usage_by_model.items():
+                        if _u.get("calls", 0) == 0:
+                            continue
+                        _entry = CostLedgerEntry.from_usage(
+                            agent_id="rlm_root",
+                            attempt_index=0,
+                            provider="anthropic",  # type: ignore[arg-type]
+                            model=_model,
+                            usage={
+                                "input_tokens": _u.get("input_tokens", 0),
+                                "output_tokens": _u.get("output_tokens", 0),
+                                "cache_creation_input_tokens": _u.get("cache_creation_input_tokens", 0),
+                                "cache_read_input_tokens": _u.get("cache_read_input_tokens", 0),
+                                "reasoning_tokens": 0,
+                            },
+                        )
+                        if ctx.cost_ledger is not None:
+                            ctx.cost_ledger.append(_entry)
+                        # Also write directly to the ledger file (mirrors
+                        # record_subagent_usage_to_path for resilience when
+                        # ctx.cost_ledger has no path attached).
+                        _ledger_path = project_dir / "cost_ledger.jsonl"
+                        if ctx.cost_ledger is None or ctx.cost_ledger.path is None:
+                            import json as _json_ledger
+                            _ledger_path.parent.mkdir(parents=True, exist_ok=True)
+                            with _ledger_path.open("a", encoding="utf-8") as _fh:
+                                _fh.write(_json_ledger.dumps(_entry.to_json(), sort_keys=True) + "\n")
+                        else:
+                            ctx.cost_ledger.flush()
+                except Exception:  # noqa: BLE001 — ledgering is best-effort
+                    logger.warning("run_pipeline_rlm: drain_root_usage ledger failed", exc_info=True)
 
     except _FatalPrimitiveAbort as exc:
         fatal_abort = exc
@@ -2409,11 +3891,29 @@ def _finalize(
         )
         or llm_model
     )
+    # Selection-aware stamping: an overridden executor/verifier reports its
+    # resolved provider:model; planner + grader stay byte-identical when no
+    # unified surface is used (role_selection is None / those sub-roles inherit).
+    _role_selection = getattr(ctx, "role_selection", None)
+    _sel_executor = getattr(_role_selection, "executor", None)
+    _sel_verifier = getattr(_role_selection, "verifier", None)
+    _sel_grader = getattr(_role_selection, "grader", None)
     report.models = {
         "planner": llm_model,
-        "executor": getattr(ctx, "agent_model", None),
-        "verifier": llm_model,
-        "grader": _grader_stamp,
+        "executor": (
+            _sel_executor.stamp
+            if _sel_executor is not None
+            else getattr(ctx, "agent_model", None)
+        ),
+        "verifier": (
+            _sel_verifier.stamp
+            if _sel_verifier is not None
+            else llm_model
+        ),
+        # Prefer the explicit grader RoleSpec stamp (mirrors executor/verifier) so
+        # an explicit foundry grader names its real deployment; fall back to the
+        # env/llm_model-derived stamp when the grader inherits.
+        "grader": (_sel_grader.stamp if _sel_grader is not None else _grader_stamp),
     }
     started_at: str | None = None
     demo_status_path = project_dir / "demo_status.json"
@@ -2513,6 +4013,12 @@ def _finalize(
     except Exception:  # noqa: BLE001 — re-grade is advisory, never blocks finalize
         logger.warning("_finalize: finalize_regrade failed (non-fatal)", exc_info=True)
 
+    # P2.3 — OFFLINE adversarial validation panel (report-stamping only). Extracted to
+    # _run_finalize_validation_panel so the fatal-abort + hard-stop paths run it too.
+    # Runs BEFORE write_final_report_rlm so the verdict is on disk for the stamp chokepoint.
+    if not run_failed:
+        _run_finalize_validation_panel(ctx, report, project_dir)
+
     json_path, _md_path = write_final_report_rlm(
         report, project_dir, run_experiment_calls=run_experiment_call_count(ctx),
         run_experiment_ok_calls=run_experiment_success_count(ctx),
@@ -2529,6 +4035,23 @@ def _finalize(
         mine_lessons(project_dir, project_dir.parent, getattr(ctx, "arxiv_id", None))
     except Exception:  # noqa: BLE001 — lesson bookkeeping must never break finalize
         logger.debug("_finalize: mine_lessons raised", exc_info=True)
+
+    # Positive recipe admission (OPENRESEARCH_POSITIVE_RECIPES, default-OFF).
+    # Mirrors mine_lessons; fired after write_final_report_rlm so the report is
+    # on disk when admit_recipe reads experiment_runs.jsonl alongside it.
+    try:
+        from backend.agents.rlm import recipe_library as _rl
+        from backend.agents.prompts.paper_hints import PAPER_HINTS as _PH
+        from backend.agents.rlm.external_validator import load_verdict as _load_verdict
+        if _rl.positive_recipes_enabled():
+            _report_dict = report.model_dump() if hasattr(report, "model_dump") else (report if isinstance(report, dict) else {})
+            _verdict = _load_verdict(project_dir)
+            _paper_class = _rl.derive_paper_class(
+                arxiv_id=getattr(ctx, "arxiv_id", None), paper_hints=_PH, rubric=_report_dict.get("rubric"),
+            )
+            _rl.admit_recipe(project_dir, project_dir.parent, report=_report_dict, validator_verdict=_verdict, paper_class=_paper_class)
+    except Exception:  # noqa: BLE001 — recipe bookkeeping must never break finalize
+        logger.debug("_finalize: recipe admission skipped", exc_info=True)
 
     # Write worker reports summary at run finalization
     try:

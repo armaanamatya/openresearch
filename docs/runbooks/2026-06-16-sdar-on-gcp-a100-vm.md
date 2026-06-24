@@ -5,6 +5,12 @@ Run the SDAR reproduction (arXiv 2605.15155) on a bare GCP **A2 GPU VM** using t
 pay only the A100 VM hours. This is the SDAR baseline handoff command's auth shape with
 `--sandbox local` instead of `runpod`.
 
+Current production preference: use **spot/preemptible A100 capacity** unless an
+operator explicitly opts into on-demand. `scripts/gcp_sdar_preflight.sh` enforces
+that by default (`OPENRESEARCH_REQUIRE_SPOT=true`) and refuses to start a non-spot
+GPU VM. The existing `sdar-a100-8g` VM has been verified as `SPOT`, `preemptible=True`,
+`a2-highgpu-8g`.
+
 > Why `--sandbox local` and not `--sandbox gcp`: your `gcp_info.md` provisions a single
 > long-lived **VM**, which the harness drives as host subprocesses (one-GPU-per-cell
 > `run_matrix`) with no Docker/K8s. `--sandbox gcp` (GKE Jobs) targets a managed cluster,
@@ -62,6 +68,50 @@ git checkout feat/azure-bicep-canonical-aoai-hardening   # has GCP backend + eve
 uv venv --python 3.12 .venv 2>/dev/null || python3.12 -m venv .venv
 .venv/bin/pip install -r backend/requirements.txt
 .venv/bin/pip install -r backend/requirements-dev.txt   # parallel test runners (optional)
+```
+
+## 3b. Full-scope SDAR asset preflight — mandatory before a paid run
+
+The full SDAR scope is not just "Python + GPUs". It needs the Qwen HF weights,
+Search-QA datasets, ALFWorld game data, and the WebShop server module ready
+before the RLM loop submits cells. Run the GCP preflight/warmer once on the VM:
+
+```bash
+scripts/gcp_sdar_preflight.sh prepare
+```
+
+This starts the VM if needed, syncs the repo, installs `backend/requirements-sdar.txt`,
+warms HuggingFace model/dataset caches under `runs/.cache/`, provisions
+ALFWorld/WebShop/Search-QA through `EnvCacheManager`, verifies 8 visible GPUs, and
+writes:
+
+```bash
+runs/.cache/sdar_gcp.env
+```
+
+Source that file for any direct launch:
+
+```bash
+set -a
+. runs/.cache/sdar_gcp.env
+set +a
+```
+
+Fast validation without downloads:
+
+```bash
+scripts/gcp_sdar_preflight.sh check
+```
+
+If this is RED, do not launch the reproduction. Fix the missing package/data/server
+first; otherwise the failure will happen mid-run while the A100 VM is billing.
+
+The wrapper supports:
+
+```bash
+scripts/gcp_sdar_preflight.sh status   # includes spot/preemptible status
+scripts/gcp_sdar_preflight.sh start    # refuses non-spot by default
+scripts/gcp_sdar_preflight.sh stop
 ```
 
 ## 4. Authenticate — Claude subscription OAuth (zero LLM cost)
@@ -130,6 +180,21 @@ env -u ANTHROPIC_API_KEY .venv/bin/python scripts/batch_reproduce.py 2605.15155 
   --gpus-per-run 8 \
   --model claude-oauth \
   --max-wall-clock 86400
+```
+
+For the Grok / Azure AI Foundry path, keep the same preflight requirement and
+launch with the cached env file loaded:
+
+```bash
+set -a
+. runs/.cache/sdar_gcp.env
+set +a
+
+env -u ANTHROPIC_API_KEY .venv/bin/python -m backend.cli reproduce 2605.15155 \
+  --mode rlm --sandbox local --model grok \
+  --models executor=grok,grader=grok,verifier=grok \
+  --gpu-mode max --gpu-parallelism multi --vram-gb 40 \
+  --no-force-single-gpu --max-wall-clock 86400
 ```
 
 ---

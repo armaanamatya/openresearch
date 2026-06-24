@@ -15,6 +15,10 @@ from backend.agents.runtime.base import (
     ProviderConfigurationError,
     ProviderName,
 )
+from backend.agents.runtime.foundry_endpoint import (
+    FOUNDRY_MODE_ALIASES,
+    has_foundry_credentials,
+)
 from backend.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -236,6 +240,14 @@ def selected_provider(provider: ProviderName | str | None = None) -> ProviderNam
         return "anthropic"
     if normalized in {"openai", "oai"}:
         return "openai"
+    # Azure OpenAI and Azure AI Foundry are not ProviderName literals; both ride
+    # the OpenAI SDK surface, so generic sub-agents may name them here and get
+    # the "openai" literal back (matching validate_provider_credentials, which
+    # returns "openai" for azure as the "closest ProviderName"). The dedicated
+    # Azure/Foundry runtimes are selected upstream in make_runtime() before this
+    # call; this branch only lets a caller that passed the name through resolve.
+    if normalized in {"azure", "azure-openai", "azure_openai"} | FOUNDRY_MODE_ALIASES:
+        return "openai"
     raise ProviderConfigurationError(
         provider=normalized,
         reason="expected 'anthropic' or 'openai'",
@@ -380,6 +392,36 @@ def configure_openai_agents_sdk_credentials(
         os.environ["OPENAI_ADMIN_KEY"] = admin_key
 
 
+def configure_azure_openai_credentials(settings: Any = None) -> bool:
+    """Bridge Azure OpenAI settings into the canonical ``AZURE_OPENAI_*`` env.
+
+    The Azure consumers — ``make_runtime("azure")`` /
+    ``_has_azure_openai_credentials``, the navigation accelerator,
+    ``grader_transport``, and ``AzureOpenAiAgentRuntime`` — all read
+    ``os.environ`` directly, but pydantic-settings reads ``.env`` *without*
+    mutating ``os.environ``. So a key supplied only in ``.env`` (or under the
+    Azure portal's ``AZURE_OPENAI_KEY1`` / ``KEY2`` labels) is invisible to
+    them. This funnels Settings — which honours ``.env`` and the KEY1/KEY2
+    aliases — into the canonical names once, before any consumer runs.
+
+    setdefault semantics: an explicit shell ``AZURE_OPENAI_*`` is never
+    overwritten (shell > .env, matching pydantic-settings precedence).
+    Idempotent. Returns True iff both a key and an endpoint are present after
+    the bridge (i.e. ``_has_azure_openai_credentials()``).
+    """
+    s = settings if settings is not None else get_settings(_force_reload=True)
+    for name, val in (
+        ("AZURE_OPENAI_API_KEY", getattr(s, "azure_openai_api_key", "")),
+        ("AZURE_OPENAI_ENDPOINT", getattr(s, "azure_openai_endpoint", "")),
+        ("AZURE_OPENAI_DEPLOYMENT", getattr(s, "azure_openai_deployment", "")),
+        ("AZURE_OPENAI_API_VERSION", getattr(s, "azure_openai_api_version", "")),
+    ):
+        val = (val or "").strip()
+        if val and not os.environ.get(name):
+            os.environ[name] = val
+    return _has_azure_openai_credentials()
+
+
 def configure_openai_agents_sdk_for_endpoint(
     base_url: str,
     api_key: str,
@@ -487,6 +529,38 @@ def make_runtime(
     Credentials are validated only when requested so tests and offline import
     paths can instantiate the orchestrator without requiring local secrets.
     """
+    # Azure OpenAI is not a ProviderName literal — selected_provider() /
+    # validate_provider_credentials() normalize it to "openai", which would
+    # build a plain OpenAI runtime. Branch first so an explicit "azure" request
+    # returns the Azure runtime (Stream D executor tier reachable directly).
+    if str(provider or "").lower() in {"azure", "azure-openai", "azure_openai"}:
+        if require_api_key and not _has_azure_openai_credentials():
+            raise ProviderConfigurationError(
+                provider="azure-openai",
+                reason=(
+                    "Azure OpenAI credentials are missing; set both "
+                    "AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT."
+                ),
+            )
+        from backend.agents.runtime.azure_openai_runtime import AzureOpenAiAgentRuntime
+
+        return AzureOpenAiAgentRuntime()
+    # Azure AI Foundry (OpenAI-compatible custom endpoint, e.g. Grok). Like
+    # plain Azure, it is not a ProviderName literal — branch first so an
+    # explicit "azure-foundry"/"grok" request returns the Foundry runtime
+    # (executor-tier reachable directly, key-only, no OAuth).
+    if str(provider or "").lower() in {"azure-foundry", "foundry", "grok"}:
+        if require_api_key and not has_foundry_credentials():
+            raise ProviderConfigurationError(
+                provider="azure-foundry",
+                reason=(
+                    "Azure Foundry credentials missing; set AZURE_FOUNDRY_ENDPOINT "
+                    "and AZURE_FOUNDRY_API_KEY (and AZURE_FOUNDRY_DEPLOYMENT)."
+                ),
+            )
+        from backend.agents.runtime.azure_foundry_runtime import AzureFoundryAgentRuntime
+
+        return AzureFoundryAgentRuntime()
     resolved = (
         validate_provider_credentials(provider)
         if require_api_key
@@ -512,6 +586,7 @@ __all__ = [
     "_scan_wsl_windows_credentials",
     "aggregate_auth_status",
     "configure_openai_agents_sdk_credentials",
+    "configure_azure_openai_credentials",
     "has_provider_credentials",
     "make_runtime",
     "selected_provider",

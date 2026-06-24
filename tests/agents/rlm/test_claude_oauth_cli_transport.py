@@ -56,7 +56,7 @@ def test_cli_complete_success_and_stdin(monkeypatch):
     assert "--print" in captured["cmd"]
     assert "--output-format" in captured["cmd"] and "json" in captured["cmd"]
     assert "--model" in captured["cmd"] and "claude-sonnet-4-6" in captured["cmd"]
-    assert "--append-system-prompt" in captured["cmd"] and "SYS" in captured["cmd"]
+    assert "--system-prompt" in captured["cmd"] and "SYS" in captured["cmd"]
     assert "--disallowed-tools" in captured["cmd"] and "Bash" in captured["cmd"]
 
 
@@ -71,7 +71,7 @@ def test_cli_complete_omits_system_when_empty(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     c._cli_complete(system="", user="u", model="m")
-    assert "--append-system-prompt" not in captured["cmd"]
+    assert "--system-prompt" not in captured["cmd"]
 
 
 @pytest.mark.parametrize("proc,desc", [

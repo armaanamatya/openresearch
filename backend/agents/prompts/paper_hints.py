@@ -23,6 +23,7 @@ from __future__ import annotations
 import re
 
 from backend.agents.schemas import (
+    AssetSpec,
     DatasetSlice,
     InvariantSpec,
     PaperHint,
@@ -44,7 +45,36 @@ PAPER_HINTS: dict[str, PaperHint] = {
             "is lambda = 0.1 and the gate sharpness is beta = 10; the GRPO loss "
             "is ADDED to the gated self-distillation loss (both terms required). "
             "Use the real pretrained Qwen weights from HuggingFace, not "
-            "surrogates."
+            "surrogates. "
+            "Never wrap loss.backward()/optimizer.step() in a bare `except Exception` "
+            "that swallows the error and continues — let an OOM propagate (the harness "
+            "shrink-retries) or explicitly shrink the batch and retry; a swallowed "
+            "exception that exits 0 with empty metrics is a silent-OOM anti-pattern "
+            "the preflight rejects. "
+            "Emit GRPO baseline cells (not only SDAR cells) for each model x env so "
+            "the rubric's baseline-comparison leaves can score. "
+            "Give every ablation/variant cell a DISTINCT (model_key, env, baseline) "
+            "triple in cells.json — e.g. baseline=sdar_ucb / sdar_random / sdar_full "
+            "for the retrieval ablations — so each lands under its own rubric leaf "
+            "(a duplicate triple collapses cells). "
+            "GRPO learns only from reward VARIANCE within each rollout group — wire "
+            "the per-episode reward from env.step() into the GRPO advantage (never "
+            "leave it hardcoded 0); if mean_reward stays 0.0 across all steps the "
+            "policy gets no signal, l_grpo collapses to 0, and the OPSD gate never "
+            "activates. A tiny model on the cost-bounded scope needs enough rollout "
+            "steps per cell to occasionally succeed and earn non-zero reward. "
+            "The WebShop environment needs its local server reachable at "
+            "http://127.0.0.1:3000 BEFORE any WebShop cell — start it in "
+            "build_environment/detect_environment (the repo's web_agent_site server) "
+            "and health-check it; if it cannot start, drop WebShop from scope rather "
+            "than letting its cells fail. "
+            "On a memory-constrained GPU (<=48GB), a 3B+ model in full fine-tuning "
+            "GRPO will OOM — full fine-tuning needs ~16-20GB per billion params "
+            "(bf16 weights+grads, Adam optimizer states, and the frozen reference "
+            "model). Use gradient checkpointing and a conservative per-cell batch "
+            "size, and LoRA or FSDP sharding if needed; set each cell's est_vram_gb "
+            "to your realistic estimate so the capacity-gate sizes the grid correctly "
+            "instead of OOM-retrying."
         ),
         default_scope=ScopeSpec(
             models=[
@@ -148,6 +178,16 @@ PAPER_HINTS: dict[str, PaperHint] = {
             # other framework deps are deliberately NOT listed.
             "https://github.com/BartekCupial/finetuning-RL-as-CL",
         ],
+        assets=AssetSpec(
+            requirements_files=["backend/requirements-sdar.txt"],
+            models=[
+                "Qwen/Qwen3-1.7B",
+                "Qwen/Qwen2.5-3B-Instruct",
+                "Qwen/Qwen2.5-7B-Instruct",
+            ],
+            datasets=["nq_open", "hotpot_qa"],
+            webshop=True,
+        ),
     ),
     # Adam (Kingma & Ba, 2014) — five experiment families. Four are cheap
     # (MNIST-MLP, MNIST logistic regression, IMDB BoW logistic, CIFAR-10 CNN);

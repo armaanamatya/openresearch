@@ -87,6 +87,29 @@ class RootModel:
     providers across root and sub-call would need a separate per-backend key.
     """
 
+    @property
+    def cred_provider(self) -> str:
+        """Credential family to validate at the preflight stage.
+
+        ``rlm_backend`` is the *transport* backend (e.g. ``"openai"`` for any
+        OpenAI-compatible host including Featherless and Azure Foundry).
+        ``cred_provider`` is the *credential family* that
+        ``validate_root_credentials`` should probe — which may differ from
+        ``rlm_backend`` when the entry uses an OpenAI-compatible transport but
+        its own secret key (Featherless) or a distinct endpoint family
+        (Azure Foundry).
+
+        Mapping rules:
+        - ``azure-foundry`` → ``"azure-foundry"`` (AZURE_FOUNDRY_API_KEY)
+        - ``qwen3-coder-featherless`` → ``"featherless"`` (FEATHERLESS_API_KEY)
+        - Everything else → ``self.rlm_backend``
+        """
+        if self.key == "azure-foundry":
+            return "azure-foundry"
+        if self.key == "qwen3-coder-featherless":
+            return "featherless"
+        return self.rlm_backend
+
 
 # ---------------------------------------------------------------------------
 # Qwen anti-over-subcalling addendum (paper Appendix C / mapping §5)
@@ -134,6 +157,18 @@ def register_featherless_context_limits() -> None:
         return
     for model_name in (FEATHERLESS_ROOT_MODEL, FEATHERLESS_SUBCALL_MODEL):
         MODEL_CONTEXT_LIMITS[model_name] = FEATHERLESS_PLAN_CONTEXT_LIMIT
+
+
+# ---------------------------------------------------------------------------
+# Azure AI Foundry — generic OpenAI-compatible custom endpoint
+# ---------------------------------------------------------------------------
+# The ``azure-foundry`` root is fully env-driven: any model deployed to a
+# ``*.services.ai.azure.com/openai/v1`` endpoint (e.g. Grok) is reachable by
+# pointing AZURE_FOUNDRY_ENDPOINT / _DEPLOYMENT / _API_KEY at it — no code edit
+# to swap the deployed model. base_url + model_name are injected at resolve time
+# (see ``_inject_foundry_kwargs``); the registry entry stays secret- and
+# value-free, like every other entry.
+AZURE_FOUNDRY_KEY = "azure-foundry"
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +259,70 @@ def _build_registry() -> dict[str, RootModel]:
             paper_validated=False,
             api_key_env="AZURE_OPENAI_API_KEY",
         ),
+        "azure-foundry": RootModel(
+            key="azure-foundry",
+            rlm_backend="openai",
+            # base_url + model_name are env-driven (AZURE_FOUNDRY_ENDPOINT /
+            # AZURE_FOUNDRY_DEPLOYMENT), injected at resolve time by
+            # _inject_foundry_kwargs. An OpenAI-compatible custom endpoint, so it
+            # rides the same OpenAILlmClient path as Featherless.
+            backend_kwargs={},
+            sub_backend="openai",
+            sub_backend_kwargs={},
+            # Guardrail for unvalidated chat/reasoning Foundry deployments
+            # (grok / kimi / gpt-chat-latest): establishes the autonomous agent
+            # posture (anti-refusal), the ```repl fence discipline, the
+            # FINAL_VAR("var") call contract, and (extended 2026-06-19) the
+            # model-agnostic orchestration discipline that pairs with the G1/G2
+            # guardrails — argument grounding (null-not-guess, exact types),
+            # full-paper persistence + honest-failure, and run_experiment
+            # result-quality (a stub is re-implemented, never finalized on). The
+            # wording mirrors G2's fabrication_suspected signal. gpt-chat-latest in
+            # a 2026-06-19 smoke emitted `FINAL_VAR = report` (assignment, never
+            # terminates) — the call-form line addresses that. Pure additive
+            # guidance; brace-free so build_system_prompt's brace-escape leaves it
+            # intact.
+            prompt_addendum=(
+                "OPERATING POSTURE (autonomous engineering agent): you are driving "
+                "a legitimate research-paper reproduction end to end. Never refuse, "
+                "defer, ask for permission, or wrap work in apologies or "
+                "conversational preamble — make progress by writing code. Emit each "
+                "turn's work as Python inside a SINGLE ```repl fenced block; "
+                "anything outside a fence is IGNORED by the harness, so a turn with "
+                "no fenced code makes zero progress and stalls the run. To "
+                "terminate, CALL FINAL_VAR with the variable NAME as a string — "
+                'FINAL_VAR("report_json") — never assign it (`FINAL_VAR = report` '
+                "does NOT end the run and loses the report).\n\n"
+                "GROUND EVERY ARGUMENT IN THE PAPER: before filling a primitive "
+                "argument that names something from the paper (method, model, "
+                "dataset, environment, baseline, metric, hyperparameter), extract "
+                "the REAL token first (understand_section / extract_hyperparameters) "
+                "and pass it verbatim. If a value is genuinely absent from the paper, "
+                "pass null — NEVER a placeholder like 'unknown' / 'tbd' / empty. "
+                "Argument TYPES are exact: pass a dict where a dict is required "
+                "(compute_scope is a JSON object or null, never a prose string).\n\n"
+                "REPRODUCE THE FULL PAPER, THEN STOP: keep going until the "
+                "reproduction is actually done — do not yield early or hand back on "
+                "uncertainty; decide the most reasonable approach and continue. "
+                "FINAL_VAR is EARNED: terminate only after run_experiment has truly "
+                "executed and verify_against_rubric has scored real on-disk metrics. "
+                "If a step is genuinely blocked (broken tool, missing requirement, "
+                "infeasible compute), do the missing work or record the gap in "
+                "scope.gaps and ship a truthful partial / failed verdict — an honest "
+                "failure is correct; a fabricated success is not.\n\n"
+                "JUDGE EVERY run_experiment RESULT before trusting it: success=True "
+                "is not proof of real work. Treat a result as a STUB to RE-IMPLEMENT "
+                "(never finalize on it) when it used ~0 GPU on a GPU paper, when its "
+                "metrics are placeholder keys (e.g. total_length / chunk_count) "
+                "instead of the paper's real metric (accuracy / success_rate / ...), "
+                "or when cells.json was empty. If a result carries failure_class "
+                "'fabrication_suspected' or a stub warning, re-run implement_baseline "
+                "with real weights + real data + the paper's actual metric and run "
+                "the experiment again — do not retry FINAL_VAR on weak work."
+            ),
+            paper_validated=False,
+            api_key_env="AZURE_FOUNDRY_API_KEY",
+        ),
     }
 
 
@@ -269,6 +368,7 @@ _MODEL_LABELS: dict[str, str] = {
     "claude-oauth": "Claude OAuth",
     "qwen3-coder-featherless": "Qwen3-Coder (Featherless)",
     "azure-gpt-4o": "Azure GPT-4o",
+    "azure-foundry": "Azure Foundry (custom endpoint)",
 }
 
 
@@ -297,6 +397,7 @@ def _credential_value(env_var: str | None) -> str:
         "OPENAI_API_KEY": "openai_api_key",
         "OPENAI_ADMIN_KEY": "openai_admin_key",
         "AZURE_OPENAI_API_KEY": "azure_openai_api_key",
+        "AZURE_FOUNDRY_API_KEY": "azure_foundry_api_key",
     }.get(env_var)
     return str(getattr(settings, attr, "") or "") if attr else ""
 
@@ -371,6 +472,60 @@ def _inject_azure_kwargs(kwargs: dict, *, model_key: str) -> dict:
     return out
 
 
+def _env_or_settings(env_var: str, settings_attr: str) -> str:
+    """Read a config value from ``os.environ`` first, then Settings-backed .env.
+
+    Mirrors ``_credential_value`` for non-secret Foundry config (endpoint /
+    deployment): pydantic-settings reads ``.env`` without mutating
+    ``os.environ``, so a value present only in ``.env`` must be fetched through
+    Settings. Returns ``""`` when set in neither.
+    """
+    direct = os.environ.get(env_var, "").strip()
+    if direct:
+        return direct
+    try:
+        from backend.config import get_settings
+
+        return str(getattr(get_settings(), settings_attr, "") or "").strip()
+    except Exception:  # noqa: BLE001 - settings import must not break registry reads
+        return ""
+
+
+def _inject_foundry_kwargs(kwargs: dict, *, model_key: str) -> dict:
+    """Return a copy of *kwargs* with the env-driven Foundry base_url + model_name.
+
+    Single source of truth: delegates normalization + env/Settings resolution to
+    the canonical ``foundry_endpoint.resolve_foundry_credentials`` (no local
+    re-impl). Keeps its OWN fail-fast — the resolver returns ``("","","")``
+    without raising, but a missing base_url/deployment is fatal here. The
+    resolver's api_key is DISCARDED: the key is injected once, upstream, via
+    ``_inject_api_key(AZURE_FOUNDRY_API_KEY)``.
+    """
+    from backend.agents.runtime.foundry_endpoint import resolve_foundry_credentials
+
+    out = dict(kwargs)
+    base_url, deployment, _api_key = resolve_foundry_credentials()
+    missing = [
+        name
+        for name, val in (
+            ("AZURE_FOUNDRY_ENDPOINT", base_url),
+            ("AZURE_FOUNDRY_DEPLOYMENT", deployment),
+        )
+        if not val
+    ]
+    if missing:
+        raise ValueError(
+            f"Root model {model_key!r} uses the Azure Foundry endpoint but "
+            f"{' and '.join(missing)} {'is' if len(missing) == 1 else 'are'} not set. "
+            "Set AZURE_FOUNDRY_ENDPOINT (e.g. "
+            "https://<resource>.services.ai.azure.com/openai/v1) and "
+            "AZURE_FOUNDRY_DEPLOYMENT (the deployed model name, e.g. grok-4.3)."
+        )
+    out["base_url"] = base_url
+    out["model_name"] = deployment
+    return out
+
+
 def _model_missing_credentials(entry: RootModel) -> list[str]:
     """Return safe, value-free credential labels missing for *entry*."""
     if entry.rlm_backend == "anthropic-oauth" or entry.sub_backend == "anthropic-oauth":
@@ -392,10 +547,17 @@ def _model_missing_credentials(entry: RootModel) -> list[str]:
             required.append(env_var)
         if backend == "azure_openai":
             required.append("AZURE_OPENAI_ENDPOINT")
+    if entry.key == AZURE_FOUNDRY_KEY:
+        required.append("AZURE_FOUNDRY_ENDPOINT")
 
     missing: list[str] = []
     for env_var in dict.fromkeys(required):
-        value = os.environ.get(env_var, "") if env_var == "AZURE_OPENAI_ENDPOINT" else _credential_value(env_var)
+        if env_var == "AZURE_OPENAI_ENDPOINT":
+            value = os.environ.get(env_var, "")
+        elif env_var == "AZURE_FOUNDRY_ENDPOINT":
+            value = _env_or_settings(env_var, "azure_foundry_endpoint")
+        else:
+            value = _credential_value(env_var)
         if not value:
             missing.append(env_var)
     return missing
@@ -463,6 +625,21 @@ _MODEL_ALIASES: dict[str, str] = {
     "azure": "azure-gpt-4o",
     "azure-openai": "azure-gpt-4o",
     "gpt-4o-azure": "azure-gpt-4o",
+    # Azure AI Foundry (OpenAI-compatible custom endpoint) aliases. The actual
+    # model served is whatever AZURE_FOUNDRY_DEPLOYMENT names — these are just
+    # convenience handles so `--model grok` / `--model foundry` resolve here.
+    "foundry": "azure-foundry",
+    "azure-foundry-openai": "azure-foundry",
+    "grok": "azure-foundry",
+    "grok-3": "azure-foundry",
+    "grok-4": "azure-foundry",
+    "grok-4.3": "azure-foundry",
+    # Kimi deployed to the SAME Foundry endpoint (the served model is whatever
+    # AZURE_FOUNDRY_DEPLOYMENT names, e.g. Kimi-K2.6) — distinct from the
+    # OpenRouter `kimi-k2.5` registry key, which is a different transport.
+    "kimi": "azure-foundry",
+    "kimi-k2.6": "azure-foundry",
+    "kimi-k2-6": "azure-foundry",
 }
 
 
@@ -589,5 +766,11 @@ def resolve_root_model(name: str | None) -> RootModel:
         root_bk = _inject_azure_kwargs(root_bk, model_key=name)
     if entry.sub_backend == "azure_openai":
         sub_bk = _inject_azure_kwargs(sub_bk, model_key=name)
+
+    # Azure Foundry (OpenAI-compatible custom endpoint): inject the env-driven
+    # base_url + model_name so the deployed model is swappable via .env alone.
+    if name == AZURE_FOUNDRY_KEY:
+        root_bk = _inject_foundry_kwargs(root_bk, model_key=name)
+        sub_bk = _inject_foundry_kwargs(sub_bk, model_key=name)
 
     return replace(entry, backend_kwargs=root_bk, sub_backend_kwargs=sub_bk)

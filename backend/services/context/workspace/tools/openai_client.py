@@ -19,6 +19,15 @@ def _zero_usage() -> dict[str, int]:
     }
 
 
+def _is_reasoning_model(model: str | None) -> bool:
+    """True for OpenAI reasoning-class models that reject `max_tokens` and a
+    non-default `temperature` (they require `max_completion_tokens` and only the
+    default temperature). Covers o1/o3/o4, gpt-5*, and Azure Foundry's
+    `gpt-chat-latest`. Chat models (gpt-4o, grok-*, qwen-*) return False."""
+    n = (model or "").lower()
+    return n.startswith(("o1", "o3", "o4", "gpt-5", "gpt-chat")) or "reasoning" in n
+
+
 def _usage_from_response(usage: object) -> dict[str, int]:
     """Extract token counts from a Chat Completions ``usage`` object.
 
@@ -88,6 +97,19 @@ class OpenAILlmClient:
         # accelerator / cheap-call spend instead of zeros. Mirrors ClaudeLlmClient.
         self._last_usage: dict[str, int] = _zero_usage()
 
+    def _token_temp_kwargs(self, temperature: float) -> dict:
+        """Completion kwargs appropriate for this client's model.
+
+        Reasoning-class models: ``max_completion_tokens`` + NO ``temperature``
+        (they only accept the default). Chat models: ``max_tokens`` +
+        ``temperature`` (unchanged behavior). Selected dynamically by model
+        name so a ``.env`` deployment swap (grok ⇄ gpt-chat-latest) needs no
+        code change.
+        """
+        if _is_reasoning_model(self._model):
+            return {"max_completion_tokens": self._max_tokens}
+        return {"max_tokens": self._max_tokens, "temperature": temperature}
+
     @with_429_backoff
     def complete(self, *, system: str, user: str) -> str:
         resp = self._client.chat.completions.create(
@@ -96,8 +118,7 @@ class OpenAILlmClient:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            temperature=0,
-            max_tokens=self._max_tokens,
+            **self._token_temp_kwargs(0),
         )
         self._last_usage = _usage_from_response(getattr(resp, "usage", None))
         return resp.choices[0].message.content or ""
@@ -134,19 +155,30 @@ class OpenAILlmClient:
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
-                temperature=eff_temp,
-                max_tokens=self._max_tokens,
                 n=n,
                 seed=seed,
+                **self._token_temp_kwargs(eff_temp),
             )
+            self._last_usage = _usage_from_response(getattr(resp, "usage", None))
+            return [(c.message.content or "") for c in resp.choices]
         except TypeError:
-            # SDK signature rejected n/seed — fall back to N sequential calls.
-            return [
-                self._complete_once(system=system, user=user, temperature=eff_temp)
-                for _ in range(n)
-            ]
-        self._last_usage = _usage_from_response(getattr(resp, "usage", None))
-        return [(c.message.content or "") for c in resp.choices]
+            # SDK signature rejected n/seed (older SDK) — fall through to sequential.
+            pass
+        except Exception:
+            # Some OpenAI-COMPATIBLE endpoints (Azure AI Foundry / grok) reject the
+            # multi-completion (n>1) request itself — e.g. an Azure ML 422
+            # "bootstrap_host" routing error — even though single completions
+            # succeed. Fall back to n sequential single-completion calls for n>1.
+            # For n<=1 the failure is a genuine API/transport error, so re-raise it
+            # rather than masking it behind an identical retry.
+            if n <= 1:
+                raise
+        # Fallback: n SEQUENTIAL single-completion calls — universally supported,
+        # including on endpoints without native multi-completion (n>1).
+        return [
+            self._complete_once(system=system, user=user, temperature=eff_temp)
+            for _ in range(n)
+        ]
 
     def _complete_once(self, *, system: str, user: str, temperature: float) -> str:
         """One single-choice completion at an explicit temperature (fallback path)."""
@@ -156,11 +188,10 @@ class OpenAILlmClient:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            temperature=temperature,
-            max_tokens=self._max_tokens,
+            **self._token_temp_kwargs(temperature),
         )
         self._last_usage = _usage_from_response(getattr(resp, "usage", None))
         return resp.choices[0].message.content or ""
 
 
-__all__ = ["OpenAILlmClient", "_usage_from_response", "_zero_usage"]
+__all__ = ["OpenAILlmClient", "_is_reasoning_model", "_usage_from_response", "_zero_usage"]

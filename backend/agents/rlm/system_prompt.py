@@ -549,6 +549,26 @@ _CONTEXT_MAP_SECTION = (
     "must appear in the report).\n"
 )
 
+# #62: appended only when OPENRESEARCH_USE_AUTHOR_REPO is on.
+_REPO_AWARE_SECTION = """\
+═══════════════════════════════════════════════════════════════
+  AUTHOR REPOSITORY (repo-first reproduction)
+═══════════════════════════════════════════════════════════════
+
+The paper's official code repository has been cloned for you. Its constant-size
+manifest is in your `repo_files` context variable (file tree + key-file
+excerpts + commit SHA). PREFER the authors' code over a from-scratch rewrite:
+
+- Consult `repo_files` first to orient on the real implementation.
+- Use the `inspect_repository(path=..., grep=...)` primitive to deep-read any
+  file in the repo when you need exact details.
+- In adapt mode the harness has already seeded the authors' code into your
+  working `code/` directory — ADAPT it (fix env/scope/entrypoints) rather than
+  rewriting; `implement_baseline` continues that adaptation.
+- Narrate repo discovery, clone, and inspection in your reasoning so the run
+  trace is transparent.
+"""
+
 
 def build_system_prompt(
     *,
@@ -623,6 +643,12 @@ def build_system_prompt(
             + root_model.prompt_addendum
             + "\n"
         )
+
+    # #62: repo-aware guidance only when OPENRESEARCH_USE_AUTHOR_REPO is on.
+    if _os.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    ):
+        parts.append(_REPO_AWARE_SECTION)
 
     body = "\n".join(parts)
     # rlm's build_rlm_system_prompt runs `prompt.format(custom_tools_section=...)`

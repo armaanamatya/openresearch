@@ -18,6 +18,7 @@ import pytest
 
 from backend.agents.rlm.grader_transport import (
     build_grader_client,
+    build_transport_client,
     sample_completions,
 )
 
@@ -375,3 +376,201 @@ def test_build_grader_client_construction_error_falls_back(monkeypatch):
     client, label = build_grader_client(sentinel, "root-label")
     assert client is sentinel
     assert label == "root-label"
+
+
+# ---------------------------------------------------------------------------
+# build_transport_client — the parameterized core a future verifier reuses.
+# Same dispatch as build_grader_client but backend/model are args (no env reads)
+# and the label is namespaced by role_label.
+# ---------------------------------------------------------------------------
+
+
+def test_build_transport_client_role_label_namespaces_azure(monkeypatch):
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
+    monkeypatch.delenv("AZURE_OPENAI_DEPLOYMENT", raising=False)
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "az-key")
+
+    import backend.services.context.workspace.tools.azure_openai_client as azc
+
+    class _FakeAzure:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(azc, "AzureOpenAILlmClient", _FakeAzure)
+
+    client, label = build_transport_client(
+        backend="azure",
+        model="gpt-4o",
+        fallback_client=object(),
+        fallback_label="fb",
+        role_label="verifier",
+    )
+    assert isinstance(client, _FakeAzure)
+    assert label.startswith("verifier:azure")
+    assert label == "verifier:azure:gpt-4o"
+
+
+def test_build_transport_client_passthrough_when_backend_and_model_none():
+    sentinel = object()
+    client, label = build_transport_client(
+        backend=None,
+        model=None,
+        fallback_client=sentinel,
+        fallback_label="fb",
+        role_label="verifier",
+    )
+    assert client is sentinel
+    assert label == "fb"
+
+
+def test_build_transport_client_unknown_backend_falls_back():
+    sentinel = object()
+    client, label = build_transport_client(
+        backend="bananas",
+        model=None,
+        fallback_client=sentinel,
+        fallback_label="fb",
+        role_label="verifier",
+    )
+    assert client is sentinel
+    assert label == "fb"
+
+
+# ---------------------------------------------------------------------------
+# build_transport_client — Azure AI Foundry backend (OpenAI-compatible, e.g.
+# Grok). Routes onto OpenAILlmClient via the canonical foundry resolver; with
+# creds → a client + "azure-foundry:<deployment>" label, without → fallback
+# (NEVER raises). The missing-case neutralises Settings (real .env has creds).
+# ---------------------------------------------------------------------------
+
+import types  # noqa: E402
+
+
+def test_build_transport_client_azure_foundry_with_creds(monkeypatch):
+    monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", "https://x.services.ai.azure.com")
+    monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "foundry-key")
+    monkeypatch.setenv("AZURE_FOUNDRY_DEPLOYMENT", "grok-4.3")
+
+    import backend.services.context.workspace.tools.openai_client as oac
+
+    class _FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(oac, "OpenAILlmClient", _FakeOpenAI)
+
+    # model=None (a grok sub-role has model=None → use the deployment).
+    client, label = build_transport_client(
+        backend="azure-foundry",
+        model=None,
+        fallback_client=object(),
+        fallback_label="fb",
+        role_label="grader",
+    )
+    assert isinstance(client, _FakeOpenAI)
+    assert client.kwargs["model"] == "grok-4.3"
+    assert client.kwargs["api_key"] == "foundry-key"
+    assert client.kwargs["base_url"] == "https://x.services.ai.azure.com/openai/v1"
+    assert label == "grader:azure-foundry:grok-4.3"
+
+
+def test_build_transport_client_azure_foundry_aliases(monkeypatch):
+    monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", "https://x.services.ai.azure.com")
+    monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "foundry-key")
+    monkeypatch.setenv("AZURE_FOUNDRY_DEPLOYMENT", "grok-4.3")
+
+    import backend.services.context.workspace.tools.openai_client as oac
+
+    class _FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(oac, "OpenAILlmClient", _FakeOpenAI)
+
+    for alias in ("foundry", "grok"):
+        client, label = build_transport_client(
+            backend=alias,
+            model=None,
+            fallback_client=object(),
+            fallback_label="fb",
+            role_label="verifier",
+        )
+        assert isinstance(client, _FakeOpenAI)
+        assert label == "verifier:azure-foundry:grok-4.3"
+
+
+def test_build_transport_client_azure_foundry_missing_creds_falls_back(monkeypatch):
+    # No env creds AND neutralised Settings — the real .env carries Foundry creds.
+    monkeypatch.delenv("AZURE_FOUNDRY_ENDPOINT", raising=False)
+    monkeypatch.delenv("AZURE_FOUNDRY_API_KEY", raising=False)
+    monkeypatch.delenv("AZURE_FOUNDRY_DEPLOYMENT", raising=False)
+    monkeypatch.setattr(
+        "backend.config.get_settings", lambda *a, **k: types.SimpleNamespace()
+    )
+
+    sentinel = object()
+    client, label = build_transport_client(
+        backend="azure-foundry",
+        model=None,
+        fallback_client=sentinel,
+        fallback_label="fb",
+        role_label="grader",
+    )
+    assert client is sentinel  # missing creds → fallback, NO raise
+    assert label == "fb"
+
+
+def test_build_grader_client_still_passthrough_when_grader_env_unset(monkeypatch):
+    # Back-compat: build_grader_client (the thin env wrapper) must still return
+    # the fallback unchanged when both GRADER env vars are unset.
+    monkeypatch.delenv("OPENRESEARCH_GRADER_BACKEND", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_GRADER_MODEL", raising=False)
+
+    sentinel = object()
+    client, label = build_grader_client(sentinel, "root-label")
+    assert client is sentinel
+    assert label == "root-label"
+
+
+# ---------------------------------------------------------------------------
+# resolve_anthropic_subrole_backend — API key ⇄ OAuth seamless substitution.
+# A per-role Claude pick must run on whichever Anthropic auth is present,
+# honouring llm_auth_strategy. Every edge case below.
+# ---------------------------------------------------------------------------
+from types import SimpleNamespace  # noqa: E402
+
+from backend.agents.rlm.grader_transport import (  # noqa: E402
+    resolve_anthropic_subrole_backend,
+)
+
+
+def _settings(strategy="auto", key=""):
+    return SimpleNamespace(llm_auth_strategy=strategy, anthropic_api_key=key)
+
+
+def test_subrole_backend_oauth_only_ignores_even_a_present_key(monkeypatch):
+    # oauth_only is the in-cluster default + the dead-ANTHROPIC_API_KEY-hijack
+    # mitigation: a present (possibly dead) key must NOT pull the run onto it.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-maybe-dead")
+    assert resolve_anthropic_subrole_backend(_settings("oauth_only", key="sk-x")) == "oauth"
+
+
+def test_subrole_backend_api_only_requires_key_path(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert resolve_anthropic_subrole_backend(_settings("api_only")) == "anthropic"
+
+
+def test_subrole_backend_auto_prefers_settings_key(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert resolve_anthropic_subrole_backend(_settings("auto", key="sk-live")) == "anthropic"
+
+
+def test_subrole_backend_auto_counts_env_key(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-env")
+    assert resolve_anthropic_subrole_backend(_settings("auto", key="")) == "anthropic"
+
+
+def test_subrole_backend_auto_falls_to_oauth_without_any_key(monkeypatch):
+    # The default local-dev shape: empty ANTHROPIC_API_KEY + OAuth subscription.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert resolve_anthropic_subrole_backend(_settings("auto", key="")) == "oauth"

@@ -44,24 +44,28 @@ class GpuResolutionError(RuntimeError):
     """Raised when no SKU can satisfy (VRAM + $/hr cap + cloud_type) constraints."""
 
 
-def _azure_default_sku(provisioned_skus: tuple[str, ...] | None) -> "GpuSku":
-    """Default azure SKU for the no-/low-confidence fallback, honoring provisioning.
+def _provisioned_default_sku(
+    provider: str,
+    fallback_short_name: str,
+    provisioned_skus: tuple[str, ...] | None,
+) -> "GpuSku":
+    """Default SKU for the no-/low-confidence fallback on a provisioned cloud.
 
     When provisioned_skus is set, return the CHEAPEST provisioned SKU (so the
     fallback Job targets a node pool that actually exists); otherwise the global
-    azure fallback. Fixes the unschedulable-pool hang when only a larger SKU is
-    provisioned.
+    cheapest-single-GPU fallback for ``provider``. Fixes the unschedulable-pool
+    hang when only a larger SKU is provisioned (azure AKS / gcp GKE alike).
     """
     if provisioned_skus:
         candidates: list[GpuSku] = []
         for name in provisioned_skus:
             try:
-                candidates.append(_by_short_name(name, provider="azure"))
+                candidates.append(_by_short_name(name, provider=provider))
             except GpuResolutionError:
                 pass
         if candidates:
             return min(candidates, key=lambda s: (s.approx_usd_per_hr, s.short_name))
-    return _by_short_name(_AZURE_FALLBACK_SHORT_NAME, provider="azure")
+    return _by_short_name(fallback_short_name, provider=provider)
 
 
 def resolve(
@@ -269,9 +273,11 @@ def _resolve_provisioned_cloud(
     estimate = requirements.estimated_vram_gb
     confidence = requirements.confidence
 
-    # Fallback path: no estimate OR confidence too low → cheapest SKU.
+    # Fallback path: no estimate OR confidence too low → cheapest SKU, but honor
+    # provisioned_skus so the fallback Job targets an existing node pool (the
+    # generic fallback_short_name may be a SKU the cluster never provisioned).
     if estimate is None or confidence < _CONFIDENCE_FLOOR:
-        sku = _by_short_name(fallback_short_name, provider=provider)
+        sku = _provisioned_default_sku(provider, fallback_short_name, provisioned_skus)
         full_ladder = _provisioned_ladder(provider=provider,
                                           min_effective_vram=sku.vram_gb * sku.gpu_count,
                                           max_per_gpu_usd=None,

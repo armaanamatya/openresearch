@@ -108,6 +108,25 @@ class TestDynamicComputeGuidance:
         assert "Scale-down on CPU" in prompt
         assert "Scale-up on GPU" in prompt
 
+    def test_engineering_standards_block_is_always_present(self, tmp_path, monkeypatch):
+        """The elite-ML-engineer standards block is always-on (every sandbox/gpu_mode):
+        faithful-algorithm + measured-metrics rails, plus the self-verify-real-compute
+        habit (the structural anti-stub rail that the 2026-06-19 gpt-chat-latest run
+        would have tripped: 0-GPU 'success' emitting total_length/chunk_count)."""
+        captured = _capture_prompt(monkeypatch)
+        runs_root, pcm, env, contract = _minimal_inputs(tmp_path)
+        asyncio.run(run_with_sdk(
+            "prj_test", runs_root, pcm, env, contract,
+            sandbox_mode="docker", gpu_mode=None,
+        ))
+        prompt = captured[0]["prompt"]
+        assert "ENGINEERING STANDARDS" in prompt
+        assert "FAITHFUL ALGORITHM" in prompt
+        assert "MEASURED METRICS ONLY" in prompt
+        # the anti-stub self-verification rail (the elite habit)
+        assert "SELF-VERIFY BEFORE SCALING" in prompt
+        assert "max_memory_allocated" in prompt
+
     def test_gpu_mode_off_adds_cpu_only_policy_overlay(self, tmp_path, monkeypatch):
         """--gpu-mode=off → user explicitly forbids GPU; overlay says 'commands.json
         targets CPU path'. The runtime detection block is STILL present (the GPU

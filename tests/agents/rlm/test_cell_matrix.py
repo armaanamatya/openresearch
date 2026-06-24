@@ -871,3 +871,97 @@ class TestHeadlineCoverage:
     def test_never_raises(self):
         assert audit_headline_coverage(None, ["x"]) == ["x"] or True  # no raise
         assert isinstance(audit_headline_coverage("bad", "bad"), list)
+
+
+# ===========================================================================
+# F-1 — _training_vram_floor_gb + capacity_gate backstop for missing est_vram_gb
+# ===========================================================================
+
+class TestTrainingVramFloorGb:
+    """Unit tests for the param-aware VRAM floor helper (F-1)."""
+
+    def setup_method(self):
+        from backend.agents.rlm.cell_matrix import _training_vram_floor_gb
+        self._fn = _training_vram_floor_gb
+
+    def test_qwen2_5_3b_parses(self):
+        """qwen2_5_3b → 3 * 18 = 54.0 GB."""
+        assert self._fn("qwen2_5_3b") == pytest.approx(54.0)
+
+    def test_qwen3_1_7b_parses(self):
+        """qwen3_1_7b → 1.7 * 18 = 30.6 GB."""
+        assert self._fn("qwen3_1_7b") == pytest.approx(30.6)
+
+    def test_qwen2_5_7b_parses(self):
+        """qwen2_5_7b → 7 * 18 = 126.0 GB."""
+        assert self._fn("qwen2_5_7b") == pytest.approx(126.0)
+
+    def test_junk_key_returns_none(self):
+        """An unparseable key returns None (unknown footprint)."""
+        assert self._fn("mysterious_model") is None
+        assert self._fn("") is None
+        assert self._fn(None) is None
+
+    def test_no_b_suffix_returns_none(self):
+        """A key without a 'b' size token returns None."""
+        assert self._fn("qwen_xxl") is None
+
+    def test_dot_separator_parses(self):
+        """1.7b (dot) → 30.6 GB."""
+        assert self._fn("model_1.7b") == pytest.approx(30.6)
+
+    def test_zero_billion_returns_none(self):
+        """0b → None (degenerate, not a real model size)."""
+        # A '0b' token would yield 0 * 18 = 0; the guard rejects zero.
+        assert self._fn("model_0b") is None
+
+
+class TestCapacityGateFloor:
+    """capacity_gate backstop via _training_vram_floor_gb (F-1)."""
+
+    def test_no_est_3b_dropped_on_40gb_budget(self):
+        """A 3B cell with NO est_vram_gb: floor=54 > 40*1.25=50 → dropped."""
+        cells = [_cell("qwen2_5_3b", "alfworld", "sdar")]  # no est_vram_gb
+        kept, gaps, skipped = capacity_gate(cells, per_gpu_vram_gb=40.0)
+        assert kept == []
+        assert skipped == ["qwen2_5_3b"]
+        assert len(gaps) == 1
+        g = gaps[0]
+        assert g["item"] == "qwen2_5_3b"
+        assert g["kind"] == "capacity"
+        # Gap note must mention missing estimate and ask agent to provide it.
+        assert "est_vram_gb" in g["reason"]
+
+    def test_no_est_1_7b_kept_on_40gb_budget(self):
+        """A 1.7B cell with NO est_vram_gb: floor=30.6, 30.6*1.25=38.25 ≤ 40 → kept."""
+        cells = [_cell("qwen3_1_7b", "alfworld", "sdar")]  # no est_vram_gb
+        kept, gaps, skipped = capacity_gate(cells, per_gpu_vram_gb=40.0)
+        assert len(kept) == 1
+        assert skipped == []
+        assert gaps == []
+
+    def test_3b_with_explicit_est_not_affected_by_floor(self):
+        """A 3B cell WITH explicit est_vram_gb=20 on a 40GB budget: kept (floor bypassed)."""
+        cells = [_cell("qwen2_5_3b", "alfworld", "sdar", est_vram_gb=20.0)]
+        kept, gaps, skipped = capacity_gate(cells, per_gpu_vram_gb=40.0)
+        # 20 * 1.25 = 25 ≤ 40 → kept
+        assert len(kept) == 1
+        assert skipped == []
+
+    def test_unparseable_key_no_est_kept(self):
+        """Unknown model key + no est_vram_gb → floor None → kept (today's behavior)."""
+        cells = [_cell("mystery_model", "alfworld", "sdar")]  # no est_vram_gb
+        kept, gaps, skipped = capacity_gate(cells, per_gpu_vram_gb=10.0)
+        assert len(kept) == 1
+        assert skipped == []
+
+    def test_existing_cells_with_est_byte_identical(self):
+        """Cells WITH est_vram_gb must be byte-identical to prior behavior."""
+        cells = [
+            _cell("qwen3_1_7b", "search_qa", "sdar", est_vram_gb=14.0),
+            _cell("qwen2_5_7b", "search_qa", "sdar", est_vram_gb=28.0),
+        ]
+        kept, gaps, skipped = capacity_gate(cells, per_gpu_vram_gb=23.68)
+        kept_models = {c["model_key"] for c in kept}
+        assert kept_models == {"qwen3_1_7b"}
+        assert skipped == ["qwen2_5_7b"]

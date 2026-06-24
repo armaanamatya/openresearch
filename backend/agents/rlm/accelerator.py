@@ -28,6 +28,14 @@ Supported providers (``mode`` arg to :func:`resolve_accelerator`):
                    ``AZURE_OPENAI_ENDPOINT``, ``AZURE_OPENAI_DEPLOYMENT``.  Raises
                    :class:`AcceleratorError` when creds are missing in explicit
                    mode; returns ``None`` in ``"auto"``.
+* ``"azure-foundry"`` (aliases ``"foundry"``/``"grok"``) — Azure AI Foundry
+                   OpenAI-compatible endpoint (e.g. Grok) from
+                   ``AZURE_FOUNDRY_ENDPOINT``, ``AZURE_FOUNDRY_DEPLOYMENT``,
+                   ``AZURE_FOUNDRY_API_KEY`` (via the canonical
+                   ``foundry_endpoint.resolve_foundry_credentials``).  Rides the
+                   plain OpenAI SDK (``is_azure=False``), no probe.  Raises
+                   :class:`AcceleratorError` when creds/deployment are missing in
+                   explicit mode; returns ``None`` in ``"auto"``.
 * ``"endpoint"`` — arbitrary user-supplied OpenAI-compatible endpoint from
                    ``OPENRESEARCH_ACCELERATOR_BASE_URL``.  Raises
                    :class:`AcceleratorError` when the env var is absent.
@@ -47,6 +55,8 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+
+from backend.agents.runtime.foundry_endpoint import FOUNDRY_MODE_ALIASES
 
 __all__ = [
     "AcceleratorEndpoint",
@@ -79,8 +89,8 @@ class AcceleratorEndpoint:
         API key for the endpoint.  Defaults to ``"local"`` for on-device
         servers that do not require authentication.
     kind:
-        Originating provider: ``"local"``, ``"runpod"``, ``"azure"``, or
-        ``"endpoint"``.
+        Originating provider: ``"local"``, ``"runpod"``, ``"azure"``,
+        ``"foundry"``, or ``"endpoint"``.
     is_azure:
         ``True`` only for Azure OpenAI endpoints.
         :func:`build_accelerator_client` routes to
@@ -346,6 +356,51 @@ def _resolve_azure(*, explicit: bool) -> AcceleratorEndpoint | None:
     )
 
 
+def _resolve_foundry(*, explicit: bool) -> AcceleratorEndpoint | None:
+    """Resolve the Azure AI Foundry accelerator provider (OpenAI-compatible, e.g. Grok).
+
+    Reads the canonical (base_url, deployment, api_key) triple from
+    ``foundry_endpoint.resolve_foundry_credentials`` (env then Settings/.env).
+    No probe — like ``_resolve_azure``, Foundry is a managed endpoint and
+    credential presence is the gate. base_url is already normalised to
+    ``…/openai/v1``; the deployment is the model id, so it must be non-empty.
+
+    Raises :class:`AcceleratorError` in explicit mode when base_url+api_key are
+    absent OR the deployment (model id) is missing; returns ``None`` in
+    ``"auto"`` mode (graceful fallback).
+    """
+    from backend.agents.runtime.foundry_endpoint import resolve_foundry_credentials
+
+    base_url, deployment, api_key = resolve_foundry_credentials()
+    if not (base_url and api_key):
+        if explicit:
+            raise AcceleratorError(
+                "Azure Foundry accelerator requires AZURE_FOUNDRY_ENDPOINT and "
+                "AZURE_FOUNDRY_API_KEY to be set. Set these environment variables "
+                "(and AZURE_FOUNDRY_DEPLOYMENT) and retry."
+            )
+        _log.info(
+            "accelerator[foundry]: credentials not present (AZURE_FOUNDRY_ENDPOINT / "
+            "AZURE_FOUNDRY_API_KEY); skipping in auto mode"
+        )
+        return None
+    if not deployment:
+        if explicit:
+            raise AcceleratorError(
+                "Azure Foundry accelerator requires AZURE_FOUNDRY_DEPLOYMENT (the "
+                "deployed model name, e.g. grok-4.3) — it is the OpenAI-compatible "
+                "model id and cannot be empty."
+            )
+        return None
+    return AcceleratorEndpoint(
+        base_url=base_url,
+        model=deployment,
+        api_key=api_key,
+        kind="foundry",
+        is_azure=False,
+    )
+
+
 def _resolve_endpoint(*, explicit: bool) -> AcceleratorEndpoint | None:
     """Resolve a user-supplied arbitrary OpenAI-compatible endpoint.
 
@@ -458,6 +513,9 @@ def resolve_accelerator(
     if mode_lower == "azure":
         return _resolve_azure(explicit=True)
 
+    if mode_lower in FOUNDRY_MODE_ALIASES:
+        return _resolve_foundry(explicit=True)
+
     if mode_lower == "endpoint":
         return _resolve_endpoint(explicit=True)
 
@@ -467,7 +525,7 @@ def resolve_accelerator(
 
     raise ValueError(
         f"Unknown accelerator mode {mode!r}. "
-        "Valid values: off, auto, local, runpod, azure, endpoint."
+        "Valid values: off, auto, local, runpod, azure, azure-foundry, endpoint."
     )
 
 
@@ -514,6 +572,15 @@ def _resolve_auto(*, sandbox_mode: object) -> AcceleratorEndpoint | None:
             return ep
     except Exception as exc:  # noqa: BLE001
         _log.debug("accelerator[auto]: azure check failed: %s", exc)
+
+    # --- 4. Azure AI Foundry credentials (OpenAI-compatible, e.g. Grok) ---
+    try:
+        ep = _resolve_foundry(explicit=False)
+        if ep is not None:
+            _log.info("accelerator[auto]: selected foundry (credentials present)")
+            return ep
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("accelerator[auto]: foundry check failed: %s", exc)
 
     _log.info(
         "accelerator[auto]: no provider satisfied; returning None (using default Sonnet/OAuth)"

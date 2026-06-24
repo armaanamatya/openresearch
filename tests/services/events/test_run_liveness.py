@@ -204,3 +204,120 @@ def test_sweep_still_marks_orphan_when_pid_host_matches(tmp_path: Path) -> None:
     reports = sweep_orphaned_runs(tmp_path, stale_after_s=120)
 
     assert [r.project_id for r in reports] == ["prj_same_host"]
+
+
+# ---------------------------------------------------------------------------
+# Salvage: stop_reason, verdict, final_report.md (2026-06-20)
+# ---------------------------------------------------------------------------
+
+
+def _write_rubric_score_event(run_dir: Path, score: float) -> None:
+    """Append a rubric_score SSE event to dashboard_events.jsonl."""
+    path = run_dir / "dashboard_events.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"event": "rubric_score", "score": score, "target": 1.0}) + "\n")
+
+
+def test_salvage_writes_stop_reason_and_verdict_with_score(tmp_path: Path) -> None:
+    """Orphaned run with a rubric_score event → salvaged report has stop_reason+verdict=partial."""
+    run_dir = tmp_path / "prj_salvage"
+    _write_rubric_score_event(run_dir, 0.42)
+    _write_status(
+        run_dir,
+        {"projectId": "prj_salvage", "status": "running", "pid": 99999, "updatedAt": _old_iso(500)},
+    )
+
+    sweep_orphaned_runs(tmp_path, stale_after_s=120)
+
+    report = json.loads((run_dir / "final_report.json").read_text(encoding="utf-8"))
+    assert report["stop_reason"] == {"kind": "orphaned", "detail": "run process disappeared (host suspend / SIGKILL / OOM)"}
+    assert report["verdict"] == "partial"
+    assert abs(report["rubric_score"] - 0.42) < 1e-6
+
+
+def test_salvage_verdict_failed_when_no_score(tmp_path: Path) -> None:
+    """Orphaned run with no rubric evidence → verdict=failed, stop_reason present."""
+    run_dir = tmp_path / "prj_no_score"
+    _write_status(
+        run_dir,
+        {"projectId": "prj_no_score", "status": "running", "pid": 99999, "updatedAt": _old_iso(500)},
+    )
+
+    sweep_orphaned_runs(tmp_path, stale_after_s=120)
+
+    assert (run_dir / "demo_status.json").exists()
+    report = json.loads((run_dir / "final_report.json").read_text(encoding="utf-8"))
+    assert report["verdict"] == "failed"
+    assert report["stop_reason"]["kind"] == "orphaned"
+    assert report["rubric_score"] == 0.0
+
+
+def test_salvage_does_not_overwrite_existing_final_report(tmp_path: Path) -> None:
+    """A run that already has final_report.json must not be overwritten."""
+    run_dir = tmp_path / "prj_has_report"
+    existing = {"verdict": "reproduced", "rubric_score": 0.99, "custom": True}
+    (run_dir).mkdir(parents=True)
+    (run_dir / "final_report.json").write_text(json.dumps(existing), encoding="utf-8")
+    _write_status(
+        run_dir,
+        {"projectId": "prj_has_report", "status": "running", "pid": 99999, "updatedAt": _old_iso(500)},
+    )
+
+    sweep_orphaned_runs(tmp_path, stale_after_s=120)
+
+    report = json.loads((run_dir / "final_report.json").read_text(encoding="utf-8"))
+    assert report["custom"] is True
+    assert report["verdict"] == "reproduced"
+
+
+def test_salvage_writes_md_companion(tmp_path: Path) -> None:
+    """Orphaned run → final_report.md is written alongside final_report.json."""
+    run_dir = tmp_path / "prj_md"
+    _write_rubric_score_event(run_dir, 0.55)
+    _write_status(
+        run_dir,
+        {"projectId": "prj_md", "status": "running", "pid": 99999, "updatedAt": _old_iso(500)},
+    )
+
+    sweep_orphaned_runs(tmp_path, stale_after_s=120)
+
+    md_path = run_dir / "final_report.md"
+    assert md_path.exists(), "final_report.md should be written for orphaned run"
+    md_text = md_path.read_text(encoding="utf-8")
+    assert "prj_md" in md_text
+    assert "partial" in md_text
+    assert "orphan" in md_text.lower()
+
+
+def test_salvage_md_not_written_when_report_already_exists(tmp_path: Path) -> None:
+    """When final_report.json exists, neither it nor final_report.md is overwritten."""
+    run_dir = tmp_path / "prj_md_skip"
+    (run_dir).mkdir(parents=True)
+    (run_dir / "final_report.json").write_text(json.dumps({"verdict": "reproduced"}), encoding="utf-8")
+    _write_status(
+        run_dir,
+        {"projectId": "prj_md_skip", "status": "running", "pid": 99999, "updatedAt": _old_iso(500)},
+    )
+
+    sweep_orphaned_runs(tmp_path, stale_after_s=120)
+
+    assert not (run_dir / "final_report.md").exists()
+
+
+def test_salvage_no_crash_on_no_evidence(tmp_path: Path) -> None:
+    """Orphaned run with no evidence files → marked interrupted without crash."""
+    run_dir = tmp_path / "prj_empty"
+    _write_status(
+        run_dir,
+        {"projectId": "prj_empty", "status": "running", "pid": 99999, "updatedAt": _old_iso(500)},
+    )
+
+    reports = sweep_orphaned_runs(tmp_path, stale_after_s=120)
+
+    assert len(reports) == 1
+    assert reports[0].project_id == "prj_empty"
+    status = json.loads((run_dir / "demo_status.json").read_text(encoding="utf-8"))
+    assert status["status"] == "interrupted"
+    report = json.loads((run_dir / "final_report.json").read_text(encoding="utf-8"))
+    assert report["rubric_score"] == 0.0

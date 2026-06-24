@@ -109,14 +109,47 @@ else
     echo "[start.sh] Runpod preflight not required for sandbox=${OPENRESEARCH_DEFAULT_SANDBOX}."
 fi
 
+# 2a. GKE preflight (when sandbox is gcp or gke; skippable). Mirrors the runpod
+# block: free read-only checks by default; START_FULL_SMOKE=1 passes --start-pod
+# (an operator-gated, money-spending stub — exit 6). gke is an alias for gcp.
+GKE_PREFLIGHT="scripts/gke_check.sh"
+if [[ "${OPENRESEARCH_DEFAULT_SANDBOX}" == "gcp" || "${OPENRESEARCH_DEFAULT_SANDBOX}" == "gke" ]]; then
+    if [[ "${START_SKIP_PREFLIGHT:-0}" != "1" && -x "${GKE_PREFLIGHT}" ]]; then
+        gke_args=()
+        if [[ "${START_FULL_SMOKE:-0}" == "1" ]]; then
+            echo "[start.sh] START_FULL_SMOKE=1 — running GKE pod smoke (operator-gated stub; would spend money)."
+            gke_args+=("--start-pod")
+        else
+            echo "[start.sh] Running GKE preflight (free)..."
+        fi
+        # macOS bash 3.2 empty-array guard (see runpod block).
+        gke_rc=0
+        "${GKE_PREFLIGHT}" ${gke_args[@]+"${gke_args[@]}"} || gke_rc=$?
+        if [[ "${gke_rc}" -eq 6 ]]; then
+            # exit 6 == the --start-pod smoke is an intentionally-unimplemented
+            # operator-gated stub. Treat it as a NON-FATAL skip so
+            # START_FULL_SMOKE=1 doesn't brick GKE startup; the free preflight
+            # checks above already ran. Any OTHER non-zero stays fatal.
+            echo "[start.sh] GKE pod smoke unimplemented (exit 6) — skipping smoke, continuing startup."
+        elif [[ "${gke_rc}" -ne 0 ]]; then
+            echo "[start.sh] GKE preflight FAILED (exit ${gke_rc}) — refusing to start (set START_SKIP_PREFLIGHT=1 to bypass)."
+            exit 1
+        fi
+    elif [[ "${START_SKIP_PREFLIGHT:-0}" == "1" ]]; then
+        echo "[start.sh] START_SKIP_PREFLIGHT=1 — skipping GKE preflight."
+    fi
+fi
+
 # 2b. Docker daemon preflight. build_environment does a LOCAL `docker build` only
-# for sandbox `docker` and `auto`/unknown (LocalDockerBackend). Both `local` and
-# `runpod` short-circuit build_environment to a no-op — runpod boots its own pod
-# image over SSH — so neither needs a daemon. A down daemon makes only docker/auto
-# runs fail at build_environment with backend_unavailable, so surface it at startup
-# for those modes. Warn (don't refuse): a per-run --sandbox override changes the
-# requirement, and the dashboard can outlive a daemon restart.
-if [[ "${OPENRESEARCH_DEFAULT_SANDBOX}" != "local" && "${OPENRESEARCH_DEFAULT_SANDBOX}" != "runpod" && "${START_SKIP_PREFLIGHT:-0}" != "1" ]]; then
+# for sandbox `docker` and `auto`/unknown (LocalDockerBackend). `local`, `runpod`,
+# and `gcp`/`gke` short-circuit build_environment to a no-op — runpod boots its own
+# pod image over SSH, gcp/gke run a pre-baked Artifact Registry image on the GKE
+# cluster (primitives.build_environment _sb_key=="gcp") — so none needs a local
+# daemon. A down daemon makes only docker/auto runs fail at build_environment with
+# backend_unavailable, so surface it at startup for those modes. Warn (don't
+# refuse): a per-run --sandbox override changes the requirement, and the dashboard
+# can outlive a daemon restart.
+if [[ "${OPENRESEARCH_DEFAULT_SANDBOX}" != "local" && "${OPENRESEARCH_DEFAULT_SANDBOX}" != "runpod" && "${OPENRESEARCH_DEFAULT_SANDBOX}" != "gcp" && "${OPENRESEARCH_DEFAULT_SANDBOX}" != "gke" && "${START_SKIP_PREFLIGHT:-0}" != "1" ]]; then
     if ! command -v docker >/dev/null 2>&1; then
         echo "[start.sh] WARNING: 'docker' CLI not found — runs with sandbox in {docker,auto} will fail at build_environment. Install OrbStack/Docker, or use --sandbox local/runpod."
     elif ! docker info >/dev/null 2>&1; then

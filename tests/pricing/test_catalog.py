@@ -32,6 +32,9 @@ _ROOT_MODEL_TO_PRICING_KEY: dict[str, str] = {
     "claude-oauth": "anthropic.claude-oauth",
     "qwen3-coder-featherless": "featherless.qwen3-coder-480b",
     "azure-gpt-4o": "azure.gpt-4o",
+    # azure-foundry is env-driven (any model on a custom endpoint), so it has no
+    # dedicated pricing row — estimate it via the azure gpt-4o reference rate.
+    "azure-foundry": "azure.gpt-4o",
 }
 
 

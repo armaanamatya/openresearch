@@ -210,7 +210,7 @@ class TestResolveCustomTools:
         monkeypatch.delenv("OPENRESEARCH_RLM_STUB_PRIMITIVES", raising=False)
         ctx = make_context(tmp_path)
         tools, label = _resolve_custom_tools(ctx)
-        assert len(tools) == 17  # RLM primitives + codex_repair + read_context_map (PEEK-lite)
+        assert len(tools) == 18  # RLM primitives + codex_repair + read_context_map + inspect_repository (#62)
         assert label == "real (binding)"
         for entry in tools.values():
             assert callable(entry["tool"])
@@ -413,6 +413,38 @@ class TestWriteDemoStatus:
         assert status["process_status"] == "completed"
         assert status["verdict"] == "failed"
         assert status["error"] == "watchdog timeout"
+
+    def test_root_validation_fields_written_when_supplied(self, tmp_path):
+        """P2 root-validation gate stamp: the two fields land in demo_status.json
+        only when supplied (oauth-root-reliability plan)."""
+        _write_demo_status(
+            tmp_path,
+            "running",
+            root_model_validated=False,
+            root_model_risk="degenerate_loop",
+        )
+        status = self._load(tmp_path)
+        assert status["root_model_validated"] is False
+        assert status["root_model_risk"] == "degenerate_loop"
+
+    def test_root_validation_fields_absent_when_omitted(self, tmp_path):
+        """Existing call sites pass neither kwarg — the keys must NOT appear,
+        keeping those writes byte-for-byte unchanged."""
+        _write_demo_status(tmp_path, "running")
+        status = self._load(tmp_path)
+        assert "root_model_validated" not in status
+        assert "root_model_risk" not in status
+
+    def test_root_validation_stamp_merges_forward(self, tmp_path):
+        """A later write that omits the fields preserves the earlier stamp via
+        the ``**existing`` merge."""
+        _write_demo_status(
+            tmp_path, "running", root_model_validated=True, root_model_risk="none"
+        )
+        _write_demo_status(tmp_path, "completed", process_status="completed")
+        status = self._load(tmp_path)
+        assert status["root_model_validated"] is True
+        assert status["root_model_risk"] == "none"
 
     def test_stamps_own_pid_for_orphan_sweep(self, tmp_path):
         """sweep_orphaned_runs skips runs without a pid, so every writer of

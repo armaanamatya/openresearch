@@ -43,6 +43,33 @@ _TERMINAL_POD_STATES: frozenset[str] = frozenset({"EXITED", "FAILED", "DEAD"})
 _STALL_WARN_LOCK = threading.Lock()
 _STALL_WARN_EMITTED = False
 
+# #62: directory-name components excluded from every SFTP upload (repo/ stays
+# host-only — it is a large source tree that the pod does not need).
+_RUNPOD_EXCLUDED_DIR_PARTS: frozenset[str] = frozenset(
+    {"outputs", ".git", "__pycache__", ".venv", "repo"}
+)
+
+
+def _runpod_upload_relpaths(local_root: "Path") -> list[str]:
+    """Pure: sorted relative POSIX paths the SFTP walk would upload.
+
+    Directory components listed in ``_RUNPOD_EXCLUDED_DIR_PARTS`` (including
+    ``repo/``) are filtered out.  This helper is extracted so that the
+    exclusion logic can be unit-tested without an SFTP connection.  #62 —
+    keeps ``runs/<id>/repo/`` host-only.
+    """
+    from pathlib import Path as _P
+    local_root = _P(local_root)
+    out: list[str] = []
+    for p in sorted(local_root.rglob("*")):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(local_root)
+        if any(part in _RUNPOD_EXCLUDED_DIR_PARTS for part in rel.parts):
+            continue
+        out.append(rel.as_posix())
+    return out
+
 
 def _warn_no_remote_stall_detection_once() -> None:
     """Emit a single loud WARNING that runpod exec has NO stall detection.
@@ -848,8 +875,12 @@ class RunpodBackend(RuntimeBackend):
     ) -> None:
         await sftp.makedirs(remote_root, exist_ok=True)
         for local_path in sorted(local_root.rglob("*")):
-            rel = local_path.relative_to(local_root).as_posix()
-            remote_path = _join_posix(remote_root, rel)
+            rel = local_path.relative_to(local_root)
+            # #62: keep repo/ (and the other build-only dirs) host-only.
+            if any(part in _RUNPOD_EXCLUDED_DIR_PARTS for part in rel.parts):
+                continue
+            rel_posix = rel.as_posix()
+            remote_path = _join_posix(remote_root, rel_posix)
             if local_path.is_dir():
                 await sftp.makedirs(remote_path, exist_ok=True)
             elif local_path.is_file():

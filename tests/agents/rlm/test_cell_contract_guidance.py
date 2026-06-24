@@ -20,8 +20,11 @@ def test_cell_path_injects_contract_budget_and_suppresses_torchrun():
     g = guidance("local", "max", gpu_cell_budget=_cell(), gpu_parallelism="multi", gpu_visible_count=8)
     assert "SINGLE-CELL TRAINER CONTRACT" in g
     assert "cells.json" in g and "train_cell.py" in g
-    assert "per-cell budget is ONE GPU = 24 GB" in g
+    assert "each cell runs on ONE GPU (24 GB budget)" in g
     assert "harness-owned cell matrix (one GPU per cell)" in g
+    # 6c: a too-large cell MAY shard across K dedicated cards via device_map (NOT torchrun).
+    assert '"gpus": K' in g
+    assert 'device_map="auto"' in g
     # The torchrun multi-GPU instruction must NOT appear — it fights one-cell-per-GPU.
     assert "torchrun --standalone" not in g
     assert "OPENRESEARCH_CELL_PARAMS" in g and "OPENRESEARCH_CELL_BATCH_SCALE" in g

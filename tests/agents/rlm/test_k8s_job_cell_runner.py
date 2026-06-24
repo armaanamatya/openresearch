@@ -2690,3 +2690,135 @@ class TestFix7PendingTimeoutDefault:
             "FIX-7: _SETTINGS_DEFAULTS['azure_pending_timeout_seconds'] must be 1500 "
             "(config.py default, raised from 900 to accommodate AKS GPU cold-start scale-up)"
         )
+
+
+# ---------------------------------------------------------------------------
+# Parallelism — total schedulable GPUs = max_nodes × gpus_per_node, divided by
+# the per-cell GPU request (gpu_plan.gpu_count).
+# ---------------------------------------------------------------------------
+
+class TestParallelism:
+    """run_matrix must size its worker pool by total schedulable GPUs, not node count.
+
+    The runner spawns exactly ``parallelism`` worker threads; we capture that
+    count by counting how many ``threading.Thread`` objects run_matrix creates.
+    """
+
+    @staticmethod
+    def _reset_settings_cache():
+        import backend.config as _config
+        _config._settings_cache = None
+
+    def _observed_parallelism(
+        self,
+        *,
+        cells: list[dict],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        gpu_plan: Any = None,
+        max_parallel: int | None = None,
+        max_nodes: int = 4,
+        gpus_per_node: int = 1,
+    ) -> int:
+        """Drive run_matrix with a fake K8s and capture the worker-thread count."""
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.1})
+
+        settings = dict(kjcr._SETTINGS_DEFAULTS)
+        settings.update(
+            {
+                "azure_base_image": "test-registry.io/reprolab-aks-cell:test",
+                "azure_storage_account": "testacct",
+                "azure_blob_container": "testctr",
+                "azure_max_nodes": max_nodes,
+                "azure_gpus_per_node": gpus_per_node,
+                "azure_watch_poll_interval_s": 0.001,
+            }
+        )
+        monkeypatch.setattr(
+            kjcr,
+            "_setting",
+            lambda name, default=None: settings.get(name, default),
+        )
+
+        created: list[Any] = []
+        real_thread = threading.Thread
+
+        def _counting_thread(*args: Any, **kwargs: Any):
+            t = real_thread(*args, **kwargs)
+            created.append(t)
+            return t
+
+        monkeypatch.setattr(kjcr.threading, "Thread", _counting_thread)
+
+        with bind_run_context(gpu_plan=gpu_plan):
+            run_matrix(
+                cells,
+                tmp_path / "train_cell.py",
+                output_root=tmp_path / "out",
+                max_parallel=max_parallel,
+            )
+        # The only threads run_matrix spawns are the `parallelism` worker threads.
+        return len(created)
+
+    def test_default_gpus_per_node_byte_identical(self, tmp_path, monkeypatch):
+        """Default gpus_per_node=1, single-GPU cell ⇒ min(max_nodes, len(cells))."""
+        monkeypatch.setenv("OPENRESEARCH_AZURE_MAX_NODES", "4")
+        monkeypatch.delenv("OPENRESEARCH_AZURE_GPUS_PER_NODE", raising=False)
+        self._reset_settings_cache()
+        cells = [{"id": f"c{i}"} for i in range(10)]
+        # gpu_plan default gpu_count=1; total_gpus = 4×1 = 4 ⇒ min(4, 10) = 4.
+        obs = self._observed_parallelism(
+            cells=cells, tmp_path=tmp_path, monkeypatch=monkeypatch,
+            gpu_plan=_FakeGpuPlan(gpu_count=1),
+            max_nodes=4,
+        )
+        assert obs == 4  # == min(max_nodes, len(cells)), unchanged from before
+        self._reset_settings_cache()
+
+    def test_default_byte_identical_when_cells_fewer_than_nodes(self, tmp_path, monkeypatch):
+        """Default path caps at len(cells) when fewer cells than nodes."""
+        monkeypatch.setenv("OPENRESEARCH_AZURE_MAX_NODES", "4")
+        monkeypatch.delenv("OPENRESEARCH_AZURE_GPUS_PER_NODE", raising=False)
+        self._reset_settings_cache()
+        cells = [{"id": "c0"}, {"id": "c1"}]
+        obs = self._observed_parallelism(
+            cells=cells, tmp_path=tmp_path, monkeypatch=monkeypatch,
+            gpu_plan=_FakeGpuPlan(gpu_count=1),
+            max_nodes=4,
+        )
+        assert obs == 2  # min(max_nodes=4, len(cells)=2)
+        self._reset_settings_cache()
+
+    def test_gpus_per_node_8_packs_cells(self, tmp_path, monkeypatch):
+        """gpus_per_node=8, single-node, single-GPU cells ⇒ min(8, len(cells))."""
+        monkeypatch.setenv("OPENRESEARCH_AZURE_MAX_NODES", "1")
+        monkeypatch.setenv("OPENRESEARCH_AZURE_GPUS_PER_NODE", "8")
+        self._reset_settings_cache()
+        cells = [{"id": f"c{i}"} for i in range(10)]
+        # total_gpus = 1×8 = 8; per-cell=1 ⇒ min(8, 10) = 8.
+        obs = self._observed_parallelism(
+            cells=cells, tmp_path=tmp_path, monkeypatch=monkeypatch,
+            gpu_plan=_FakeGpuPlan(gpu_count=1),
+            max_nodes=1,
+            gpus_per_node=8,
+        )
+        assert obs == 8
+        self._reset_settings_cache()
+
+    def test_multi_gpu_cell_divides_total_gpus(self, tmp_path, monkeypatch):
+        """A gpu_plan.gpu_count=2 cell halves the cell concurrency."""
+        monkeypatch.setenv("OPENRESEARCH_AZURE_MAX_NODES", "1")
+        monkeypatch.setenv("OPENRESEARCH_AZURE_GPUS_PER_NODE", "8")
+        self._reset_settings_cache()
+        cells = [{"id": f"c{i}"} for i in range(10)]
+        # total_gpus = 8; per-cell=2 ⇒ 8 // 2 = 4 ⇒ min(4, 10) = 4.
+        obs = self._observed_parallelism(
+            cells=cells, tmp_path=tmp_path, monkeypatch=monkeypatch,
+            gpu_plan=_FakeGpuPlan(short_name="azure_a100_80x2", gpu_count=2),
+            max_nodes=1,
+            gpus_per_node=8,
+        )
+        assert obs == 4
+        self._reset_settings_cache()

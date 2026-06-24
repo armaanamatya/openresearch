@@ -73,6 +73,45 @@ class TestSdarHintStructure:
         assert "lambda" in sdar.guidance.lower()
         assert "beta" in sdar.guidance.lower()
 
+    def test_guidance_warns_silent_oom_antipattern(self, sdar):
+        """Guidance must warn against swallowed backward/step exceptions (silent-OOM)."""
+        g = sdar.guidance
+        assert "silent-OOM" in g or "silent_oom" in g.lower(), (
+            "SDAR guidance must name the silent-OOM anti-pattern"
+        )
+        assert "except" in g.lower(), (
+            "SDAR guidance must mention bare except blocks as the root cause"
+        )
+
+    def test_guidance_requires_grpo_baseline_cells(self, sdar):
+        """Guidance must instruct the agent to emit GRPO baseline cells."""
+        assert "GRPO baseline" in sdar.guidance or "grpo baseline" in sdar.guidance.lower(), (
+            "SDAR guidance must instruct agent to emit GRPO baseline cells"
+        )
+
+    def test_guidance_requires_distinct_cell_triples(self, sdar):
+        """Guidance must instruct the agent to use distinct (model, env, baseline) triples."""
+        g = sdar.guidance
+        assert "DISTINCT" in g or "distinct" in g.lower(), (
+            "SDAR guidance must require distinct cell triples"
+        )
+        assert "triple" in g.lower(), (
+            "SDAR guidance must reference the (model_key, env, baseline) triple concept"
+        )
+
+    def test_guidance_explains_grpo_reward_signal(self, sdar):
+        """Guidance must explain GRPO needs reward variance / wired env reward (the l_grpo=0 ceiling)."""
+        g = sdar.guidance.lower()
+        assert "reward" in g and ("variance" in g or "mean_reward" in g or "l_grpo" in g), (
+            "SDAR guidance must explain GRPO reward-variance / reward-wiring"
+        )
+
+    def test_guidance_requires_webshop_server(self, sdar):
+        """Guidance must instruct starting the WebShop server before its cells."""
+        g = sdar.guidance
+        assert "WebShop" in g or "webshop" in g.lower(), "SDAR guidance must mention WebShop"
+        assert "3000" in g, "SDAR guidance must name the WebShop server endpoint (127.0.0.1:3000)"
+
     def test_default_scope_has_three_models(self, sdar):
         assert sdar.default_scope is not None
         assert len(sdar.default_scope.models) == 3
@@ -170,6 +209,45 @@ class TestPaperHintsTableShape:
 
 
 OMNIZIP_ID = "2511.14582"
+
+
+class TestSdarMemoryConstrainedGuidance:
+    """F-2 — SDAR guidance must warn about full-FT OOM on memory-constrained GPUs."""
+
+    @pytest.fixture
+    def sdar(self) -> PaperHint:
+        h = lookup_paper_hint(SDAR_ID)
+        assert h is not None
+        return h
+
+    def test_guidance_warns_full_ft_oom_on_small_gpu(self, sdar):
+        """Guidance must explain full fine-tuning needs ~16-20 GB per billion params."""
+        g = sdar.guidance.lower()
+        # Must mention the per-billion-params VRAM cost.
+        assert "per billion" in g or "billion param" in g or "billion params" in g, (
+            "SDAR guidance must mention per-billion-params VRAM cost for full fine-tuning"
+        )
+
+    def test_guidance_recommends_gradient_checkpointing(self, sdar):
+        """Guidance must recommend gradient checkpointing for memory-constrained GPUs."""
+        g = sdar.guidance.lower()
+        assert "gradient checkpointing" in g or "grad-checkpoint" in g or "grad_checkpoint" in g, (
+            "SDAR guidance must recommend gradient checkpointing"
+        )
+
+    def test_guidance_mentions_batch_size_or_lora(self, sdar):
+        """Guidance must mention conservative batch size or LoRA/FSDP sharding."""
+        g = sdar.guidance.lower()
+        assert "batch size" in g or "lora" in g or "fsdp" in g, (
+            "SDAR guidance must mention conservative batch size or LoRA/FSDP for OOM mitigation"
+        )
+
+    def test_guidance_asks_agent_to_set_est_vram_gb(self, sdar):
+        """Guidance must ask the agent to set est_vram_gb so the capacity gate works."""
+        g = sdar.guidance
+        assert "est_vram_gb" in g, (
+            "SDAR guidance must instruct agent to set est_vram_gb in cells.json"
+        )
 
 
 class TestOmniZipHint:

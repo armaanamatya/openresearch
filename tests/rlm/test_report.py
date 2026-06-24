@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -925,7 +926,11 @@ class TestAuthoritativeRubricOverride:
         json_path, _ = write_final_report_rlm(report, project_dir)
         data = json.loads(json_path.read_text())
 
-        assert data["rubric"]["meets_target"] is False
+        # The stale root-supplied meets_target=False is now CORRECTED at the write
+        # chokepoint from the authoritative score (0.656 >= target 0.6 → True).
+        # This is the desired behaviour: meets_target must always be consistent
+        # with overall_score vs target_score when both are present (Task 2 fix).
+        assert data["rubric"]["meets_target"] is True
         assert data["verdict"] == "partial"
 
     def test_failed_verdict_is_never_floored(self, tmp_path):

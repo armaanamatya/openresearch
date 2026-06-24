@@ -41,8 +41,8 @@ def test_custom_tools_count_matches_doc():
     from backend.agents.rlm.primitives import PRIMITIVE_REGISTRY
 
     n = len(PRIMITIVE_REGISTRY)
-    assert n == 17, f"PRIMITIVE_REGISTRY has {n} entries; update the doc + this test together"
-    assert "17" in _CLAUDE, "CLAUDE.md should state the bound custom_tools count (17)"
+    assert n == 18, f"PRIMITIVE_REGISTRY has {n} entries; update the doc + this test together"
+    assert "18" in _CLAUDE, "CLAUDE.md should state the bound custom_tools count (18)"
 
 
 def test_runpod_cloud_type_default_matches_config():

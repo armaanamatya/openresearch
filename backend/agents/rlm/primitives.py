@@ -49,6 +49,7 @@ _RUN_EXPERIMENT_REPAIRABLE_FAILURES = {
     "degenerate_training",
     "disk_exhausted",
     "incomplete_metrics",
+    "all_models_failed",      # Workstream C Fix 1: per_model non-empty, no ok status (flag-gated)
     "contract_violation",
     # Existing classifier labels that require agent-side repair.
     "missing_module",
@@ -65,6 +66,9 @@ _RUN_EXPERIMENT_REPAIRABLE_FAILURES = {
     "syntax_error",
     "scope_shape_violation",
     "dockerfile_invalid",
+    "fabrication_suspected",   # GAP-1: VRAM-evidence fabrication → agent must re-implement
+    "code_review_rejected",    # P1: pre-GPU code review found anti-fabrication bug
+    "smoke_metrics_unreal",    # P2: pre-GPU smoke found non-real metrics
     "unknown",
 }
 _RUN_EXPERIMENT_RETRYABLE_FAILURES = {
@@ -166,6 +170,12 @@ def _local_core_bootstrap_commands(requirements_path: "Path", torch_index: str) 
 # the n_ok==0, n_err>0 branch of the cell matrix (primitives.py ~:3789).
 _METRICS_BEARING_REPAIRABLE_FAILURES = {
     "cell_execution_error",
+    # GAP-1 (2026-06-18): a VRAM-evidence fabrication ALSO ships a populated metrics
+    # dict (the fabricated numbers), so the metrics-first short-circuit below would
+    # otherwise mis-type it ``partial_evidence`` and let the fake results count as
+    # evidence. The whole point is that ZERO real GPU work happened — fully
+    # repairable, never partial. Set on BOTH paths (cells route + monolithic).
+    "fabrication_suspected",
 }
 
 _CODEX_HARD_ALLOWED_TASKS = {
@@ -1005,6 +1015,67 @@ def extract_hyperparameters(text_slice: str, *, ctx: "RunContext") -> dict:
     return result
 
 
+def _merge_repo_deps_into_spec(spec_dict: dict, repo_dir: "Path") -> dict:
+    """Merge a cloned repo's declared deps into an EnvironmentSpec dict.
+
+    Repo-declared deps take priority (ground truth) over inferred ones. Reads
+    requirements*.txt (one ``name[==/>=/...]version`` per line), and the bare
+    package names from setup.py / pyproject.toml / environment*.yml. Pure +
+    fail-soft: an unreadable/garbage file is skipped; returns spec_dict unchanged
+    when repo_dir has no recognizable manifest.
+    """
+    import re as _re
+    from pathlib import Path as _Path
+
+    repo_dir = _Path(repo_dir)
+    if not repo_dir.is_dir():
+        return spec_dict
+    repo_pkgs: dict[str, str] = {}
+
+    # requirements*.txt — the highest-signal, version-pinned source.
+    for req in sorted(repo_dir.glob("requirements*.txt")):
+        try:
+            for line in req.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.split("#", 1)[0].strip()
+                if not line or line.startswith("-"):
+                    continue
+                m = _re.match(r"^([A-Za-z0-9._-]+)\s*([<>=!~].*)?$", line)
+                if m:
+                    repo_pkgs[m.group(1)] = (m.group(2) or "").strip()
+        except OSError:
+            continue
+
+    # Bare names from pyproject/setup/environment (no version → empty string).
+    for name in ("pyproject.toml", "setup.py"):
+        f = repo_dir / name
+        if f.is_file():
+            try:
+                text = f.read_text(encoding="utf-8", errors="replace")
+                for m in _re.finditer(r"[\"']([A-Za-z0-9._-]+)\s*(?:[<>=!~][^\"']*)?[\"']", text):
+                    repo_pkgs.setdefault(m.group(1), "")
+            except OSError:
+                pass
+    for env_yml in list(repo_dir.glob("environment*.yml")) + list(repo_dir.glob("environment*.yaml")):
+        try:
+            for line in env_yml.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.strip().lstrip("-").strip()
+                m = _re.match(r"^([A-Za-z0-9._-]+)\s*(?:[<>=!~=].*)?$", line)
+                if m and m.group(1) not in {"dependencies", "name", "channels", "pip"}:
+                    repo_pkgs.setdefault(m.group(1), "")
+        except OSError:
+            continue
+
+    if not repo_pkgs:
+        return spec_dict
+    merged = dict(spec_dict)
+    pip = dict(merged.get("pip_packages") or {})
+    for name, ver in repo_pkgs.items():
+        if ver or name not in pip:  # repo pin wins; bare name fills a gap
+            pip[name] = ver if ver else pip.get(name, "")
+    merged["pip_packages"] = pip
+    return merged
+
+
 def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
     """Infer the runtime environment; return an EnvironmentSpec dict.
 
@@ -1033,11 +1104,14 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
     from backend.agents.rlm import primitive_cache as _cache
     _sandbox_mode_val = getattr(ctx, "sandbox_mode", None)
     _sandbox_key = getattr(_sandbox_mode_val, "value", str(_sandbox_mode_val) if _sandbox_mode_val is not None else None)
+    _repo_on = os.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() in ("1", "true", "yes", "on")
     _payload = {
         "method_spec": method_spec,
         # gpu_mode + sandbox_mode both affect Dockerfile shape, so both are cache keys.
         "gpu_mode": getattr(ctx, "gpu_mode", None),
         "sandbox_mode": _sandbox_key,
+        "repo_first": _repo_on,
+        "repo_commit": (_load_repo_spec(ctx.project_dir).get("commit_sha") if _repo_on else None),
     }
     _cached = _cache.maybe_get(ctx.project_dir, "detect_environment", payload=_payload)
     if _cached is not None:
@@ -1056,6 +1130,15 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
         sandbox_mode=_sandbox_key,
     )
     spec_dict = spec.model_dump()
+    # #62: when a repo was cloned (flag on), merge its declared deps — ground
+    # truth over prose-inferred deps. Byte-identical when no repo/ exists.
+    import os as _os_repo
+    if _os_repo.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    ):
+        _repo_dir = ctx.project_dir / "repo"
+        if _repo_dir.is_dir():
+            spec_dict = _merge_repo_deps_into_spec(spec_dict, _repo_dir)
     # Runtime-hardware truth (2026-06-09): papers older than the GPU era never
     # *mention* GPUs, so the paper-derived assumption reads "CPU only (no GPU
     # required)" — and the agent then plans timid CPU-scale experiments on a
@@ -1705,32 +1788,53 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
                     })
                     data["compute_scope"] = None
             else:
-                # String, None, or any non-dict — coerce to None rather than aborting.
-                if cs_dict is not None:
-                    logger.warning(
-                        "plan_reproduction: compute_scope is not a dict (%s) — dropping",
-                        type(cs_dict).__name__,
-                    )
-                    _emit_dashboard_event(ctx, event_type="run_warning", payload={
-                        "code": "compute_scope_invalid",
-                        "message": (
-                            f"compute_scope must be a dict or null; got "
-                            f"{type(cs_dict).__name__!r}: {str(cs_dict)[:200]}"
-                        ),
-                    })
-                    # Agent-visible feedback (2026-06-09): this fired on 15/15
-                    # Adam+All-CNN attempts because the dashboard warning never
-                    # reaches the root. Put the exact expected shape ON the
-                    # returned plan so the agent can self-correct, and the
-                    # compute-adjusted grading path stops being silently lost.
-                    data.setdefault("warnings", []).append(
-                        "compute_scope was a string and was DROPPED. If you "
-                        "reduced compute vs the paper, resend it as a JSON "
-                        "object: {\"is_clipped\": true, \"paper_epochs\": N, "
-                        "\"actual_epochs\": M, \"rationale\": \"...\", "
-                        "\"metric_floors\": [{...}]} — otherwise omit it."
-                    )
-                data["compute_scope"] = None
+                # String, None, or any non-dict — try to recover a JSON-object
+                # string first (LLMs sometimes JSON-encode the dict); drop otherwise.
+                recovered = False
+                if isinstance(cs_dict, str):
+                    import json as _json
+                    try:
+                        parsed = _json.loads(cs_dict.strip())
+                        if isinstance(parsed, dict):
+                            # Fall through to the same validation path as a real dict.
+                            try:
+                                data["compute_scope"] = _ComputeScope(**parsed).model_dump()
+                                recovered = True
+                            except _PydanticValidationError as _ve:
+                                logger.warning(
+                                    "plan_reproduction: compute_scope JSON-string "
+                                    "parsed but failed validation (%s) — dropping",
+                                    _ve,
+                                )
+                    except (ValueError, TypeError):
+                        pass  # not valid JSON — fall through to drop+warn below
+
+                if not recovered:
+                    if cs_dict is not None:
+                        logger.warning(
+                            "plan_reproduction: compute_scope is not a dict (%s) — dropping",
+                            type(cs_dict).__name__,
+                        )
+                        _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                            "code": "compute_scope_invalid",
+                            "message": (
+                                f"compute_scope must be a dict or null; got "
+                                f"{type(cs_dict).__name__!r}: {str(cs_dict)[:200]}"
+                            ),
+                        })
+                        # Agent-visible feedback (2026-06-09): this fired on 15/15
+                        # Adam+All-CNN attempts because the dashboard warning never
+                        # reaches the root. Put the exact expected shape ON the
+                        # returned plan so the agent can self-correct, and the
+                        # compute-adjusted grading path stops being silently lost.
+                        data.setdefault("warnings", []).append(
+                            "compute_scope was a string and was DROPPED. If you "
+                            "reduced compute vs the paper, resend it as a JSON "
+                            "object: {\"is_clipped\": true, \"paper_epochs\": N, "
+                            "\"actual_epochs\": M, \"rationale\": \"...\", "
+                            "\"metric_floors\": [{...}]} — otherwise omit it."
+                        )
+                    data["compute_scope"] = None
         else:
             # Not in the response (max mode or no instruction sent) — leave as None.
             data["compute_scope"] = None
@@ -1897,6 +2001,91 @@ def _drive_baseline_child(
     )
 
 
+def _load_repo_spec(project_dir: "Path") -> dict:
+    """Read rlm_state/repo_spec.json (the deterministic trusted source). {} if absent."""
+    import json as _json
+    from pathlib import Path as _Path
+    p = _Path(project_dir) / "rlm_state" / "repo_spec.json"
+    if not p.exists():
+        return {}
+    try:
+        data = _json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _repo_artifact_index(project_dir: "Path", plan_artifact_index: "dict | None") -> dict:
+    """Merge the TRUSTED repo metadata into artifact_index, repo fields winning.
+
+    The root's plan["artifact_index"] is untrusted; the repo_spec.json written at
+    run setup is authoritative. Returns the plan's dict unchanged when no repo was used
+    or when the master flag is off.
+    """
+    import os as _os
+    from pathlib import Path as _Path
+    base = dict(plan_artifact_index or {})
+    if _os.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() not in ("1", "true", "yes", "on"):
+        return base
+    spec = _load_repo_spec(project_dir)
+    if spec.get("url") and spec.get("clone_succeeded"):
+        base.update({
+            "repo_url": spec.get("url"),
+            "commit_sha": spec.get("commit_sha"),
+            "path": spec.get("path") or str(_Path(project_dir) / "repo"),
+            "mode": spec.get("mode") or "adapt",
+        })
+    return base
+
+
+def _should_seed_code_from_repo(mode: str, repo_dir: "Path", code_dir: "Path") -> bool:
+    """True iff ADAPT mode, the repo exists, and code/ is empty (first call)."""
+    from pathlib import Path as _Path
+    if (mode or "").strip().lower() != "adapt":
+        return False
+    repo_dir = _Path(repo_dir)
+    code_dir = _Path(code_dir)
+    if not repo_dir.is_dir():
+        return False
+    if code_dir.exists() and any(code_dir.iterdir()):
+        return False
+    return True
+
+
+def _seed_code_from_repo(repo_dir: "Path", code_dir: "Path") -> int:
+    """Copy repo_dir -> code_dir excluding .git/ and symlinks; return count of files copied."""
+    import shutil as _shutil
+    from pathlib import Path as _Path
+    repo_dir = _Path(repo_dir)
+    code_dir = _Path(code_dir)
+    code_dir.mkdir(parents=True, exist_ok=True)
+    repo_root = repo_dir.resolve()
+    copied = 0
+    for src in sorted(repo_dir.rglob("*")):
+        rel = src.relative_to(repo_dir)
+        if ".git" in rel.parts:
+            continue
+        if src.is_symlink():        # never copy symlinks (could escape repo/)
+            continue
+        try:
+            resolved = src.resolve()
+            if resolved != repo_root and repo_root not in resolved.parents:
+                continue            # defensive: skip anything resolving outside repo/
+        except OSError:
+            continue
+        dst = code_dir / rel
+        if src.is_dir():
+            dst.mkdir(parents=True, exist_ok=True)
+        elif src.is_file():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                _shutil.copy2(src, dst)
+                copied += 1
+            except OSError:
+                continue
+    return copied
+
+
 def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = False) -> dict:
     """Generate the baseline code from a reproduction plan; return a typed envelope.
 
@@ -1967,7 +2156,7 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
         else:
             contract = ReproductionContract(**_contract_dict)
 
-    artifact_index = plan.get("artifact_index")
+    artifact_index = _repo_artifact_index(ctx.project_dir, plan.get("artifact_index"))
 
     # An optional plan["repair_context"] (a failed run_experiment result) puts
     # the code-writing agent into fix-existing-code mode — the root passes it
@@ -2131,6 +2320,7 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
     _sandbox_key = getattr(ctx.sandbox_mode, "value", str(ctx.sandbox_mode) if ctx.sandbox_mode is not None else None)
     _gpu_key = getattr(getattr(ctx, "gpu_mode", None), "value", str(getattr(ctx, "gpu_mode", None)) if getattr(ctx, "gpu_mode", None) is not None else None)
     from backend.agents.baseline_knowledge import KNOWLEDGE_CHANNEL_VERSION as _KC_VER
+    _repo_on = os.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() in ("1", "true", "yes", "on")
     _payload = {
         "plan": plan,
         "repair_context": repair_context,
@@ -2138,6 +2328,8 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
         "sandbox_mode": _sandbox_key,
         "gpu_mode": _gpu_key,
         "knowledge_channel_version": _KC_VER,
+        "repo_first": _repo_on,
+        "repo_commit": (_load_repo_spec(ctx.project_dir).get("commit_sha") if _repo_on else None),
     }
     _cached = _cache.maybe_get(ctx.project_dir, "implement_baseline", payload=_payload)
     if _cached is not None:
@@ -2288,6 +2480,23 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
 
     code_dir = ctx.runs_root / ctx.project_id / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
+
+    # #62: ADAPT mode, first call only (code/ empty) — seed the authors' code into
+    # code/ so the sub-agent ADAPTS rather than rewrites. Re-entrant repair calls
+    # never re-seed (code/ already non-empty). Flag-gated; byte-identical off.
+    import os as _os_repo
+    if _os_repo.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    ):
+        _rspec = _load_repo_spec(ctx.project_dir)
+        _repo_dir = ctx.project_dir / "repo"
+        if _should_seed_code_from_repo(_rspec.get("mode", "adapt"), _repo_dir, code_dir):
+            _n = _seed_code_from_repo(_repo_dir, code_dir)
+            logger.info("implement_baseline[%s]: seeded code/ from repo/ (%d files)", ctx.project_id, _n)
+            _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                "code": "repo_code_seeded",
+                "message": f"adapt-mode: seeded code/ from the authors' repo ({_n} files)",
+            })
 
     # Route-retention (2026-06-11): remember whether a cells manifest existed
     # before this (repair) implementation so its silent disappearance — the
@@ -2977,6 +3186,52 @@ def _metrics_completeness_violation(result: dict) -> tuple[str, str] | None:
                 "treated as 'not measured'.",
             )
     return None
+
+
+def _all_models_failed_violation(result: dict) -> tuple[str, str] | None:
+    """Detect a ``success=True`` run whose per_model is non-empty but NO entry
+    reached an ok status — every model errored/failed at load/train, yet the
+    subprocess exited 0 so ``success`` was reported true (the latent fake-green).
+
+    The monolithic ``run_experiment`` path sets ``success = all(r.succeeded …)`` —
+    subprocess exit only. An all-errored result (e.g. every per_model entry carries
+    ``status:"failed"`` + a ``0.0`` numeric) sails through every other guard:
+    ``_metrics_completeness_violation`` only fires when entries are EMPTY
+    placeholders (an error-bearing entry with a ``0.0`` passes
+    ``_per_model_has_measured_value``), and ``_degenerate_training_violation`` only
+    judges models whose status is in :data:`_OK_STATUSES` (a ``failed`` model is
+    skipped). This guard closes that narrow gap, mirroring the cells-route
+    ``any_ok`` rule (``cell_matrix.py``).
+
+    DEFAULT-OFF behind ``OPENRESEARCH_PER_MODEL_STATUS_GATE`` (``1``/``true``/``yes``
+    = ON; anything else/unset = OFF) — with it unset, behavior is byte-for-byte
+    today (the all-errored row still returns success=true and no guard fires). The
+    default-flip is gated on the operator's >=3 paired GPU A/B + grader-sigma
+    runbook step. Returns ``(failure_class, message)`` or ``None``.
+    """
+    if os.environ.get("OPENRESEARCH_PER_MODEL_STATUS_GATE", "").strip().lower() not in ("1", "true", "yes"):
+        return None
+    metrics = result.get("metrics")
+    if not isinstance(metrics, dict) or not metrics:
+        return None
+    per_model = metrics.get("per_model")
+    if not isinstance(per_model, dict) or not per_model:
+        return None
+    ok = [
+        m for m, mv in per_model.items()
+        if isinstance(mv, dict) and str(mv.get("status", "")).lower() in _OK_STATUSES
+    ]
+    if ok:
+        return None
+    names = ", ".join(map(str, list(per_model.keys())[:4]))
+    return (
+        "all_models_failed",
+        f"all_models_failed: per_model has {len(per_model)} model(s) ({names}) but NONE "
+        f"reached an ok status ({sorted(_OK_STATUSES)}) — every model errored/failed, yet "
+        "the experiment exited 0 so success was reported true. Fix the failing model "
+        "load/train so at least one model reaches a terminal ok status with measured "
+        "metrics, then re-run.",
+    )
 
 
 def _training_health_violation(result: dict) -> tuple[str, str] | None:
@@ -5234,7 +5489,7 @@ def _read_prior_weak_leaves(project_dir) -> list[dict]:
         doc = json.loads(
             (Path(project_dir) / "rubric_evaluation.json").read_text(encoding="utf-8"))
         wl = doc.get("weak_leaves")
-        return [l for l in wl if isinstance(l, dict)] if isinstance(wl, list) else []
+        return [lf for lf in wl if isinstance(lf, dict)] if isinstance(wl, list) else []
     except Exception:  # noqa: BLE001
         return []
 
@@ -5391,13 +5646,15 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         except Exception:  # noqa: BLE001 — replication must never break the run
             logger.debug("run_experiment: seed replication failed (non-fatal)", exc_info=True)
 
-    # Multi-GPU cells: a slot of `gpus_per_cell` cards device_map-shards ONE (large)
-    # model, so the capacity-gate VRAM budget is the slot's COMBINED VRAM, not one card.
+    # Multi-GPU cells: a cell may declare "gpus": k to shard a large model across k
+    # cards.  `_gpus_per_cell` is the UNIFORM default (used when a cell omits "gpus").
+    # capacity_gate now computes the per-cell budget as per_gpu_vram_gb × cell["gpus"]
+    # internally — pass the single-card VRAM and the default, not the pre-multiplied slot.
     _gpus_per_cell = max(1, int(os.environ.get("OPENRESEARCH_GPUS_PER_CELL", "1") or "1"))
-    # PREVENT — clamp to the per-slot budget, drop confirmed-dead datasets (fail-soft).
+    # PREVENT — drop cells that exceed their per-cell GPU budget; drop confirmed-dead datasets.
     headroom = _dynamic_gpu_headroom()
     kept, cap_gaps, models_skipped = cell_matrix.capacity_gate(
-        all_cells, caps.per_gpu_vram_gb * _gpus_per_cell, headroom=headroom)
+        all_cells, caps.per_gpu_vram_gb, headroom=headroom, default_gpus_per_cell=_gpus_per_cell)
     kept, ds_gaps, envs_skipped = cell_matrix.dataset_url_preflight(kept)
 
     # Headline-coverage honesty (2026-06-16): a paper-headline model the agent
@@ -5455,8 +5712,20 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     # past the first wave to status=timeout (adversarial-review C1, 2026-06-02). The
     # run-level watchdog is the ultimate hang guard; this just lets the root score a
     # partial sooner than the watchdog's hard-exit if the matrix genuinely overruns.
-    _n_slots = max(1, len(gpus) // _gpus_per_cell)
-    _waves = (len(kept) + _n_slots - 1) // _n_slots  # ceil(cells / slots)
+    # Heterogeneity-aware wave estimate: sum the GPU demand of every kept cell,
+    # then divide by total available GPUs (ceiling division).  This gives a
+    # conservative (over-estimated) wave count so the matrix timeout is always
+    # generous enough — under-budgeting would silently truncate tail cells.
+    _total_demand = sum(
+        max(1, min(
+            int(c.get("gpus", _gpus_per_cell))
+            if str(c.get("gpus", _gpus_per_cell)).lstrip("-").isdigit()
+            else _gpus_per_cell,
+            len(gpus)
+        ))
+        for c in kept
+    )
+    _waves = max(1, (_total_demand + len(gpus) - 1) // max(1, len(gpus)))
     # Time-budget gate (2026-06-10): the matrix budget must FIT the run's
     # remaining wall clock (minus a verify+report reserve). Adam v6's 100-epoch
     # VAE re-grid got `per_cell × waves` of budget with 4h of run left, sailed
@@ -5539,6 +5808,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     # failure). Shape-gated + local/docker only; no `search` key → the legacy
     # single-phase dispatch below runs byte-for-byte unchanged.
     matrix_result = None
+    _staged_out = None
     if _sb_key_ecm not in ("azure", "gcp"):
         _staged_groups = []
         try:
@@ -5640,7 +5910,8 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
 
     metrics = cell_matrix.aggregate_cell_metrics(
         matrix_result, kept, capacity_gaps=cap_gaps, dataset_gaps=ds_gaps,
-        models_skipped=models_skipped, environments_skipped=envs_skipped)
+        models_skipped=models_skipped, environments_skipped=envs_skipped,
+        budget_dropped=_staged_out.get("dropped_cells_full") if _staged_out is not None else None)
     metrics = _apply_operator_scope(metrics, ctx)
     logs = _summarize_cell_logs(kept, matrix_result, gpus)
 
@@ -5937,6 +6208,116 @@ def run_experiment(
     except Exception:  # noqa: BLE001 — pre-flight MUST NOT block on its own bug
         logger.exception("run_experiment: pre_flight_validator raised — skipping")
 
+    # P1 — pre-GPU code-review gate (flag-gated, default OFF; spec 2026-06-20 §4.1).
+    # Uses the grok validator (EXTERNAL_VALIDATOR=1) to review training code for
+    # anti-fabrication issues BEFORE any GPU is spent.  Fail-OPEN: any error →
+    # non-blocking (P2 + post-run guards backstop).
+    try:
+        from backend.agents.rlm.code_review_gate import (  # noqa: PLC0415
+            code_review_gate_enabled,
+            review_executor_code,
+        )
+        if code_review_gate_enabled():
+            _crg_client = getattr(ctx, "validator_client", None)
+            _crg_method_ctx = "Generic anti-fabrication review: SDAR-style RL training"
+            try:
+                _crg_arxiv = getattr(ctx, "arxiv_id", None)
+                if _crg_arxiv:
+                    from backend.agents.prompts.paper_hints import PAPER_HINTS as _CRG_PH  # noqa: PLC0415
+                    import re as _crg_re  # noqa: PLC0415
+                    _crg_hint = _CRG_PH.get(_crg_re.sub(r"v\d+$", "", str(_crg_arxiv))) or _CRG_PH.get(str(_crg_arxiv))
+                    if _crg_hint and getattr(_crg_hint, "guidance", None):
+                        _crg_method_ctx = f"Paper {_crg_arxiv}: {_crg_hint.guidance[:1000]}"
+                _crg_rubric_path = ctx.project_dir / "generated_rubric.json"
+                if _crg_rubric_path.exists():
+                    import json as _crg_json  # noqa: PLC0415
+                    _crg_rubric = _crg_json.loads(_crg_rubric_path.read_text(encoding="utf-8"))
+                    _crg_contrib = str(_crg_rubric.get("core_contribution") or "")[:500]
+                    if _crg_contrib:
+                        _crg_method_ctx = f"{_crg_method_ctx}\nCore contribution: {_crg_contrib}"
+            except Exception:  # noqa: BLE001 — building method_context must never block
+                pass
+            _crg_verdict = review_executor_code(
+                validator_client=_crg_client,
+                code_dir=Path(code_path),
+                method_context=_crg_method_ctx,
+            )
+            if _crg_verdict.blocking:
+                _crg_cited = [
+                    f for f in _crg_verdict.findings
+                    if f.get("severity") in {"will_produce_fake_metrics", "will_produce_wrong_metrics"}
+                ]
+                _crg_msg = (
+                    "code_review_rejected: the code review found "
+                    f"{len(_crg_cited)} blocking anti-fabrication issue(s) — "
+                    + "; ".join(
+                        f"{f.get('file')}:{f.get('line')} [{f.get('anti_pattern')}] {f.get('detail')}"
+                        for f in _crg_cited[:3]
+                    )
+                )
+                try:
+                    _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                        "code": "code_review_rejected", "message": _crg_msg,
+                    })
+                except Exception:  # noqa: BLE001
+                    pass
+                logger.warning("run_experiment[%s]: %s", getattr(ctx, "run_id", "?"), _crg_msg)
+                return _persist_experiment_result(ctx, {
+                    "success": False,
+                    "metrics": {},
+                    "failure_class": "code_review_rejected",
+                    "error": _crg_msg,
+                    "repair_context": {"cited_findings": _crg_cited[:5]},
+                }, model_id=model_id, eval_env=eval_env)
+    except Exception:  # noqa: BLE001 — the code-review gate MUST NOT block on its own bug
+        logger.exception("run_experiment: code_review_gate raised — skipping")
+
+    # P2 — metric-reality smoke (flag-gated, default OFF; spec 2026-06-20 §4.2).
+    # Runs ~2 training steps on one representative per cell-group BEFORE the full
+    # grid to assert that the training loop backprops a real loss.  Fail-OPEN only
+    # when the smoke cannot launch; any executor-side bad outcome is judged.
+    try:
+        from backend.agents.rlm.metric_reality_smoke import (  # noqa: PLC0415
+            metric_reality_smoke_enabled,
+            run_metric_reality_smoke,
+        )
+        if metric_reality_smoke_enabled():
+            _p2_cells: list | None = None
+            try:
+                _p2_cells_path = Path(code_path) / "cells.json"
+                if _p2_cells_path.is_file():
+                    import json as _p2_json  # noqa: PLC0415
+                    _p2_manifest = _p2_json.loads(_p2_cells_path.read_text(encoding="utf-8"))
+                    _p2_cells = [
+                        c for c in (_p2_manifest.get("cells") or [])
+                        if isinstance(c, dict) and c.get("id")
+                    ]
+            except Exception:  # noqa: BLE001
+                _p2_cells = None
+            _p2_smoke = run_metric_reality_smoke(
+                ctx=ctx,
+                code_dir=Path(code_path),
+                cells=_p2_cells,
+            )
+            if not _p2_smoke.get("ok"):
+                _p2_msg = _p2_smoke.get("detail") or "smoke_metrics_unreal: smoke failed"
+                try:
+                    _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                        "code": "smoke_metrics_unreal", "message": _p2_msg,
+                    })
+                except Exception:  # noqa: BLE001
+                    pass
+                logger.warning("run_experiment[%s]: %s", getattr(ctx, "run_id", "?"), _p2_msg)
+                return _persist_experiment_result(ctx, {
+                    "success": False,
+                    "metrics": {},
+                    "failure_class": "smoke_metrics_unreal",
+                    "error": _p2_msg,
+                    "repair_context": {"smoke_detail": _p2_msg},
+                }, model_id=model_id, eval_env=eval_env)
+    except Exception:  # noqa: BLE001 — the smoke gate MUST NOT block on its own bug
+        logger.exception("run_experiment: metric_reality_smoke raised — skipping")
+
     # PR-μ Solution B: mode-scaled wall-clock cap.
     # resolve_experiment_timeout_s applies OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S >
     # EXPERIMENT_TIMEOUT_BY_MODE[execution_mode] > _DEFAULT_EXPERIMENT_TIMEOUT_S,
@@ -6091,6 +6472,50 @@ def run_experiment(
     except Exception:  # noqa: BLE001 — the cell route must never crash the run
         logger.exception("run_experiment: cell-matrix route raised; falling back to legacy path")
         _cell_route_taken = False
+
+    # GAP-1 anti-fabrication (2026-06-18): the cells route measures net-peak VRAM and
+    # degrades a near-zero-GPU "success" (the only place the VRAM guard lived). grok
+    # fabricated SDAR via the MONOLITHIC path below — returning Table-1 numbers in 14 s
+    # on 0 GPU memory — which never measured GPU work. Sample baseline VRAM here and poll
+    # peak across the monolithic execution, then (after the loop) route through the
+    # SHARED gpu_cell_runner.vram_evidence_verdict so the two paths can never drift.
+    #
+    # LOCAL-ONLY by construction: the subprocess runs on THIS host's GPUs only under the
+    # local sandbox, so nvidia-smi here can see its allocation. On runpod/docker/azure the
+    # training runs remotely / in a container — _antifab_peak_vram_gb stays None → never
+    # flagged (fail-soft). Any error in the whole block is swallowed so it can never crash
+    # run_experiment.
+    _antifab_peak_vram_gb: float | None = None
+    _antifab_vram_stop = _threading.Event()
+    _antifab_vram_thread = None
+    _antifab_vram_baseline_mib: float | None = None
+    _antifab_vram_readings: list[float] = []
+    try:
+        from backend.agents.rlm import gpu_cell_runner as _gcr_antifab
+        if (
+            _is_local_sb
+            and not _cell_route_taken
+            and _gcr_antifab._antifab_guard_enabled()
+        ):
+            # Resolve ONE physical GPU id to watch (the run's pinned card, else the
+            # first visible card) — same resolution chain the cells route uses.
+            _antifab_gpu_ids = [
+                str(g) for g in (
+                    tuple(getattr(ctx, "gpu_device_ids", ()) or ())
+                    or _gcr_antifab.discover_visible_gpus()
+                )
+            ]
+            _antifab_phys_gpu = _antifab_gpu_ids[0] if _antifab_gpu_ids else None
+            if _antifab_phys_gpu is not None:
+                _antifab_vram_baseline_mib = _gcr_antifab._sample_vram_mib(_antifab_phys_gpu)
+                _antifab_vram_thread = _threading.Thread(
+                    target=_gcr_antifab._poll_peak_vram_daemon,
+                    args=(_antifab_phys_gpu, 2.0, _antifab_vram_stop, _antifab_vram_readings),
+                    daemon=True,
+                )
+                _antifab_vram_thread.start()
+    except Exception:  # noqa: BLE001 — the antifab VRAM probe must never crash the run
+        logger.debug("run_experiment: antifab VRAM probe setup failed", exc_info=True)
 
     # Escalation loop (spec 2026-05-23 §OOM + §Capacity): on CUDA OOM OR
     # RunPod capacity exhaustion, pop the next SKU from GpuPlan.ladder_remaining,
@@ -6294,6 +6719,25 @@ def run_experiment(
     if _progress_thread is not None:
         _progress_thread.join(timeout=2)
 
+    # GAP-1: stop the antifab VRAM poller and compute the net peak (peak - baseline),
+    # mirroring the cells route's reliability requirements: a known baseline AND >= 2
+    # during-run samples (so a single zero-delta reading on a short mock run can't
+    # false-positive). Any unmet requirement → None → never flagged (fail-soft).
+    _antifab_vram_stop.set()
+    if _antifab_vram_thread is not None:
+        try:
+            _antifab_vram_thread.join(timeout=5.0)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        if len(_antifab_vram_readings) >= 2 and _antifab_vram_baseline_mib is not None:
+            _antifab_peak_mib = max(_antifab_vram_readings)
+            _antifab_peak_vram_gb = max(
+                0.0, _antifab_peak_mib - _antifab_vram_baseline_mib
+            ) / 1024.0
+    except Exception:  # noqa: BLE001
+        _antifab_peak_vram_gb = None
+
     # P2 manifest: the escalation loop has produced its final result — stamp the
     # identifiers the persist chokepoint records. run_id/env_id/commands are in
     # scope (the while-True ran ≥1 time, so run_id is bound to the last attempt).
@@ -6308,6 +6752,176 @@ def run_experiment(
     # the grid half bypass all guards).
     if _hybrid_grid_result is not None:
         result = _merge_hybrid_results(_hybrid_grid_result, result, code_path)
+
+    # GAP-1 anti-fabrication degradation (2026-06-18): a monolithic run that exited 0
+    # but produced GPU-training-claiming metrics on near-zero net VRAM cannot have
+    # trained/evaluated a real model — degrade it to a repairable failure mirroring the
+    # cells-route message. The SHARED gpu_cell_runner.vram_evidence_verdict makes the
+    # decision (guard-gate + fail-soft inside): True ONLY when the guard is on, a peak
+    # was measured (None ⇒ no GPU visible / sampling failed ⇒ never flagged), the
+    # metrics claim GPU training, AND the net peak is below the floor. A CPU-only paper
+    # (no device/model/training-metric claim) is never flagged. Whole block fail-soft.
+    if result.get("success"):
+        try:
+            _antifab_claims_gpu = _gcr_antifab.metrics_claim_gpu_training(result.get("metrics"))
+            if _gcr_antifab.vram_evidence_verdict(
+                _antifab_peak_vram_gb, claims_gpu_training=_antifab_claims_gpu
+            ):
+                _antifab_min = _gcr_antifab._antifab_min_vram_gb()
+                _antifab_msg = (
+                    f"fabrication_suspected: peak VRAM {_antifab_peak_vram_gb:.3f} GiB < "
+                    f"threshold {_antifab_min:.3f} GiB — claimed GPU training produced no "
+                    f"GPU work (a real model train/eval cannot run on near-zero VRAM)"
+                )
+                result = {
+                    **result, "success": False,
+                    "failure_class": "fabrication_suspected",
+                    "error": _antifab_msg,
+                }
+                try:
+                    _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                        "code": "fabrication_suspected", "message": _antifab_msg,
+                    })
+                except Exception:  # noqa: BLE001 — diagnostics must never break the run
+                    logger.debug("run_experiment: fabrication_suspected event emit failed")
+                logger.warning(
+                    "run_experiment[%s]: %s", getattr(ctx, "run_id", "?"), _antifab_msg,
+                )
+        except Exception:  # noqa: BLE001 — the antifab degradation must never crash the run
+            logger.debug("run_experiment: antifab VRAM degradation failed", exc_info=True)
+
+    # G2 route-agnostic stub-metrics guard (flag-gated, default OFF): the VRAM verdict
+    # above only fires when metrics CLAIM gpu training; a stub that emits placeholder
+    # keys (total_length/chunk_count) never claims gpu training, so it slips past VRAM
+    # on every backend. Degrade such a "success" to the already-repairable
+    # fabrication_suspected so the root re-implements. Conservative (only fires when NO
+    # real-metric key is present). Re-check success: the antifab block above may already
+    # have flipped it. Fail-soft. (Future: cross-check against rubric-expected keys.)
+    if result.get("success"):
+        try:
+            from backend.agents.rlm.stub_detection import (
+                looks_like_stub_metrics,
+                stub_metrics_guard_enabled,
+                stub_repair_message,
+            )
+            if stub_metrics_guard_enabled() and looks_like_stub_metrics(result.get("metrics")):
+                _stub_msg = stub_repair_message(result.get("metrics"))
+                result = {
+                    **result,
+                    "success": False,
+                    "failure_class": "fabrication_suspected",
+                    "error": _stub_msg,
+                }
+                _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                    "code": "fabrication_suspected", "message": _stub_msg,
+                })
+                logger.warning(
+                    "run_experiment[%s]: %s", getattr(ctx, "run_id", "?"), _stub_msg,
+                )
+        except Exception:  # noqa: BLE001 — the stub-metrics guard must never crash the run
+            logger.debug("run_experiment: stub-metrics guard failed", exc_info=True)
+
+    # Zero/constant-metrics fabrication floor (flag-gated, default OFF; spec 2026-06-20
+    # §6.1). The VRAM antifab fires only when metrics CLAIM gpu and the stub guard keys on
+    # placeholder KEYS — the SDAR v6 case wrote all-0.0 VALUES with REAL keys after real GPU
+    # training, slipping both. Fire only when result-claiming values are all-zero/constant
+    # across cells AND the metrics claim gpu training AND no provenance.json links the metric
+    # to a real output (a legit failing baseline scores 0 but emits provenance, so it is NOT
+    # vetoed). P0 is fail-HONEST report-only: degrade to the repairable fabrication_suspected;
+    # the fix-first repair loop that consumes it lands in P3. Fail-soft.
+    if result.get("success"):
+        try:
+            from pathlib import Path as _ZmPath
+
+            from backend.agents.rlm.gpu_cell_runner import metrics_claim_gpu_training
+            from backend.agents.rlm.zero_metrics_detection import (
+                zero_metrics_repair_message,
+                zero_metrics_should_veto,
+            )
+            _zm_metrics = result.get("metrics")
+            _zm_prov = False
+            try:
+                _zm_pd = getattr(ctx, "project_dir", None)
+                if _zm_pd is not None:
+                    _zm_code = _ZmPath(_zm_pd) / "code"
+                    _zm_prov = _zm_code.is_dir() and any(_zm_code.rglob("provenance.json"))
+            except Exception:  # noqa: BLE001
+                _zm_prov = False
+            if zero_metrics_should_veto(
+                _zm_metrics,
+                gpu_claim=metrics_claim_gpu_training(_zm_metrics),
+                provenance_present=_zm_prov,
+            ):
+                _zm_msg = zero_metrics_repair_message(_zm_metrics)
+                result = {
+                    **result,
+                    "success": False,
+                    "failure_class": "fabrication_suspected",
+                    "error": _zm_msg,
+                }
+                _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                    "code": "fabrication_suspected", "message": _zm_msg,
+                })
+                logger.warning(
+                    "run_experiment[%s]: %s", getattr(ctx, "run_id", "?"), _zm_msg,
+                )
+        except Exception:  # noqa: BLE001 — the zero-metrics floor must never crash the run
+            logger.debug("run_experiment: zero-metrics guard failed", exc_info=True)
+
+    # C — metric-semantics guard (flag-gated, default OFF; spec 2026-06-20 §4.6).
+    # Out-of-range rate metrics (accuracy/f1/precision/recall/success_rate > 1+eps) or
+    # non-finite loss/reward are degraded to fabrication_suspected.  Conservative —
+    # 0.0 is in range; only a CLEAR out-of-range fires.  Fail-soft.
+    if result.get("success"):
+        try:
+            from backend.agents.rlm.metric_semantics import (  # noqa: PLC0415
+                metric_semantics_guard_enabled,
+                metric_semantics_violation,
+            )
+            if metric_semantics_guard_enabled():
+                _ms_violation = metric_semantics_violation(result.get("metrics"))
+                if _ms_violation is not None:
+                    _ms_msg = (
+                        "fabrication_suspected: metric-semantics violation — "
+                        + _ms_violation
+                        + ". Re-implement: ensure rate metrics (accuracy/f1/etc.) are "
+                        "fractions in [0, 1] and loss/reward are finite."
+                    )
+                    result = {
+                        **result,
+                        "success": False,
+                        "failure_class": "fabrication_suspected",
+                        "error": _ms_msg,
+                    }
+                    try:
+                        _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                            "code": "fabrication_suspected", "message": _ms_msg,
+                        })
+                    except Exception:  # noqa: BLE001
+                        logger.debug("run_experiment: metric-semantics event emit failed")
+                    logger.warning(
+                        "run_experiment[%s]: %s", getattr(ctx, "run_id", "?"), _ms_msg,
+                    )
+        except Exception:  # noqa: BLE001 — the metric-semantics guard must never crash the run
+            logger.debug("run_experiment: metric-semantics guard failed", exc_info=True)
+
+    # Unified evidence-audit veto (Pillar-1 wiring, spec 2026-06-20 §3). Flag-gated INSIDE
+    # result_is_fabricated (OPENRESEARCH_EVIDENCE_AUDIT, default OFF → returns None → this is
+    # byte-identical). When ON, the unified critic catches the SDAR-v6 all-0.0-real-keys / stub
+    # / low-VRAM fabrications even if the individual guard flags above are off — one master
+    # switch. Re-checks success (a prior guard may have flipped it). Fail-soft in the helper.
+    if result.get("success"):
+        from backend.agents.rlm.evidence_audit import apply_result_veto  # noqa: PLC0415
+        result = apply_result_veto(
+            result,
+            ctx,
+            peak_vram_gb=_antifab_peak_vram_gb,
+            emit=lambda _msg: _emit_dashboard_event(
+                ctx,
+                event_type="run_warning",
+                payload={"code": "fabrication_suspected", "message": _msg},
+            ),
+        )
 
     # Finalize-on-timeout (2026-06-08): a timed-out / stalled experiment must SCORE its
     # completed work, not zero it (the Adam failure: 4/5 families trained, the timeout fired
@@ -6387,6 +7001,28 @@ def run_experiment(
             except Exception:  # noqa: BLE001 — diagnostics must never break the run
                 logger.debug("run_experiment: metrics_incomplete event emit failed")
             logger.warning("run_experiment[%s]: %s", getattr(ctx, "run_id", "?"), _cmsg)
+
+    # All-models-failed postflight (Workstream C Fix 1, default-OFF behind
+    # OPENRESEARCH_PER_MODEL_STATUS_GATE): a run that exited 0 but whose per_model
+    # is non-empty with NO entry at an ok status — every model errored/failed at
+    # load/train, yet success=all(r.succeeded) reported true. The completeness guard
+    # above passes an error-bearing entry that carries a 0.0 numeric, and the
+    # degenerate-training guard skips non-ok-status models, so without this the
+    # fake-green ships silently. Flip it to a repairable failure (mirrors the
+    # cells-route any_ok rule) and emit a loud warning. Flag-gated default-OFF →
+    # byte-for-byte today when unset (the function returns None).
+    if result.get("success"):
+        _allfail = _all_models_failed_violation(result)
+        if _allfail is not None:
+            _afcls, _afmsg = _allfail
+            result = {**result, "success": False, "error": _afmsg, "failure_class": _afcls}
+            try:
+                _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                    "code": "all_models_failed", "message": _afmsg,
+                })
+            except Exception:  # noqa: BLE001 — diagnostics must never break the run
+                logger.debug("run_experiment: all_models_failed event emit failed")
+            logger.warning("run_experiment[%s]: %s", getattr(ctx, "run_id", "?"), _afmsg)
 
     # Scope-shape validation (PR B): if scope is multi-model / multi-dataset,
     # require metrics.json to carry the expected per_model / per_dataset
@@ -6981,7 +7617,7 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
         scored = score_reproduction(
             rubric_tree=rubric,
             run_dir=ctx.project_dir,
-            llm_client=ctx.llm_client,
+            llm_client=getattr(ctx, "verifier_client", None) or ctx.llm_client,
             rubric_source=str(rubric.get("source") or "paperbench_bundle"),
             degraded=degraded,
             # Paper-hint invariant gate (2026-05-29): thread invariants from
@@ -7721,6 +8357,59 @@ def read_context_map(*, ctx: "RunContext") -> dict:
         return {}
 
 
+def inspect_repository(
+    path: str = "",
+    grep: "str | None" = None,
+    reclone_url: "str | None" = None,
+    max_bytes: int = 65536,
+    *,
+    ctx: "RunContext",
+) -> dict:
+    """Bounded read of the cloned author repo at runs/<id>/repo/ (the 18th primitive).
+
+    Off-state (OPENRESEARCH_USE_AUTHOR_REPO unset) -> ``{"status": "disabled"}`` —
+    mirrors read_context_map's no-op so the registry count stays stable and the
+    off-state is inert. On-state: list a subtree, read a bounded file, optionally
+    grep within a file, or (reclone_url) re-resolve + re-clone a different repo.
+    Never raises (fail-soft): an error returns ``{"status": "error", "error": ...}``.
+    Path traversal outside repo/ is refused.
+    """
+    import os as _os
+    if _os.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() not in (
+        "1", "true", "yes", "on",
+    ):
+        return {"status": "disabled"}
+    try:
+        repo_dir = (ctx.project_dir / "repo").resolve()
+        if reclone_url:
+            from backend.services.ingestion.repo.provisioner import RepoProvisioner
+            from backend.services.ingestion.repo.resolver import RepoResolver
+            spec = RepoResolver.resolve(reclone_url, [], set(), None)
+            manifest = RepoProvisioner.clone(spec, ctx.project_dir / "repo")
+            if manifest is None:
+                return {"status": "error", "error": f"reclone failed for {reclone_url}"}
+            return {"status": "ok", "kind": "reclone", "commit_sha": manifest.commit_sha}
+
+        target = (repo_dir / path).resolve() if path else repo_dir
+        # Refuse traversal outside repo/.
+        if repo_dir != target and repo_dir not in target.parents:
+            return {"status": "error", "error": "path escapes repo/"}
+        if not target.exists():
+            return {"status": "error", "error": f"not found: {path or '.'}"}
+        if target.is_dir():
+            entries = sorted(p.name + ("/" if p.is_dir() else "") for p in target.iterdir())
+            return {"status": "ok", "kind": "dir", "path": path or ".", "entries": entries[:500]}
+        with target.open("rb") as _fh:
+            _data = _fh.read(max_bytes + 1)
+        truncated = len(_data) > max_bytes
+        raw = _data[:max_bytes].decode("utf-8", errors="replace")
+        if grep:
+            raw = "\n".join(ln for ln in raw.splitlines() if grep in ln)
+        return {"status": "ok", "kind": "file", "path": path, "content": raw, "truncated": truncated}
+    except Exception as exc:  # noqa: BLE001 — a read tool must never break the run
+        return {"status": "error", "error": str(exc)[:300]}
+
+
 PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "understand_section": understand_section,
     "extract_hyperparameters": extract_hyperparameters,
@@ -7739,6 +8428,7 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "resolve_gpu_requirements": resolve_gpu_requirements,
     "codex_repair": codex_repair,
     "read_context_map": read_context_map,  # PEEK-lite, OPENRESEARCH_CONTEXT_MAP
+    "inspect_repository": inspect_repository,  # #62, OPENRESEARCH_USE_AUTHOR_REPO
 }
 
 PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
@@ -7835,4 +8525,11 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "extract_hyperparameters, and detect_environment so you can avoid "
         "re-deriving them. Returns {} when disabled or empty. NAVIGATION ONLY — "
         "never cite as report evidence.",
+    "inspect_repository": "inspect_repository(path='', grep=None, reclone_url=None, "
+        "max_bytes=65536) -> dict — bounded read of the authors' cloned repo at "
+        "runs/<id>/repo/ (enabled by OPENRESEARCH_USE_AUTHOR_REPO). List a subtree "
+        "(path='' or a dir), read a bounded file (path='train.py'), grep within a "
+        "file (grep='def main'), or re-point to a different repo (reclone_url=...). "
+        "Returns {status:'disabled'} when the flag is off. NAVIGATION/ADAPTATION "
+        "aid — code/ is what runs; the report's evidence gate remains the backstop.",
 }

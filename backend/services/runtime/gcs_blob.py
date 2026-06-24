@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 # Directory-name components that are always excluded from uploads.
 _EXCLUDED_DIR_PARTS: frozenset[str] = frozenset(
-    {"outputs", ".git", "__pycache__", ".venv"}
+    {"outputs", ".git", "__pycache__", ".venv", "repo"}
 )
 
 

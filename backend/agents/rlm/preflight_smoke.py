@@ -58,33 +58,103 @@ for _p in HERE.iterdir():
     elif _p.is_dir() and any(_p.glob("*.py")):
         _local.add(_p.name)
 
-# 1. Collect top-level dependency roots from every .py via AST (no execution).
-roots = set()
-for py in sorted(HERE.rglob("*.py")):
-    if py.name == _SELF:
-        continue
+# 1. Identify entry-point files (the code that actually executes).
+#    Priority order: named entry points, then cells.json-named scripts.
+#    If NONE found, fall back to scanning every .py (legacy behaviour, non-cell papers).
+_entry_points: list = []
+
+# Fixed-name entry points
+for _ep_name in ("train_cell.py", "train.py", "main.py"):
+    _ep = HERE / _ep_name
+    if _ep.exists():
+        _entry_points.append(_ep.resolve())
+
+# cells.json-named scripts
+_cells_json = HERE / "cells.json"
+if _cells_json.exists():
     try:
-        tree = ast.parse(py.read_text(encoding="utf-8"))
+        _cells_raw = json.loads(_cells_json.read_text(encoding="utf-8"))
+        # cells.json may be a list or {"cells": [...]}
+        _cells_list = _cells_raw if isinstance(_cells_raw, list) else _cells_raw.get("cells", [])
+        for _cell in _cells_list:
+            if not isinstance(_cell, dict):
+                continue
+            for _key in ("script", "entry", "trainer"):
+                _val = _cell.get(_key)
+                if isinstance(_val, str) and _val:
+                    _candidate = HERE / _val
+                    if _candidate.exists():
+                        _rp = _candidate.resolve()
+                        if _rp not in _entry_points:
+                            _entry_points.append(_rp)
     except Exception:
-        continue  # SyntaxError etc. is the static AST gate's job, not ours
-    # MODULE-LEVEL imports only (direct children of the module body) — these are the
-    # imports that actually execute on ``import <module>``. Deliberately skip imports
-    # nested in functions/classes (lazy imports) and inside ``try``/``if`` blocks
-    # (ImportError-guarded optionals): a copied harness helper (search_qa_env.py,
-    # alfworld_env.py) lazy-imports faiss/datasets/alfworld INSIDE functions, so a
-    # non-SDAR paper that never calls them must NOT be flagged as missing them. A
-    # missed lazy import just degrades to the pre-smoke behaviour (caught at run time,
-    # repairable) — far cheaper than the false positive of installing alfworld for an
-    # optimizer paper.
+        pass  # malformed cells.json: do not crash the smoke
+
+# 2. Collect top-level dependency roots via import-closure BFS from entry points.
+#    If no entry point found, fall back to scanning every .py (legacy behaviour).
+roots = set()
+
+def _extract_imports_from_file(py_path):
+    """Parse a single file and yield (top_name, is_local) pairs for module-level imports."""
+    try:
+        tree = ast.parse(py_path.read_text(encoding="utf-8"))
+    except Exception:
+        return  # SyntaxError etc. — static AST gate's job
+    # MODULE-LEVEL imports only (direct children of module body): deliberatey skip
+    # imports nested in functions/classes (lazy imports) and inside try/if blocks
+    # (ImportError-guarded optionals).
     for node in tree.body:
         if isinstance(node, ast.Import):
             for alias in node.names:
-                roots.add(alias.name.split(".")[0])
+                top = alias.name.split(".")[0]
+                if top:
+                    is_local = (HERE / (top + ".py")).exists() or (HERE / top / "__init__.py").exists()
+                    yield top, is_local
         elif isinstance(node, ast.ImportFrom):
             if node.level == 0 and node.module:  # absolute imports only
-                roots.add(node.module.split(".")[0])
+                top = node.module.split(".")[0]
+                if top:
+                    is_local = (HERE / (top + ".py")).exists() or (HERE / top / "__init__.py").exists()
+                    yield top, is_local
 
-# 2. Probe each third-party root (skip locals + __future__).
+if _entry_points:
+    # BFS over the local import graph reachable from entry points.
+    _visited: set = set()
+    _queue: list = list(_entry_points)
+    while _queue:
+        _py = _queue.pop(0)
+        if _py in _visited:
+            continue
+        _visited.add(_py)
+        if _py.name == _SELF:
+            continue
+        for _top, _is_local in _extract_imports_from_file(_py):
+            if _is_local:
+                # Follow the local module into the BFS (do NOT probe it as third-party).
+                _local_file = HERE / (_top + ".py")
+                _local_pkg = HERE / _top / "__init__.py"
+                if _local_file.exists():
+                    _rp = _local_file.resolve()
+                    if _rp not in _visited:
+                        _queue.append(_rp)
+                elif _local_pkg.exists():
+                    _rp = _local_pkg.resolve()
+                    if _rp not in _visited:
+                        _queue.append(_rp)
+            else:
+                # Third-party root — add to probe set.
+                roots.add(_top)
+else:
+    # No identifiable entry point: fall back to whole-dir scan (legacy behaviour).
+    # Non-cell papers, minimal harness setups, etc. are unaffected.
+    for py in sorted(HERE.rglob("*.py")):
+        if py.name == _SELF:
+            continue
+        for _top, _is_local in _extract_imports_from_file(py):
+            if not _is_local:
+                roots.add(_top)
+
+# 3. Probe each third-party root (skip locals + __future__).
 failures = []
 probed = []
 for r in sorted(roots):

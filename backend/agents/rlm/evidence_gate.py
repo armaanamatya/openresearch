@@ -17,7 +17,7 @@ data-unavailable detector uses) and this module makes the pure veto decision.
 This module is **pure + stdlib-only** so it is trivially unit-testable and carries
 no import dependency on leaf_scorer (no circular import).
 
-``OPENRESEARCH_EVIDENCE_GATE`` is **default-OFF**: with the flag unset
+``OPENRESEARCH_LEAF_EVIDENCE_GATE`` is **default-OFF**: with the flag unset
 :func:`evidence_gate_enabled` returns False and the leaf_scorer never calls
 :func:`gate_decision`, so scoring is byte-for-byte identical to today. The gate is
 flipped ON only after the calibration σ-gate clears (see the spec's rollout
@@ -25,6 +25,12 @@ sequence). Conservative by construction — see :func:`leaf_claims_measured_resu
 a leaf is gated only when we are *confident* it asserts a measured numeric result,
 so a judgment/method/theory leaf (which legitimately has no ``per_model`` cell) is
 never vetoed.
+
+Note on the name split: this module's :func:`evidence_gate_enabled` reads
+``OPENRESEARCH_LEAF_EVIDENCE_GATE`` (the per-leaf veto, default-OFF) — distinct from
+``OPENRESEARCH_EVIDENCE_GATE`` which is the verdict-level gate in
+``report.py::_apply_evidence_gate`` (default-ON). The two were previously conflated
+on one var with opposite defaults; the split makes them independently controllable.
 """
 
 from __future__ import annotations
@@ -40,12 +46,25 @@ _RESULT_CATEGORY_HINTS: tuple[str, ...] = ("result", "metric")
 
 
 def evidence_gate_enabled() -> bool:
-    """True iff ``OPENRESEARCH_EVIDENCE_GATE`` opts the gate ON.
+    """True iff the per-leaf evidence veto gate is opted ON.
 
-    Default-OFF: any unset/empty/falsey value disables the gate entirely so the
-    leaf_scorer behaves byte-for-byte as it does today.
+    Reads ``OPENRESEARCH_LEAF_EVIDENCE_GATE`` (default-OFF).  This is a
+    DISTINCT variable from ``OPENRESEARCH_EVIDENCE_GATE``, which controls the
+    verdict-level gate in ``report.py::_apply_evidence_gate`` (default-ON).
+
+    Split-default rationale: both gates previously shared
+    ``OPENRESEARCH_EVIDENCE_GATE`` but with opposite defaults — the verdict gate
+    defaulted ON while the leaf-veto gate defaulted OFF.  Sharing one var with
+    opposite defaults made it impossible to independently control them.  The
+    leaf-veto gate now reads ``OPENRESEARCH_LEAF_EVIDENCE_GATE`` so the two
+    can be toggled independently.
+
+    Backward-compat note: operators who previously set
+    ``OPENRESEARCH_EVIDENCE_GATE=1`` to activate the leaf veto should now set
+    ``OPENRESEARCH_LEAF_EVIDENCE_GATE=1`` instead.  Setting
+    ``OPENRESEARCH_EVIDENCE_GATE=1`` now ONLY controls the verdict gate.
     """
-    return os.environ.get("OPENRESEARCH_EVIDENCE_GATE", "").strip().lower() in (
+    return os.environ.get("OPENRESEARCH_LEAF_EVIDENCE_GATE", "").strip().lower() in (
         "1",
         "true",
         "yes",

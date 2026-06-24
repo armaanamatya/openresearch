@@ -128,6 +128,58 @@ def _coerce_metric(value: Any) -> float | None:
 
 
 # ---------------------------------------------------------------------------
+# F-1 — param-aware training VRAM floor (backstop for missing est_vram_gb)
+# ---------------------------------------------------------------------------
+
+# Full fine-tune GRPO training cost per billion params (bf16 weights+grads = 4
+# bytes/param × 2; Adam fp32 master + states = ~12 bytes/param; frozen ref model
+# = ~2 bytes/param × 2 in bf16; activations add headroom — sum ≈ 18 GB/B).
+_FULL_FT_TRAIN_GB_PER_B: float = 18.0
+
+
+def _training_vram_floor_gb(model_key: str | None) -> float | None:
+    """Param-aware full-FT training VRAM floor (GB) parsed from a model key, or None.
+
+    Used ONLY as a backstop when a cell omits ``est_vram_gb`` — a no-estimate cell
+    must not be blindly kept when the model name reveals it will OOM.  Parses a size
+    token like ``'3b'`` / ``'1_7b'`` / ``'1.7b'`` / ``'7b'`` from ``model_key``.
+
+    Naming convention (HuggingFace): ``qwen2_5_3b`` = Qwen 2.5 3B (size=3),
+    ``qwen3_1_7b`` = Qwen3 1.7B (size=1.7).  The size token is the last ``Nb`` or
+    ``N.Mb`` part; an adjacent underscore prefix of ``1`` (and only ``1``) is treated
+    as a decimal prefix so ``1_7b`` → 1.7B.  Larger numeric prefixes like ``5`` in
+    ``2_5_7b`` are version numbers and are not combined with the following size.
+
+    Returns ``None`` when ``model_key`` is absent or the size cannot be parsed (unknown
+    footprint → today's keep behaviour is preserved for those cells).
+    """
+    if not model_key:
+        return None
+    import re
+    parts = re.split(r"_", str(model_key).lower())
+    for i in range(len(parts) - 1, -1, -1):
+        m = re.fullmatch(r"(\d+(?:\.\d+)?)b", parts[i])
+        if not m:
+            continue
+        solo_str = m.group(1)
+        try:
+            solo = float(solo_str)
+        except ValueError:
+            return None
+        # Only combine with a preceding ``1`` to handle names like ``1_7b`` → 1.7B.
+        # A prefix of ``1`` is never a version number in practise; anything larger is.
+        if i > 0 and parts[i - 1] == "1":
+            try:
+                billions = float(f"1.{solo_str}")
+            except ValueError:
+                billions = solo
+        else:
+            billions = solo
+        return billions * _FULL_FT_TRAIN_GB_PER_B if billions > 0 else None
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Stage 0 — axis normalization
 # ---------------------------------------------------------------------------
 
@@ -273,16 +325,24 @@ def capacity_gate(
     per_gpu_vram_gb: float,
     *,
     headroom: float = DEFAULT_HEADROOM,
+    default_gpus_per_cell: int = 1,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
-    """Drop cells that cannot fit on a single GPU, before any launch.
+    """Drop cells that cannot fit within their per-cell GPU budget, before any launch.
 
     A cell is dropped when ``per_gpu_vram_gb > 0`` AND
-    ``cell["est_vram_gb"] * headroom > per_gpu_vram_gb`` — i.e. its estimated
-    footprint, padded by the same headroom the scheduler uses, exceeds one
-    card's budget.  The gate is **per-cell**: a model with one env that fits and
-    one that does not keeps the fitting env.  A model only lands in
-    ``models_skipped`` when EVERY one of its cells exceeds budget (no surviving
-    cell carries that ``model_key``).
+    ``cell["est_vram_gb"] * headroom > per_gpu_vram_gb * cell_gpus`` — i.e. its
+    estimated footprint, padded by the same headroom the scheduler uses, exceeds
+    the combined VRAM budget of the cell's allocated cards.
+
+    ``cell_gpus`` is ``max(1, int(cell.get("gpus", default_gpus_per_cell)))``
+    (falls back to ``default_gpus_per_cell`` when ``"gpus"`` is absent or
+    non-numeric).  When every cell omits ``"gpus"`` and
+    ``default_gpus_per_cell == 1`` (the default), the behaviour is byte-identical
+    to the prior single-GPU gate.
+
+    The gate is **per-cell**: a model with one env that fits and one that does not
+    keeps the fitting env.  A model only lands in ``models_skipped`` when EVERY
+    one of its cells exceeds budget (no surviving cell carries that ``model_key``).
 
     Never blocks on unknown capacity:
 
@@ -291,14 +351,19 @@ def capacity_gate(
       must not be dropped on a guess).
 
     Args:
-        cells:            Cell-description dicts (see module docstring for the
-                          per-cell schema).  ``model_key`` and ``est_vram_gb``
-                          are read; all other keys pass through untouched.
-        per_gpu_vram_gb:  VRAM of a single target GPU, in GiB.  ``<= 0`` means
-                          unknown — keep everything.
-        headroom:         Multiplier applied to ``est_vram_gb`` before the
-                          comparison.  Defaults to :data:`DEFAULT_HEADROOM`
-                          (1.25), matching ``OPENRESEARCH_DYNAMIC_GPU_HEADROOM``.
+        cells:                  Cell-description dicts (see module docstring for the
+                                per-cell schema).  ``model_key``, ``est_vram_gb``,
+                                and the optional ``"gpus"`` field are read; all
+                                other keys pass through untouched.
+        per_gpu_vram_gb:        VRAM of a single target GPU, in GiB.  ``<= 0`` means
+                                unknown — keep everything.
+        headroom:               Multiplier applied to ``est_vram_gb`` before the
+                                comparison.  Defaults to :data:`DEFAULT_HEADROOM`
+                                (1.25), matching ``OPENRESEARCH_DYNAMIC_GPU_HEADROOM``.
+        default_gpus_per_cell:  Default GPU count per cell (``gpus_per_cell`` in
+                                the scheduler).  Used when a cell does not declare
+                                ``"gpus"``.  Defaults to 1 → byte-identical to prior
+                                behaviour when no cell uses the ``"gpus"`` field.
 
     Returns:
         ``(kept_cells, gap_entries, models_skipped)`` where:
@@ -330,6 +395,8 @@ def capacity_gate(
     # estimate for the gap message of fully-dropped models.
     kept_models: set[str] = set()
     dropped_est: dict[str, float] = {}
+    # Track model_keys that were dropped using the param floor (no agent-provided est).
+    dropped_via_floor: set[str] = set()
 
     for cell in cells:
         if not isinstance(cell, dict):
@@ -342,18 +409,37 @@ def capacity_gate(
         est_raw = cell.get("est_vram_gb")
         est = _coerce_metric(est_raw)
 
-        # Missing/non-numeric estimate → unknown footprint → keep.
+        # Missing/non-numeric estimate — try the param-aware floor as a backstop.
+        # A floor is derived ONLY from the model_key when the agent did not provide
+        # est_vram_gb; a provided (non-None) est is never overridden.
+        est_from_floor = False
         if est is None:
-            kept.append(cell)
-            if model_key:
-                kept_models.add(model_key)
-            continue
+            floor = _training_vram_floor_gb(model_key)
+            if floor is not None:
+                est = floor
+                est_from_floor = True
+            else:
+                # Truly unknown footprint — keep without checking (today's behaviour).
+                kept.append(cell)
+                if model_key:
+                    kept_models.add(model_key)
+                continue
 
-        if est * hr > budget:
-            # This cell is too big for one card.  Record its estimate against the
-            # model_key; it is only a *model* skip if no sibling cell survives.
+        # Per-cell GPU count: cell["gpus"] if present and numeric, else default.
+        try:
+            cell_gpus = max(1, int(cell.get("gpus", default_gpus_per_cell)))
+        except (TypeError, ValueError):
+            cell_gpus = max(1, default_gpus_per_cell)
+        cell_budget = budget * cell_gpus  # combined VRAM for this cell's slot
+
+        if est * hr > cell_budget:
+            # This cell exceeds its allocated GPU budget.  Record its estimate
+            # against the model_key; it is only a *model* skip if no sibling
+            # cell survives.
             if model_key:
                 dropped_est[model_key] = max(dropped_est.get(model_key, 0.0), est)
+                if est_from_floor:
+                    dropped_via_floor.add(model_key)
             continue
 
         kept.append(cell)
@@ -366,14 +452,20 @@ def capacity_gate(
     gap_entries: list[dict[str, Any]] = []
     for mk in fully_dropped:
         est = dropped_est[mk]
-        gap_entries.append({
-            "item": mk,
-            "reason": (
+        via_floor = mk in dropped_via_floor
+        if via_floor:
+            reason = (
+                f"needs ~{est:.0f}GB > per-GPU budget {budget:.0f}GB "
+                f"(headroom {hr}; floor estimated from model name — "
+                f"set est_vram_gb in cells.json and use gradient checkpointing "
+                f"or LoRA/FSDP to reduce peak memory)"
+            )
+        else:
+            reason = (
                 f"needs ~{est:.0f}GB > per-GPU budget {budget:.0f}GB "
                 f"(headroom {hr})"
-            ),
-            "kind": "capacity",
-        })
+            )
+        gap_entries.append({"item": mk, "reason": reason, "kind": "capacity"})
 
     return kept, gap_entries, fully_dropped
 
@@ -697,6 +789,7 @@ def aggregate_cell_metrics(
     dataset_gaps: list[dict[str, Any]] | None = None,
     models_skipped: list[str] | None = None,
     environments_skipped: list[str] | None = None,
+    budget_dropped: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Fold per-cell results into the canonical harness ``metrics.json`` shape.
 
@@ -830,6 +923,15 @@ def aggregate_cell_metrics(
         gaps.extend(g for g in capacity_gaps if isinstance(g, dict))
     if dataset_gaps:
         gaps.extend(g for g in dataset_gaps if isinstance(g, dict))
+    for _bd in (budget_dropped or []):
+        if isinstance(_bd, dict):
+            _p = _bd.get("params") or {}
+            gaps.append({
+                "model_key": _bd.get("model_key") or _p.get("model_key"),
+                "env": _bd.get("env") or _p.get("env"),
+                "baseline": _bd.get("baseline") or _p.get("baseline"),
+                "reason": "staged_search_budget_dropped",
+            })
 
     scope: dict[str, Any] = {
         "models_run": sorted(models_with_ok),
