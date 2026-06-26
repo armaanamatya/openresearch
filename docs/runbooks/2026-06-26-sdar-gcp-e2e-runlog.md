@@ -33,3 +33,5 @@ appears on the `/leaderboard` (aggregated from the same `final_report.json`).
 
 | UTC | project_id | event | root/model | scope | sandbox/instance | status | score | verdict | cost USD | cells ok/total | stop | run dir | note |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2026-06-26 20:16Z | sdar_merged_full_2g | launched | claude-oauth | full-grid 30c/20-step | gcp/sdar-ultra/us-central1-c/a2-ultragpu-2g(2xA100-80GB) | - | - | - | - | - | - | runs/sdar_merged_full_2g/ | run 1/2 on merged code HEAD 260df7da (Ayush round-2 + grounded); LIFECYCLE_PRIMARY, GRADER_SAMPLES=3, repo-first, oauth keyless · `MIN_GPUS=2 GUIDANCE=full PRIMARY=1 scripts/sdar_gcp_optimal_run.sh` |
+| 2026-06-26 20:22Z | sdar_merged_full_2g | progress | - | - | gcp/sdar-ultra/2xA100-80GB | - | - | - | - | - | - | runs/sdar_merged_full_2g/ | live: cells_with_metrics=0 |
