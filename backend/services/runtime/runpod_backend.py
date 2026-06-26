@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import json
 import logging
 import os
 import stat
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -31,9 +33,75 @@ from backend.services.runtime.interface import (
     SandboxConfig,
     SandboxRuntimeError,
 )
+from backend.services.runtime.remote_stall import (
+    RemoteStallGuard,
+    remote_stall_guard_enabled,
+)
 
 
 DEFAULT_RUNPOD_IMAGE = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"
+
+# Newest mtime of any checkpoint/metrics artifact under a root — the remote
+# stall guard's SECOND independent liveness signal (the first being streamed
+# output). Mirrors local_process._PROGRESS_GLOBS / _newest_progress_mtime.
+_REMOTE_PROGRESS_GLOBS = ("*.pt", "*.ckpt", "*.safetensors", "metrics.json")
+_REMOTE_STALL_POLL_S = 30.0  # cadence ceiling; scaled down for short windows
+_REMOTE_STALL_WINDOW_S = 3600.0  # default stall window (60 min); mirrors local
+
+
+def _remote_stall_window_s(env: dict[str, str] | None = None) -> float:
+    """Resolve the remote stall window (``OPENRESEARCH_REMOTE_STALL_S``).
+
+    Falls back to ``OPENRESEARCH_EXPERIMENT_STALL_S`` (shared with the local
+    guard) then the 60-min default. ``0`` disables. Fail-soft.
+    """
+    src = os.environ if env is None else env
+    for key in ("OPENRESEARCH_REMOTE_STALL_S", "OPENRESEARCH_EXPERIMENT_STALL_S"):
+        raw = (src.get(key, "") or "").strip()
+        if not raw:
+            continue
+        try:
+            val = float(raw)
+        except ValueError:
+            continue
+        return val if val >= 0 else _REMOTE_STALL_WINDOW_S
+    return _REMOTE_STALL_WINDOW_S
+
+
+def _stall_poll_interval(timeout: float | None) -> float:
+    """Poll cadence for the stall loop: tight enough to observe small windows.
+
+    Scaled to at most half the hard timeout so a short test timeout is actually
+    sampled, floored at 1 s; production (3600 s window) stays at 30 s.
+    """
+    poll = _REMOTE_STALL_POLL_S
+    if timeout and timeout > 0:
+        poll = min(poll, timeout / 2.0)
+    return max(1.0, poll)
+
+
+def _newest_remote_progress_mtime(root: Path | None) -> float:
+    """Newest mtime of any checkpoint/metrics file under *root* (0.0 if none).
+
+    The remote guard's checkpoint liveness signal. Reads the LOCAL artifact
+    root, which the backend syncs from the pod; a bump means the remote process
+    is still producing progress. Fully fail-soft (returns best-effort 0.0).
+    """
+    if root is None:
+        return 0.0
+    newest = 0.0
+    try:
+        for pat in _REMOTE_PROGRESS_GLOBS:
+            for p in root.rglob(pat):
+                try:
+                    mt = p.stat().st_mtime
+                    if mt > newest:
+                        newest = mt
+                except OSError:
+                    continue
+    except Exception:  # noqa: BLE001
+        return newest
+    return newest
 
 # RunPod pod states from which recovery is impossible — raise immediately
 # rather than spinning the full boot_timeout_seconds (A3-5).
@@ -445,16 +513,46 @@ class RunpodBackend(RuntimeBackend):
             # diagnose so no streaming benefit is lost.
             use_streaming = hasattr(conn, "create_process")
             if use_streaming:
-                exit_code, stdout, stderr, timed_out = await _exec_streaming(
+                # Two-signal remote stall guard (default OFF). When armed it
+                # reaps a wedged remote process EARLY (no output AND no
+                # checkpoint/metrics activity past the window) instead of
+                # waiting out the full per-command hard timeout — cutting paid
+                # GPU waste. Built per-command so its bookkeeping is isolated.
+                stall_guard = self._build_remote_stall_guard(artifact_root, timeout)
+                (
+                    exit_code,
+                    stdout,
+                    stderr,
+                    timed_out,
+                    cause,
+                    stall_evidence,
+                ) = await _exec_streaming(
                     conn,
                     remote_cmd,
                     log_path=log_path,
                     command=command,
                     timeout=timeout,
+                    artifact_root=artifact_root,
+                    stall_guard=stall_guard,
                 )
                 if timed_out:
                     finished_at = datetime.now(timezone.utc)
                     await self._sync_artifacts_to_host_quietly(sandbox)
+                    if cause == "exec_stalled":
+                        self._persist_remote_stall_evidence(
+                            artifact_root, command, stall_evidence
+                        )
+                        return ExecResult(
+                            command=command,
+                            exit_code=None,
+                            stdout=stdout,
+                            stderr=stderr,
+                            started_at=started_at,
+                            finished_at=finished_at,
+                            duration_seconds=(finished_at - started_at).total_seconds(),
+                            timed_out=True,
+                            cause_kind=RuntimeCauseKind.exec_stalled,
+                        )
                     return ExecResult(
                         command=command,
                         exit_code=None,
@@ -525,6 +623,58 @@ class RunpodBackend(RuntimeBackend):
             duration_seconds=(finished_at - started_at).total_seconds(),
             cause_kind=None if exit_code == 0 else RuntimeCauseKind.command_failed,
         )
+
+    def _build_remote_stall_guard(
+        self, artifact_root: Path | None, timeout: int
+    ) -> RemoteStallGuard | None:
+        """Build the per-command two-signal stall guard, or ``None`` when OFF.
+
+        Gated behind ``OPENRESEARCH_REMOTE_STALL_GUARD`` (default OFF → returns
+        ``None`` so the remote exec path is byte-for-byte unchanged). The guard
+        reads two independent liveness signals: streamed-output line count
+        (wired by ``_exec_streaming``) and the newest checkpoint/metrics mtime
+        under the local artifact root. Fully fail-soft — any construction error
+        degrades to no guard.
+        """
+        try:
+            if not remote_stall_guard_enabled():
+                return None
+            window = _remote_stall_window_s()
+            if window <= 0:
+                return None
+            # ``_exec_streaming`` rebinds output_count_reader to its own live
+            # line counter; checkpoint_mtime_reader stays the artifact-root probe.
+            return RemoteStallGuard(
+                stall_window_s=window,
+                output_count_reader=lambda: 0,
+                checkpoint_mtime_reader=lambda: _newest_remote_progress_mtime(
+                    artifact_root
+                ),
+                monotonic=time.monotonic,
+                enabled=True,
+            )
+        except Exception:  # noqa: BLE001 — never let guard setup break exec
+            return None
+
+    def _persist_remote_stall_evidence(
+        self, artifact_root: Path | None, command: str, evidence: dict | None
+    ) -> None:
+        """Persist the grounded stall evidence packet next to the exec log.
+
+        Writes ``<artifact_root>/.remote_stall.json`` so the ``exec_stalled``
+        classification is grounded in which two signals were stale and for how
+        long, not a bare timeout. Fully fail-soft.
+        """
+        if artifact_root is None or evidence is None:
+            return
+        try:
+            payload = dict(evidence)
+            payload["command"] = command[:512]
+            (artifact_root / ".remote_stall.json").write_text(
+                json.dumps(payload), encoding="utf-8"
+            )
+        except Exception:  # noqa: BLE001 — instrumentation must never break exec
+            pass
 
     async def copy_out(self, sandbox: Sandbox, path: str) -> bytes:
         remote_path = self._map_remote_path(sandbox, path)
@@ -1322,7 +1472,9 @@ async def _exec_streaming(
     log_path: Path | None,
     command: str,
     timeout: int,
-) -> tuple[int, str, str, bool]:
+    artifact_root: Path | None = None,
+    stall_guard: "RemoteStallGuard | None" = None,
+) -> tuple[int, str, str, bool, str | None, dict | None]:
     """Run *remote_cmd* via SSH, teeing stdout/stderr to *log_path*.
 
     Mirrors LocalDockerBackend.exec's streaming behaviour: each line read off
@@ -1331,16 +1483,32 @@ async def _exec_streaming(
     terminated and the captured tail is read back from the log file so the
     caller sees what the wedged pod was actually doing.
 
-    Returns ``(exit_code, stdout, stderr, timed_out)``. On ``timed_out=True``
-    the ``exit_code`` is ``-1`` (sentinel) and stdout carries the captured tail.
+    Returns ``(exit_code, stdout, stderr, timed_out, cause, evidence)``.
+    ``cause`` is ``None`` on a clean/exit-code return, ``"exec_timeout"`` on the
+    hard budget cap, or ``"exec_stalled"`` when the optional two-signal
+    *stall_guard* declared a hang first (with ``evidence`` set to its grounded
+    packet). On any terminal-kill return the ``exit_code`` is ``-1`` (sentinel)
+    and stdout carries the captured tail.
 
     The log file is opened best-effort; an ``OSError`` during open or write
-    falls back to memory-only buffering rather than aborting the exec.
+    falls back to memory-only buffering rather than aborting the exec. The
+    stall guard is OPT-IN (``stall_guard=None`` → byte-for-byte the legacy
+    timeout-only behaviour) and fully fail-soft.
     """
     process = await conn.create_process(remote_cmd)
 
     out_chunks: list[str] = []
     err_chunks: list[str] = []
+    # Output-progress signal for the stall guard: a monotonic count of lines
+    # streamed off the remote process. Bumped in the drain loops below. Rebind
+    # the guard's output reader onto it so the FIRST signal (output growth) is
+    # live; the SECOND (checkpoint mtime) was wired by the caller.
+    line_counts = {"n": 0}
+    if stall_guard is not None:
+        try:
+            stall_guard.output_count_reader = lambda: line_counts["n"]
+        except Exception:  # noqa: BLE001 — fail-soft, keep the caller's reader
+            pass
 
     fh = None
     if log_path is not None:
@@ -1365,6 +1533,7 @@ async def _exec_streaming(
                 return
             text = line if isinstance(line, str) else line.decode("utf-8", errors="replace")
             chunks.append(text)
+            line_counts["n"] += 1
             if fh is not None:
                 try:
                     fh.write(text.encode("utf-8"))
@@ -1377,22 +1546,70 @@ async def _exec_streaming(
     stderr_task = asyncio.create_task(_drain(process.stderr, err_chunks))
 
     timed_out = False
-    try:
+    stalled = False
+    stall_evidence: dict | None = None
+
+    def _terminate_remote() -> None:
+        # Best-effort terminate: send SIGTERM via asyncssh, then close
+        # the channel. The drain tasks will see EOF/closed-channel
+        # exceptions and exit; we still flush whatever they captured.
         try:
-            await asyncio.wait_for(process.wait(), timeout=timeout)
-        except (asyncio.TimeoutError, TimeoutError):
-            timed_out = True
-            # Best-effort terminate: send SIGTERM via asyncssh, then close
-            # the channel. The drain tasks will see EOF/closed-channel
-            # exceptions and exit; we still flush whatever they captured.
+            process.terminate()
+        except Exception:
+            pass
+        try:
+            process.close()
+        except Exception:
+            pass
+
+    try:
+        if stall_guard is not None:
+            # Two-signal stall guard armed: poll liveness on a bounded cadence
+            # so a wedged remote process is reaped BEFORE the hard timeout,
+            # while a healthy run still rides ``process.wait()`` to completion.
+            # The guard reads (line-count, newest-artifact-mtime) — both via
+            # the injected readers wired by the caller — and only fires when
+            # BOTH have been stale past the window. Fully fail-soft: any error
+            # in the poll loop degrades to plain ``process.wait()``.
+            wait_task = asyncio.ensure_future(process.wait())
+            loop = asyncio.get_event_loop()
+            start = loop.time()
+            poll = _stall_poll_interval(timeout)
             try:
-                process.terminate()
-            except Exception:
-                pass
+                while True:
+                    done, _ = await asyncio.wait({wait_task}, timeout=poll)
+                    if wait_task in done:
+                        break
+                    if timeout and (loop.time() - start) >= timeout:
+                        timed_out = True
+                        break
+                    try:
+                        fired = stall_guard.observe()
+                    except Exception:  # noqa: BLE001 — guard must never break exec
+                        fired = False
+                    if fired:
+                        stalled = True
+                        ev = getattr(stall_guard, "evidence", None)
+                        try:
+                            stall_evidence = ev.as_dict() if ev is not None else None
+                        except Exception:  # noqa: BLE001
+                            stall_evidence = None
+                        break
+            except Exception:  # noqa: BLE001 — degrade to wait-to-completion
+                try:
+                    await asyncio.wait_for(wait_task, timeout=timeout)
+                except (asyncio.TimeoutError, TimeoutError):
+                    timed_out = True
+            if timed_out or stalled:
+                if not wait_task.done():
+                    wait_task.cancel()
+                _terminate_remote()
+        else:
             try:
-                process.close()
-            except Exception:
-                pass
+                await asyncio.wait_for(process.wait(), timeout=timeout)
+            except (asyncio.TimeoutError, TimeoutError):
+                timed_out = True
+                _terminate_remote()
         # Whether timed out or clean, wait for the drain tasks to flush
         # everything they've buffered. Bound this with a short grace period
         # so a wedged readline doesn't extend the timeout indefinitely.
@@ -1411,7 +1628,7 @@ async def _exec_streaming(
             except OSError:
                 pass
 
-    if timed_out:
+    if timed_out or stalled:
         # Read captured tail back from the log so the caller sees the
         # incremental output even though the process never returned.
         # Cap at 32k chars to bound memory like the local backend does.
@@ -1421,15 +1638,26 @@ async def _exec_streaming(
                 captured = log_path.read_text(encoding="utf-8", errors="replace")[-32000:]
             except OSError:
                 pass
+        if stalled:
+            window = None
+            if stall_evidence is not None:
+                window = stall_evidence.get("stall_window_s")
+            window_txt = f"{window:.0f}" if isinstance(window, (int, float)) else "the stall window"
+            stderr_text = (
+                "".join(err_chunks)
+                + f"\nCommand stalled: no output AND no checkpoint/metrics activity "
+                f"for {window_txt} s (two-signal remote stall guard)."
+            ).strip()
+            return (-1, captured, stderr_text, True, "exec_stalled", stall_evidence)
         stderr_text = "".join(err_chunks) or f"Command timed out after {timeout} seconds."
-        return (-1, captured, stderr_text, True)
+        return (-1, captured, stderr_text, True, "exec_timeout", None)
 
     exit_code = process.exit_status
     if exit_code is None:
         # asyncssh returns None when the process was killed by signal; treat
         # as a non-zero exit but not a timeout — we got a clean wait().
         exit_code = 1
-    return (int(exit_code), "".join(out_chunks), "".join(err_chunks), False)
+    return (int(exit_code), "".join(out_chunks), "".join(err_chunks), False, None, None)
 
 
 def ensure_runpod_available() -> None:

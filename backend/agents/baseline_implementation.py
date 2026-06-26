@@ -2767,6 +2767,19 @@ async def run_with_sdk(
     )
 
     if repair_context:
+        # Durable failure capsule (OPENRESEARCH_FAILURE_CAPSULES): when the
+        # failed run_experiment result carries a rendered capsule of real
+        # on-disk evidence, surface it ABOVE the raw repair_context JSON so the
+        # agent fixes from concrete evidence. Flag-gated + fail-soft: OFF or
+        # absent → the prompt is byte-for-byte unchanged.
+        _capsule_block = ""
+        try:
+            from backend.agents.rlm import failure_capsule as _fcap
+            _cap_text = (repair_context or {}).get("failure_capsule_text")
+            if _fcap.capsules_enabled() and _cap_text:
+                _capsule_block = f"{_cap_text}\n\n"
+        except Exception:  # noqa: BLE001 — capsule inlining must never block repair
+            _capsule_block = ""
         prompt = (
             f"The baseline for project {project_id} was already implemented in "
             f"{code_dir}, but running the experiment FAILED. Diagnose the failure "
@@ -2776,6 +2789,7 @@ async def run_with_sdk(
             f"results as a flat JSON object (metric name → number) to a file named "
             f"metrics.json in the code root, because that file is how the "
             f"reproduction's metrics are read back.\n\n"
+            f"{_capsule_block}"
             f"Experiment failure:\n```json\n"
             f"{json.dumps(repair_context, indent=2, default=str)}\n```\n\n"
             f"Reproduction context:\n```json\n{json.dumps(context, indent=2)}\n```"
