@@ -4003,8 +4003,17 @@ def _finalize(
     # score its completed grid earned (2026-06-13 v5/v6/v10).
     try:
         from backend.agents.rlm import finalize_regrade as _fr
-        if not run_failed:
-            _fr.regrade_and_emit(ctx, report, emit)
+        # Fire on BOTH success and failure. A run marked failed because
+        # verify_against_rubric timed out / never ran can still carry a COMPLETE
+        # trained grid on disk (the SDAR 22-cell grid whose 600s verify cap
+        # expired → failed/not-scored). regrade_and_emit self-gates
+        # (should_regrade returns False when no converged grid exists), so a
+        # genuinely-empty failure stays a no-op; a failed-with-evidence run
+        # recovers its earned score. Still under the existing
+        # REPROLAB_FINALIZE_REGRADE flag (set it to 0 to disable entirely).
+        if run_failed:
+            logger.info("_finalize: run_failed — attempting evidence-salvage re-grade")
+        _fr.regrade_and_emit(ctx, report, emit)
     except Exception:  # noqa: BLE001 — re-grade is advisory, never blocks finalize
         logger.warning("_finalize: finalize_regrade failed (non-fatal)", exc_info=True)
 

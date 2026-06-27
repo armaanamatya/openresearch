@@ -1957,6 +1957,14 @@ def score_reproduction(
     # Submit all batches concurrently; width ≤8 avoids rate-limit bursts.
     # I12: explicit shutdown(wait=False) so a wedged batch cannot block cleanup.
     max_workers = min(len(batches), 8) if batches else 1
+    # Grading-scale debug line: the dominant driver of verify wall-clock. A big
+    # grid × GRADER_SAMPLES=3 is what blew the 600s verify cap; this makes the
+    # load visible up front (e.g. "24 leaves → 2 batches × 1 sample").
+    logger.info(
+        "leaf-grading: %d eligible leaf(s) → %d batch(es) × %d grader sample(s), "
+        "%d concurrent worker(s)",
+        len(eligible_leaves), len(batches), _grader_samples, max_workers,
+    )
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
     try:
         future_to_batch: dict[concurrent.futures.Future[list[dict[str, Any]]], tuple[int, list[dict[str, Any]]]] = {

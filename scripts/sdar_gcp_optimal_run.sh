@@ -38,6 +38,9 @@ SDAR_VRAM_GB="${SDAR_VRAM_GB:-40}"     # per-GPU VRAM the run reports to the cap
 LIFECYCLE_MAX_IMPROVE="${LIFECYCLE_MAX_IMPROVE:-}"   # OPENRESEARCH_LIFECYCLE_MAX_IMPROVE override; empty = harness default (set -u safe)
 EVAL_PROVENANCE_GUARD="${OPENRESEARCH_EVAL_PROVENANCE_GUARD:-}"  # S1 eval-metric provenance guard; empty = default OFF (byte-identical)
 REUSE_RUBRIC="${OPENRESEARCH_REUSE_RUBRIC:-}"                    # A/B: pin the pre-seeded rubric so the grader doesn't drift; empty = default
+GRADER_SAMPLES="${GRADER_SAMPLES:-1}"                  # median-of-N leaf grading; 1 is σ-gate-sufficient + ~3x faster (a big grid x3 samples blew the verify cap); 3 = fidelity-critical opt-in
+VERIFY_TIMEOUT_S="${VERIFY_TIMEOUT_S:-1800}"           # OPENRESEARCH_VERIFY_AGAINST_RUBRIC_TIMEOUT_S: verify wall-clock cap (table default 600s is too tight to grade a full grid)
+NO_AUTOSTOP="${NO_AUTOSTOP:-1}"                        # 1 = leave the VM UP on finish so the ledger-monitor pulls the report THEN stops it; 0 = run self-stops (strands the report on the a2-ultragpu disk)
 
 G=(gcloud --project "$PROJECT")
 ZP=(--zone "$ZONE" --project "$PROJECT")
@@ -153,12 +156,13 @@ ssh_ "cd $REMOTE_DIR && {
   echo 'export OPENRESEARCH_ROOT_EFFORT=high'                                   >> runs/.cache/sdar_gcp.env
   echo 'export OPENRESEARCH_PREFLIGHT_SMOKE=0'                                  >> runs/.cache/sdar_gcp.env
   echo 'export OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S=$RUN_EXPERIMENT_TIMEOUT_S' >> runs/.cache/sdar_gcp.env
+  echo 'export OPENRESEARCH_VERIFY_AGAINST_RUBRIC_TIMEOUT_S=$VERIFY_TIMEOUT_S'  >> runs/.cache/sdar_gcp.env
   echo 'export OPENRESEARCH_SDAR_VRAM_GB=$SDAR_VRAM_GB'                          >> runs/.cache/sdar_gcp.env
   [ -n '$LIFECYCLE_MAX_IMPROVE' ] && echo 'export OPENRESEARCH_LIFECYCLE_MAX_IMPROVE=$LIFECYCLE_MAX_IMPROVE' >> runs/.cache/sdar_gcp.env
-  echo 'export OPENRESEARCH_GRADER_SAMPLES=3'                                   >> runs/.cache/sdar_gcp.env
+  echo 'export OPENRESEARCH_GRADER_SAMPLES=$GRADER_SAMPLES'                     >> runs/.cache/sdar_gcp.env
   [ -n '$EVAL_PROVENANCE_GUARD' ] && echo 'export OPENRESEARCH_EVAL_PROVENANCE_GUARD=$EVAL_PROVENANCE_GUARD' >> runs/.cache/sdar_gcp.env
   [ -n '$REUSE_RUBRIC' ] && echo 'export OPENRESEARCH_REUSE_RUBRIC=$REUSE_RUBRIC' >> runs/.cache/sdar_gcp.env
-  echo 'export OPENRESEARCH_SDAR_NO_AUTOSTOP=0'                                 >> runs/.cache/sdar_gcp.env
+  echo 'export OPENRESEARCH_SDAR_NO_AUTOSTOP=$NO_AUTOSTOP'                      >> runs/.cache/sdar_gcp.env
   echo 'unset OPENRESEARCH_BASELINE_EXTRA_GUIDANCE'                             >> runs/.cache/sdar_gcp.env
   set -a; . runs/.cache/sdar_gcp.env >/dev/null 2>&1; set +a
   echo \"EFFECTIVE: ROOT=\$OPENRESEARCH_SDAR_ROOT MODELS=\$OPENRESEARCH_SDAR_MODELS PRIMARY=\$OPENRESEARCH_LIFECYCLE_PRIMARY TIMEOUT=\$OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S USE_REPO=\$OPENRESEARCH_USE_AUTHOR_REPO\"
