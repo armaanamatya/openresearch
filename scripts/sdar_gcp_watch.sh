@@ -60,6 +60,11 @@ EVENTS_N="${EVENTS_N:-6}"         # events rendered in VERBOSE block
 VERBOSE="${VERBOSE:-0}"            # 1 = render recent events + live.log each tick
 KEEP_UP="${KEEP_UP:-0}"           # 1 = do NOT auto-stop VM on terminal
 MAX_TICKS="${MAX_TICKS:-160}"     # hard budget: 160 × 120s = ~5.3 h
+# PULL_AND_LOG=1 (default ON): on terminal, pull the report to the LOCAL
+# runs/<id>/ + append the honest outcome to the coworker ledger BEFORE the stop
+# decision — so the report is never stranded on an unreachable VM and there is
+# no fragile separate monitor to die. Set 0 to skip (pure remote watch).
+PULL_AND_LOG="${PULL_AND_LOG:-1}"
 
 # VM identity — same defaults as sdar_gcp_e2e.sh
 ZONE="${OPENRESEARCH_GCP_ZONE:-us-central1-b}"
@@ -67,6 +72,10 @@ PROJECT="${OPENRESEARCH_GCP_PROJECT:-deepinvent-ext-ut}"
 INSTANCE="${OPENRESEARCH_GCP_INSTANCE:-sdar-a100-od}"
 SSH_USER="${OPENRESEARCH_GCP_SSH_USER:-abheekp}"
 REMOTE_DIR="${OPENRESEARCH_REMOTE_DIR:-/home/abheekp/openresearch}"
+# Local side — where to land the pulled report + find the ledger logger. The
+# watcher runs on the LAUNCHING host (the runner SSHes from here), so the local
+# repo is reachable as the script's own parent dir.
+LOCAL_REPO="${LOCAL_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 export CLOUDSDK_CONFIG="${CLOUDSDK_CONFIG:-/home/abheekp/.config/gcloud}"
 
@@ -85,10 +94,54 @@ vm_status() {
     --zone "$ZONE" --format='value(status)' 2>/dev/null || true
 }
 
-# vm_stop — gracefully stop the VM (halt billing).
+# vm_stop — gracefully stop the VM (halt billing). Instance-type-robust: an
+# a2-ultragpu carries mandatory local SSDs and a plain `stop` is refused; retry
+# with --discard-local-ssd=true (the local SSD holds only ephemeral scratch —
+# the run artifacts live on the boot disk and are already pulled by then).
 vm_stop() {
-  gcloud --project "$PROJECT" compute instances stop "$INSTANCE" \
-    --zone "$ZONE" --quiet 2>&1 | tail -1 || true
+  local out
+  out="$(gcloud --project "$PROJECT" compute instances stop "$INSTANCE" \
+          --zone "$ZONE" --quiet 2>&1)" || true
+  if echo "$out" | grep -qiE 'local ssd|discard-local-ssd|cannot be stopped'; then
+    echo "  plain stop refused (local SSD) — retrying with --discard-local-ssd=true"
+    gcloud --project "$PROJECT" compute instances stop "$INSTANCE" \
+      --zone "$ZONE" --discard-local-ssd=true --quiet 2>&1 | tail -1 || true
+  else
+    echo "$out" | tail -1
+  fi
+}
+
+# pull_report_and_log — SSH-tar the run's report artifacts, scp them into the
+# LOCAL runs/<id>/, and append the honest outcome to the coworker ledger
+# (sdar_runlog.py auto-derives status/score/verdict/cost/cells from the now-local
+# dir). Fail-soft end-to-end: a tar/scp/ledger failure is logged but never
+# crashes the watcher — the billing-halt stop must still run.
+pull_report_and_log() {
+  [[ "$PULL_AND_LOG" == "1" ]] || return 0
+  local dest="$LOCAL_REPO/runs/$PROJECT_ID" tgz="/tmp/${PROJECT_ID}_report.tgz"
+  echo "  pulling report → $dest ..."
+  mkdir -p "$dest/code" 2>/dev/null || true
+  ssh_ "cd $REMOTE_DIR/runs/$PROJECT_ID 2>/dev/null && tar czf $tgz \
+        final_report.json final_report.md demo_status.json cost_ledger.jsonl \
+        experiment_runs.jsonl dashboard_events.jsonl code/metrics.json 2>/dev/null; \
+        echo tarred" 90 >/dev/null 2>&1 || true
+  if gcloud compute scp "$SSH_USER@$INSTANCE:$tgz" "$tgz" \
+        --zone "$ZONE" --project "$PROJECT" --quiet 2>/dev/null \
+     && tar xzf "$tgz" -C "$dest" 2>/dev/null; then
+    echo "  report pulled OK"
+  else
+    echo "  WARN: report pull failed — recover via: PROJECT_ID=$PROJECT_ID scripts/sdar_gcp_e2e.sh inspect"
+  fi
+  if [[ -f "$LOCAL_REPO/scripts/sdar_runlog.py" ]]; then
+    local py="$LOCAL_REPO/.venv/bin/python"; [[ -x "$py" ]] || py=python3
+    if "$py" "$LOCAL_REPO/scripts/sdar_runlog.py" --project-id "$PROJECT_ID" \
+          --event finished --note "auto-pulled + logged on terminal by sdar_gcp_watch" \
+          >/dev/null 2>&1; then
+      echo "  ledger row appended (docs/runbooks/2026-06-26-sdar-gcp-e2e-runlog.md)"
+    else
+      echo "  WARN: ledger log failed"
+    fi
+  fi
 }
 
 # now_utc — compact UTC timestamp for tick labels.
@@ -288,6 +341,9 @@ for tick in $(seq 1 "$MAX_TICKS"); do
   # 6. Terminal handling -------------------------------------------------
   if [[ "${done_:-0}" -gt 0 ]]; then
     print_summary "$fr_score" "$fr_ver"
+    # Pull the report local + log the ledger BEFORE the VM is made unreachable —
+    # this is the invariant that guarantees a finalized run is never stranded.
+    pull_report_and_log
     if [[ "$KEEP_UP" == "1" ]]; then
       echo "KEEP_UP=1 — VM left running. Stop manually: scripts/sdar_gcp_e2e.sh down"
     else

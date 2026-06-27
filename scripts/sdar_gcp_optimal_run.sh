@@ -195,11 +195,18 @@ if ! launch_once; then
   launch_once || { log "FATAL: launch failed after prepare"; exit 3; }
 fi
 
-# --- 5. verbose lifecycle-aware watch (auto-stops the VM on a terminal state) -----------
-log "run launched; starting verbose watcher (auto-stops VM on terminal) ..."
-VERBOSE=1 OPENRESEARCH_GCP_ZONE="$ZONE" OPENRESEARCH_GCP_INSTANCE="$INSTANCE" \
+# --- 5. verbose lifecycle-aware watch -------------------------------------------------
+# The watcher (spawned here, so it lives inside this detached runner — session-
+# survivable, no fragile separate monitor) owns the terminal sequence: on a
+# finalized run it PULLS the report to the local runs/<id>/, appends the honest
+# outcome to the coworker ledger, THEN stops the VM. NO_AUTOSTOP=1 keeps the run
+# itself from self-stopping first (which would strand the report). KEEP_UP=1
+# overrides only the stop (leaves the VM up for manual inspection).
+log "run launched; starting watcher (pull report → log ledger → stop VM on terminal) ..."
+VERBOSE=1 PULL_AND_LOG=1 KEEP_UP="${KEEP_UP:-0}" \
+  OPENRESEARCH_GCP_ZONE="$ZONE" OPENRESEARCH_GCP_INSTANCE="$INSTANCE" \
   OPENRESEARCH_GCP_PROJECT="$PROJECT" OPENRESEARCH_GCP_SSH_USER="$SSH_USER" \
-  OPENRESEARCH_REMOTE_DIR="$REMOTE_DIR" PROJECT_ID="$PROJECT_ID" \
+  OPENRESEARCH_REMOTE_DIR="$REMOTE_DIR" PROJECT_ID="$PROJECT_ID" LOCAL_REPO="$HERE" \
   bash "$HERE/scripts/sdar_gcp_watch.sh" 2>&1 | tail -120
 
 log "=== runner finished. report persists on the boot disk; pull with: ==="
