@@ -41,6 +41,7 @@ REUSE_RUBRIC="${OPENRESEARCH_REUSE_RUBRIC:-}"                    # A/B: pin the 
 GRADER_SAMPLES="${GRADER_SAMPLES:-1}"                  # median-of-N leaf grading; 1 is σ-gate-sufficient + ~3x faster (a big grid x3 samples blew the verify cap); 3 = fidelity-critical opt-in
 VERIFY_TIMEOUT_S="${VERIFY_TIMEOUT_S:-1800}"           # OPENRESEARCH_VERIFY_AGAINST_RUBRIC_TIMEOUT_S: verify wall-clock cap (table default 600s is too tight to grade a full grid)
 NO_AUTOSTOP="${NO_AUTOSTOP:-1}"                        # 1 = leave the VM UP on finish so the ledger-monitor pulls the report THEN stops it; 0 = run self-stops (strands the report on the a2-ultragpu disk)
+MAX_RUN_DUR="${OPENRESEARCH_GCP_MAX_RUN_DURATION:-100800s}"   # 28h hard ceiling > harness 24h budget
 
 G=(gcloud --project "$PROJECT")
 ZP=(--zone "$ZONE" --project "$PROJECT")
@@ -48,6 +49,19 @@ log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 ssh_() { timeout "${2:-90}" gcloud compute ssh "$SSH_USER@$INSTANCE" "${ZP[@]}" --quiet --command "$1"; }
 status_() { "${G[@]}" compute instances describe "$INSTANCE" --zone "$ZONE" --format='value(status)' 2>/dev/null || true; }
 wait_ssh() { local i; for i in $(seq 1 30); do ssh_ 'echo ok' 25 2>/dev/null | grep -q ok && { log "  sshd ready"; return 0; }; sleep 10; done; log "  WARN: sshd not confirmed"; }
+
+# arm_max_run_duration: GCP control-plane-enforced hard stop ceiling, independent of
+# any local/VM process. Must run while the instance is TERMINATED (set-scheduling rule).
+# STOP preserves the boot disk; a2-ultragpu mandatory local SSDs need the discard flag.
+arm_max_run_duration() {
+  local extra=()
+  [[ "$GPU_MT" == a2-ultragpu* ]] && extra+=(--discard-local-ssds-at-termination-timestamp=true)
+  "${G[@]}" compute instances set-scheduling "$INSTANCE" --zone "$ZONE" \
+    --max-run-duration="$MAX_RUN_DUR" --instance-termination-action=STOP "${extra[@]}" \
+    >/dev/null 2>&1 \
+    && log "armed GCP max-run-duration=$MAX_RUN_DUR action=STOP (hard idle ceiling)" \
+    || log "WARN: could not arm max-run-duration (non-fatal; VM-side watchdog still covers)"
+}
 
 log "=== SDAR optimal on-demand runner: project_id=$PROJECT_ID root=$ROOT zone=$ZONE ==="
 
@@ -67,11 +81,14 @@ elif [[ "$_st" == "MISSING" && -n "${CREATE_IMAGE:-}" ]]; then
   # while stocked out). Repeatedly try to CREATE it on-demand until capacity returns. On-demand
   # by default (no --preemptible); GPU types require --maintenance-policy=TERMINATE.
   log "instance $INSTANCE absent; CREATE-polling $GPU_MT in $ZONE (image $CREATE_IMAGE) every ${POLL_INTERVAL}s"
+  _create_mrd_extra=()
+  [[ "$GPU_MT" == a2-ultragpu* ]] && _create_mrd_extra+=(--discard-local-ssds-at-termination-timestamp=true)
   for i in $(seq 1 "$MAX_POLLS"); do
     out="$("${G[@]}" compute instances create "$INSTANCE" --zone "$ZONE" --machine-type "$GPU_MT" \
       --image-family "$CREATE_IMAGE" --image-project "${CREATE_IMAGE_PROJECT:-deeplearning-platform-release}" \
       --maintenance-policy TERMINATE --boot-disk-size "${CREATE_DISK_GB:-1000}" --boot-disk-type pd-ssd \
-      --metadata install-nvidia-driver=True --no-restart-on-failure 2>&1)"
+      --metadata install-nvidia-driver=True --no-restart-on-failure \
+      --max-run-duration="$MAX_RUN_DUR" --instance-termination-action=STOP "${_create_mrd_extra[@]}" 2>&1)"
     if [[ "$(status_)" == "RUNNING" ]]; then log "[$i] CAPACITY — created $INSTANCE ($GPU_MT in $ZONE)"; got=1; break; fi
     if echo "$out" | grep -qiE 'STOCKOUT|enough resources|EXHAUSTED|currently unavailable'; then
       log "[$i] stocked out; sleeping ${POLL_INTERVAL}s"; sleep "$POLL_INTERVAL"
@@ -98,6 +115,7 @@ if [[ "$got" != 1 && "$_st" != "MISSING" ]]; then
     log "FATAL: scheduling is '$_pm2', not STANDARD — refusing to poll (would start as spot and preempt)"; exit 4
   fi
   log "confirmed scheduling=STANDARD (on-demand, no preempt)"
+  arm_max_run_duration
   for i in $(seq 1 "$MAX_POLLS"); do
     out="$("${G[@]}" compute instances start "$INSTANCE" --zone "$ZONE" 2>&1)"
     if [[ "$(status_)" == "RUNNING" ]]; then log "[$i] CAPACITY RETURNED — VM RUNNING"; got=1; break; fi
@@ -119,7 +137,10 @@ fi
 LOCKDIR="${SDAR_LAUNCH_LOCK:-$HERE/runs/.cache/sdar_launch.lock}"
 if ! mkdir "$LOCKDIR" 2>/dev/null; then
   log "another poller already won the launch (lock $LOCKDIR held) — stopping my VM ($ZONE/$INSTANCE) and exiting"
-  "${G[@]}" compute instances stop "$INSTANCE" --zone "$ZONE" >/dev/null 2>&1 || true
+  _lk_stop="$("${G[@]}" compute instances stop "$INSTANCE" --zone "$ZONE" 2>&1)" || true
+  if echo "$_lk_stop" | grep -qiE 'local ssd|discard-local-ssd|cannot be stopped'; then
+    "${G[@]}" compute instances stop "$INSTANCE" --zone "$ZONE" --discard-local-ssd=true >/dev/null 2>&1 || true
+  fi
   exit 0
 fi
 log "acquired launch lock — proceeding as the run target ($ZONE/$INSTANCE/$GPU_MT)"
@@ -203,7 +224,7 @@ fi
 # itself from self-stopping first (which would strand the report). KEEP_UP=1
 # overrides only the stop (leaves the VM up for manual inspection).
 log "run launched; starting watcher (pull report → log ledger → stop VM on terminal) ..."
-VERBOSE=1 PULL_AND_LOG=1 KEEP_UP="${KEEP_UP:-0}" \
+VERBOSE=1 PULL_AND_LOG=1 KEEP_UP="${KEEP_UP:-0}" MAX_TICKS="${MAX_TICKS:-900}" \
   OPENRESEARCH_GCP_ZONE="$ZONE" OPENRESEARCH_GCP_INSTANCE="$INSTANCE" \
   OPENRESEARCH_GCP_PROJECT="$PROJECT" OPENRESEARCH_GCP_SSH_USER="$SSH_USER" \
   OPENRESEARCH_REMOTE_DIR="$REMOTE_DIR" PROJECT_ID="$PROJECT_ID" LOCAL_REPO="$HERE" \

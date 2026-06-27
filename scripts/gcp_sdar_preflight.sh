@@ -338,6 +338,54 @@ remote_prepare() {
   # default). `sudo rm` clears any root-owned files a prior `sudo pip` left behind.
   # Idempotent: an existing 3.12 venv is reused as-is.
   "${ssh_base[@]}" "export PATH=\"\$HOME/.local/bin:\$PATH\" && cd $REMOTE_DIR && if [ ! -x .venv/bin/python ] || ! .venv/bin/python --version 2>&1 | grep -q '3\\.12'; then sudo rm -rf .venv && uv venv --python 3.12 --seed .venv; fi && .venv/bin/python -m pip install -r backend/requirements.txt && .venv/bin/python scripts/sdar_gcp_assets.py --prepare --check"
+  # --- Layer 2: VM-side systemd idle watchdog (idempotent; survives local-host death) ---
+  # Writes 3 unit files and enables the timer. Uses `sudo shutdown -h now` (not gcloud)
+  # so no IAM scope is needed and the a2-ultragpu local-SSD discard API gotcha is avoided.
+  "${ssh_base[@]}" "$(cat <<'WATCHDOG_INSTALL'
+sudo tee /usr/local/sbin/sdar-idle-watchdog.sh >/dev/null <<'WD'
+#!/usr/bin/env bash
+# VM-side idle backstop: stop the instance when no reproduction is alive AND the GPU is
+# idle past a grace window. Survives local-host death. Guest shutdown halts billing on
+# a2-ultragpu with no local-SSD discard gotcha and needs no GCP IAM/scope.
+set -uo pipefail
+STATE=/run/sdar_last_active            # tmpfs -> fresh grace window each boot
+GRACE="${SDAR_IDLE_GRACE_S:-3600}"
+live() {
+  pgrep -f 'backend.cli reproduce' >/dev/null 2>&1 && return 0
+  local u
+  u=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | sort -rn | head -1)
+  [[ "${u:-0}" =~ ^[0-9]+$ ]] && [ "${u:-0}" -gt 5 ] && return 0
+  return 1
+}
+if live; then date +%s > "$STATE"; exit 0; fi
+[ -f "$STATE" ] || { date +%s > "$STATE"; exit 0; }
+now=$(date +%s); last=$(cat "$STATE" 2>/dev/null || echo "$now")
+if [ $(( now - last )) -ge "$GRACE" ]; then
+  logger -t sdar-idle-watchdog "idle > ${GRACE}s, no reproduction running — shutting down"
+  sudo shutdown -h now
+fi
+WD
+sudo tee /etc/systemd/system/sdar-idle-watchdog.service >/dev/null <<'SVC'
+[Unit]
+Description=SDAR idle VM backstop
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sdar-idle-watchdog.sh
+SVC
+sudo tee /etc/systemd/system/sdar-idle-watchdog.timer >/dev/null <<'TMR'
+[Unit]
+Description=Run SDAR idle watchdog
+[Timer]
+OnBootSec=30min
+OnUnitActiveSec=5min
+Persistent=true
+[Install]
+WantedBy=timers.target
+TMR
+sudo chmod +x /usr/local/sbin/sdar-idle-watchdog.sh && sudo systemctl daemon-reload && sudo systemctl enable --now sdar-idle-watchdog.timer
+WATCHDOG_INSTALL
+  )"
+  echo "[prepare] installed sdar-idle-watchdog.timer (VM-side idle backstop)"
 }
 
 assert_running() {

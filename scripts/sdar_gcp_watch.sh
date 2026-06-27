@@ -267,6 +267,18 @@ for tick in $(seq 1 "$MAX_TICKS"); do
 
   # 1. Check VM is still RUNNING ----------------------------------------
   vm_s="$(vm_status)"
+  # FM-6: an empty result may be a transient network blip; retry once (sleep 15s then
+  # re-query) before concluding terminal. Only a confirmed non-RUNNING status
+  # (TERMINATED/STOPPING/STOPPED) is terminal; a still-empty result is not conclusive.
+  if [[ -z "$vm_s" ]]; then
+    sleep 15
+    vm_s="$(vm_status)"
+  fi
+  if [[ -z "$vm_s" ]]; then
+    echo "[tick $tick $(now_utc)] vm_status empty after retry (possible network blip) — continuing"
+    sleep "$INTERVAL"
+    continue
+  fi
   if [[ "$vm_s" != "RUNNING" ]]; then
     echo ""
     echo "[tick $tick $(now_utc)] VM=$vm_s (preempted or stopped externally) — exiting"
