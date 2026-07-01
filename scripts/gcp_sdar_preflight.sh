@@ -617,6 +617,15 @@ launch_run() {
   _spec_add OPENRESEARCH_METRICS_COMPLETENESS_CHECK "${OPENRESEARCH_METRICS_COMPLETENESS_CHECK:-1}"
   _spec_add OPENRESEARCH_NO_LEARNING_SIGNAL_GATE  "${OPENRESEARCH_NO_LEARNING_SIGNAL_GATE:-1}"
   _spec_add OPENRESEARCH_EMIT_FIGURE_SIDECARS     "${OPENRESEARCH_EMIT_FIGURE_SIDECARS:-1}"
+  # Undertrained-cell floor (empty => guard off; forwarded here too so it reaches
+  # os.environ via --run-spec in addition to the sdar_gcp.env shell export).
+  _spec_add OPENRESEARCH_MIN_TRAIN_STEPS          "${OPENRESEARCH_MIN_TRAIN_STEPS:-}"
+  # Cross-run + intra-run self-learning (default ON for the SDAR recipe): capture
+  # redacted failure tails into repair prompts, mine per-paper negative lessons, and
+  # admit evidence-gated positive recipes so each attempt/run teaches the next.
+  _spec_add OPENRESEARCH_FAILURE_CAPSULES         "${OPENRESEARCH_FAILURE_CAPSULES:-1}"
+  _spec_add OPENRESEARCH_NEGATIVE_LESSONS         "${OPENRESEARCH_NEGATIVE_LESSONS:-1}"
+  _spec_add OPENRESEARCH_POSITIVE_RECIPES         "${OPENRESEARCH_POSITIVE_RECIPES:-1}"
   # EVAL_PROVENANCE_GUARD OFF for run 1 (false-veto risk until the smoke confirms record_eval).
   _spec_add OPENRESEARCH_EVAL_PROVENANCE_GUARD    "${OPENRESEARCH_EVAL_PROVENANCE_GUARD:-0}"
   _spec_add OPENRESEARCH_SDAR_CACHE_ROOT          "${OPENRESEARCH_SDAR_CACHE_ROOT:-/mnt/sdar-cache}"
