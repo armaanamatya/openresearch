@@ -632,6 +632,10 @@ launch_run() {
   _spec_add WEBSHOP_DATA_DIR                      "${WEBSHOP_DATA_DIR:-}"
   _spec_add SEARCH_QA_INDEX_DIR                   "${SEARCH_QA_INDEX_DIR:-}"
   _spec_add OPENRESEARCH_WEBSHOP_PYTHON           "${OPENRESEARCH_WEBSHOP_PYTHON:-}"
+  # Point HF + ALFWorld at the warm cache so the GPU run loads pre-staged weights /
+  # game data instead of re-downloading them on paid GPU time (empty => unset).
+  _spec_add HF_HOME                              "${HF_HOME:-}"
+  _spec_add ALFWORLD_DATA                        "${ALFWORLD_DATA:-}"
 
   # Multi-line scope guidance: fold from the staged text file (backward-compat)
   # or from OPENRESEARCH_BASELINE_EXTRA_GUIDANCE if set directly.
