@@ -1,24 +1,41 @@
-"""EnvCacheManager — host-shared, crash-safe cache for heavy RL environments.
+"""EnvCacheManager — facade over the env_adapters registry (Phase 1a).
 
 Part B of full-scope-envs (2026-06-01), extended 2026-06-01 for the agentic
-re-enablement of the SDAR full scope. The SDAR paper needs three environments a
-Search-QA-only run skips: **ALFWorld** (a multi-GB one-time ``alfworld-download``),
-**WebShop** (a single indexed server process), and a **dense Search-QA retriever**
-(an E5 index over the wiki-18 corpus — large to build, pointless to rebuild). This
-manager makes all three:
+re-enablement of the SDAR full scope, and refactored 2026-07-01 into a thin
+facade (see
+``docs/superpowers/plans/2026-07-01-phase-1a-1b-provisioning-seam-and-gates.md``).
+The SDAR paper needs three environments a Search-QA-only run skips:
+**ALFWorld** (a multi-GB one-time ``alfworld-download``), **WebShop** (a single
+indexed server process, or an in-process backend), and a **dense Search-QA
+retriever** (an E5 index over the wiki-18 corpus). This module used to own all
+three environments' setup/lifecycle logic directly; that logic has moved
+verbatim into three :class:`~backend.services.runtime.env_adapters.EnvironmentAdapter`
+implementations (:class:`~backend.services.runtime.env_adapters.AlfworldAdapter` /
+:class:`~backend.services.runtime.env_adapters.WebShopAdapter` /
+:class:`~backend.services.runtime.env_adapters.SearchQaAdapter`) sharing one
+:class:`~backend.services.runtime.asset_cache.AssetCache`. ``EnvCacheManager``
+now just builds those three adapters and delegates every public method to
+them — a behavior-preserving refactor, not a new API. The on-disk state
+filenames (``env_cache_state.json`` / ``.env_cache.lock``) and JSON keys
+(``alfworld`` / ``webshop`` / ``search_qa``) are unchanged, so a warm cache
+disk from before this refactor stays valid.
+
+Behavior preserved from the pre-refactor implementation:
 
 * **idempotent + host-shared** — ALFWorld data and the dense Search-QA index are
   built/downloaded ONCE into a shared cache dir (``OPENRESEARCH_ENV_CACHE_DIR``,
   default ``<runs_root>/.cache/envs``) and reused by every later run/cell;
-* **ref-counted** — ONE WebShop server backs N concurrent leases and is torn down
-  only when the last lease releases;
-* **crash-safe** — an ``fcntl``-locked state file with stale-server reclaim by PID
-  liveness, mirroring ``backend/services/runtime/local_gpu_allocator.py``;
-* **fail-soft into the rubric** — a setup that cannot complete on this host returns
-  a VERIFIED ``env_setup_failed`` :class:`~backend.agents.rlm.exclusion.Exclusion`
-  (NOT an exception) for ALFWorld/WebShop, so the grid runs the environments that
-  work and the rubric EXCLUDES (numerator AND denominator) the rest. Search-QA
-  never excludes: a cold/unavailable dense index degrades to BM25 (still real
+* **ref-counted** — ONE WebShop server backs N concurrent leases and is torn
+  down only when the last lease releases;
+* **crash-safe** — an ``fcntl``-locked state file with stale-server reclaim by
+  PID liveness (now :class:`~backend.services.runtime.asset_cache.AssetCache`),
+  mirroring ``backend/services/runtime/local_gpu_allocator.py``;
+* **fail-soft into the rubric** — a setup that cannot complete on this host
+  returns a VERIFIED ``env_setup_failed``
+  :class:`~backend.agents.rlm.exclusion.Exclusion` (NOT an exception) for
+  ALFWorld/WebShop, so the grid runs the environments that work and the
+  rubric EXCLUDES (numerator AND denominator) the rest. Search-QA never
+  excludes: a cold/unavailable dense index degrades to BM25 (still real
   retrieval), so the environment always runs. This is the fairness principle
   (2026-06-01): never dock the rubric for an environment the harness could not
   stand up. The verified Exclusion flows through ``exclusion.build_scope_block``
@@ -31,57 +48,57 @@ multi-GB build. ``OPENRESEARCH_SEARCH_QA_DENSE`` must be truthy to attempt anyth
 passage store (snapshot-downloaded, cached, reused). Absent either, Search-QA
 provisions ``SEARCH_QA_RETRIEVER=bm25`` and the env's BM25/overlap retriever runs.
 
-INTEGRATION STATUS: the cache / lock / ref-count / Exclusion logic is unit-tested
-with the downloader subprocess, the health probe, and the index builder INJECTED.
-The real ``alfworld-download`` invocation (now resolved by abs path next to the
-interpreter), the WebShop server bring-up, and the dense index download are the
-seams a clean-host integration test / a live run plug real commands into.
+The public import surface is FROZEN (callers: ``backend/agents/rlm/run.py``,
+``backend/cli.py``, ``scripts/sdar_gcp_assets.py``, ``scripts/batch_reproduce.py``):
+``EnvCacheManager``, ``provision_scope``, ``EnvSetupResult``, ``ProvisionResult``,
+``default_cache_dir``, ``FULL_SCOPE_ENV_GUIDANCE``. ``_pid_alive`` and a handful
+of per-env default-callable helpers (``_search_qa_encoder`` /
+``_default_search_qa_index_builder`` / ``_default_webshop_launcher``) are also
+re-exported here — not because this module uses them, but because existing
+tests call them directly as ``env_cache.<name>`` module attributes, and
+``EnvCacheManager.__init__`` threads a pre-construction ``monkeypatch.setattr(
+env_cache, "_pid_alive", ...)`` into :class:`WebShopAdapter` by referencing the
+bare ``_pid_alive`` name (resolved from this module's namespace at call time,
+never captured early).
 """
 
 from __future__ import annotations
 
-import contextlib
-import fcntl
-import json
-import logging
-import os
-import signal
-import sys
-import tempfile
+# `os` is imported bare (not `from os import kill`) purely so tests can do
+# `monkeypatch.setattr(EC.os, "kill", ...)`. `os` is a singleton module, so
+# patching it via this module's `os` attribute also patches
+# `env_adapters.webshop`'s own `import os`, which is what actually calls
+# `os.kill` when tearing down the WebShop server. This module has no direct
+# `os.*` call of its own.
+import os  # noqa: F401 — monkeypatch surface only, see comment above
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Callable
 
-from backend.agents.rlm.exclusion import (
-    AXIS_ENVIRONMENT,
-    KIND_ENV_SETUP_FAILED,
-    Exclusion,
+from backend.agents.rlm.exclusion import Exclusion
+from backend.services.runtime.asset_cache import AssetCache, _pid_alive, default_cache_dir
+from backend.services.runtime.env_adapters import (
+    AlfworldAdapter,
+    EnvironmentAdapter,
+    EnvSetupResult,
+    ProvisionCtx,
+    SearchQaAdapter,
+    WebShopAdapter,
+    resolve_adapter,
 )
 
-logger = logging.getLogger(__name__)
-
-
-def _alfworld_has_games(data_dir: "Path | str", *, max_scan: int = 200_000) -> bool:
-    """Return True iff at least one ``traj_data.json`` game file exists under ``data_dir``.
-
-    Mirrors ``alfworld_env.ALFWorldEnv._has_any_games`` but lives here (stdlib-only,
-    no alfworld import) so ``ensure_alfworld`` can verify the download without pulling
-    in the alfworld package at module scope.  Bounded walk so a pathological tree never
-    hangs.  Fail-soft: any OS error → False (treats as 'no games').
-    """
-    scanned = 0
-    try:
-        for _dp, _dns, filenames in os.walk(str(data_dir)):
-            if "traj_data.json" in filenames:
-                return True
-            scanned += len(filenames) + 1
-            if scanned >= max_scan:
-                break
-    except OSError:
-        return False
-    return False
-
+# Back-compat re-exports: existing tests call these directly as module
+# attributes (``env_cache._search_qa_encoder()``,
+# ``env_cache._default_search_qa_index_builder(...)``,
+# ``env_cache._default_webshop_launcher(...)``) rather than going through an
+# adapter instance. Each is defined ONCE in its owning adapter module and
+# imported here, never redefined — no dead duplicates.
+from backend.services.runtime.env_adapters.search_qa import (  # noqa: F401
+    _default_search_qa_index_builder,
+    _search_qa_encoder,
+)
+from backend.services.runtime.env_adapters.webshop import _default_webshop_launcher  # noqa: F401
 
 __all__ = [
     "EnvSetupResult",
@@ -143,237 +160,20 @@ _WEBSHOP = "WebShop"
 _SEARCH_QA = "Search-QA"
 
 
-def default_cache_dir() -> Path:
-    """Resolve the shared env-cache dir from ``OPENRESEARCH_ENV_CACHE_DIR`` or default."""
-    override = os.environ.get("OPENRESEARCH_ENV_CACHE_DIR", "").strip()
-    if override:
-        return Path(override).expanduser().resolve()
-    runs_root = os.environ.get("OPENRESEARCH_RUNS_ROOT", "").strip() or "runs"
-    return (Path(runs_root) / ".cache" / "envs").resolve()
-
-
-@dataclass
-class EnvSetupResult:
-    """Outcome of provisioning one environment.
-
-    Exactly one of (``ok=True`` with a path/url/env-vars) or (``ok=False`` with
-    ``exclusion``) holds. ``data_path`` is set for ALFWorld, ``base_url`` for
-    WebShop; ``Search-QA`` returns ``ok=True`` with ``env_vars`` carrying the
-    retriever selection (``SEARCH_QA_INDEX_DIR`` + ``SEARCH_QA_RETRIEVER``) and no
-    path/url. ``env_vars`` is a generic bag merged into the child environment by
-    :meth:`as_env_vars` (alongside the ALFWorld/WebShop legacy keys).
-    """
-
-    env: str
-    ok: bool
-    data_path: str | None = None
-    base_url: str | None = None
-    exclusion: Exclusion | None = None
-    detail: str = ""
-    env_vars: dict[str, str] = field(default_factory=dict)
-
-    def as_env_vars(self) -> dict[str, str]:
-        """Cache locations to splice into a child run's environment (empty on fail)."""
-        if not self.ok:
-            return {}
-        out: dict[str, str] = dict(self.env_vars)
-        if self.data_path:
-            out["ALFWORLD_DATA"] = self.data_path
-        if self.base_url:
-            out["WEBSHOP_URL"] = self.base_url
-        return out
-
-
-def _pid_alive(pid: int) -> bool:
-    """True iff ``pid`` is a live process (signal 0 probe). Mirrors the GPU allocator."""
-    if not isinstance(pid, int) or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # exists but owned by another user
-    except OSError:
-        return False
-    return True
-
-
-def _resolve_console_script(name: str) -> str | None:
-    """Resolve a venv console script (e.g. ``alfworld-download``) to an abs path.
-
-    Console scripts install next to the interpreter (``<venv>/bin/<name>``) but
-    that dir is not necessarily on a child process's PATH, so resolve by abs path
-    first and fall back to a PATH lookup. Returns ``None`` if not found.
-    """
-    import shutil
-
-    candidate = Path(sys.executable).with_name(name)
-    if candidate.exists():
-        return str(candidate)
-    return shutil.which(name)
-
-
-def _default_alfworld_downloader(cache_dir: Path) -> None:
-    """Run ``alfworld-download`` into ``cache_dir`` (real path; injected in tests).
-
-    ``ALFWORLD_DATA`` controls the download target. The console script is resolved
-    by abs path (it may not be on the child's PATH); a missing script raises, which
-    ``ensure_alfworld`` converts into a verified Exclusion.
-    """
-    import subprocess  # local import: only the real path needs it
-
-    exe = _resolve_console_script("alfworld-download")
-    if not exe:
-        raise FileNotFoundError(
-            "alfworld-download console script not found next to the interpreter "
-            f"({Path(sys.executable).parent}) or on PATH"
-        )
-    env = {**os.environ, "ALFWORLD_DATA": str(cache_dir)}
-    subprocess.run([exe], check=True, env=env, timeout=3600)
-
-
-def _default_webshop_launcher(cache_dir: Path, port: int) -> int:
-    """Start the WebShop server, return its PID (real path; injected in tests)."""
-    import subprocess
-
-    log = open(cache_dir / "webshop_server.log", "ab")  # noqa: SIM115 — child owns it
-    # Use the running interpreter, not a bare ``python`` (which need not be on the
-    # cell's PATH — a venv invoked by path doesn't put its bin/ there). With the
-    # correct interpreter, an un-installed ``web_agent_site`` surfaces as a clear
-    # ModuleNotFoundError that ``ensure_webshop`` turns into a verified
-    # ``env_setup_failed`` Exclusion, instead of a misleading ``No such file: python``.
-    #
-    # OPENRESEARCH_WEBSHOP_PYTHON allows a dedicated Python 3.10 venv to be used for
-    # WebShop's server, keeping its frozen old torch/transformers stack isolated from
-    # the run venv's modern stack (set by install_webshop_dedicated in asset_provisioning).
-    webshop_python = os.environ.get("OPENRESEARCH_WEBSHOP_PYTHON") or sys.executable
-    proc = subprocess.Popen(
-        [webshop_python, "-m", "web_agent_site.app", "--port", str(port)],
-        cwd=str(cache_dir), stdout=log, stderr=subprocess.STDOUT,
-        env={**os.environ},
-    )
-    return proc.pid
-
-
-def _default_inprocess_smoke(data_dir: str) -> bool:
-    """Minimal in-process smoke: verify data files exist + web_agent_site is importable.
-
-    This is the real path injected in production.  Tests inject a fast lambda
-    so CI never needs web_agent_site installed.  Returns False on any failure
-    (never raises) — the caller converts False into a verified Exclusion.
-    """
-    items = os.path.join(data_dir, "items_shuffle.json")
-    attrs = os.path.join(data_dir, "items_ins_v2.json")
-    if not (os.path.exists(items) and os.path.exists(attrs)):
-        logger.debug("env_cache: WebShop in-process smoke: missing data files under %s", data_dir)
-        return False
-    pkg_dir = os.environ.get("WEBSHOP_PACKAGE_DIR", "").strip()
-    if pkg_dir:
-        import sys as _sys  # noqa: PLC0415 — lazy
-        if pkg_dir not in _sys.path:
-            _sys.path.insert(0, pkg_dir)
-    try:
-        import web_agent_site  # noqa: F401, PLC0415 — intentional lazy import
-        return True
-    except ImportError:
-        logger.debug("env_cache: WebShop in-process smoke: web_agent_site not importable")
-        return False
-
-
-def _default_probe(url: str, *, timeout_s: float = 2.0) -> bool:
-    """HTTP liveness probe (real path; injected in tests)."""
-    import urllib.request
-
-    try:
-        with urllib.request.urlopen(url, timeout=timeout_s) as resp:  # noqa: S310
-            return 200 <= int(getattr(resp, "status", 0) or 0) < 500
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def _search_qa_encoder() -> str:
-    """The e5 encoder the dense index was built with — the query encoder MUST match
-    it (same dimension + semantics) or FAISS search errors. The prebuilt wiki-18
-    indexes are e5-base-v2; override with ``OPENRESEARCH_SEARCH_QA_ENCODER`` for an index
-    built with a different e5 variant."""
-    return os.environ.get("OPENRESEARCH_SEARCH_QA_ENCODER", "").strip() or "intfloat/e5-base-v2"
-
-
-def _default_search_qa_index_builder(cache_dir: Path) -> Path | None:
-    """Build/download a dense E5 wiki-18 retrieval index (real path; injected in tests).
-
-    Returns the index dir on success, ``None`` to fall back to BM25 — NEVER raises.
-    Opt-in + configurable so a cold/offline host degrades gracefully:
-
-      * ``OPENRESEARCH_SEARCH_QA_DENSE`` must be truthy to attempt anything;
-      * ``OPENRESEARCH_SEARCH_QA_INDEX_REPO`` — a HF repo holding a prebuilt FAISS index
-        + passage store; snapshot-downloaded into ``cache_dir`` when set (fastest,
-        no local embedding). ``OPENRESEARCH_SEARCH_QA_INDEX_REPO_TYPE`` selects the HF
-        repo type (default ``dataset``).
-
-    The downloaded artifact is cached under ``cache_dir`` and reused by
-    :meth:`EnvCacheManager.ensure_search_qa_index`. A local-embed path (download the
-    corpus + embed with e5 on GPU) is intentionally left to a follow-up — the repo
-    download keeps the common case fast and the BM25 fallback keeps every host live.
-    """
-    flag = os.environ.get("OPENRESEARCH_SEARCH_QA_DENSE", "").strip().lower()
-    if flag not in ("1", "true", "yes", "on"):
-        return None
-    # A pre-staged local index (operator placed the FAISS index + corpus on a roomy
-    # disk already, e.g. via a one-time download) — use it directly, no network call.
-    direct = os.environ.get("OPENRESEARCH_SEARCH_QA_INDEX_DIR", "").strip()
-    if direct:
-        ddir = Path(direct)
-        if ddir.is_dir() and (any(ddir.rglob("*.index")) or any(ddir.rglob("*.faiss"))):
-            return ddir
-        logger.warning(
-            "env_cache: OPENRESEARCH_SEARCH_QA_INDEX_DIR=%s has no .index/.faiss file; "
-            "falling through to repo download / BM25.", direct,
-        )
-    repo = os.environ.get("OPENRESEARCH_SEARCH_QA_INDEX_REPO", "").strip()
-    if not repo:
-        logger.info(
-            "env_cache: OPENRESEARCH_SEARCH_QA_DENSE set but OPENRESEARCH_SEARCH_QA_INDEX_REPO "
-            "is empty — using BM25 (set the repo to enable dense E5 retrieval)."
-        )
-        return None
-    try:
-        from huggingface_hub import snapshot_download  # lazy: only the real path needs it
-
-        repo_type = os.environ.get("OPENRESEARCH_SEARCH_QA_INDEX_REPO_TYPE", "dataset").strip() or "dataset"
-        dest = cache_dir / "search_qa_index"
-        dest.mkdir(parents=True, exist_ok=True)
-        snapshot_download(
-            repo_id=repo, repo_type=repo_type, local_dir=str(dest),
-            local_dir_use_symlinks=False,
-        )
-        # Minimal sanity: a FAISS index file must exist for the env to load it.
-        if any(dest.rglob("*.index")) or any(dest.rglob("*.faiss")):
-            return dest
-        logger.warning(
-            "env_cache: search-qa index repo %s downloaded but no .index/.faiss file "
-            "found — BM25 fallback.", repo,
-        )
-        return None
-    except Exception as exc:  # noqa: BLE001 — dense is best-effort; BM25 always works
-        logger.warning(
-            "env_cache: dense search-qa index build failed (%s: %s); BM25 fallback.",
-            type(exc).__name__, str(exc)[:160],
-        )
-        return None
-
-
 class EnvCacheManager:
-    """Idempotent, fcntl-locked, ref-counted cache for ALFWorld + WebShop + Search-QA.
+    """Facade over the env_adapters registry (ALFWorld / WebShop / Search-QA).
 
-    All side-effecting operations (download, server launch, health probe, dense
-    index build) are injected callables, so the entire lifecycle is unit-testable
-    without touching the network, a multi-GB download, or a real server. Every
-    public method is fail-soft: an ALFWorld/WebShop provisioning error becomes an
-    :class:`EnvSetupResult` carrying a verified ``env_setup_failed``
-    :class:`Exclusion`; a Search-QA dense-index failure degrades to BM25 (never an
-    exclusion — the env always runs). Nothing raises.
+    Builds one shared :class:`~backend.services.runtime.asset_cache.AssetCache`
+    plus the three concrete adapters, and delegates every public method to
+    them. All side-effecting operations (download, server launch, health
+    probe, dense index build) are injected callables — passed straight
+    through to the owning adapter — so the entire lifecycle is unit-testable
+    without touching the network, a multi-GB download, or a real server.
+    Every public method is fail-soft: an ALFWorld/WebShop provisioning error
+    becomes an :class:`EnvSetupResult` carrying a verified ``env_setup_failed``
+    :class:`~backend.agents.rlm.exclusion.Exclusion`; a Search-QA dense-index
+    failure degrades to BM25 (never an exclusion — the env always runs).
+    Nothing raises.
     """
 
     def __init__(
@@ -389,306 +189,67 @@ class EnvCacheManager:
         server_ready_timeout_s: float = 60.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        self.cache_dir = Path(cache_dir).resolve() if cache_dir else default_cache_dir()
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self._state_path = self.cache_dir / "env_cache_state.json"
-        self._lock_path = self.cache_dir / ".env_cache.lock"
-        self._downloader = downloader or _default_alfworld_downloader
-        self._launcher = server_launcher or _default_webshop_launcher
-        self._probe = probe or _default_probe
-        self._index_builder = index_builder or _default_search_qa_index_builder
-        # [NEW 2026-06-27] Injectable smoke for the in-process WebShop path.
-        self._inprocess_smoke: Callable[[str], bool] = inprocess_smoke or _default_inprocess_smoke
-        self._webshop_port = int(webshop_port)
-        self._ready_timeout_s = float(server_ready_timeout_s)
-        self._clock = clock
-
-    # --- locked state I/O (mirrors local_gpu_allocator's fcntl discipline) ----
-
-    @contextlib.contextmanager
-    def _locked_state(self) -> Iterator[dict[str, Any]]:
-        """Yield the mutable state dict under an exclusive lock; persist on exit."""
-        with open(self._lock_path, "w") as lock_f:
-            fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
-            try:
-                state = self._read_state()
-                yield state
-                self._write_state(state)
-            finally:
-                fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
-
-    def _read_state(self) -> dict[str, Any]:
-        try:
-            data = json.loads(self._state_path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-        except (OSError, ValueError):
-            return {}
-
-    def _write_state(self, state: dict[str, Any]) -> None:
-        fd, tmp = tempfile.mkstemp(dir=self.cache_dir, prefix=".env_cache_", suffix=".json")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(state, f, indent=2, default=str)
-            os.replace(tmp, self._state_path)
-        except Exception:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp)
-            raise
-
-    @staticmethod
-    def _fail(env: str, reason: str, evidence: str = "") -> EnvSetupResult:
-        """Build a fail result carrying a VERIFIED env_setup_failed Exclusion."""
-        return EnvSetupResult(
-            env=env, ok=False, detail=reason,
-            exclusion=Exclusion(
-                item=env, axis=AXIS_ENVIRONMENT, kind=KIND_ENV_SETUP_FAILED,
-                reason=reason, verified=True, evidence=evidence,
-            ),
+        self._cache = AssetCache(cache_dir)
+        self.cache_dir = self._cache.cache_dir  # back-compat attribute
+        self._alfworld = AlfworldAdapter(self._cache, downloader=downloader, clock=clock)
+        self._webshop = WebShopAdapter(
+            self._cache,
+            server_launcher=server_launcher,
+            probe=probe,
+            inprocess_smoke=inprocess_smoke,
+            # Bare module-global name, resolved from THIS module's namespace at
+            # call time (not `asset_cache._pid_alive`, not captured into a local
+            # early) — so a pre-construction `monkeypatch.setattr(env_cache,
+            # "_pid_alive", ...)` is honoured by the adapter.
+            pid_alive=_pid_alive,
+            webshop_port=webshop_port,
+            server_ready_timeout_s=server_ready_timeout_s,
+            clock=clock,
+        )
+        self._search_qa = SearchQaAdapter(self._cache, index_builder=index_builder, clock=clock)
+        self._adapters: tuple[EnvironmentAdapter, ...] = (
+            self._alfworld,
+            self._webshop,
+            self._search_qa,
         )
 
     # --- public provisioning -------------------------------------------------
 
     def setup(self, env: str) -> EnvSetupResult:
         """Provision one environment by name (case-insensitive). Never raises."""
-        key = (env or "").strip().lower()
-        if key in ("alfworld", "alf world", "alf-world"):
-            return self.ensure_alfworld(display_name=env or _ALFWORLD)
-        if key in ("webshop", "web shop", "web-shop"):
-            return self.acquire_webshop(display_name=env or _WEBSHOP)
-        if key in ("search-qa", "searchqa", "search_qa", "search qa",
-                   "nq", "nq-open", "nq_open", "hotpotqa", "hotpot_qa"):
-            return self.ensure_search_qa_index(display_name=env or _SEARCH_QA)
-        # Any other dataset-only env: nothing to provision.
-        return EnvSetupResult(env=env or "", ok=True, detail="no environment to provision")
+        adapter = resolve_adapter(env, self._adapters)
+        if adapter is None:
+            # Any other dataset-only env: nothing to provision.
+            return EnvSetupResult(env=env or "", ok=True, detail="no environment to provision")
+        return adapter.provision(ProvisionCtx(display_name=env or adapter.key))
 
     def ensure_alfworld(self, *, display_name: str = _ALFWORLD) -> EnvSetupResult:
         """Download ALFWorld once into the shared cache; reuse on later calls.
 
-        BES Phase 4A (A1) note — two distinct "once" caches, do not conflate:
-        this method is the host-shared **game-data** cache (the multi-GB
-        ``alfworld-download``), idempotent across runs/cells. The per-cell **env
-        object** reuse (build ``AlfredTWEnv`` once and ``reset()`` it in place
-        across episodes, the ~82× reload tax) lives in
-        ``alfworld_env.ALFWorldEnv`` behind ``OPENRESEARCH_ALFWORLD_ENV_REUSE`` — a
-        rollout-loop concern, not a data-cache one. The data cache that A1's env
-        reuse builds on top of is exactly this method's output.
+        Delegates to :meth:`AlfworldAdapter.provision`.
         """
-        data_dir = self.cache_dir / "alfworld"
-        try:
-            with self._locked_state() as state:
-                rec = state.get("alfworld") or {}
-                if rec.get("ready") and Path(rec.get("data_path", "")).exists():
-                    # Game-file presence check: a stale/partial download could have
-                    # written the directory with no traj_data.json games, in which
-                    # case cells would produce info["unavailable"]=True and 0.0 rewards
-                    # that are counted as real results (the silent zero-score failure).
-                    # Re-verify game files; if missing, fall through to re-download.
-                    if _alfworld_has_games(Path(rec["data_path"])):
-                        return EnvSetupResult(env=display_name, ok=True,
-                                              data_path=rec["data_path"], detail="cache hit")
-                    logger.warning(
-                        "env_cache: ALFWorld cache hit but no games found under %r; "
-                        "re-downloading to recover", rec["data_path"]
-                    )
-                    # Clear stale state so a re-download and fresh state record follow.
-                    state.pop("alfworld", None)
-                data_dir.mkdir(parents=True, exist_ok=True)
-                self._downloader(data_dir)   # injected; real path runs alfworld-download
-                # Verify game files are actually present after the download completes.
-                # A successful alfworld-download that yields no games (network blip,
-                # partial fetch) must be treated as a failure — otherwise cells inherit
-                # ALFWORLD_DATA pointing at an empty dir and produce 0.0 rewards that
-                # are counted in the score instead of being excluded as env_setup_failed.
-                if not _alfworld_has_games(data_dir):
-                    reason = (
-                        f"alfworld-download ran without error but no games (traj_data.json) "
-                        f"found under {data_dir!r}; download may be incomplete. "
-                        "Re-run with a clean cache (delete the alfworld/ subdir)."
-                    )
-                    logger.warning("env_cache: ALFWorld %s", reason)
-                    return self._fail(display_name, reason, evidence=str(data_dir))
-                state["alfworld"] = {"ready": True, "data_path": str(data_dir),
-                                     "downloaded_at": self._clock()}
-                return EnvSetupResult(env=display_name, ok=True,
-                                      data_path=str(data_dir), detail="downloaded")
-        except Exception as exc:  # noqa: BLE001 — fail-soft into a verified Exclusion
-            logger.warning("env_cache: ALFWorld setup failed: %s", exc)
-            return self._fail(display_name, f"alfworld-download failed: {type(exc).__name__}: {exc}",
-                              evidence=str(exc)[:200])
-
-    def _find_sdar_webshop_pkg(self) -> str | None:
-        """Return the ``web_agent_site`` package root from the SDAR ref, or ``None``.
-
-        The SDAR ref is at ``<cache_dir>/../SDAR_ref`` (i.e. ``runs/.cache/SDAR_ref``).
-        The package root — the directory whose child is ``web_agent_site/`` — is at
-        ``SDAR_ref/agent_system/environments/env_package/webshop/webshop/``.
-        """
-        candidate = (
-            self.cache_dir.parent
-            / "SDAR_ref"
-            / "agent_system"
-            / "environments"
-            / "env_package"
-            / "webshop"
-            / "webshop"
-        )
-        if (candidate / "web_agent_site").is_dir():
-            return str(candidate)
-        return None
+        return self._alfworld.provision(ProvisionCtx(display_name=display_name))
 
     def acquire_webshop(self, *, display_name: str = _WEBSHOP) -> EnvSetupResult:
         """Acquire WebShop: in-process (preferred) or HTTP server (legacy).
 
-        **In-process path (new, 2026-06-27):** activated when ``WEBSHOP_DATA_DIR``
-        is set in the environment (operator pre-staged product corpus) OR the SDAR
-        ref package can be detected at the standard cache location AND
-        ``WEBSHOP_DATA_DIR`` is set.  On success sets ``WEBSHOP_DATA_DIR`` (NOT
-        ``WEBSHOP_URL``) in ``env_vars``; ``WebShopEnv.__init__`` detects this and
-        constructs an ``_InProcessBackend`` (zero sockets, no Java/Lucene).
-
-        **Legacy HTTP path:** used when ``WEBSHOP_DATA_DIR`` is unset.  Starts
-        (or reuses) a shared ``web_agent_site.app`` server process; ref-counted
-        (``release_webshop`` tears it down when the last lease drops).  Sets
-        ``WEBSHOP_URL`` as before — backward-compatible with all existing callers.
+        Delegates to :meth:`WebShopAdapter.provision`.
         """
-        # ---- In-process path ------------------------------------------------
-        data_dir_env = os.environ.get("WEBSHOP_DATA_DIR", "").strip()
-        if data_dir_env:
-            # Resolve (or auto-detect) the package root alongside the data dir.
-            pkg_dir = os.environ.get("WEBSHOP_PACKAGE_DIR", "").strip() or self._find_sdar_webshop_pkg()
-
-            # Smoke test: data files present + web_agent_site importable.
-            try:
-                smoke_ok = self._inprocess_smoke(data_dir_env)
-            except Exception as exc:  # noqa: BLE001 — smoke must never propagate
-                smoke_ok = False
-                logger.warning("env_cache: WebShop in-process smoke raised: %s", exc)
-
-            if not smoke_ok:
-                return self._fail(
-                    display_name,
-                    f"WebShop in-process smoke failed for WEBSHOP_DATA_DIR={data_dir_env!r}",
-                    evidence=data_dir_env,
-                )
-
-            # Record state (best-effort — failure here is non-fatal).
-            with contextlib.suppress(Exception):
-                with self._locked_state() as state:
-                    state["webshop"] = {
-                        "ready": True, "inprocess": True,
-                        "data_dir": data_dir_env,
-                        **({"pkg_dir": pkg_dir} if pkg_dir else {}),
-                    }
-
-            env_vars: dict[str, str] = {"WEBSHOP_DATA_DIR": data_dir_env}
-            if pkg_dir:
-                env_vars["WEBSHOP_PACKAGE_DIR"] = pkg_dir
-            num_prods = os.environ.get("WEBSHOP_NUM_PRODUCTS", "").strip()
-            if num_prods:
-                env_vars["WEBSHOP_NUM_PRODUCTS"] = num_prods
-            return EnvSetupResult(
-                env=display_name, ok=True,
-                env_vars=env_vars,
-                detail=f"in-process (data_dir={data_dir_env})",
-            )
-
-        # ---- Legacy HTTP server path (unchanged from original) ---------------
-        base_url = f"http://127.0.0.1:{self._webshop_port}"
-        try:
-            with self._locked_state() as state:
-                rec = state.get("webshop") or {}
-                pid = rec.get("pid")
-                running = bool(rec.get("running")) and _pid_alive(int(pid)) if pid else False
-                if not running:
-                    # Stale/never-started → (re)launch and health-probe.
-                    new_pid = self._launcher(self.cache_dir, self._webshop_port)
-                    if not self._await_ready(base_url):
-                        with contextlib.suppress(Exception):
-                            os.kill(int(new_pid), signal.SIGTERM)
-                        return self._fail(display_name,
-                                          f"WebShop server did not become ready at {base_url}",
-                                          evidence=base_url)
-                    rec = {"pid": int(new_pid), "running": True, "url": base_url, "refcount": 0}
-                rec["refcount"] = int(rec.get("refcount", 0)) + 1
-                state["webshop"] = rec
-                return EnvSetupResult(env=display_name, ok=True, base_url=base_url,
-                                      detail=f"lease #{rec['refcount']}")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("env_cache: WebShop setup failed: %s", exc)
-            return self._fail(display_name, f"WebShop setup failed: {type(exc).__name__}: {exc}",
-                              evidence=str(exc)[:200])
+        return self._webshop.provision(ProvisionCtx(display_name=display_name))
 
     def release_webshop(self) -> None:
-        """Drop one WebShop lease; stop the server when the last lease releases."""
-        try:
-            with self._locked_state() as state:
-                rec = state.get("webshop") or {}
-                if not rec:
-                    return
-                rec["refcount"] = max(0, int(rec.get("refcount", 0)) - 1)
-                if rec["refcount"] <= 0:
-                    pid = rec.get("pid")
-                    if pid and _pid_alive(int(pid)):
-                        with contextlib.suppress(Exception):
-                            os.kill(int(pid), signal.SIGTERM)
-                    rec["running"] = False
-                    rec["pid"] = None
-                state["webshop"] = rec
-        except Exception as exc:  # noqa: BLE001 — release must never raise
-            logger.warning("env_cache: WebShop release failed (non-fatal): %s", exc)
+        """Drop one WebShop lease; stop the server when the last lease releases.
+
+        Delegates to :meth:`WebShopAdapter.release`.
+        """
+        self._webshop.release()
 
     def ensure_search_qa_index(self, *, display_name: str = _SEARCH_QA) -> EnvSetupResult:
-        """Provide a Search-QA retriever: dense E5 index when buildable + cached,
-        else BM25 (always works).
+        """Provide a Search-QA retriever: dense E5 index when buildable, else BM25.
 
-        Unlike ALFWorld/WebShop, Search-QA NEVER returns an exclusion — a cold or
-        unavailable dense index degrades to ``SEARCH_QA_RETRIEVER=bm25`` and the
-        env's BM25/overlap retriever runs. The dense build is idempotent + shared
-        (cached under ``<cache>/search_qa_index``).
+        Delegates to :meth:`SearchQaAdapter.provision`.
         """
-        try:
-            with self._locked_state() as state:
-                rec = state.get("search_qa") or {}
-                if (rec.get("ready") and rec.get("retriever") == "e5"
-                        and Path(rec.get("index_dir", "")).exists()):
-                    return EnvSetupResult(
-                        env=display_name, ok=True, detail="cache hit (e5)",
-                        env_vars={"SEARCH_QA_INDEX_DIR": rec["index_dir"],
-                                  "SEARCH_QA_RETRIEVER": "e5",
-                                  "SEARCH_QA_ENCODER": _search_qa_encoder()},
-                    )
-                built = self._index_builder(self.cache_dir)  # injected; None → BM25
-                if built is not None and Path(built).exists():
-                    state["search_qa"] = {"ready": True, "retriever": "e5",
-                                          "index_dir": str(built), "built_at": self._clock()}
-                    return EnvSetupResult(
-                        env=display_name, ok=True, detail="dense index ready",
-                        env_vars={"SEARCH_QA_INDEX_DIR": str(built),
-                                  "SEARCH_QA_RETRIEVER": "e5",
-                                  "SEARCH_QA_ENCODER": _search_qa_encoder()},
-                    )
-                state["search_qa"] = {"ready": True, "retriever": "bm25",
-                                      "built_at": self._clock()}
-                return EnvSetupResult(
-                    env=display_name, ok=True, detail="bm25 (no dense index)",
-                    env_vars={"SEARCH_QA_RETRIEVER": "bm25"},
-                )
-        except Exception as exc:  # noqa: BLE001 — Search-QA must always run
-            logger.warning("env_cache: search-qa provisioning issue (%s); BM25",
-                           type(exc).__name__)
-            return EnvSetupResult(
-                env=display_name, ok=True, detail="bm25 (provisioning fell back)",
-                env_vars={"SEARCH_QA_RETRIEVER": "bm25"},
-            )
-
-    def _await_ready(self, url: str) -> bool:
-        """Poll the health probe until ready or the ready-timeout elapses."""
-        deadline = self._clock() + self._ready_timeout_s
-        while self._clock() < deadline:
-            if self._probe(url):
-                return True
-            time.sleep(0.5)
-        return self._probe(url)  # one last chance
+        return self._search_qa.provision(ProvisionCtx(display_name=display_name))
 
 
 @dataclass
