@@ -41,9 +41,13 @@ PAPER_HINTS: dict[str, PaperHint] = {
             "SDAR (Self-Distilled Agentic Reinforcement Learning) algorithmic "
             "invariants the rubric inspects for: the on-policy self-distillation "
             "gate is g_t = sigmoid(beta * delta_t) with stop_gradient on the "
-            "gate (NOT differentiable through it); the self-distillation weight "
-            "is lambda = 0.1 and the gate sharpness is beta = 10; the GRPO loss "
-            "is ADDED to the gated self-distillation loss (both terms required). "
+            "gate (NOT differentiable through it); the OPSD self-distillation "
+            "weight is sdar_coef = 0.01 and the gate sharpness is beta = 5.0 "
+            "(the authors' RELEASED scripts at github.com/ZJU-REAL/SDAR "
+            "examples/sdar_trainer/*.sh reproduce the paper's reported numbers; "
+            "the paper TEXT states lambda=0.1/beta=10 — a documented paper-vs-code "
+            "discrepancy, so the grader accepts either); the GRPO loss is ADDED "
+            "to the gated self-distillation loss (both terms required). "
             "Use the real pretrained Qwen weights from HuggingFace, not "
             "surrogates. "
             "Never wrap loss.backward()/optimizer.step() in a bare `except Exception` "
@@ -57,17 +61,53 @@ PAPER_HINTS: dict[str, PaperHint] = {
             "triple in cells.json — e.g. baseline=sdar_ucb / sdar_random / sdar_full "
             "for the retrieval ablations — so each lands under its own rubric leaf "
             "(a duplicate triple collapses cells). "
+            "REPRODUCTION BREADTH — the rubric grades the paper's FULL method and "
+            "the method-fidelity + artifact leaves read it from CODE (not only "
+            "trained results): adapt the authors' COMPLETE codebase from the cloned "
+            "repo (use inspect_repository), do NOT write a minimal SDAR+GRPO. Keep "
+            "all THREE gating strategies (entropy / gap / soft-OR), all FIVE "
+            "baselines as code paths (GRPO, OPSD, Skill-SD, GRPO+OPSD, RLSD), and "
+            "the SkillBank + its retrieval modes present in code/. You TRAIN only "
+            "the sdar + grpo cells on the scoped models; the other baselines, the "
+            "extra gating modes, and any out-of-scope model (e.g. the 7B) must be "
+            "declared in metrics.json['omitted'] (reason='in code, not trained on "
+            "this scope') — honest omission, never faked or silently dropped. "
             "GRPO learns only from reward VARIANCE within each rollout group — wire "
             "the per-episode reward from env.step() into the GRPO advantage (never "
             "leave it hardcoded 0); if mean_reward stays 0.0 across all steps the "
             "policy gets no signal, l_grpo collapses to 0, and the OPSD gate never "
             "activates. A tiny model on the cost-bounded scope needs enough rollout "
             "steps per cell to occasionally succeed and earn non-zero reward. "
-            "The WebShop environment needs its local server reachable at "
-            "http://127.0.0.1:3000 BEFORE any WebShop cell — start it in "
-            "build_environment/detect_environment (the repo's web_agent_site server) "
-            "and health-check it; if it cannot start, drop WebShop from scope rather "
-            "than letting its cells fail. "
+            "The WebShop environment runs IN-PROCESS — the authors use the gym "
+            "WebAgentTextEnv / a local SimServer over the pickled product corpus "
+            "plus a Lucene index; there is NO HTTP server and no standalone server "
+            "port. Do NOT "
+            "start or depend on a web_agent_site server. Construct the env "
+            "in-process (lazy-import web_agent_site) over the staged WebShop data, "
+            "running the WebShop cell under its own py3.10 interpreter "
+            "(OPENRESEARCH_WEBSHOP_PYTHON) where web_agent_site is installed. Do NOT "
+            "drop WebShop — roll real episodes and earn reward by buying the "
+            "matching product. The Search-QA environment retrieves IN-PROCESS — "
+            "point SEARCH_QA_INDEX_DIR at the cached wiki-18 E5 FAISS index + "
+            "passage store so the harness retriever loads intfloat/e5-base-v2 "
+            "in-process; do NOT launch a retriever server (the authors' separate "
+            ":8000 server is not used on the harness path). Set ALFWORLD_DATA before "
+            "alfworld-download. Train each env for the paper's 150 steps "
+            "(total_epochs for ALFWorld/WebShop, total_training_steps for Search-QA) "
+            "with env.rollout.n=8, seed=0 — a sparse terminal-reward env needs the "
+            "full step budget to land winning trajectories. "
+            "Generate rollouts with vLLM (the authors' method — adapt their repo via "
+            "inspect_repository), NOT a hand-rolled HF model.generate loop: vLLM's batched "
+            "paged-attention inference is 5-20x faster for the 16-task x 8-rollout multi-turn "
+            "budget, and slow HF generation is what forced prior runs to undertrain to ~20 "
+            "steps. CRITICAL for on-policy correctness: after EVERY optimizer step, sync the "
+            "updated policy weights INTO the vLLM engine (the authors' weight-sync path / "
+            "vllm load_weights) before the next rollout batch — stale vLLM weights silently "
+            "make rollouts off-policy and collapse the GRPO advantage to noise. Colocate the "
+            "vLLM engine and the training model on the cell's GPU (Qwen3-1.7B and Qwen2.5-3B "
+            "each fit one 80GB card with vLLM gpu_memory_utilization ~0.4-0.5 to leave room "
+            "for training); include BOTH the vLLM KV-cache and the training model+optimizer in "
+            "each cell's est_vram_gb. "
             "On a memory-constrained GPU (<=48GB), a 3B+ model in full fine-tuning "
             "GRPO will OOM — full fine-tuning needs ~16-20GB per billion params "
             "(bf16 weights+grads, Adam optimizer states, and the frozen reference "
@@ -108,7 +148,10 @@ PAPER_HINTS: dict[str, PaperHint] = {
                     "self-distillation mechanism collapses."
                 ),
                 must_match=[
-                    r"(?:torch\.)?sigmoid\s*\(\s*(?:self\.)?beta\s*\*",
+                    # Accept the authors' actual variable name ``gate_beta`` as well
+                    # as ``beta`` — adapting their released code uses ``gate_beta``,
+                    # and requiring the bare ``beta`` here false-capped the score.
+                    r"(?:torch\.)?sigmoid\s*\(\s*(?:self\.)?(?:gate_)?beta\s*\*",
                 ],
             ),
             InvariantSpec(
@@ -124,22 +167,25 @@ PAPER_HINTS: dict[str, PaperHint] = {
                 ],
             ),
             InvariantSpec(
-                name="lambda_self_distill_weight_0p1",
+                name="opsd_self_distill_weight",
                 rationale=(
-                    "Paper sets the OPSD self-distillation weight lambda to "
-                    "0.1 (paper §3.2, eq. 5)."
+                    "The OPSD self-distillation weight: the authors' released "
+                    "scripts use sdar_coef = 0.01; the paper text states lambda "
+                    "= 0.1 (paper §3.2, eq. 5). Either is accepted."
                 ),
                 must_match=[
-                    r"(?:lambda|opsd_weight|distill_weight|self_distill_weight|sd_weight)\s*[:=]\s*0\.1\b",
+                    r"(?:lambda|sdar_coef|opsd_weight|distill_weight|self_distill_weight|sd_weight)\s*[:=]\s*0\.(?:01|1)\b",
                 ],
             ),
             InvariantSpec(
-                name="beta_gate_sharpness_10",
+                name="gate_sharpness_beta",
                 rationale=(
-                    "Paper sets the gate sharpness beta to 10 (paper §3.2)."
+                    "The gate sharpness beta: the authors' released scripts use "
+                    "gate_beta = 5.0; the paper text states beta = 10 (paper "
+                    "§3.2). Either is accepted."
                 ),
                 must_match=[
-                    r"\bbeta\s*[:=]\s*10(?:\.0)?\b",
+                    r"\b(?:beta|gate_beta)\s*[:=]\s*(?:5|10)(?:\.0)?\b",
                 ],
             ),
             InvariantSpec(

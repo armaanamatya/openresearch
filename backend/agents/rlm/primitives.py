@@ -47,6 +47,7 @@ _RUN_EXPERIMENT_REPAIRABLE_FAILURES = {
     "code_bug",
     "cell_execution_error",   # Phase 0C: all run cells errored (non-OOM) → repair
     "degenerate_training",
+    "undertrained",           # OPENRESEARCH_MIN_TRAIN_STEPS: cell ran < min optimizer steps
     "disk_exhausted",
     "incomplete_metrics",
     "all_models_failed",      # Workstream C Fix 1: per_model non-empty, no ok status (flag-gated)
@@ -2998,6 +2999,11 @@ def _combine_command_output(results: list) -> str:
 _STEP_COUNT_KEYS = frozenset({
     "train_steps", "global_step", "optimizer_steps", "steps_completed", "completed_steps",
 })
+# Broader alias set used by the undertrained guard — adds common short forms the cells
+# route trainer emits (e.g. ``step: 19``, ``steps: 19``, ``total_steps``, ``final_step``).
+_UNDERTRAINED_STEP_KEYS: frozenset[str] = (
+    frozenset({"step", "steps", "total_steps", "final_step"}) | _STEP_COUNT_KEYS
+)
 
 
 def _max_train_steps(metrics: dict) -> int | None:
@@ -3151,6 +3157,65 @@ def _degenerate_training_violation(metrics: dict, *, epsilon: float = 1e-6) -> t
                     "signal. Fix the reward/answer-matching so it is non-zero BEFORE the RL loop "
                     "(extract the answer span; token-F1 over the full gold-alias list; print "
                     "zero-shot accuracy first), and confirm optimizer.step() actually runs.")
+    return None
+
+
+def _undertrained_cell_violation(metrics: dict, *, min_steps: int) -> tuple[str, str] | None:
+    """Flag a per-model cell the agent marked succeeded that ran fewer optimizer steps
+    than the paper's required minimum (``OPENRESEARCH_MIN_TRAIN_STEPS``).
+
+    Handles BOTH the flat ``per_model[model]=leaf`` and the nested cells-route
+    ``per_model[model]={env:{baseline:leaf}}`` shapes via :func:`_model_result_leaves`.
+    Only judges leaves whose status is in :data:`_OK_STATUSES`.
+
+    Conservative exemptions (never false-fires):
+
+    - ``min_steps <= 0`` → always returns None (flag off, byte-identical off-state).
+    - No step field recorded in the leaf → skip (cannot judge).
+    - Leaf already failed/errored → skip (:data:`_OK_STATUSES` filter).
+    - Step count >= min_steps → pass.
+
+    Step-field aliases accepted: :data:`_UNDERTRAINED_STEP_KEYS` — everything in
+    :data:`_STEP_COUNT_KEYS` plus the short forms ``step``, ``steps``,
+    ``total_steps``, ``final_step`` that the cells-route trainer commonly emits.
+    """
+    if min_steps <= 0:
+        return None
+    per_model = metrics.get("per_model")
+    if not isinstance(per_model, dict):
+        return None
+    for m, mv in per_model.items():
+        if not isinstance(mv, dict):
+            continue
+        ok_leaves = [
+            lf for lf in _model_result_leaves(mv)
+            if str(lf.get("status", "")).lower() in _OK_STATUSES
+        ]
+        for lf in ok_leaves:
+            recorded_steps: int | None = None
+            for k in _UNDERTRAINED_STEP_KEYS:
+                v = lf.get(k)
+                if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0:
+                    recorded_steps = int(v)
+                    break
+            if recorded_steps is None:
+                continue  # no step field recorded — cannot judge
+            if recorded_steps < min_steps:
+                env_key = lf.get("env") or lf.get("dataset") or ""
+                baseline_key = lf.get("baseline") or lf.get("method") or ""
+                coord = str(m)
+                if env_key:
+                    coord = f"{coord}/{env_key}"
+                if baseline_key:
+                    coord = f"{coord}/{baseline_key}"
+                return (
+                    "undertrained",
+                    f"undertrained: cell {coord!r} ran {recorded_steps} optimizer step(s) "
+                    f"but the paper requires >= {min_steps}. Sparse-reward RL environments "
+                    f"cannot learn in so few steps — increase the step/epoch count so every "
+                    f"cell reaches the floor. Do NOT reduce steps further; scale down "
+                    f"batch size, sequence length, or eval examples instead.",
+                )
     return None
 
 
@@ -3387,6 +3452,14 @@ def _training_health_violation(result: dict) -> tuple[str, str] | None:
         _deg = _degenerate_training_violation(result.get("metrics") or {}, epsilon=_deg_eps)
         if _deg is not None:
             return _deg
+    # (4) undertrained — exited 0, status=ok, but fewer steps than the paper-required floor
+    # (OPENRESEARCH_MIN_TRAIN_STEPS). Per-cell check via _model_result_leaves so it fires
+    # on the cells-route nested shape (``step: 19`` in each leaf) that the flat
+    # ``insufficient_train_steps`` check above misses when ``step`` is not at the top level.
+    # Flag-gated default-OFF: ``min_steps`` was already resolved above; 0 → no-op.
+    _ut = _undertrained_cell_violation(result.get("metrics") or {}, min_steps=min_steps)
+    if _ut is not None:
+        return _ut
     return None
 
 
@@ -5682,6 +5755,16 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
                 _prov.build_cell_provenance(code, run_id=run_id)
             except Exception:  # noqa: BLE001 — provenance must never break the run
                 logger.debug("cell-matrix: provenance build failed (non-fatal)", exc_info=True)
+            # Harness-owned training-curve + figure sidecars for the text-only
+            # grader.  Flag-gated (OPENRESEARCH_EMIT_FIGURE_SIDECARS, default OFF)
+            # so unset ⇒ byte-identical.  Recommended ON for SDAR via run-spec.
+            try:
+                from backend.agents.rlm import figure_sidecars as _fig_sc  # noqa: PLC0415
+                _fig_sc.emit_sidecars(code, m)
+            except Exception:  # noqa: BLE001 — sidecars must never break the run
+                logger.debug(
+                    "cell-matrix: figure_sidecars emission failed (non-fatal)", exc_info=True
+                )
 
     try:
         manifest = json.loads((code / "cells.json").read_text(encoding="utf-8"))

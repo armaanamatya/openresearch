@@ -32,16 +32,41 @@ MIN_GPUS="${OPENRESEARCH_SDAR_MIN_GPUS:-4}"
 PROJECT_ID="${PROJECT_ID:-sdar_optimal_od}"
 POLL_INTERVAL="${POLL_INTERVAL:-600}"
 MAX_POLLS="${MAX_POLLS:-288}"            # 288 * 600s = 48h ceiling
-ROOT="${ROOT:-claude-oauth}"
+ROOT="${ROOT:-foundry}"
 RUN_EXPERIMENT_TIMEOUT_S="${RUN_EXPERIMENT_TIMEOUT_S:-2400}"
 SDAR_VRAM_GB="${SDAR_VRAM_GB:-40}"     # per-GPU VRAM the run reports to the capacity gate (80 for a2-ultragpu)
 LIFECYCLE_MAX_IMPROVE="${LIFECYCLE_MAX_IMPROVE:-}"   # OPENRESEARCH_LIFECYCLE_MAX_IMPROVE override; empty = harness default (set -u safe)
 EVAL_PROVENANCE_GUARD="${OPENRESEARCH_EVAL_PROVENANCE_GUARD:-}"  # S1 eval-metric provenance guard; empty = default OFF (byte-identical)
 REUSE_RUBRIC="${OPENRESEARCH_REUSE_RUBRIC:-}"                    # A/B: pin the pre-seeded rubric so the grader doesn't drift; empty = default
+# Grok-root guardrails: prevent a non-Claude root from passing placeholder args
+# or stubbing metrics.  Default ON (1); override via env before launching.
+ARG_CONTRACTS="${OPENRESEARCH_ARG_CONTRACTS:-1}"
+STUB_METRICS_GUARD="${OPENRESEARCH_STUB_METRICS_GUARD:-1}"
 GRADER_SAMPLES="${GRADER_SAMPLES:-1}"                  # median-of-N leaf grading; 1 is σ-gate-sufficient + ~3x faster (a big grid x3 samples blew the verify cap); 3 = fidelity-critical opt-in
 VERIFY_TIMEOUT_S="${VERIFY_TIMEOUT_S:-1800}"           # OPENRESEARCH_VERIFY_AGAINST_RUBRIC_TIMEOUT_S: verify wall-clock cap (table default 600s is too tight to grade a full grid)
 NO_AUTOSTOP="${NO_AUTOSTOP:-1}"                        # 1 = leave the VM UP on finish so the ledger-monitor pulls the report THEN stops it; 0 = run self-stops (strands the report on the a2-ultragpu disk)
 MAX_RUN_DUR="${OPENRESEARCH_GCP_MAX_RUN_DURATION:-100800s}"   # 28h hard ceiling > harness 24h budget
+
+# --- Persistent cache disk + machine image (default OFF — no regression) -----
+# OPENRESEARCH_SDAR_USE_CACHE_DISK=1: attach a named pd-ssd data disk that
+# survives VM delete/recreate; repoints HF_HOME/cache/pip at /mnt/sdar-cache.
+# ZONE MISMATCH NOTE: sdar-ultra (1 TB, the adoptable orphaned disk) is in
+# us-central1-c while this runner's VM (sdar-a100-od) defaults to us-central1-b.
+# GCP forbids cross-zone disk attach. OPERATOR STEP before enabling:
+#   (a) snapshot sdar-ultra in us-central1-c then recreate it in us-central1-b
+#       as 'sdar-cache', or
+#   (b) set OPENRESEARCH_SDAR_CACHE_DISK_ZONE=us-central1-b and create a new
+#       1000 GB pd-ssd named 'sdar-cache' in that zone.
+# The attach function warns and skips (never aborts) on a zone mismatch.
+USE_CACHE_DISK="${OPENRESEARCH_SDAR_USE_CACHE_DISK:-0}"
+CACHE_DISK="${OPENRESEARCH_SDAR_CACHE_DISK:-sdar-cache}"
+CACHE_MOUNT="${OPENRESEARCH_SDAR_CACHE_MOUNT:-/mnt/sdar-cache}"
+CACHE_DISK_ZONE="${OPENRESEARCH_SDAR_CACHE_DISK_ZONE:-${ZONE}}"
+# OPENRESEARCH_SDAR_USE_MI=1: boot from the named machine image at CREATE time
+# (--source-machine-image instead of --image-family; MI is multi-zonal).
+# Default OFF: stock DLVM CREATE path is unchanged when unset.
+USE_MI="${OPENRESEARCH_SDAR_USE_MI:-0}"
+MI_NAME="${OPENRESEARCH_SDAR_MI_NAME:-sdar-mi-20260620}"
 
 G=(gcloud --project "$PROJECT")
 ZP=(--zone "$ZONE" --project "$PROJECT")
@@ -63,7 +88,85 @@ arm_max_run_duration() {
     || log "WARN: could not arm max-run-duration (non-fatal; VM-side watchdog still covers)"
 }
 
+# attach_and_mount_cache_disk: idempotent, fail-soft (logs warning + returns 0
+# on any error so the run falls back to boot-disk cache mode, never aborts).
+attach_and_mount_cache_disk() {
+  [[ "$USE_CACHE_DISK" != "1" ]] && return 0
+  if [[ "$CACHE_DISK_ZONE" != "$ZONE" ]]; then
+    log "WARN: cache disk '$CACHE_DISK' zone=$CACHE_DISK_ZONE != VM zone=$ZONE"
+    log "  GCP forbids cross-zone disk attach. OPERATOR STEP: snapshot sdar-ultra"
+    log "  (us-central1-c) and recreate 'sdar-cache' in us-central1-b, OR set"
+    log "  OPENRESEARCH_SDAR_CACHE_DISK_ZONE=us-central1-b and create the disk there."
+    log "  Falling back to boot-disk cache mode."
+    return 0
+  fi
+  # Create the disk if absent (idempotent; 1000 GB pd-ssd matching sdar-ultra).
+  if ! "${G[@]}" compute disks describe "$CACHE_DISK" --zone "$ZONE" \
+       --format='value(name)' >/dev/null 2>&1; then
+    log "cache disk '$CACHE_DISK' absent in $ZONE — creating 1000 GB pd-ssd ..."
+    "${G[@]}" compute disks create "$CACHE_DISK" --zone "$ZONE" \
+      --size=1000GB --type=pd-ssd >/dev/null 2>&1 \
+      && log "  created $CACHE_DISK (1000 GB pd-ssd, $ZONE)" \
+      || { log "WARN: could not create cache disk — boot-disk cache mode"; return 0; }
+  fi
+  # Attach if not already attached.
+  local _users
+  _users="$("${G[@]}" compute disks describe "$CACHE_DISK" --zone "$ZONE" \
+    --format='value(users)' 2>/dev/null || true)"
+  if echo "$_users" | grep -qF "$INSTANCE"; then
+    log "cache disk '$CACHE_DISK' already attached to $INSTANCE"
+  else
+    "${G[@]}" compute instances attach-disk "$INSTANCE" --zone "$ZONE" \
+      --disk "$CACHE_DISK" --mode=rw --device-name=sdar-cache >/dev/null 2>&1 \
+      && log "attached cache disk '$CACHE_DISK' to $INSTANCE" \
+      || { log "WARN: cache disk attach failed — boot-disk cache mode"; return 0; }
+  fi
+  # Format (first attach only) and mount on the VM.
+  # $CACHE_MOUNT is expanded locally; \$DEV/\$MNT/\$(...) are evaluated on the VM.
+  ssh_ "$(cat <<_MOUNT_EOF
+set -eo pipefail
+DEV=/dev/disk/by-id/google-sdar-cache
+MNT=$CACHE_MOUNT
+if ! blkid "\$DEV" >/dev/null 2>&1; then
+  echo '[cache] formatting \$DEV as ext4 (first attach)...'
+  sudo mkfs.ext4 -F "\$DEV"
+fi
+sudo mkdir -p "\$MNT"
+if mountpoint -q "\$MNT"; then
+  echo '[cache] already mounted at \$MNT'
+else
+  sudo mount -o discard,defaults "\$DEV" "\$MNT"
+  echo '[cache] mounted \$DEV at \$MNT'
+fi
+sudo mkdir -p "\$MNT/hf" "\$MNT/envs" "\$MNT/pip"
+sudo chown -R "\$(id -un):\$(id -gn)" "\$MNT"
+echo '[cache] ready: hf/ envs/ pip/'
+_MOUNT_EOF
+  )" 90 \
+    && log "cache disk mounted at $CACHE_MOUNT on $INSTANCE" \
+    || log "WARN: VM-side cache disk mount failed — boot-disk cache mode"
+}
+
+# Source the credential preflight helper (defines preflight_root_credential +
+# preflight_subagent_oauth). Fail-soft: if the helper is absent, warn and continue
+# (a missing helper should never silently block a run, only a dead key should).
+_CRED_PREFLIGHT_SH="${HERE}/scripts/sdar_cred_preflight.sh"
+if [ -f "$_CRED_PREFLIGHT_SH" ]; then
+  # shellcheck source=scripts/sdar_cred_preflight.sh
+  . "$_CRED_PREFLIGHT_SH"
+else
+  log "WARN: sdar_cred_preflight.sh not found at $_CRED_PREFLIGHT_SH — skipping credential preflight"
+  preflight_root_credential() { :; }
+  preflight_subagent_oauth()   { :; }
+fi
+
 log "=== SDAR optimal on-demand runner: project_id=$PROJECT_ID root=$ROOT zone=$ZONE ==="
+log "EFFECTIVE launch config: root=$ROOT sub-agents=executor=sonnet,grader=sonnet,verifier=sonnet guardrails=ARG_CONTRACTS=$ARG_CONTRACTS STUB_METRICS_GUARD=$STUB_METRICS_GUARD"
+
+# --- CREDENTIAL PREFLIGHT (fail-fast before any VM provisioning / money spent) ---
+# A dead root credential exits 1 here; a missing oauth WARN (non-fatal) prints.
+preflight_root_credential "$ROOT"
+preflight_subagent_oauth
 
 # --- 1. secure an on-demand GPU VM (no preempt). NEVER stop a RUNNING VM: it may hold a
 #        live run, and stopping one is exactly what cascaded a lost run + lost capacity. --
@@ -76,19 +179,34 @@ if [[ "$_st" == "RUNNING" ]]; then
   else
     log "FATAL: VM RUNNING with unexpected config ($_mt/$_pm), not $GPU_MT/STANDARD — refusing to stop a possibly-live VM; resolve manually"; exit 5
   fi
-elif [[ "$_st" == "MISSING" && -n "${CREATE_IMAGE:-}" ]]; then
+elif [[ "$_st" == "MISSING" && ( -n "${CREATE_IMAGE:-}" || "$USE_MI" == "1" ) ]]; then
   # CREATE-poll: the instance does not exist (e.g. an a2-ultragpu that cannot be pre-created
   # while stocked out). Repeatedly try to CREATE it on-demand until capacity returns. On-demand
   # by default (no --preemptible); GPU types require --maintenance-policy=TERMINATE.
-  log "instance $INSTANCE absent; CREATE-polling $GPU_MT in $ZONE (image $CREATE_IMAGE) every ${POLL_INTERVAL}s"
+  # When USE_MI=1, boot from the named machine image (multi-zonal, warm OS+drivers+venv)
+  # instead of a stock DLVM image-family (cold, ~30-60 min re-warm). DEFAULT OFF (no regression).
+  if [[ "$USE_MI" == "1" ]]; then
+    log "instance $INSTANCE absent; CREATE-polling $GPU_MT in $ZONE (machine-image $MI_NAME) every ${POLL_INTERVAL}s"
+  else
+    log "instance $INSTANCE absent; CREATE-polling $GPU_MT in $ZONE (image $CREATE_IMAGE) every ${POLL_INTERVAL}s"
+  fi
   _create_mrd_extra=()
   [[ "$GPU_MT" == a2-ultragpu* ]] && _create_mrd_extra+=(--discard-local-ssds-at-termination-timestamp=true)
   for i in $(seq 1 "$MAX_POLLS"); do
-    out="$("${G[@]}" compute instances create "$INSTANCE" --zone "$ZONE" --machine-type "$GPU_MT" \
-      --image-family "$CREATE_IMAGE" --image-project "${CREATE_IMAGE_PROJECT:-deeplearning-platform-release}" \
-      --maintenance-policy TERMINATE --boot-disk-size "${CREATE_DISK_GB:-1000}" --boot-disk-type pd-ssd \
-      --metadata install-nvidia-driver=True --no-restart-on-failure \
-      --max-run-duration="$MAX_RUN_DUR" --instance-termination-action=STOP "${_create_mrd_extra[@]}" 2>&1)"
+    if [[ "$USE_MI" == "1" ]]; then
+      # --source-machine-image and --image-family are mutually exclusive.
+      # Machine images are multi-zonal so zone doesn't constrain the image choice.
+      out="$("${G[@]}" compute instances create "$INSTANCE" --zone "$ZONE" --machine-type "$GPU_MT" \
+        --source-machine-image "$MI_NAME" \
+        --maintenance-policy TERMINATE --no-restart-on-failure \
+        --max-run-duration="$MAX_RUN_DUR" --instance-termination-action=STOP "${_create_mrd_extra[@]}" 2>&1)"
+    else
+      out="$("${G[@]}" compute instances create "$INSTANCE" --zone "$ZONE" --machine-type "$GPU_MT" \
+        --image-family "$CREATE_IMAGE" --image-project "${CREATE_IMAGE_PROJECT:-deeplearning-platform-release}" \
+        --maintenance-policy TERMINATE --boot-disk-size "${CREATE_DISK_GB:-1000}" --boot-disk-type pd-ssd \
+        --metadata install-nvidia-driver=True --no-restart-on-failure \
+        --max-run-duration="$MAX_RUN_DUR" --instance-termination-action=STOP "${_create_mrd_extra[@]}" 2>&1)"
+    fi
     if [[ "$(status_)" == "RUNNING" ]]; then log "[$i] CAPACITY — created $INSTANCE ($GPU_MT in $ZONE)"; got=1; break; fi
     if echo "$out" | grep -qiE 'STOCKOUT|enough resources|EXHAUSTED|currently unavailable'; then
       log "[$i] stocked out; sleeping ${POLL_INTERVAL}s"; sleep "$POLL_INTERVAL"
@@ -145,6 +263,9 @@ if ! mkdir "$LOCKDIR" 2>/dev/null; then
 fi
 log "acquired launch lock — proceeding as the run target ($ZONE/$INSTANCE/$GPU_MT)"
 wait_ssh
+# Attach + mount the persistent cache disk after the VM is up (idempotent; no-op
+# when USE_CACHE_DISK=0 so boot-disk cache mode is byte-identical when unset).
+attach_and_mount_cache_disk
 
 # --- 2. sync latest code ---------------------------------------------------------------
 log "syncing latest code to the VM ..."
@@ -153,12 +274,26 @@ OPENRESEARCH_GCP_ZONE="$ZONE" OPENRESEARCH_GCP_INSTANCE="$INSTANCE" \
   OPENRESEARCH_GCP_PROVISIONING_MODEL=STANDARD \
   bash "$HERE/scripts/gcp_sdar_preflight.sh" sync 2>&1 | tail -4
 
-# ensure the env file exists (prepare creates it + warms caches on a fresh disk)
-if ! ssh_ "test -f $REMOTE_DIR/runs/.cache/sdar_gcp.env" 30; then
-  log "sdar_gcp.env missing — running prepare to warm env/caches (first-boot path)"
+# ensure the env file exists (prepare creates it + warms caches on a fresh disk).
+# When USE_CACHE_DISK=1 and the data disk already has a .warm_ok sentinel, prepare
+# is fast: sdar_gcp_assets.py finds the cached models/datasets on /mnt/sdar-cache
+# and skips the expensive re-download (only pip install + env provisioning runs).
+_env_ok=0
+ssh_ "test -f $REMOTE_DIR/runs/.cache/sdar_gcp.env" 30 2>/dev/null && _env_ok=1 || true
+if [[ "$_env_ok" != "1" ]]; then
+  if [[ "$USE_CACHE_DISK" == "1" && "$CACHE_DISK_ZONE" == "$ZONE" ]] && \
+     ssh_ "test -f ${CACHE_MOUNT}/.warm_ok" 20 2>/dev/null; then
+    log "cache disk warm (.warm_ok present) — prepare will use cached assets (fast path)"
+  else
+    log "sdar_gcp.env missing — running prepare to warm env/caches (first-boot path)"
+  fi
   OPENRESEARCH_GCP_ZONE="$ZONE" OPENRESEARCH_GCP_INSTANCE="$INSTANCE" \
     OPENRESEARCH_GCP_GPU_MACHINE_TYPE="$GPU_MT" OPENRESEARCH_SDAR_MIN_GPUS="$MIN_GPUS" \
     OPENRESEARCH_GCP_PROVISIONING_MODEL=STANDARD \
+    OPENRESEARCH_SDAR_USE_CACHE_DISK="$USE_CACHE_DISK" \
+    OPENRESEARCH_SDAR_CACHE_DISK="$CACHE_DISK" \
+    OPENRESEARCH_SDAR_CACHE_MOUNT="$CACHE_MOUNT" \
+    OPENRESEARCH_SDAR_CACHE_DISK_ZONE="$CACHE_DISK_ZONE" \
     bash "$HERE/scripts/gcp_sdar_preflight.sh" prepare 2>&1 | tail -8
 fi
 
@@ -184,9 +319,11 @@ ssh_ "cd $REMOTE_DIR && {
   [ -n '$EVAL_PROVENANCE_GUARD' ] && echo 'export OPENRESEARCH_EVAL_PROVENANCE_GUARD=$EVAL_PROVENANCE_GUARD' >> runs/.cache/sdar_gcp.env
   [ -n '$REUSE_RUBRIC' ] && echo 'export OPENRESEARCH_REUSE_RUBRIC=$REUSE_RUBRIC' >> runs/.cache/sdar_gcp.env
   echo 'export OPENRESEARCH_SDAR_NO_AUTOSTOP=$NO_AUTOSTOP'                      >> runs/.cache/sdar_gcp.env
+  echo 'export OPENRESEARCH_ARG_CONTRACTS=$ARG_CONTRACTS'                       >> runs/.cache/sdar_gcp.env
+  echo 'export OPENRESEARCH_STUB_METRICS_GUARD=$STUB_METRICS_GUARD'            >> runs/.cache/sdar_gcp.env
   echo 'unset OPENRESEARCH_BASELINE_EXTRA_GUIDANCE'                             >> runs/.cache/sdar_gcp.env
   set -a; . runs/.cache/sdar_gcp.env >/dev/null 2>&1; set +a
-  echo \"EFFECTIVE: ROOT=\$OPENRESEARCH_SDAR_ROOT MODELS=\$OPENRESEARCH_SDAR_MODELS PRIMARY=\$OPENRESEARCH_LIFECYCLE_PRIMARY TIMEOUT=\$OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S USE_REPO=\$OPENRESEARCH_USE_AUTHOR_REPO\"
+  echo \"EFFECTIVE: ROOT=\$OPENRESEARCH_SDAR_ROOT MODELS=\$OPENRESEARCH_SDAR_MODELS PRIMARY=\$OPENRESEARCH_LIFECYCLE_PRIMARY TIMEOUT=\$OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S USE_REPO=\$OPENRESEARCH_USE_AUTHOR_REPO ARG_CONTRACTS=\$OPENRESEARCH_ARG_CONTRACTS STUB_METRICS_GUARD=\$OPENRESEARCH_STUB_METRICS_GUARD\"
   grep -q '^CLAUDE_CODE_OAUTH_TOKEN=.' .env && echo 'oauth token: present' || echo 'oauth token: MISSING'
 }" 60
 

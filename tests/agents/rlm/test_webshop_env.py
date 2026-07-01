@@ -146,8 +146,16 @@ class FakeWebShopClient:
 
 @pytest.fixture(autouse=True)
 def _clear_webshop_url(monkeypatch):
-    """Every test starts with WEBSHOP_URL unset; tests opt back in via base_url."""
+    """Every test starts with WEBSHOP_URL and WEBSHOP_DATA_DIR unset.
+
+    Tests that need WEBSHOP_URL opt back in via ``base_url=`` or
+    ``monkeypatch.setenv("WEBSHOP_URL", ...)``.  Tests that need the
+    in-process path opt in via ``monkeypatch.setenv("WEBSHOP_DATA_DIR", ...)``.
+    Clearing both here prevents a stray env var from flipping the availability
+    branch unexpectedly.
+    """
     monkeypatch.delenv("WEBSHOP_URL", raising=False)
+    monkeypatch.delenv("WEBSHOP_DATA_DIR", raising=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -491,3 +499,177 @@ def test_task_index_resolution_is_deterministic():
     assert env._resolve_goal_idx(task="-12", seed=None) == 2          # abs, then % 10
     assert env._resolve_goal_idx(task=None, seed=7) == 7              # seed fallback
     assert env._resolve_goal_idx(task=None, seed=None) == 0           # default
+
+
+# --------------------------------------------------------------------------- #
+# In-process backend (WEBSHOP_DATA_DIR set, WEBSHOP_URL unset)                 #
+# --------------------------------------------------------------------------- #
+# The mock replaces _InProcessBackend so CI needs no real web_agent_site.      #
+# All tests are socket-hermetic and run in the base venv.                      #
+
+class MockInProcBackend:
+    """Scripted in-process backend — no web_agent_site required.
+
+    Scripted episode: reset → "Instruction: buy red shoes" → search → click → buy.
+    """
+
+    num_goals: int = 100  # class-level to match _InProcessBackend contract
+
+    def __init__(self, data_dir: str, num_products=None) -> None:
+        self.data_dir = data_dir
+        # Make num_goals an instance attribute too (mirrors _InProcessBackend).
+        self.num_goals = 100
+
+    def reset(self, goal_idx: int) -> str:
+        return f"Instruction: buy red shoes (goal {goal_idx})\n[Search]"
+
+    def step(self, action: str) -> tuple[str, float, bool]:
+        a = action.lower()
+        if "buy" in a:
+            return "Thank you for your purchase!", 0.875, True
+        if "search" in a:
+            return "Results: [B001] Red Running Shoes - $42\n[next >]", 0.0, False
+        # Any other click → item page.
+        return "Red Running Shoes $42\n[buy now]", 0.0, False
+
+
+class MockFailingBackend:
+    """Backend whose __init__ always raises ImportError (simulates missing web_agent_site)."""
+
+    def __init__(self, *_a, **_kw) -> None:
+        raise ImportError("web_agent_site not installed (mock)")
+
+
+class TestInProcessWebShopEnv:
+    """In-process mode tests; all socket-hermetic, no web_agent_site needed."""
+
+    # ------------------------------------------------------------------ #
+    # Test 1: construction triggers when WEBSHOP_DATA_DIR is set           #
+    # ------------------------------------------------------------------ #
+    def test_inprocess_construction_when_data_dir_set(self, monkeypatch, tmp_path):
+        """WebShopEnv._inproc is populated when WEBSHOP_DATA_DIR is set."""
+        monkeypatch.setenv("WEBSHOP_DATA_DIR", str(tmp_path))
+        monkeypatch.setattr(webshop_env, "_InProcessBackend", MockInProcBackend)
+
+        env = WebShopEnv()  # must not raise
+        assert env._inproc is not None
+        assert isinstance(env._inproc, MockInProcBackend)
+        assert env._num_goals == 100  # propagated from backend.num_goals
+        assert env.base_url == ""     # no HTTP URL
+
+    # ------------------------------------------------------------------ #
+    # Test 2: available() reports in-process when data_dir set             #
+    # ------------------------------------------------------------------ #
+    def test_inprocess_available_when_data_dir_set(self, monkeypatch, tmp_path):
+        """available() returns (True, 'in-process...') when WEBSHOP_DATA_DIR set."""
+        monkeypatch.setenv("WEBSHOP_DATA_DIR", str(tmp_path))
+        ok, reason = WebShopEnv.available()
+        assert ok is True
+        assert "in-process" in reason
+        assert str(tmp_path) in reason
+
+    # ------------------------------------------------------------------ #
+    # Test 3: full episode — search → click → buy earns nonzero reward    #
+    # ------------------------------------------------------------------ #
+    def test_inprocess_full_episode_reward_nonzero(self, monkeypatch, tmp_path):
+        """A scripted search→click→buy episode earns the mock's 0.875 reward."""
+        monkeypatch.setenv("WEBSHOP_DATA_DIR", str(tmp_path))
+        monkeypatch.setattr(webshop_env, "_InProcessBackend", MockInProcBackend)
+
+        env = WebShopEnv()
+        obs0 = env.reset(seed=1, task=0)
+        assert "Instruction" in obs0
+        assert env.done is False
+        assert env.turns_taken == 0
+
+        r1 = env.step("search[red shoes]")
+        assert r1.done is False
+        assert r1.reward == 0.0
+        assert "B001" in r1.observation
+        assert env.turns_taken == 1
+
+        r2 = env.step("click[B001]")
+        assert r2.done is False
+        assert "buy now" in r2.observation.lower()
+        assert env.turns_taken == 2
+
+        r3 = env.step("click[buy now]")
+        assert r3.done is True
+        assert r3.reward == pytest.approx(0.875)
+        assert r3.info.get("success") is True  # 0.875 > 0.5
+        assert r3.info.get("reward") == pytest.approx(0.875)
+        assert r3.info.get("steps") == 3
+
+        assert env.done is True
+        assert env.episode_reward() == pytest.approx(0.875)
+        assert env.last_info["success"] is True
+
+        # Transcript carries the interaction.
+        transcript = env.build_student_prompt()
+        assert "search[red shoes]" in transcript
+        assert "click[buy now]" in transcript
+
+    # ------------------------------------------------------------------ #
+    # Test 4: construction failure → _inproc is None, unavailable path    #
+    # ------------------------------------------------------------------ #
+    def test_inprocess_fallback_when_construction_fails(self, monkeypatch, tmp_path):
+        """If _InProcessBackend raises, _inproc is None and step() is unavailable."""
+        monkeypatch.setenv("WEBSHOP_DATA_DIR", str(tmp_path))
+        monkeypatch.setattr(webshop_env, "_InProcessBackend", MockFailingBackend)
+
+        env = WebShopEnv()  # must not raise
+        assert env._inproc is None  # fell through to unavailable path
+
+        # Behavioral: step() returns unavailable terminal, never raises.
+        obs = env.reset()
+        assert isinstance(obs, str)
+        res = env.step("search[shoes]")
+        assert res.done is True
+        assert res.reward == 0.0
+        assert res.info.get("unavailable") is True
+
+    # ------------------------------------------------------------------ #
+    # Test 5: neither URL nor data_dir → unchanged unavailable behavior   #
+    # ------------------------------------------------------------------ #
+    def test_unavailable_when_neither_set(self):
+        """Byte-identical regression: env is unavailable when both vars unset."""
+        # autouse fixture already cleared both vars.
+        ok, reason = WebShopEnv.available()
+        assert ok is False
+        assert "WEBSHOP_URL" in reason  # existing test invariant preserved
+        assert "not set" in reason
+
+        env = WebShopEnv()
+        assert env._inproc is None
+        obs = env.reset()
+        assert "unavailable" in obs.lower()
+        res = env.step("search[anything]")
+        assert res.done is True and res.reward == 0.0
+        assert res.info.get("unavailable") is True
+
+    # ------------------------------------------------------------------ #
+    # Test 6: _patch_search_engine is safe (no web_agent_site required)   #
+    # ------------------------------------------------------------------ #
+    def test_patch_search_engine_is_safe_without_web_agent_site(self, tmp_path):
+        """_patch_search_engine must not raise when web_agent_site is not installed.
+
+        rank_bm25 IS in the dev venv.  web_agent_site is NOT.  The function should
+        build the BM25 index + patch sys.modules quietly, then silently skip the
+        direct-import branch when web_agent_site is absent.
+        """
+        import json
+        # Create minimal data files so the products load path doesn't error.
+        items = [{"Title": "Red Shoes", "Description": "comfy"}, {"Title": "Blue Hat"}]
+        (tmp_path / "items_shuffle.json").write_text(json.dumps(items))
+        (tmp_path / "items_ins_v2.json").write_text(json.dumps([]))
+
+        # Must not raise even though web_agent_site is absent (it's not in the venv).
+        try:
+            webshop_env._InProcessBackend._patch_search_engine(str(tmp_path), None)
+        except ImportError:
+            # rank_bm25 is absent (shouldn't happen in this venv) — acceptable.
+            pass
+        except Exception as exc:  # noqa: BLE001
+            raise AssertionError(
+                f"_patch_search_engine raised unexpectedly: {type(exc).__name__}: {exc}"
+            ) from exc

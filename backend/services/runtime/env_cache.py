@@ -61,6 +61,28 @@ from backend.agents.rlm.exclusion import (
 
 logger = logging.getLogger(__name__)
 
+
+def _alfworld_has_games(data_dir: "Path | str", *, max_scan: int = 200_000) -> bool:
+    """Return True iff at least one ``traj_data.json`` game file exists under ``data_dir``.
+
+    Mirrors ``alfworld_env.ALFWorldEnv._has_any_games`` but lives here (stdlib-only,
+    no alfworld import) so ``ensure_alfworld`` can verify the download without pulling
+    in the alfworld package at module scope.  Bounded walk so a pathological tree never
+    hangs.  Fail-soft: any OS error → False (treats as 'no games').
+    """
+    scanned = 0
+    try:
+        for _dp, _dns, filenames in os.walk(str(data_dir)):
+            if "traj_data.json" in filenames:
+                return True
+            scanned += len(filenames) + 1
+            if scanned >= max_scan:
+                break
+    except OSError:
+        return False
+    return False
+
+
 __all__ = [
     "EnvSetupResult",
     "EnvCacheManager",
@@ -88,29 +110,31 @@ FULL_SCOPE_ENV_GUIDANCE = (
     "HotpotQA contexts. Reward = token-F1.\n"
     "  • `from alfworld_env import ALFWorldEnv` — real ALFWorld TextWorld episodes "
     "loaded from the directory in the ALFWORLD_DATA env var.\n"
-    "  • `from webshop_env import WebShopEnv` — real WebShop via the server at the "
-    "WEBSHOP_URL env var.\n"
+    "  • `from webshop_env import WebShopEnv` — real WebShop (in-process when "
+    "WEBSHOP_DATA_DIR is set, or via HTTP server when WEBSHOP_URL is set). For "
+    "WebShop cells add flask, gym, beautifulsoup4, rank_bm25, cleantext to "
+    "requirements.txt (installed alongside the web_agent_site package).\n"
     "  • `from agentic_rollout import rollout_episode` — drives ONE multi-turn episode "
     "and returns a flat Trajectory(sequence_ids, response_mask, reward, info). Compute "
     "the GRPO advantage over a group of G such rollouts and the OPSD gate token-wise "
     "over the response_mask positions — do NOT hand-roll the turn→token-mask "
     "conversion.\n"
-    "ALFWORLD_DATA / WEBSHOP_URL / SEARCH_QA_INDEX_DIR / SEARCH_QA_RETRIEVER are "
+    "ALFWORLD_DATA / WEBSHOP_DATA_DIR + WEBSHOP_PACKAGE_DIR (in-process) or "
+    "WEBSHOP_URL (HTTP server) / SEARCH_QA_INDEX_DIR / SEARCH_QA_RETRIEVER are "
     "provided by the host-shared environment cache — consume them. The ALFWorld game "
     "data is ALREADY downloaded under $ALFWORLD_DATA; load games from there and do NOT "
     "run `alfworld-download` yourself (it is unnecessary and may not be on PATH). Do "
     "NOT start your own WebShop server or rebuild the index. Add one cell per "
     "(model × baseline × seed × env) to code/cells.json for EVERY environment in "
-    "scope — you MUST include Search-QA AND ALFWorld (and WebShop when WEBSHOP_URL is "
-    "set); a run that trains only one environment is incomplete. Put the env name in "
-    "each cell's `env` field, and add the env deps your modules import to requirements.txt "
-    "(rank_bm25, sentence-transformers, faiss-cpu, datasets, alfworld; requests is "
-    "optional — webshop_env prefers stdlib urllib). Train at PAPER DEPTH, not "
-    "smoke-test depth: STEPS >= 400, GROUP_SIZE = 8, and a token budget large enough "
-    "for multi-turn rollouts (agentic episodes need many turns × tokens). If an "
-    "environment's data or server is genuinely unavailable at runtime, record it as a "
-    "scope gap (do NOT crash the grid) — the harness converts a verified-unavailable "
-    "env into a rubric exclusion."
+    "scope — you MUST include Search-QA AND ALFWorld (and WebShop when WEBSHOP_DATA_DIR "
+    "or WEBSHOP_URL is set); a run that trains only one environment is incomplete. Put "
+    "the env name in each cell's `env` field, and add the env deps your modules import "
+    "to requirements.txt (rank_bm25, sentence-transformers, faiss-cpu, datasets, "
+    "alfworld). Train at PAPER DEPTH, not smoke-test depth: STEPS >= 400, "
+    "GROUP_SIZE = 8, and a token budget large enough for multi-turn rollouts (agentic "
+    "episodes need many turns × tokens). If an environment's data or server is genuinely "
+    "unavailable at runtime, record it as a scope gap (do NOT crash the grid) — the "
+    "harness converts a verified-unavailable env into a rubric exclusion."
 )
 
 # Environments this manager knows how to stand up.
@@ -232,6 +256,31 @@ def _default_webshop_launcher(cache_dir: Path, port: int) -> int:
     return proc.pid
 
 
+def _default_inprocess_smoke(data_dir: str) -> bool:
+    """Minimal in-process smoke: verify data files exist + web_agent_site is importable.
+
+    This is the real path injected in production.  Tests inject a fast lambda
+    so CI never needs web_agent_site installed.  Returns False on any failure
+    (never raises) — the caller converts False into a verified Exclusion.
+    """
+    items = os.path.join(data_dir, "items_shuffle.json")
+    attrs = os.path.join(data_dir, "items_ins_v2.json")
+    if not (os.path.exists(items) and os.path.exists(attrs)):
+        logger.debug("env_cache: WebShop in-process smoke: missing data files under %s", data_dir)
+        return False
+    pkg_dir = os.environ.get("WEBSHOP_PACKAGE_DIR", "").strip()
+    if pkg_dir:
+        import sys as _sys  # noqa: PLC0415 — lazy
+        if pkg_dir not in _sys.path:
+            _sys.path.insert(0, pkg_dir)
+    try:
+        import web_agent_site  # noqa: F401, PLC0415 — intentional lazy import
+        return True
+    except ImportError:
+        logger.debug("env_cache: WebShop in-process smoke: web_agent_site not importable")
+        return False
+
+
 def _default_probe(url: str, *, timeout_s: float = 2.0) -> bool:
     """HTTP liveness probe (real path; injected in tests)."""
     import urllib.request
@@ -335,6 +384,7 @@ class EnvCacheManager:
         server_launcher: Callable[[Path, int], int] | None = None,
         probe: Callable[[str], bool] | None = None,
         index_builder: Callable[[Path], "Path | None"] | None = None,
+        inprocess_smoke: "Callable[[str], bool] | None" = None,
         webshop_port: int = 3000,
         server_ready_timeout_s: float = 60.0,
         clock: Callable[[], float] = time.monotonic,
@@ -347,6 +397,8 @@ class EnvCacheManager:
         self._launcher = server_launcher or _default_webshop_launcher
         self._probe = probe or _default_probe
         self._index_builder = index_builder or _default_search_qa_index_builder
+        # [NEW 2026-06-27] Injectable smoke for the in-process WebShop path.
+        self._inprocess_smoke: Callable[[str], bool] = inprocess_smoke or _default_inprocess_smoke
         self._webshop_port = int(webshop_port)
         self._ready_timeout_s = float(server_ready_timeout_s)
         self._clock = clock
@@ -426,10 +478,35 @@ class EnvCacheManager:
             with self._locked_state() as state:
                 rec = state.get("alfworld") or {}
                 if rec.get("ready") and Path(rec.get("data_path", "")).exists():
-                    return EnvSetupResult(env=display_name, ok=True,
-                                          data_path=rec["data_path"], detail="cache hit")
+                    # Game-file presence check: a stale/partial download could have
+                    # written the directory with no traj_data.json games, in which
+                    # case cells would produce info["unavailable"]=True and 0.0 rewards
+                    # that are counted as real results (the silent zero-score failure).
+                    # Re-verify game files; if missing, fall through to re-download.
+                    if _alfworld_has_games(Path(rec["data_path"])):
+                        return EnvSetupResult(env=display_name, ok=True,
+                                              data_path=rec["data_path"], detail="cache hit")
+                    logger.warning(
+                        "env_cache: ALFWorld cache hit but no games found under %r; "
+                        "re-downloading to recover", rec["data_path"]
+                    )
+                    # Clear stale state so a re-download and fresh state record follow.
+                    state.pop("alfworld", None)
                 data_dir.mkdir(parents=True, exist_ok=True)
                 self._downloader(data_dir)   # injected; real path runs alfworld-download
+                # Verify game files are actually present after the download completes.
+                # A successful alfworld-download that yields no games (network blip,
+                # partial fetch) must be treated as a failure — otherwise cells inherit
+                # ALFWORLD_DATA pointing at an empty dir and produce 0.0 rewards that
+                # are counted in the score instead of being excluded as env_setup_failed.
+                if not _alfworld_has_games(data_dir):
+                    reason = (
+                        f"alfworld-download ran without error but no games (traj_data.json) "
+                        f"found under {data_dir!r}; download may be incomplete. "
+                        "Re-run with a clean cache (delete the alfworld/ subdir)."
+                    )
+                    logger.warning("env_cache: ALFWorld %s", reason)
+                    return self._fail(display_name, reason, evidence=str(data_dir))
                 state["alfworld"] = {"ready": True, "data_path": str(data_dir),
                                      "downloaded_at": self._clock()}
                 return EnvSetupResult(env=display_name, ok=True,
@@ -439,8 +516,83 @@ class EnvCacheManager:
             return self._fail(display_name, f"alfworld-download failed: {type(exc).__name__}: {exc}",
                               evidence=str(exc)[:200])
 
+    def _find_sdar_webshop_pkg(self) -> str | None:
+        """Return the ``web_agent_site`` package root from the SDAR ref, or ``None``.
+
+        The SDAR ref is at ``<cache_dir>/../SDAR_ref`` (i.e. ``runs/.cache/SDAR_ref``).
+        The package root — the directory whose child is ``web_agent_site/`` — is at
+        ``SDAR_ref/agent_system/environments/env_package/webshop/webshop/``.
+        """
+        candidate = (
+            self.cache_dir.parent
+            / "SDAR_ref"
+            / "agent_system"
+            / "environments"
+            / "env_package"
+            / "webshop"
+            / "webshop"
+        )
+        if (candidate / "web_agent_site").is_dir():
+            return str(candidate)
+        return None
+
     def acquire_webshop(self, *, display_name: str = _WEBSHOP) -> EnvSetupResult:
-        """Acquire a lease on the shared WebShop server (start it if needed)."""
+        """Acquire WebShop: in-process (preferred) or HTTP server (legacy).
+
+        **In-process path (new, 2026-06-27):** activated when ``WEBSHOP_DATA_DIR``
+        is set in the environment (operator pre-staged product corpus) OR the SDAR
+        ref package can be detected at the standard cache location AND
+        ``WEBSHOP_DATA_DIR`` is set.  On success sets ``WEBSHOP_DATA_DIR`` (NOT
+        ``WEBSHOP_URL``) in ``env_vars``; ``WebShopEnv.__init__`` detects this and
+        constructs an ``_InProcessBackend`` (zero sockets, no Java/Lucene).
+
+        **Legacy HTTP path:** used when ``WEBSHOP_DATA_DIR`` is unset.  Starts
+        (or reuses) a shared ``web_agent_site.app`` server process; ref-counted
+        (``release_webshop`` tears it down when the last lease drops).  Sets
+        ``WEBSHOP_URL`` as before — backward-compatible with all existing callers.
+        """
+        # ---- In-process path ------------------------------------------------
+        data_dir_env = os.environ.get("WEBSHOP_DATA_DIR", "").strip()
+        if data_dir_env:
+            # Resolve (or auto-detect) the package root alongside the data dir.
+            pkg_dir = os.environ.get("WEBSHOP_PACKAGE_DIR", "").strip() or self._find_sdar_webshop_pkg()
+
+            # Smoke test: data files present + web_agent_site importable.
+            try:
+                smoke_ok = self._inprocess_smoke(data_dir_env)
+            except Exception as exc:  # noqa: BLE001 — smoke must never propagate
+                smoke_ok = False
+                logger.warning("env_cache: WebShop in-process smoke raised: %s", exc)
+
+            if not smoke_ok:
+                return self._fail(
+                    display_name,
+                    f"WebShop in-process smoke failed for WEBSHOP_DATA_DIR={data_dir_env!r}",
+                    evidence=data_dir_env,
+                )
+
+            # Record state (best-effort — failure here is non-fatal).
+            with contextlib.suppress(Exception):
+                with self._locked_state() as state:
+                    state["webshop"] = {
+                        "ready": True, "inprocess": True,
+                        "data_dir": data_dir_env,
+                        **({"pkg_dir": pkg_dir} if pkg_dir else {}),
+                    }
+
+            env_vars: dict[str, str] = {"WEBSHOP_DATA_DIR": data_dir_env}
+            if pkg_dir:
+                env_vars["WEBSHOP_PACKAGE_DIR"] = pkg_dir
+            num_prods = os.environ.get("WEBSHOP_NUM_PRODUCTS", "").strip()
+            if num_prods:
+                env_vars["WEBSHOP_NUM_PRODUCTS"] = num_prods
+            return EnvSetupResult(
+                env=display_name, ok=True,
+                env_vars=env_vars,
+                detail=f"in-process (data_dir={data_dir_env})",
+            )
+
+        # ---- Legacy HTTP server path (unchanged from original) ---------------
         base_url = f"http://127.0.0.1:{self._webshop_port}"
         try:
             with self._locked_state() as state:

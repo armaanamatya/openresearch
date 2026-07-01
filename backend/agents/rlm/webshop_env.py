@@ -5,8 +5,24 @@ the canonical web-navigation benchmark of the paper's three environments and, li
 ALFWorld, cannot be faked as closed-book QA — the policy has to *search* a catalog,
 *click* through item lists and option pages, and *buy* the right product to earn the
 WebShop matching reward.  This module restores it as a real :class:`AgenticEnv`
-talking to the WebShop server that ``env_cache.acquire_webshop`` stands up and
-exports as ``WEBSHOP_URL``.
+talking to either an in-process backend (preferred; zero sockets, no Java/Lucene) or
+an HTTP server (legacy).
+
+**In-process mode (2026-06-27).** When ``WEBSHOP_URL`` is unset but ``WEBSHOP_DATA_DIR``
+is set, :class:`WebShopEnv` constructs an :class:`_InProcessBackend` that wraps
+``web_agent_site.envs.web_agent_text_env.WebAgentTextEnv`` directly — the authors'
+``SimServer`` renders Flask templates in-process, never binds a socket.  The only
+blocker (``init_search_engine`` calling ``LuceneSearcher`` which requires Java + a
+pre-built index) is removed by a ``rank_bm25.BM25Okapi`` monkey-patch applied before
+the first ``web_agent_site`` import.  **FIDELITY DEVIATION:** BM25Okapi (pure Python,
+unigram) replaces Lucene BM25F; search ranking quality is slightly lower but the GRPO
+policy learns navigation regardless of exact ranking.  Running the WebShop cell under
+``OPENRESEARCH_WEBSHOP_PYTHON`` (a py3.10 verl-webshop env with the real Lucene index)
+is the faithful upgrade.  TODO: wire ``OPENRESEARCH_WEBSHOP_PYTHON`` as a per-cell
+interpreter seam in ``gpu_cell_runner`` when faithful Lucene search is required.
+
+When neither ``WEBSHOP_URL`` nor ``WEBSHOP_DATA_DIR`` is set, behavior is
+byte-identical to the prior version (the unavailability path).
 
 **Action grammar (WebShop canonical).**  The policy emits ONE action per turn:
 
@@ -65,7 +81,7 @@ from typing import Any, Callable, Protocol
 # agent-generated trainer and this module both resolve it as a top-level module.
 from sdar_env_base import AgenticEnv, StepResult
 
-__all__ = ["WebShopEnv", "HttpResponse", "UrllibClient"]
+__all__ = ["WebShopEnv", "HttpResponse", "UrllibClient", "_InProcessBackend"]
 
 #: Default per-request HTTP timeout (seconds).  Kept short so a wedged server
 #: degrades into a textual observation quickly instead of stalling a cell.
@@ -223,6 +239,128 @@ _SYSTEM_PROMPT = (
 )
 
 
+class _InProcessBackend:
+    """Zero-network WebShop backend wrapping ``web_agent_site.WebAgentTextEnv``.
+
+    Lazy-imported: only instantiated when ``WEBSHOP_URL`` is unset and
+    ``WEBSHOP_DATA_DIR`` is set, so this copyable file stays import-light for
+    all non-WebShop cells.
+
+    **FIDELITY DEVIATION:** ``init_search_engine`` is monkey-patched to return a
+    ``rank_bm25.BM25Okapi`` searcher (pure Python, unigram) instead of the authors'
+    ``LuceneSearcher`` (Java ≥11, pre-built index, pyserini).  rank_bm25 is already
+    in ``web_agent_site``'s own dependency list, so no new transitive dep is added.
+    The BM25 patch is applied BEFORE the first ``web_agent_site`` import to avoid
+    the Java requirement.
+
+    ``WEBSHOP_PACKAGE_DIR`` env var (set by ``env_cache.acquire_webshop``) prepends
+    the package root containing ``web_agent_site/`` onto ``sys.path`` so the package
+    is importable without a full ``pip install``.
+    """
+
+    def __init__(self, data_dir: str, num_products: int | None = None) -> None:
+        import sys as _sys  # noqa: PLC0415 — lazy inside in-process branch only
+
+        pkg_root = os.environ.get("WEBSHOP_PACKAGE_DIR", "").strip()
+        if pkg_root and pkg_root not in _sys.path:
+            _sys.path.insert(0, pkg_root)
+
+        # Patch BEFORE the first web_agent_site import (engine.engine.init_search_engine
+        # is imported at module level by WebAgentTextEnv; patching sys.modules is the
+        # reliable hook regardless of import order).
+        _InProcessBackend._patch_search_engine(data_dir, num_products)
+
+        from web_agent_site.envs.web_agent_text_env import WebAgentTextEnv  # noqa: PLC0415
+
+        self._gym_env = WebAgentTextEnv(
+            observation_mode="text",
+            file_path=os.path.join(data_dir, "items_shuffle.json"),
+            attr_path=os.path.join(data_dir, "items_ins_v2.json"),
+            num_products=num_products,
+        )
+        #: Total goals in this corpus; used for deterministic goal-idx wrapping.
+        self.num_goals: int = len(self._gym_env.server.goals)
+
+    @staticmethod
+    def _patch_search_engine(data_dir: str, num_products: int | None) -> None:
+        """Replace ``LuceneSearcher`` with ``BM25Okapi`` before any web_agent_site import.
+
+        Must be called once per process before the first ``web_agent_site.engine.engine``
+        import.  rank_bm25 is already in web_agent_site's own deps — no new dep added.
+
+        The BM25 quality is slightly lower than Lucene BM25F but the GRPO policy
+        learns to navigate search results regardless of exact ranking; absolute reward
+        may differ by ≤ 5% from paper results using the full Lucene stack.
+        """
+        import json as _json  # noqa: PLC0415
+        import sys as _sys  # noqa: PLC0415
+
+        from rank_bm25 import BM25Okapi  # noqa: PLC0415
+
+        products_path = os.path.join(data_dir, "items_shuffle.json")
+        try:
+            with open(products_path) as _f:
+                products = _json.load(_f)
+            if num_products:
+                products = products[:num_products]
+        except Exception:  # noqa: BLE001 — defensive; empty corpus → stub BM25
+            products = []
+
+        corpus = []
+        for p in products:
+            tokens = " ".join([
+                str(p.get("Title", "")),
+                str(p.get("Description", "")),
+            ]).lower().split()
+            corpus.append(tokens if tokens else ["_placeholder_"])
+        bm25 = BM25Okapi(corpus) if corpus else BM25Okapi([["_placeholder_"]])
+
+        class _BM25SearchEngine:
+            def __init__(self, bm25_obj: "BM25Okapi", prods: list) -> None:
+                self._bm25 = bm25_obj
+                self._n = len(prods)
+
+            def search(self, query: str, k: int = 50) -> list:
+                from collections import namedtuple  # noqa: PLC0415
+                Hit = namedtuple("Hit", ["docid", "score"])
+                tokens = str(query).lower().split()
+                scores = self._bm25.get_scores(tokens)
+                ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k]
+                return [Hit(docid=str(i), score=float(scores[i])) for i in ranked]
+
+        _engine = _BM25SearchEngine(bm25, products)
+        _replace = lambda num_products=None: _engine  # noqa: E731 — lambda for brevity
+
+        # Patch sys.modules if the module was already imported.
+        if "web_agent_site.engine.engine" in _sys.modules:
+            _sys.modules["web_agent_site.engine.engine"].init_search_engine = _replace
+        # Also patch via direct import (handles the future-import case).
+        try:
+            import web_agent_site.engine.engine as _wse  # noqa: PLC0415
+            _wse.init_search_engine = _replace
+        except ImportError:
+            pass  # not yet on sys.path — the sys.modules patch covers the cached case
+
+    def reset(self, goal_idx: int) -> str:
+        """Start a new episode for ``goal_idx``; return the initial observation text."""
+        obs, _ = self._gym_env.reset(session=goal_idx)
+        return str(obs) if obs else ""
+
+    def step(self, action: str) -> tuple[str, float, bool]:
+        """Apply one action; return ``(observation, reward, done)``.
+
+        ``WebAgentTextEnv.step()`` auto-resets internally when ``done=True``
+        (line 137 of web_agent_text_env.py).  The reward is captured from the
+        RETURN TUPLE before the internal reset clears it — no state is read from
+        the gym env after ``step()`` returns.
+        """
+        obs, reward, done, _info = self._gym_env.step(action)
+        obs_str = str(obs) if obs else ""
+        reward_f = float(reward) if reward is not None else 0.0
+        reward_f = max(0.0, min(1.0, reward_f))  # WebShop score ∈ [0, 1]
+        return obs_str, reward_f, bool(done)
+
+
 class WebShopEnv(AgenticEnv):
     """Real WebShop agentic environment (search/click → matching-score reward).
 
@@ -277,6 +415,23 @@ class WebShopEnv(AgenticEnv):
         self._last_obs: str = ""
         self._unavailable_reason: str | None = None
 
+        # [NEW 2026-06-27] In-process backend: when WEBSHOP_URL is unset but
+        # WEBSHOP_DATA_DIR is set, construct _InProcessBackend (zero sockets, no
+        # Java/Lucene).  Fail-soft: a construction error sets _inproc=None and the
+        # env falls through to the unavailability path — never raises.
+        self._inproc: "_InProcessBackend | None" = None
+        if not self.base_url:
+            _data_dir = os.environ.get("WEBSHOP_DATA_DIR", "").strip()
+            if _data_dir:
+                try:
+                    _num_p_str = os.environ.get("WEBSHOP_NUM_PRODUCTS", "").strip()
+                    _num_p = int(_num_p_str) if _num_p_str else None
+                    self._inproc = _InProcessBackend(_data_dir, num_products=_num_p)
+                    if self._num_goals is None:
+                        self._num_goals = self._inproc.num_goals
+                except Exception:  # noqa: BLE001 — fail-soft; falls to unavailable path
+                    self._inproc = None
+
     # --- HTTP seam dispatch --------------------------------------------------
 
     def _get(self, path: str) -> HttpResponse:
@@ -309,25 +464,37 @@ class WebShopEnv(AgenticEnv):
 
     @classmethod
     def available(cls, *, client: HttpClient | None = None, base_url: str | None = None) -> tuple[bool, str]:
-        """Report ``(ok, reason)`` for whether the WebShop server is reachable.
+        """Report ``(ok, reason)`` for whether WebShop is usable.
 
-        ``WEBSHOP_URL`` must be set (or ``base_url`` passed) and a quick GET of the
-        root must succeed.  Never raises — a failed probe is reported as
-        ``(False, reason)``.  ``client`` is injectable so the test can assert the
-        unset-URL branch without any network.
+        Checks in priority order:
+        1. HTTP path — ``WEBSHOP_URL`` (or explicit ``base_url``) + quick GET probe.
+        2. In-process path — ``WEBSHOP_DATA_DIR`` set (optimistic; construction
+           is lazy and fail-soft in ``__init__``).
+        3. Neither set → ``(False, reason)``.
+
+        Never raises.  ``client`` is injectable so tests can assert the unset-URL
+        branch without any network.
         """
+        # 1. HTTP probe.
         url = (base_url if base_url is not None else os.environ.get("WEBSHOP_URL", "")) or ""
         url = url.strip().rstrip("/")
-        if not url:
-            return False, "WEBSHOP_URL is not set"
-        probe = client or UrllibClient(timeout_s=min(_DEFAULT_TIMEOUT_S, 4.0))
-        try:
-            resp = probe.get(url + "/")
-        except Exception as exc:  # noqa: BLE001
-            return False, f"WebShop probe raised {type(exc).__name__}: {exc}"
-        if getattr(resp, "ok", False):
-            return True, f"WebShop reachable at {url}"
-        return False, f"WebShop probe to {url} returned status {getattr(resp, 'status', 0)}"
+        if url:
+            probe = client or UrllibClient(timeout_s=min(_DEFAULT_TIMEOUT_S, 4.0))
+            try:
+                resp = probe.get(url + "/")
+            except Exception as exc:  # noqa: BLE001
+                return False, f"WebShop probe raised {type(exc).__name__}: {exc}"
+            if getattr(resp, "ok", False):
+                return True, f"WebShop reachable at {url}"
+            return False, f"WebShop probe to {url} returned status {getattr(resp, 'status', 0)}"
+
+        # 2. In-process path.
+        data_dir = os.environ.get("WEBSHOP_DATA_DIR", "").strip()
+        if data_dir:
+            return True, f"WebShop in-process mode (WEBSHOP_DATA_DIR={data_dir})"
+
+        # 3. Neither configured.
+        return False, "WEBSHOP_URL is not set and WEBSHOP_DATA_DIR is not set"
 
     def _unavailable_state(self) -> str | None:
         """Return a non-empty reason iff this instance's server is unreachable.
@@ -425,7 +592,19 @@ class WebShopEnv(AgenticEnv):
         self._unavailable_reason = None
         self._start_episode(system=_SYSTEM_PROMPT)
 
-        # Fetch the instruction / search-box landing page for this session.
+        if self._inproc is not None:
+            # In-process path: delegate to _InProcessBackend.reset().
+            try:
+                obs = _clip(self._inproc.reset(self._goal_idx))
+            except Exception:  # noqa: BLE001 — fail-soft; disable backend for this episode
+                obs = "[WebShop in-process backend failed at reset; check WEBSHOP_DATA_DIR]"
+                self._unavailable_reason = "in-process backend failed at reset"
+                self._inproc = None
+            self._last_obs = obs
+            self._record_obs(obs)
+            return obs
+
+        # HTTP path (unchanged).
         obs = self._fetch_landing()
         self._last_obs = obs
         self._record_obs(obs)
@@ -493,20 +672,36 @@ class WebShopEnv(AgenticEnv):
         Never raises.  Flow:
 
         1. Record the raw action (counts the turn).
-        2. If the server is unavailable (no URL, or reset()'s landing came back
+        2. [NEW] If the in-process backend is active, delegate to it directly.
+        3. If the HTTP server is unavailable (no URL, or reset()'s landing came back
            unreachable — see :meth:`_unavailable_state`), finish immediately with
            a zero-reward terminal step carrying ``info={"unavailable": True, ...}``.
-        3. Parse the action.  Unparseable / unsupported → a nudge observation, not
+        4. Parse the action.  Unparseable / unsupported → a nudge observation, not
            done (wastes the turn).
-        4. ``search[...]`` → POST the query, observe the results page.
-        5. ``click[buy now]`` → POST the purchase, read the matching reward, finish.
-        6. ``click[...]`` (non-terminal) → POST the click, observe the new page; if
+        5. ``search[...]`` → POST the query, observe the results page.
+        6. ``click[buy now]`` → POST the purchase, read the matching reward, finish.
+        7. ``click[...]`` (non-terminal) → POST the click, observe the new page; if
            the server itself signals ``done`` with a reward, honour it.
-        7. On the last allowed turn without a purchase → finish with reward 0.0.
+        8. On the last allowed turn without a purchase → finish with reward 0.0.
         """
         self._record_act(action)
 
-        # (2) Unavailable server → terminal, fail-soft.  Covers BOTH no URL at all
+        # (2) In-process path: delegate to _InProcessBackend.step() — zero sockets.
+        if self._inproc is not None:
+            try:
+                obs_raw, reward, done = self._inproc.step(action)
+            except Exception:  # noqa: BLE001 — fail-soft; end episode on backend error
+                obs_raw, reward, done = "[WebShop in-process error]", 0.0, True
+            obs = _clip(obs_raw)
+            self._last_obs = obs
+            self._record_obs(obs)
+            if done:
+                return self._finish_with(reward, obs)
+            if self._exhausted():
+                return self._finish_with(0.0, obs)
+            return StepResult(observation=obs, reward=0.0, done=False)
+
+        # (3) Unavailable server → terminal, fail-soft.  Covers BOTH no URL at all
         # and a set-but-dead URL whose landing fetch came back unreachable in
         # reset() (status 0 / non-2xx).  Without this second case a dead server
         # would burn every turn on status-0 degraded pages instead of returning

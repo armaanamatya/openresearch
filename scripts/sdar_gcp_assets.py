@@ -33,9 +33,33 @@ REPO = Path(__file__).resolve().parents[1]
 # so the lazy `from backend... import` calls below would raise ModuleNotFoundError.
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
-DEFAULT_CACHE_DIR = REPO / "runs" / ".cache" / "envs"
-DEFAULT_HF_HOME = REPO / "runs" / ".cache" / "hf"
-DEFAULT_PIP_CACHE = REPO / "runs" / ".cache" / "pip"
+# Honor OPENRESEARCH_SDAR_CACHE_ROOT when it points at an active mountpoint
+# (a persistent pd-ssd data disk attached to the VM). Falls back to the
+# repo-local runs/.cache/ when the env var is absent or the path is not a
+# mountpoint — so a stale/unset var never silently breaks a boot-disk-only run.
+def _resolve_cache_root() -> Path:
+    raw = os.environ.get("OPENRESEARCH_SDAR_CACHE_ROOT", "")
+    if raw:
+        p = Path(raw)
+        if os.path.ismount(str(p)):
+            return p
+        # Specified but not a mountpoint — warn and fall back so the run still works.
+        import sys as _sys
+        print(
+            f"[WARN] OPENRESEARCH_SDAR_CACHE_ROOT={raw!r} is not a mountpoint — "
+            "using repo runs/.cache/ instead (is the data disk attached?)",
+            file=_sys.stderr,
+        )
+    return REPO / "runs" / ".cache"
+
+
+_CACHE_ROOT = _resolve_cache_root()
+DEFAULT_CACHE_DIR = _CACHE_ROOT / "envs"
+DEFAULT_HF_HOME = _CACHE_ROOT / "hf"
+DEFAULT_PIP_CACHE = _CACHE_ROOT / "pip"
+# The env file always lives on the boot disk so the VM can source it regardless
+# of whether the data disk is attached. The .warm_ok sentinel on the data disk
+# is a separate skip-gate checked by the runner shell scripts.
 DEFAULT_ENV_FILE = REPO / "runs" / ".cache" / "sdar_gcp.env"
 SDAR_REQUIREMENTS = REPO / "backend" / "requirements-sdar.txt"
 

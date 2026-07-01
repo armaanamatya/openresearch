@@ -19,15 +19,24 @@ from backend.services.runtime.env_cache import EnvCacheManager
 
 
 class _Downloader:
-    def __init__(self, fail: bool = False):
+    def __init__(self, fail: bool = False, games: bool = True):
         self.calls = 0
         self.fail = fail
+        self.games = games
 
     def __call__(self, cache_dir: Path) -> None:
         self.calls += 1
         if self.fail:
             raise RuntimeError("alfworld-download exit 1")
-        Path(cache_dir).mkdir(parents=True, exist_ok=True)  # simulate fetched data
+        cache_dir = Path(cache_dir)
+        cache_dir.mkdir(parents=True, exist_ok=True)  # simulate fetched data
+        if self.games:
+            # Simulate a real ALFWorld download: write a fake game file so that the
+            # post-download game-file verification passes.  Real alfworld-download
+            # places traj_data.json files under json_2.1.1/train/.
+            game_dir = cache_dir / "json_2.1.1" / "train" / "game0"
+            game_dir.mkdir(parents=True, exist_ok=True)
+            (game_dir / "traj_data.json").write_text("{}", encoding="utf-8")
 
 
 def _fake_clock(step: float = 1.0):
@@ -61,6 +70,51 @@ def test_alfworld_failure_returns_verified_exclusion(tmp_path: Path):
     assert r.exclusion.verified is True
     assert r.exclusion.axis == X.AXIS_ENVIRONMENT and r.exclusion.item == "ALFWorld"
     assert r.as_env_vars() == {}
+
+
+def test_alfworld_empty_download_returns_verified_exclusion(tmp_path: Path):
+    """A download that exits 0 but writes no game files must be treated as a failure.
+
+    This closes the silent-zero gap: previously ensure_alfworld returned ok=True on
+    an empty download; cells then inherited ALFWORLD_DATA pointing at a gameless dir,
+    reset() returned info["unavailable"]=True, and all rewards were 0.0 — counted as
+    real results rather than excluded as env_setup_failed.
+    """
+    m = EnvCacheManager(tmp_path, downloader=_Downloader(games=False))
+    r = m.ensure_alfworld()
+    assert not r.ok, "empty download must not return ok=True"
+    assert r.exclusion is not None
+    assert r.exclusion.kind == X.KIND_ENV_SETUP_FAILED
+    assert r.exclusion.verified is True
+    assert "traj_data.json" in r.detail or "games" in r.detail
+    assert r.as_env_vars() == {}
+
+
+def test_alfworld_stale_cache_no_games_triggers_redownload(tmp_path: Path):
+    """A stale cache record whose data_path exists but has no games falls through to re-download.
+
+    Scenario: a prior partial download left an empty alfworld/ dir; the state.json
+    records ready=True and the dir still exists.  On the next call, the cache-hit
+    branch must detect the absent games and re-download (not return a stale ok=True).
+    """
+    # First call: download succeeds WITH games → ok=True, state recorded.
+    good_dl = _Downloader(games=True)
+    m = EnvCacheManager(tmp_path, downloader=good_dl)
+    r1 = m.ensure_alfworld()
+    assert r1.ok and good_dl.calls == 1
+
+    # Simulate games being deleted (e.g. disk cleanup).
+    import shutil as _shutil
+    game_dir = tmp_path / "alfworld" / "json_2.1.1"
+    if game_dir.exists():
+        _shutil.rmtree(str(game_dir))
+
+    # Second call: cache says ready=True, dir exists, but no games — must re-download.
+    good_dl2 = _Downloader(games=True)
+    m2 = EnvCacheManager(tmp_path, downloader=good_dl2)
+    r2 = m2.ensure_alfworld()
+    assert r2.ok and good_dl2.calls == 1, "should have re-downloaded when games were gone"
+    assert r2.detail == "downloaded"
 
 
 def test_failed_setup_exclusion_routes_through_build_scope_block(tmp_path: Path):
@@ -192,3 +246,66 @@ def test_provision_scope_all_ok_no_exclusions(tmp_path: Path, monkeypatch):
     res = EC.provision_scope(["ALFWorld", "Search-QA"], m)
     assert res.exclusions == [] and "ALFWORLD_DATA" in res.env_vars
     res.release()  # no webshop lease → safe no-op
+
+
+# --- WebShop in-process path (2026-06-27) -----------------------------------
+
+def test_acquire_webshop_inprocess_ok(tmp_path: Path, monkeypatch):
+    """In-process path: WEBSHOP_DATA_DIR set + smoke passes → WEBSHOP_DATA_DIR in env_vars, no WEBSHOP_URL."""
+    data_dir = tmp_path / "ws_data"
+    data_dir.mkdir()
+    monkeypatch.setenv("WEBSHOP_DATA_DIR", str(data_dir))
+    monkeypatch.delenv("WEBSHOP_PACKAGE_DIR", raising=False)
+
+    m = EnvCacheManager(tmp_path, inprocess_smoke=lambda d: True)
+    r = m.acquire_webshop()
+
+    assert r.ok is True
+    assert r.base_url is None                          # no HTTP server
+    assert r.exclusion is None
+    assert "WEBSHOP_DATA_DIR" in r.as_env_vars()
+    assert "WEBSHOP_URL" not in r.as_env_vars()        # KEY invariant: no HTTP URL emitted
+    assert r.as_env_vars()["WEBSHOP_DATA_DIR"] == str(data_dir)
+    assert "in-process" in r.detail
+
+
+def test_acquire_webshop_inprocess_smoke_failure_returns_exclusion(tmp_path: Path, monkeypatch):
+    """When WEBSHOP_DATA_DIR is set but smoke fails, a verified Exclusion is returned."""
+    monkeypatch.setenv("WEBSHOP_DATA_DIR", str(tmp_path / "bad_data"))
+
+    m = EnvCacheManager(tmp_path, inprocess_smoke=lambda d: False)
+    r = m.acquire_webshop()
+
+    assert r.ok is False
+    assert r.exclusion is not None
+    assert r.exclusion.kind == X.KIND_ENV_SETUP_FAILED
+    assert r.exclusion.verified is True
+    assert r.as_env_vars() == {}
+
+
+def test_acquire_webshop_inprocess_does_not_count_as_http_lease(tmp_path: Path, monkeypatch):
+    """In-process mode: base_url is None so provision_scope counts zero leases."""
+    monkeypatch.setenv("WEBSHOP_DATA_DIR", str(tmp_path))
+    m = EnvCacheManager(tmp_path, inprocess_smoke=lambda d: True)
+    res = EC.provision_scope(["WebShop"], m)
+
+    assert res.ok if hasattr(res, "ok") else True
+    assert "WEBSHOP_DATA_DIR" in res.env_vars
+    assert "WEBSHOP_URL" not in res.env_vars
+    # release() must be safe even with zero HTTP leases.
+    res.release()  # should not raise
+
+
+def test_acquire_webshop_http_path_unaffected_when_data_dir_unset(tmp_path: Path, monkeypatch):
+    """When WEBSHOP_DATA_DIR is not set, the legacy HTTP path is unchanged."""
+    monkeypatch.delenv("WEBSHOP_DATA_DIR", raising=False)
+    monkeypatch.setattr(EC, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(EC.os, "kill", lambda pid, sig: None)
+
+    m = EnvCacheManager(tmp_path, server_launcher=lambda c, p: 77, probe=lambda u: True)
+    r = m.acquire_webshop()
+
+    assert r.ok is True
+    assert r.base_url is not None                   # HTTP path sets base_url
+    assert "WEBSHOP_URL" in r.as_env_vars()         # HTTP URL emitted
+    assert "WEBSHOP_DATA_DIR" not in r.as_env_vars()
