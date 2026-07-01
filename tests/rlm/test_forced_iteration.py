@@ -561,14 +561,14 @@ def test_policy_visible_across_to_thread_when_entered_inside_worker() -> None:
     assert asyncio.run(_run()) is policy
 
 
-# --- 4.7 hard best-attempt floor (REPROLAB_FLOOR_HARD) ----------------------
+# --- 4.7 hard best-attempt floor (OPENRESEARCH_FLOOR_HARD) ----------------------
 # Ratchet gap found 2026-06-12: with the iteration floor reached and candidates
 # recorded, check 5 accepted a 0.0 FINAL_VAR under a 0.656 best-attempt floor
 # with 7h of wall clock left.
 
 
 def test_floor_hard_refuses_past_iteration_floor(monkeypatch) -> None:
-    monkeypatch.setenv("REPROLAB_FLOOR_HARD", "1")
+    monkeypatch.setenv("OPENRESEARCH_FLOOR_HARD", "1")
     policy = _make_policy(score=0.0, target=0.656, iteration=5, min_iterations=2)
     refuse, msg = policy.should_refuse()
     assert refuse is True
@@ -576,21 +576,21 @@ def test_floor_hard_refuses_past_iteration_floor(monkeypatch) -> None:
 
 
 def test_floor_hard_off_by_default_accepts_past_floor(monkeypatch) -> None:
-    monkeypatch.delenv("REPROLAB_FLOOR_HARD", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_FLOOR_HARD", raising=False)
     policy = _make_policy(score=0.0, target=0.656, iteration=5, min_iterations=2)
     refuse, _ = policy.should_refuse()
     assert refuse is False
 
 
 def test_floor_hard_accepts_when_score_reaches_target(monkeypatch) -> None:
-    monkeypatch.setenv("REPROLAB_FLOOR_HARD", "1")
+    monkeypatch.setenv("OPENRESEARCH_FLOOR_HARD", "1")
     policy = _make_policy(score=0.70, target=0.656, iteration=5, min_iterations=2)
     refuse, _ = policy.should_refuse()
     assert refuse is False
 
 
 def test_floor_hard_wall_clock_still_wins(monkeypatch) -> None:
-    monkeypatch.setenv("REPROLAB_FLOOR_HARD", "1")
+    monkeypatch.setenv("OPENRESEARCH_FLOOR_HARD", "1")
     policy = _make_policy(
         score=0.0, target=0.656, iteration=5, min_iterations=2, remaining_s=30.0,
     )
@@ -599,7 +599,7 @@ def test_floor_hard_wall_clock_still_wins(monkeypatch) -> None:
 
 
 def test_floor_hard_refusal_cap_still_wins(monkeypatch) -> None:
-    monkeypatch.setenv("REPROLAB_FLOOR_HARD", "1")
+    monkeypatch.setenv("OPENRESEARCH_FLOOR_HARD", "1")
     policy = _make_policy(score=0.0, target=0.656, iteration=5, min_iterations=2)
     policy.refusal_count = 16
     refuse, _ = policy.should_refuse()
@@ -609,7 +609,7 @@ def test_floor_hard_refusal_cap_still_wins(monkeypatch) -> None:
 def test_floor_hard_refuses_no_verify_finalize_past_floor(monkeypatch) -> None:
     # 2026-06-12 attempt 3: a root that never verifies has no score/target and
     # the rubric-less accept shipped a fabricated report under a hard floor.
-    monkeypatch.setenv("REPROLAB_FLOOR_HARD", "1")
+    monkeypatch.setenv("OPENRESEARCH_FLOOR_HARD", "1")
     policy = _make_policy(score=None, target=None, iteration=5, min_iterations=2)
     refuse, msg = policy.should_refuse()
     assert refuse is True
@@ -617,7 +617,7 @@ def test_floor_hard_refuses_no_verify_finalize_past_floor(monkeypatch) -> None:
 
 
 def test_no_verify_finalize_still_accepted_without_floor_hard(monkeypatch) -> None:
-    monkeypatch.delenv("REPROLAB_FLOOR_HARD", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_FLOOR_HARD", raising=False)
     policy = _make_policy(score=None, target=None, iteration=5, min_iterations=2)
     refuse, _ = policy.should_refuse()
     assert refuse is False

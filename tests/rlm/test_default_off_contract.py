@@ -35,7 +35,7 @@ def test_all_new_flags_default_off(monkeypatch):
 
 def test_existing_default_on_rails_remain_baseline(monkeypatch):
     # These are the §11.2 baseline rails — default-ON and NOT new flags.
-    for var in ("REPROLAB_LEAF_TRIAGE", "OPENRESEARCH_METRIC_PROVENANCE"):
+    for var in ("OPENRESEARCH_LEAF_TRIAGE", "OPENRESEARCH_METRIC_PROVENANCE"):
         monkeypatch.delenv(var, raising=False)
     from backend.agents.rlm.leaf_triage import is_enabled as leaf_triage_enabled
     from backend.agents.rlm.report import _metric_provenance_enabled

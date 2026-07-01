@@ -21,7 +21,7 @@ Consumers: ``verify_against_rubric`` attaches the plan to its result (the root
 sees it immediately) and persists ``rlm_state/leaf_triage.json``;
 ``baseline_implementation`` appends a compact directive block to the next
 implementer prompt. Zero LLM calls; fail-soft everywhere; default ON with the
-``REPROLAB_LEAF_TRIAGE=0`` escape hatch (env_pin precedent — this is a
+``OPENRESEARCH_LEAF_TRIAGE=0`` escape hatch (env_pin precedent — this is a
 correctness/efficiency rail, not an experiment).
 """
 
@@ -36,7 +36,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-ENV_FLAG = "REPROLAB_LEAF_TRIAGE"
+ENV_FLAG = "OPENRESEARCH_LEAF_TRIAGE"
 STATE_FILE = "leaf_triage.json"
 
 _MAX_DIRECTIVES = 8

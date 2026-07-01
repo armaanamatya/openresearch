@@ -17,7 +17,7 @@ lowers what the run already earned). The fresh grade is persisted so
 ``write_final_report_rlm``'s merge ships it.
 
 One extra LLM grading call, gated to fire only on the stale-and-below-target
-shape (not every finalize). Default ON; ``REPROLAB_FINALIZE_REGRADE=0``
+shape (not every finalize). Default ON; ``OPENRESEARCH_FINALIZE_REGRADE=0``
 disables (env_pin precedent — a correctness rail). Fail-soft everywhere: any
 error keeps the recorded grade untouched. Paper-agnostic — keys off mtimes and
 the rubric on disk, nothing paper-specific.
@@ -33,7 +33,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-ENV_FLAG = "REPROLAB_FINALIZE_REGRADE"
+ENV_FLAG = "OPENRESEARCH_FINALIZE_REGRADE"
 # Evidence must be at least this much newer than the last grade to count as
 # "grown since graded" (filters same-second re-writes / metadata touches).
 _STALENESS_MARGIN_S = 120.0
