@@ -39,6 +39,9 @@ export HF_HOME="$CACHE/hf"
 export MAX_JOBS="${MAX_JOBS:-4}"     # fix #3 — cap flash-attn build parallelism
 export CXX=g++ CC=gcc
 SEARCH_MAX_RETRIES="${SEARCH_MAX_RETRIES:-40}"   # fix #5 — resumable download loop
+# fix #7 — base RESOLVES model ids but never DOWNLOADS the weights; stage them
+# explicitly into HF_HOME or the GPU run re-downloads them on paid GPU time.
+SDAR_STAGE_MODELS="${SDAR_STAGE_MODELS:-Qwen/Qwen3-1.7B,Qwen/Qwen2.5-3B-Instruct,Qwen/Qwen2.5-7B-Instruct}"
 
 step() { echo "[stage $(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 REPO="$HOME/sdar_authors_repro.sh"
@@ -66,6 +69,20 @@ step "fix #4: install verl preprocessing deps into the sdar env (tensordict, ...
 "$CACHE/conda/envs/sdar/bin/pip" install -q \
   tensordict codetiming omegaconf hydra-core pandas pyarrow datasets >/dev/null 2>&1 || \
   step "WARN: sdar dep install had issues (search preprocess may surface a missing module)"
+
+# --- 2b. stage model weights (fix #7 — base never downloads them) ------------
+step "fix #7: stage HF weights into HF_HOME ($SDAR_STAGE_MODELS)"
+HF_HOME="$CACHE/hf" SDAR_STAGE_MODELS="$SDAR_STAGE_MODELS" \
+  "$CACHE/conda/envs/sdar/bin/python3" - <<'PYW' || step "WARN: weight staging incomplete (GPU run may re-download)"
+import os
+from huggingface_hub import snapshot_download
+for m in [x.strip() for x in os.environ["SDAR_STAGE_MODELS"].split(",") if x.strip()]:
+    for attempt in range(6):
+        try:
+            snapshot_download(m); print("staged", m, flush=True); break
+        except Exception as e:  # HF rate-limits unauthenticated; resumable — retry
+            print(f"retry {attempt+1}/6 {m}: {e}", flush=True)
+PYW
 
 # --- 3. alfworld -------------------------------------------------------------
 step "phase: alfworld"
