@@ -70,6 +70,14 @@ USE_CACHE_DISK="${OPENRESEARCH_SDAR_USE_CACHE_DISK:-0}"
 CACHE_DISK="${OPENRESEARCH_SDAR_CACHE_DISK:-sdar-cache}"
 CACHE_MOUNT="${OPENRESEARCH_SDAR_CACHE_MOUNT:-/mnt/sdar-cache}"
 CACHE_DISK_ZONE="${OPENRESEARCH_SDAR_CACHE_DISK_ZONE:-${ZONE}}"
+# Multi-zone capacity search: space-separated candidate zones tried in order each poll
+# round; first RUNNING VM wins.  Single entry (the default) is byte-identical to today.
+# Set to "auto" to discover zones from the GCP accelerator-types API.
+ZONES="${OPENRESEARCH_GCP_ZONES:-$ZONE}"
+# Preference-ordered machine types for GPU-count fallback.  Single entry = byte-identical.
+MACHINE_TYPES="${OPENRESEARCH_GCP_MACHINE_TYPES:-$GPU_MT}"
+# Snapshot used to port the cache disk to whichever zone wins (only when USE_CACHE_DISK=1).
+CACHE_SNAPSHOT="${OPENRESEARCH_SDAR_CACHE_SNAPSHOT:-${CACHE_DISK}-snap}"
 # OPENRESEARCH_SDAR_USE_MI=1: boot from the named machine image at CREATE time
 # (--source-machine-image instead of --image-family; MI is multi-zonal).
 # Default OFF: stock DLVM CREATE path is unchanged when unset.
@@ -155,6 +163,108 @@ _MOUNT_EOF
     || log "WARN: VM-side cache disk mount failed — boot-disk cache mode"
 }
 
+# discover_gpu_zones: resolves "auto" ZONES to a concrete space-separated zone list
+# by querying GCP accelerator-types for the GPU matching the chosen machine type, then
+# best-effort filtering by region GPU quota > 0.  Prints the list to stdout.
+# WHY: avoids hard-coding zones; adapts as GCP capacity shifts per project/quota.
+# Fail-soft: returns $ZONE on any error so the single-zone path always works.
+discover_gpu_zones() {
+  local mt="${1:-$GPU_MT}"
+  local accel quota_metric
+  case "$mt" in
+    a2-ultragpu*) accel="nvidia-a100-80gb";  quota_metric="NVIDIA_A100_80GB_GPUS" ;;
+    a2-highgpu*)  accel="nvidia-tesla-a100"; quota_metric="NVIDIA_A100_GPUS" ;;
+    a3-highgpu*)  accel="nvidia-h100-80gb";  quota_metric="NVIDIA_H100_GPUS" ;;
+    *)            accel="nvidia-tesla-a100"; quota_metric="NVIDIA_A100_GPUS" ;;
+  esac
+  log "ZONES=auto: querying accelerator-types for $accel (machine $mt) ..."
+  local raw_zones
+  raw_zones="$("${G[@]}" compute accelerator-types list \
+    --filter="name=${accel}" --format="value(zone)" 2>/dev/null | tr '\n' ' ')" || true
+  if [[ -z "${raw_zones// }" ]]; then
+    log "WARN: discover_gpu_zones: no zones found for $accel — falling back to $ZONE"
+    echo "$ZONE"; return
+  fi
+  log "  discovered zones: $raw_zones"
+  # Best-effort quota filter: drop zones whose region shows 0 quota for this GPU type.
+  # On query failure we keep all discovered zones (fail-open).
+  local filtered="" seen_regions=""
+  for _dz in $raw_zones; do
+    local _dr="${_dz%-*}"  # e.g. us-central1-b -> us-central1
+    [[ " $seen_regions " == *" $_dr "* ]] && { filtered="$filtered $_dz"; continue; }
+    seen_regions="$seen_regions $_dr"
+    local _qlimit
+    _qlimit="$("${G[@]}" compute regions describe "$_dr" \
+      --format="csv[no-heading](quotas.metric,quotas.limit)" 2>/dev/null \
+      | grep "^${quota_metric}," | cut -d',' -f2 | head -1)" || true
+    if [[ -n "$_qlimit" && "${_qlimit%%.*}" -eq 0 ]] 2>/dev/null; then
+      log "  skipping $_dz (region $_dr: $quota_metric limit=${_qlimit})"
+    else
+      log "  keeping  $_dz (region $_dr: $quota_metric limit=${_qlimit:-unknown})"
+      filtered="$filtered $_dz"
+    fi
+  done
+  filtered="${filtered# }"
+  if [[ -z "$filtered" ]]; then
+    log "WARN: discover_gpu_zones: quota filter removed all zones — returning all discovered"
+    echo "${raw_zones% }"
+  else
+    echo "$filtered"
+  fi
+}
+
+# ensure_cache_snapshot: creates a global snapshot of CACHE_DISK if one doesn't exist,
+# making the disk portable to any zone that wins the capacity search.
+# WHY: pd-ssd disks are zone-locked; GCP forbids cross-zone attach; a snapshot is global.
+# Only active when USE_CACHE_DISK=1.  Fail-soft (warn + return 0 on any error).
+ensure_cache_snapshot() {
+  [[ "$USE_CACHE_DISK" != "1" ]] && return 0
+  if "${G[@]}" compute snapshots describe "$CACHE_SNAPSHOT" \
+       --format='value(name)' >/dev/null 2>&1; then
+    log "cache snapshot '$CACHE_SNAPSHOT' exists — disk portable across zones"
+    return 0
+  fi
+  if ! "${G[@]}" compute disks describe "$CACHE_DISK" --zone "$CACHE_DISK_ZONE" \
+       --format='value(name)' >/dev/null 2>&1; then
+    log "WARN: ensure_cache_snapshot: source disk '$CACHE_DISK' absent in $CACHE_DISK_ZONE — skipping"
+    return 0
+  fi
+  log "creating cache snapshot '$CACHE_SNAPSHOT' from '$CACHE_DISK' ($CACHE_DISK_ZONE) ..."
+  "${G[@]}" compute snapshots create "$CACHE_SNAPSHOT" \
+    --source-disk "$CACHE_DISK" --source-disk-zone "$CACHE_DISK_ZONE" >/dev/null 2>&1 \
+    && log "  created snapshot '$CACHE_SNAPSHOT' (disk now portable)" \
+    || log "WARN: could not create cache snapshot — zone-portability unavailable"
+}
+
+# ensure_cache_in_zone: ensures CACHE_DISK exists in <zone>, creating it from
+# CACHE_SNAPSHOT when it doesn't.  Updates CACHE_DISK_ZONE on success.
+# WHY: after multi-zone rotation the cache must follow whichever zone won.
+# When winning zone == CACHE_DISK_ZONE (single-zone / same-zone) this is a strict no-op
+# — byte-identical to the prior path.  Fail-soft (warn + return 0 on any error).
+ensure_cache_in_zone() {
+  [[ "$USE_CACHE_DISK" != "1" ]] && return 0
+  local _target="$1"
+  if [[ "$_target" == "$CACHE_DISK_ZONE" ]]; then
+    return 0  # already in the right zone — strict no-op
+  fi
+  if "${G[@]}" compute disks describe "$CACHE_DISK" --zone "$_target" \
+       --format='value(name)' >/dev/null 2>&1; then
+    log "cache disk '$CACHE_DISK' already exists in $_target"
+    CACHE_DISK_ZONE="$_target"; return 0
+  fi
+  if ! "${G[@]}" compute snapshots describe "$CACHE_SNAPSHOT" \
+       --format='value(name)' >/dev/null 2>&1; then
+    log "WARN: ensure_cache_in_zone: snapshot '$CACHE_SNAPSHOT' absent — cannot create disk in $_target"
+    log "  Falling back to boot-disk cache mode for this zone."
+    return 0
+  fi
+  log "creating cache disk '$CACHE_DISK' in $_target from snapshot '$CACHE_SNAPSHOT' ..."
+  "${G[@]}" compute disks create "$CACHE_DISK" \
+    --source-snapshot "$CACHE_SNAPSHOT" --zone "$_target" --type pd-ssd >/dev/null 2>&1 \
+    && { log "  created '$CACHE_DISK' in $_target"; CACHE_DISK_ZONE="$_target"; } \
+    || log "WARN: could not create cache disk in $_target — boot-disk cache mode"
+}
+
 # Source the credential preflight helper (defines preflight_root_credential +
 # preflight_subagent_oauth). Fail-soft: if the helper is absent, warn and continue
 # (a missing helper should never silently block a run, only a dead key should).
@@ -171,10 +281,50 @@ fi
 log "=== SDAR optimal on-demand runner: project_id=$PROJECT_ID root=$ROOT zone=$ZONE ==="
 log "EFFECTIVE launch config: root=$ROOT sub-agents=executor=sonnet,grader=sonnet,verifier=sonnet guardrails=ARG_CONTRACTS=$ARG_CONTRACTS STUB_METRICS_GUARD=$STUB_METRICS_GUARD"
 
+# Resolve ZONES: "auto" -> discover via GCP accelerator-types API; anything else is used
+# verbatim.  Single-zone default (OPENRESEARCH_GCP_ZONES unset) is byte-identical to today.
+if [[ "$ZONES" == "auto" ]]; then
+  ZONES="$(discover_gpu_zones "$GPU_MT")"
+  log "ZONES resolved from auto: $ZONES"
+fi
+
+# --plan / self-test: print the resolved capacity-search config without provisioning.
+# Run before credential preflight so no side effects occur.
+# Example: OPENRESEARCH_GCP_ZONES="us-central1-a us-central1-c" \
+#            bash scripts/sdar_gcp_optimal_run.sh --plan
+if [[ "${1:-}" == "--plan" ]]; then
+  echo "=== sdar_gcp_optimal_run --plan ==="
+  printf "  project:           %s\n" "$PROJECT"
+  printf "  instance:          %s\n" "$INSTANCE"
+  printf "  zone (primary):    %s\n" "$ZONE"
+  printf "  ZONES (resolved):  %s\n" "$ZONES"
+  printf "  MACHINE_TYPES:     %s\n" "$MACHINE_TYPES"
+  if [[ "$USE_CACHE_DISK" == "1" ]]; then
+    printf "  cache disk:        %s\n" "$CACHE_DISK"
+    printf "  cache disk zone:   %s\n" "$CACHE_DISK_ZONE"
+    printf "  cache snapshot:    %s\n" "$CACHE_SNAPSHOT"
+    printf "  cache mount:       %s\n" "$CACHE_MOUNT"
+    printf "  cache plan:        ensure_cache_snapshot -> ensure_cache_in_zone(<winning zone>)\n"
+  else
+    printf "  cache disk:        DISABLED (USE_CACHE_DISK=%s)\n" "$USE_CACHE_DISK"
+  fi
+  printf "  root:              %s\n" "$ROOT"
+  printf "  project_id:        %s\n" "$PROJECT_ID"
+  printf "  max_polls:         %s\n" "$MAX_POLLS"
+  printf "  poll_interval:     %ss\n" "$POLL_INTERVAL"
+  printf "  max_run_duration:  %s\n" "$MAX_RUN_DUR"
+  exit 0
+fi
+
 # --- CREDENTIAL PREFLIGHT (fail-fast before any VM provisioning / money spent) ---
 # A dead root credential exits 1 here; a missing oauth WARN (non-fatal) prints.
 preflight_root_credential "$ROOT"
 preflight_subagent_oauth
+
+# Pre-snapshot the cache disk before any zone-selection polling so the snapshot is
+# available for cross-zone disk creation if the VM lands in a different zone.
+# No-op when USE_CACHE_DISK=0 or the snapshot already exists (idempotent).
+ensure_cache_snapshot
 
 # --- 1. secure an on-demand GPU VM (no preempt). NEVER stop a RUNNING VM: it may hold a
 #        live run, and stopping one is exactly what cascaded a lost run + lost capacity. --
@@ -198,29 +348,57 @@ elif [[ "$_st" == "MISSING" && ( -n "${CREATE_IMAGE:-}" || "$USE_MI" == "1" ) ]]
   else
     log "instance $INSTANCE absent; CREATE-polling $GPU_MT in $ZONE (image $CREATE_IMAGE) every ${POLL_INTERVAL}s"
   fi
-  _create_mrd_extra=()
-  [[ "$GPU_MT" == a2-ultragpu* ]] && _create_mrd_extra+=(--discard-local-ssds-at-termination-timestamp=true)
+  # Multi-zone × multi-machine-type CREATE-poll.
+  # Each round tries every (machine-type, zone) combination in preference order;
+  # the first RUNNING VM wins and sets ZONE/GPU_MT/ZP for the rest of the script.
+  # Single ZONES + single MACHINE_TYPES entry is byte-identical to the prior loop
+  # (same gcloud command args, same sleep cadence, same log format).
   for i in $(seq 1 "$MAX_POLLS"); do
-    if [[ "$USE_MI" == "1" ]]; then
-      # --source-machine-image and --image-family are mutually exclusive.
-      # Machine images are multi-zonal so zone doesn't constrain the image choice.
-      out="$("${G[@]}" compute instances create "$INSTANCE" --zone "$ZONE" --machine-type "$GPU_MT" \
-        --source-machine-image "$MI_NAME" \
-        --maintenance-policy TERMINATE --no-restart-on-failure \
-        --max-run-duration="$MAX_RUN_DUR" --instance-termination-action=STOP "${_create_mrd_extra[@]}" 2>&1)"
-    else
-      out="$("${G[@]}" compute instances create "$INSTANCE" --zone "$ZONE" --machine-type "$GPU_MT" \
-        --image-family "$CREATE_IMAGE" --image-project "${CREATE_IMAGE_PROJECT:-deeplearning-platform-release}" \
-        --maintenance-policy TERMINATE --boot-disk-size "${CREATE_DISK_GB:-1000}" --boot-disk-type pd-ssd \
-        --metadata install-nvidia-driver=True --no-restart-on-failure \
-        --max-run-duration="$MAX_RUN_DUR" --instance-termination-action=STOP "${_create_mrd_extra[@]}" 2>&1)"
-    fi
-    if [[ "$(status_)" == "RUNNING" ]]; then log "[$i] CAPACITY — created $INSTANCE ($GPU_MT in $ZONE)"; got=1; break; fi
-    if echo "$out" | grep -qiE 'STOCKOUT|enough resources|EXHAUSTED|currently unavailable'; then
-      log "[$i] stocked out; sleeping ${POLL_INTERVAL}s"; sleep "$POLL_INTERVAL"
-    else
-      log "[$i] non-stockout create error: $(echo "$out" | tail -2)"; sleep "$POLL_INTERVAL"
-    fi
+    _round_found=0
+    for _try_mt in $MACHINE_TYPES; do
+      for _try_zone in $ZONES; do
+        _create_mrd_extra=()
+        [[ "$_try_mt" == a2-ultragpu* ]] && \
+          _create_mrd_extra+=(--discard-local-ssds-at-termination-timestamp=true)
+        if [[ "$USE_MI" == "1" ]]; then
+          # --source-machine-image and --image-family are mutually exclusive.
+          # Machine images are multi-zonal so zone doesn't constrain the image choice.
+          out="$("${G[@]}" compute instances create "$INSTANCE" \
+            --zone "$_try_zone" --machine-type "$_try_mt" \
+            --source-machine-image "$MI_NAME" \
+            --maintenance-policy TERMINATE --no-restart-on-failure \
+            --max-run-duration="$MAX_RUN_DUR" --instance-termination-action=STOP \
+            "${_create_mrd_extra[@]}" 2>&1)"
+        else
+          out="$("${G[@]}" compute instances create "$INSTANCE" \
+            --zone "$_try_zone" --machine-type "$_try_mt" \
+            --image-family "$CREATE_IMAGE" \
+            --image-project "${CREATE_IMAGE_PROJECT:-deeplearning-platform-release}" \
+            --maintenance-policy TERMINATE \
+            --boot-disk-size "${CREATE_DISK_GB:-1000}" --boot-disk-type pd-ssd \
+            --metadata install-nvidia-driver=True --no-restart-on-failure \
+            --max-run-duration="$MAX_RUN_DUR" --instance-termination-action=STOP \
+            "${_create_mrd_extra[@]}" 2>&1)"
+        fi
+        _zst="$("${G[@]}" compute instances describe "$INSTANCE" \
+          --zone "$_try_zone" --format='value(status)' 2>/dev/null || true)"
+        if [[ "$_zst" == "RUNNING" ]]; then
+          # Winner found: update ZONE/GPU_MT/ZP so all downstream helpers see the right values.
+          ZONE="$_try_zone"; GPU_MT="$_try_mt"
+          ZP=(--zone "$ZONE" --project "$PROJECT")
+          log "[$i] CAPACITY — created $INSTANCE ($GPU_MT in $ZONE)"
+          got=1; _round_found=1; break 2
+        fi
+        if echo "$out" | grep -qiE 'STOCKOUT|enough resources|EXHAUSTED|currently unavailable'; then
+          log "[$i] stocked out in $_try_zone/$_try_mt"
+        else
+          log "[$i] non-stockout create error in $_try_zone/$_try_mt: $(echo "$out" | tail -2)"
+        fi
+      done
+      [[ "$_round_found" == "1" ]] && break
+    done
+    [[ "$_round_found" == "1" ]] && break
+    sleep "$POLL_INTERVAL"
   done
   [[ "$got" == 1 ]] || { log "FATAL: no $GPU_MT capacity to create in $MAX_POLLS polls; giving up"; exit 2; }
   wait_ssh
@@ -271,6 +449,10 @@ if ! mkdir "$LOCKDIR" 2>/dev/null; then
 fi
 log "acquired launch lock — proceeding as the run target ($ZONE/$INSTANCE/$GPU_MT)"
 wait_ssh
+# Ensure the cache disk exists in the winning zone before trying to attach it.
+# No-op when USE_CACHE_DISK=0 or the winning zone already matches CACHE_DISK_ZONE
+# (single-zone case) — byte-identical to the prior path in both cases.
+ensure_cache_in_zone "$ZONE"
 # Attach + mount the persistent cache disk after the VM is up (idempotent; no-op
 # when USE_CACHE_DISK=0 so boot-disk cache mode is byte-identical when unset).
 attach_and_mount_cache_disk
