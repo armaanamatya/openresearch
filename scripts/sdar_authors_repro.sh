@@ -107,10 +107,14 @@ heartbeat_stop() {
     log "Heartbeat stopped"
 }
 
-# Retry a command up to 5× with 30s back-off (for flaky downloads)
+# Retry a command up to 5× with 30s back-off (for flaky downloads).
+# Uses `env "$@"` (not bare "$@") so a caller can pass an env-var prefix, e.g.
+# `retry HF_HOME=/x python ...` — with bare "$@" the shell treats `HF_HOME=/x`
+# as the program name ("No such file or directory") and every attempt fails
+# instantly without ever running the command.
 retry() {
     local n=0 max=5 delay=30
-    until "$@"; do
+    until env "$@"; do
         n=$(( n + 1 ))
         [[ ${n} -ge ${max} ]] && die "Command failed after ${max} attempts: $*"
         log "Attempt ${n}/${max} failed — retrying in ${delay}s: $*"
