@@ -42,6 +42,14 @@ REUSE_RUBRIC="${OPENRESEARCH_REUSE_RUBRIC:-}"                    # A/B: pin the 
 # or stubbing metrics.  Default ON (1); override via env before launching.
 ARG_CONTRACTS="${OPENRESEARCH_ARG_CONTRACTS:-1}"
 STUB_METRICS_GUARD="${OPENRESEARCH_STUB_METRICS_GUARD:-1}"
+# Scope override (models/datasets/seeds) + undertraining floor. Both must reach the
+# VM run env: run.sh reads OPENRESEARCH_SDAR_SCOPE_SPEC as a shell var to build
+# --scope-spec, and the harness reads OPENRESEARCH_MIN_TRAIN_STEPS from os.environ
+# (the undertrained-cell guard). Neither was forwarded before, so a scope override
+# silently defaulted to 1-model and the step floor stayed off. Forwarded in step 3.
+SCOPE_SPEC="${OPENRESEARCH_SDAR_SCOPE_SPEC:-}"          # inline JSON or a path; empty = run.sh 1-model default
+MIN_TRAIN_STEPS="${OPENRESEARCH_MIN_TRAIN_STEPS:-}"     # undertrained-cell floor; empty = guard off (byte-identical)
+REPORT_GCS="${OPENRESEARCH_SDAR_REPORT_GCS:-}"          # gs://bucket for the self_stop report upload (laptop-independent retrieval); empty = no upload
 GRADER_SAMPLES="${GRADER_SAMPLES:-1}"                  # median-of-N leaf grading; 1 is σ-gate-sufficient + ~3x faster (a big grid x3 samples blew the verify cap); 3 = fidelity-critical opt-in
 VERIFY_TIMEOUT_S="${VERIFY_TIMEOUT_S:-1800}"           # OPENRESEARCH_VERIFY_AGAINST_RUBRIC_TIMEOUT_S: verify wall-clock cap (table default 600s is too tight to grade a full grid)
 NO_AUTOSTOP="${NO_AUTOSTOP:-1}"                        # 1 = leave the VM UP on finish so the ledger-monitor pulls the report THEN stops it; 0 = run self-stops (strands the report on the a2-ultragpu disk)
@@ -326,6 +334,39 @@ ssh_ "cd $REMOTE_DIR && {
   echo \"EFFECTIVE: ROOT=\$OPENRESEARCH_SDAR_ROOT MODELS=\$OPENRESEARCH_SDAR_MODELS PRIMARY=\$OPENRESEARCH_LIFECYCLE_PRIMARY TIMEOUT=\$OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S USE_REPO=\$OPENRESEARCH_USE_AUTHOR_REPO ARG_CONTRACTS=\$OPENRESEARCH_ARG_CONTRACTS STUB_METRICS_GUARD=\$OPENRESEARCH_STUB_METRICS_GUARD\"
   grep -q '^CLAUDE_CODE_OAUTH_TOKEN=.' .env && echo 'oauth token: present' || echo 'oauth token: MISSING'
 }" 60
+
+# Forward the scope override + undertraining floor into the VM run env (the fixed
+# env-write block above intentionally omits them). Scope travels as base64 -> a JSON
+# file on the VM -> a plain PATH in sdar_gcp.env (bulletproof against JSON quoting;
+# run.sh reads OPENRESEARCH_SDAR_SCOPE_SPEC as a shell var and --scope-spec accepts a
+# path). MIN_TRAIN_STEPS is a plain integer export the harness reads from os.environ.
+if [[ -n "$SCOPE_SPEC" ]]; then
+  if [[ "$SCOPE_SPEC" == \{* ]]; then
+    _scope_b64="$(printf '%s' "$SCOPE_SPEC" | base64 | tr -d '\n')"
+    ssh_ "cd $REMOTE_DIR && printf '%s' '$_scope_b64' | base64 -d > runs/.cache/scope_override.json \
+      && echo 'export OPENRESEARCH_SDAR_SCOPE_SPEC=runs/.cache/scope_override.json' >> runs/.cache/sdar_gcp.env \
+      && echo \"[scope] \$(cat runs/.cache/scope_override.json)\"" 30 \
+      && log "forwarded inline scope override -> runs/.cache/scope_override.json on VM" \
+      || log "WARN: scope override forward failed — run will use run.sh 1-model default"
+  else
+    ssh_ "cd $REMOTE_DIR && echo 'export OPENRESEARCH_SDAR_SCOPE_SPEC=$SCOPE_SPEC' >> runs/.cache/sdar_gcp.env" 20 \
+      && log "forwarded scope path '$SCOPE_SPEC' to VM run env" \
+      || log "WARN: scope path forward failed"
+  fi
+fi
+if [[ -n "$MIN_TRAIN_STEPS" ]]; then
+  ssh_ "cd $REMOTE_DIR && echo 'export OPENRESEARCH_MIN_TRAIN_STEPS=$MIN_TRAIN_STEPS' >> runs/.cache/sdar_gcp.env" 20 \
+    && log "forwarded OPENRESEARCH_MIN_TRAIN_STEPS=$MIN_TRAIN_STEPS to VM run env" \
+    || log "WARN: MIN_TRAIN_STEPS forward failed — undertraining guard stays off"
+fi
+if [[ -n "$REPORT_GCS" ]]; then
+  # run.sh's self_stop reads OPENRESEARCH_SDAR_REPORT_GCS as a SHELL var to upload the
+  # report to GCS (laptop-independent). It is NOT in the optimal env-write block, so
+  # forward it here (a plain gs:// string — no quoting concern).
+  ssh_ "cd $REMOTE_DIR && echo 'export OPENRESEARCH_SDAR_REPORT_GCS=$REPORT_GCS' >> runs/.cache/sdar_gcp.env" 20 \
+    && log "forwarded OPENRESEARCH_SDAR_REPORT_GCS=$REPORT_GCS to VM run env" \
+    || log "WARN: REPORT_GCS forward failed — report will not auto-upload to GCS"
+fi
 
 # Stage the run's implementer guidance into the path the preflight launch SCPs. GUIDANCE_FILE
 # (relative to the repo root) lets one runner serve both the smallest-two and full-scope runs.

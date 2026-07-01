@@ -146,6 +146,23 @@ self_stop() {
   local reason="$1"
   _SELF_STOP_DONE=1   # prevent the EXIT trap from double-calling self_stop
   echo "[sdar_gcp_run] self_stop triggered: $reason"
+  # Upload the report + key diagnostics to GCS FIRST — before ANY early return
+  # (NO_AUTOSTOP / fast-crash) — so the result is retrievable laptop-independently
+  # even if the local watcher died. The old placement (after the NO_AUTOSTOP check)
+  # meant NO_AUTOSTOP=1 skipped the upload entirely and stranded the report on the
+  # boot disk, which is why prior runs needed a manual SSH-tar recovery.
+  if [[ -n "${OPENRESEARCH_SDAR_REPORT_GCS:-}" ]]; then
+    echo "[sdar_gcp_run] uploading report + diagnostics to $OPENRESEARCH_SDAR_REPORT_GCS/$PROJECT_ID/ ..."
+    gsutil -m cp \
+      "runs/$PROJECT_ID/final_report.json" \
+      "runs/$PROJECT_ID/final_report.md" \
+      "runs/$PROJECT_ID/demo_status.json" \
+      "runs/$PROJECT_ID/dashboard_events.jsonl" \
+      "runs/$PROJECT_ID/experiment_runs.jsonl" \
+      "runs/$PROJECT_ID/code/metrics.json" \
+      "runs/sdar_gcp_run.out" \
+      "$OPENRESEARCH_SDAR_REPORT_GCS/$PROJECT_ID/" 2>/dev/null || true
+  fi
   if [[ "${OPENRESEARCH_SDAR_NO_AUTOSTOP:-0}" == "1" ]]; then
     echo "[sdar_gcp_run] autostop disabled (OPENRESEARCH_SDAR_NO_AUTOSTOP=1); leaving VM running for debug"
     return 0
@@ -164,14 +181,6 @@ self_stop() {
        && (( SECONDS < ${OPENRESEARCH_SDAR_FASTCRASH_S:-600} )); then
     echo "[sdar_gcp_run] FAST CRASH after ${SECONDS}s (< ${OPENRESEARCH_SDAR_FASTCRASH_S:-600}s) and FASTCRASH_STAY_UP=1 — leaving VM UP to hold capacity; stop it manually ('down') once inspected"
     return 0
-  fi
-  if [[ -n "${OPENRESEARCH_SDAR_REPORT_GCS:-}" ]]; then
-    echo "[sdar_gcp_run] uploading run artifacts to $OPENRESEARCH_SDAR_REPORT_GCS/$PROJECT_ID/ ..."
-    gsutil -m cp \
-      "runs/$PROJECT_ID/final_report.json" \
-      "runs/$PROJECT_ID/final_report.md" \
-      "runs/sdar_gcp_run.out" \
-      "$OPENRESEARCH_SDAR_REPORT_GCS/$PROJECT_ID/" 2>/dev/null || true
   fi
   echo "[sdar_gcp_run] halting GPU billing via shutdown; boot disk persists; flip to CPU machine type to debug without GPU charges"
   sync
@@ -208,6 +217,18 @@ set +e
 # (the 2nd/3rd models flow to scope.gaps as honest, neutral omissions).
 _SDAR_SCOPE_SPEC="${OPENRESEARCH_SDAR_SCOPE_SPEC:-}"
 [ -n "$_SDAR_SCOPE_SPEC" ] || _SDAR_SCOPE_SPEC='{"models": ["Qwen3-1.7B"]}'
+# Forward --run-spec to the CLI. The launcher invokes us with
+# `--run-spec runs/.cache/run_spec.json`; that spec is loaded EARLY as spec-layer
+# defaults (backend/cli.py::_load_run_spec) so the intended guard suite
+# (env-liveness / zero-metrics / per-model-status / no-learning-signal / evidence
+# gate / metrics-completeness) + REPORT_GCS + env paths actually activate on the VM.
+# Without this, those flags — present only in run_spec.json — stayed silently OFF
+# (default-off in code), which is why prior runs had no env_health.jsonl. The
+# explicit --scope-spec/--model flags above still WIN over spec values.
+_RUN_SPEC_ARGS=("$@")
+if [ ${#_RUN_SPEC_ARGS[@]} -eq 0 ] && [ -f runs/.cache/run_spec.json ]; then
+  _RUN_SPEC_ARGS=(--run-spec runs/.cache/run_spec.json)
+fi
 timeout --signal=TERM --kill-after=180 "$OPENRESEARCH_SDAR_OUTER_WALL_S" \
   env -u ANTHROPIC_API_KEY .venv/bin/python -m backend.cli reproduce 2605.15155 \
     --mode rlm --sandbox local --model "$OPENRESEARCH_SDAR_ROOT" \
@@ -217,7 +238,8 @@ timeout --signal=TERM --kill-after=180 "$OPENRESEARCH_SDAR_OUTER_WALL_S" \
     --repo-url "${OPENRESEARCH_REPO_URL:-https://github.com/ZJU-REAL/SDAR}" \
     --gpu-mode max --gpu-parallelism multi --vram-gb "${OPENRESEARCH_SDAR_VRAM_GB:-40}" \
     --no-force-single-gpu --max-wall-clock 86400 \
-    --project-id "$PROJECT_ID"
+    --project-id "$PROJECT_ID" \
+    "${_RUN_SPEC_ARGS[@]}"
 rc=$?
 set -e
 
