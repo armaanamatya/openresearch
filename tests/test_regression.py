@@ -18,7 +18,6 @@ from backend.messaging.event import (
     register_event,
 )
 from backend.schemas.citations import Citation, NonEmptyCitations
-from backend.schemas.scope import Scope
 
 
 @pytest.fixture(autouse=True)

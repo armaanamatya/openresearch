@@ -161,32 +161,25 @@ def test_parallel_produces_same_scores_as_serial():
 def test_parallel_batches_overlap_in_wall_clock():
     """Multiple batches must execute concurrently.
 
-    Each mock complete() sleeps 0.15 s.  With 3 batches serial that is 0.45 s.
-    With ≥2 workers running in parallel the total elapsed should be well under
-    0.45 s (we check < 0.40 s to leave ample headroom for scheduling jitter).
+    Each mock complete() sleeps 0.15 s across 3 batches. Concurrency is proven
+    by overlapping call intervals — deterministic under scheduler load, unlike
+    the original `elapsed < serial_sum` wall-clock assertion, which flaked on
+    loaded runners (same class as the fixed test_gpu_cell_runner_heterogeneous).
     """
     sleep_per_batch = 0.15
     n_batches = 3  # 6 leaves / batch_size=2
-    serial_expected = sleep_per_batch * n_batches  # 0.45 s
 
     client = _RecordingLlmClient(sleep_s=sleep_per_batch)
     with tempfile.TemporaryDirectory() as tmp:
         run_dir = Path(tmp)
         _make_final_report(run_dir)
-        t_start = time.monotonic()
         score_reproduction(SIX_LEAF_TREE, run_dir, client, batch_size=2, degraded=False)
-        elapsed = time.monotonic() - t_start
 
     assert len(client.call_intervals) == n_batches, (
         f"expected {n_batches} LLM calls, got {len(client.call_intervals)}"
     )
-    # Parallel wall-clock must be strictly less than serial sum.
-    assert elapsed < serial_expected, (
-        f"elapsed={elapsed:.3f}s is not less than serial sum={serial_expected:.3f}s; "
-        "batches may not be running concurrently"
-    )
 
-    # Additional sanity: at least two calls must have overlapping intervals,
+    # At least two calls must have overlapping intervals,
     # i.e. one call started before another ended.
     intervals = client.call_intervals
     overlaps = 0
