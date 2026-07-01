@@ -12,9 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
-import os
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -282,7 +280,7 @@ class TestByteIdenticalOff:
         The import is inside the if branch, so it's deferred and the
         default off-path incurs zero overhead.
         """
-        import importlib, sys
+        import sys
         # Temporarily remove lifecycle_driver from sys.modules to reset import state.
         key = "backend.agents.rlm.lifecycle_driver"
         was_present = key in sys.modules
