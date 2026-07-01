@@ -1,11 +1,8 @@
 """Blackboard scope visibility levels.
 
-Mirrors PRD §1078-1082 and the string scopes used by
-`backend.services.orchestration.blackboard.BlackboardRecord`.
-
-Defined as a typed enum here for our event payloads. Proposed upstream
-to #11 in a follow-up PR; until then, we coerce to/from str at the
-blackboard service boundary.
+Mirrors PRD §1078-1082. Defined as a typed enum for our event payloads.
+(The original `backend.services.orchestration.blackboard` service was
+removed as dead code; the enum stays because event schemas use it.)
 """
 
 from __future__ import annotations
