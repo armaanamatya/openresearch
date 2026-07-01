@@ -2977,6 +2977,34 @@ def _backend_for_sandbox_mode(
     return LocalDockerBackend()
 
 
+def _resolve_run_backend(sandbox_mode, *, run_budget=None, gpu_plan=None):
+    """Select the run's execution backend, honoring ``OPENRESEARCH_CLOUD_FAILOVER``.
+
+    When the flag lists clouds (e.g. ``"gcp,azure"``) AND the sandbox is a cloud
+    backend, the clouds are tried in order via the GCP<->Azure failover selector
+    (``cloud_failover.select_backend_with_failover``) so a down / at-capacity
+    first cloud falls back to the next. An empty/unset flag is BYTE-IDENTICAL to
+    the direct ``_backend_for_sandbox_mode`` call (today's single-cloud
+    selection). The cloud NAMES come from the preference list ("gcp"/"azure"),
+    not from ``sandbox_mode`` — the mode check only decides "is this a cloud run
+    at all". Fail-soft: an empty preference or a non-cloud mode takes the direct
+    path unchanged.
+    """
+    from backend.services.runtime.cloud_failover import (
+        failover_preference,
+        select_backend_with_failover,
+    )
+
+    preference = failover_preference()
+    if preference:
+        mode_value = str(getattr(sandbox_mode, "value", sandbox_mode or "")).strip().lower()
+        if mode_value in ("gcp", "gke", "azure", "aks"):
+            return select_backend_with_failover(
+                preference, run_budget=run_budget, gpu_plan=gpu_plan
+            ).backend
+    return _backend_for_sandbox_mode(sandbox_mode, run_budget=run_budget, gpu_plan=gpu_plan)
+
+
 def _combine_command_output(results: list) -> str:
     """Join sandbox command results into one log — stdout AND stderr, in order.
 
@@ -3748,7 +3776,7 @@ async def _execute_in_sandbox(
     artifact_root = code_dir / "outputs" / run_id
     artifact_root.mkdir(parents=True, exist_ok=True)
 
-    service = RuntimeAppService(_backend_for_sandbox_mode(
+    service = RuntimeAppService(_resolve_run_backend(
         sandbox_mode, run_budget=run_budget, gpu_plan=gpu_plan,
     ))
     # gpu_mode threads ctx.gpu_mode → SandboxConfig so LocalDockerBackend's
