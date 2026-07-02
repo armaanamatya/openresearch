@@ -58,6 +58,7 @@ FAILURE_CLASSES: Final[tuple[str, ...]] = (
     "incomplete_metrics",        # exited 0 but metrics are placeholder / per_model unpopulated
     "insufficient_training",     # exited 0 with metrics but ran too briefly to be real training (a smoke)
     "cell_execution_error",      # Phase 0C: all run cells errored (non-OOM); zero ok cells
+    "cell_smoke_failed",         # pre-grid smoke of the smallest cell failed before the grid ran
     "nccl_timeout",              # distributed collective (NCCL) hang — a rank desynced/died
     "cuda_shlib_load",           # a CUDA runtime lib (libcupti/libcudart/…) couldn't dlopen
     "unknown",                   # falls-through
@@ -129,8 +130,10 @@ def _suggest(klass: str, *, extra: str = "") -> str:
             "no exec.log / heartbeat / SSE-event activity for 10 min — agent or pod was "
             "wedged; next iteration starts fresh against the persistent pod",
         "preflight_blocked":
-            "pre-flight validator found a scope shortcut or surrogate model in train.py; "
-            "see contract_violations for the exact lines to fix",
+            "Read contract_violations on the latest experiment row and fix EVERY hard "
+            "violation: no metric may be assigned from a literal or literal-conditional "
+            "(measure it), and every backward/step except-handler must re-raise or shrink "
+            "a batch/scale variable and retry.",
         "permission_denied":
             "file owned by a container's root user; attempt_isolation now chowns to host "
             "uid before archive — confirm Docker is reachable",
@@ -178,15 +181,21 @@ def _suggest(klass: str, *, extra: str = "") -> str:
             "(real pretrained weights, real episodes, optimizer.step() each iteration) to "
             "completion and record the measured eval metric for every model before finalizing",
         "cell_execution_error":
-            "every training cell failed with a non-OOM error (a code bug in the per-cell "
-            "trainer — TypeError / AttributeError / bad arg / import error) and ZERO cells "
-            "produced metrics. Read the cell stderr in the logs, fix the train_cell.py bug "
-            "it names, and re-run the matrix. A COMMON cause is argparse rejecting the cell "
-            "runner's flags: 'unrecognized arguments: --cell-id' means train_cell.py did not "
-            "DEFINE --cell-id / --output-dir (the runner ALWAYS passes them) — add "
-            "parser.add_argument('--cell-id') and ('--output-dir'); do not rename them. This "
-            "is NOT a scope reduction and NOT an OOM — do not shrink the grid or de-scope a "
-            "model/env; fix the code",
+            "every training cell failed with a non-OOM error. Read each failed cell's "
+            "error in code/outputs/<cell_id>/ (and the run row's error summary); fix the "
+            "train_cell.py bug it names, then smoke ONE cell standalone (python "
+            "train_cell.py --cell-id <id> --output-dir /tmp/smoke) before re-dispatching "
+            "the grid. A COMMON cause is argparse rejecting the cell runner's flags: "
+            "'unrecognized arguments: --cell-id' means train_cell.py did not DEFINE "
+            "--cell-id / --output-dir (the runner ALWAYS passes them). This is NOT a "
+            "scope reduction and NOT an OOM — do not shrink the grid or de-scope a model/env.",
+        "cell_smoke_failed":
+            "the pre-grid smoke of the smallest cell failed before the full grid was "
+            "dispatched — read the smoke log tail (status/error) in the run row, fix the "
+            "train_cell.py bug it names, then re-run that one cell standalone (python "
+            "train_cell.py --cell-id <id> --output-dir /tmp/smoke) before re-dispatching "
+            "the grid. This is the same class of code bug as cell_execution_error, caught "
+            "one cell earlier.",
         "nccl_timeout":
             "a distributed collective (NCCL) timed out — one rank hung or died while the "
             "others waited (the rank-0 watchdog fires at ~600s). Ensure every rank runs the "

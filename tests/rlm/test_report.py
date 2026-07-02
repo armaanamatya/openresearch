@@ -414,6 +414,83 @@ class TestWriteFinalReport:
 
 
 # ---------------------------------------------------------------------------
+# Tests: evidence_gate_passed report stamp (2026-07-02)
+#
+# recipe_library._evidence_gate_passed(report) reads report["evidence_gate_passed"]
+# as its Gate-1 admission predicate, but write_final_report_rlm never wrote the
+# key — so positive-recipe admission could never fire. These pin the additive
+# stamp: True on a clean gate pass, False on a gate veto, and ABSENT when the
+# gate is disabled (byte-identical off-state).
+# ---------------------------------------------------------------------------
+
+
+class TestEvidenceGatePassedStamp:
+    def _build_report(self, **overrides) -> RLMFinalReport:
+        payload = dict(_BASE_REPORT_DICT)
+        payload.update(overrides)
+        return RLMFinalReport(**payload)
+
+    def test_gate_on_clean_run_stamps_true(self, tmp_path):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / "experiment_runs.jsonl").write_text(
+            json.dumps({"success": True, "metrics": {"accuracy": 0.92}}) + "\n"
+        )
+        report = self._build_report()
+
+        json_path, _ = write_final_report_rlm(report, project_dir)
+
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        assert data["evidence_gate_passed"] is True
+
+    def test_gate_on_veto_stamps_false(self, tmp_path):
+        """No experiment_runs.jsonl evidence backs the self-attested
+        baseline_metrics -> the gate downgrades 'reproduced' to 'failed' ->
+        evidence_gate_passed must be False, not absent."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        report = self._build_report()  # verdict="reproduced", no experiment_runs.jsonl
+
+        json_path, _ = write_final_report_rlm(report, project_dir)
+
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        assert data["verdict"] == "failed"  # sanity: the gate did veto
+        assert data["evidence_gate_passed"] is False
+
+    def test_gate_off_key_absent(self, tmp_path, monkeypatch):
+        """Byte-identical off-state: disabling the gate must not add the key."""
+        monkeypatch.setenv("OPENRESEARCH_EVIDENCE_GATE", "0")
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / "experiment_runs.jsonl").write_text(
+            json.dumps({"success": True, "metrics": {"accuracy": 0.92}}) + "\n"
+        )
+        report = self._build_report()
+
+        json_path, _ = write_final_report_rlm(report, project_dir)
+
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        assert "evidence_gate_passed" not in data
+
+    def test_recipe_library_accepts_produced_report_dict(self, tmp_path):
+        """Integration: recipe_library._evidence_gate_passed(report) reads the
+        exact dict write_final_report_rlm produces."""
+        from backend.agents.rlm.recipe_library import _evidence_gate_passed
+
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / "experiment_runs.jsonl").write_text(
+            json.dumps({"success": True, "metrics": {"accuracy": 0.92}}) + "\n"
+        )
+        report = self._build_report()
+
+        json_path, _ = write_final_report_rlm(report, project_dir)
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+
+        assert _evidence_gate_passed(data) is True
+
+
+# ---------------------------------------------------------------------------
 # Tests: evidence-based verdict reconciliation (T6 / P0-I9)
 # ---------------------------------------------------------------------------
 

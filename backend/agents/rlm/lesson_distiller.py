@@ -31,6 +31,14 @@ from typing import Any
 # agent-correctable failure classes worth remembering across runs (mirrors
 # primitives._CODEX_AGENT_CORRECTABLE_FAILURES; duplicated here to avoid a heavy
 # import in the implementer-prompt path).
+#
+# cell_execution_error / preflight_blocked / cell_smoke_failed (2026-07-02):
+# live campaign validation found these were the classes campaigns actually hit
+# repeatedly, yet were absent from CORRECTABLE — _scan_failures never added
+# them to ``seen``, so no lesson was ever minted for them and the campaign's
+# memory_hints channel stayed dry regardless of how good the classifier's
+# suggested_fix was. All three are deterministic, agent-actionable code-bug
+# classes (never an infra flake), so they belong here.
 CORRECTABLE = frozenset(
     {
         "syntax_error",
@@ -39,6 +47,9 @@ CORRECTABLE = frozenset(
         "dockerfile_invalid",
         "contract_violation",
         "scope_shape_violation",
+        "cell_execution_error",
+        "preflight_blocked",
+        "cell_smoke_failed",
     }
 )
 PROMOTE_AT_ONE = frozenset({"dockerfile_invalid"})

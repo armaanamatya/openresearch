@@ -138,6 +138,16 @@ def test_preflight_blocked_flag() -> None:
     assert klass == "preflight_blocked"
 
 
+def test_cell_smoke_failed_preset_class() -> None:
+    """A guard-stamped failure_class='cell_smoke_failed' is recognised (not
+    misrouted to 'unknown') and carries a distinct, non-empty fix."""
+    result = {"success": False, "failure_class": "cell_smoke_failed", "error": "status=crash"}
+    klass, fix = classify_failure(result)
+    assert klass == "cell_smoke_failed"
+    assert fix.strip()
+    assert "train_cell.py" in fix
+
+
 def test_scope_shape_violation_flag() -> None:
     result = {"success": False, "scope_shape_violation": True}
     klass, _ = classify_failure(result)
@@ -248,3 +258,32 @@ def test_nccl_collective_timeout_classified() -> None:
     klass, fix = classify_failure({"success": False, "error": err})
     assert klass == "nccl_timeout"
     assert fix
+
+
+# ---------------------------------------------------------------------------
+# Hollow-lessons regression (2026-07-02): live campaign validation found the
+# memory_hints channel dry because cell_execution_error/preflight_blocked were
+# never mined into lessons. The dry channel was NOT caused by an empty
+# classifier fix (both already had one) — pin that here so a future change
+# can't silently regress the fix text back to empty while CORRECTABLE is
+# fixed on the lesson_distiller side.
+# ---------------------------------------------------------------------------
+
+def test_guard_stamped_classes_carry_distinct_nonempty_fixes() -> None:
+    """The three classes campaigns actually hit (cell_execution_error,
+    preflight_blocked, cell_smoke_failed) each get a real, class-specific
+    fix through the SAME preset/flag shortcuts _persist_experiment_result
+    relies on — never the generic 'unknown' fallback."""
+    cases = {
+        "cell_execution_error": {"success": False, "failure_class": "cell_execution_error"},
+        "preflight_blocked": {"success": False, "pre_flight_blocked": True},
+        "cell_smoke_failed": {"success": False, "failure_class": "cell_smoke_failed"},
+    }
+    seen_fixes = set()
+    for expected_class, result in cases.items():
+        klass, fix = classify_failure(result)
+        assert klass == expected_class
+        assert fix.strip(), f"{expected_class} produced an empty suggested_fix"
+        assert "classifier didn't recognise" not in fix
+        seen_fixes.add(fix)
+    assert len(seen_fixes) == len(cases), "fixes must be class-specific, not a shared fallback"
