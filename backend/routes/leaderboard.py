@@ -9,13 +9,14 @@ Spec: docs/superpowers/specs/2026-05-23-rubric-climb-leaderboard.md §4.4–§4.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from backend.config import get_settings
 from backend.services.events.leaderboard_cache import evict_missing
@@ -37,6 +38,15 @@ class RoleModels(BaseModel):
 
 
 class LeaderboardRow(BaseModel):
+    # extra="allow": the campaign column (added below via _read_campaign_column)
+    # is intentionally NOT a declared field with a None default — a declared
+    # Optional field would always serialize as `"campaign": null` for every
+    # non-campaign project. Passing it as an extra kwarg only when present
+    # (never passing the key at all otherwise) makes the key genuinely absent
+    # from model_dump()/JSON for the common case, matching the leaderboard's
+    # existing byte-identical-for-non-campaign-projects contract.
+    model_config = ConfigDict(extra="allow")
+
     project_id: str
     paper_id: str
     paper_title: str | None
@@ -79,6 +89,35 @@ _TERMINAL_STATUSES: frozenset[str] = frozenset({
     "interrupted",
     "killed",
 })
+
+
+def _read_campaign_column(run_dir: Path) -> dict[str, Any] | None:
+    """Best-effort read of runs/<id>/campaign/campaign.json for the
+    leaderboard's campaign column (spec §12). Read fresh at request time —
+    deliberately NOT routed through leaderboard_cache (that cache is
+    mtime-keyed on final_report.json; campaign.json changes independently
+    and far more often while a campaign is in flight). Any missing/corrupt/
+    wrong-shaped file yields None (fail-soft) so a torn campaign.json can
+    never 500 the leaderboard or block a row from being built.
+    """
+    campaign_path = run_dir / "campaign" / "campaign.json"
+    try:
+        if not campaign_path.is_file():
+            return None
+        parsed = json.loads(campaign_path.read_text(encoding="utf-8"))
+        if not isinstance(parsed, dict):
+            return None
+        next_attempt_n = int(parsed.get("next_attempt_n", 1))
+        terminal = parsed.get("terminal")
+        terminal_kind = terminal.get("kind") if isinstance(terminal, dict) else None
+        return {
+            "attempts": max(0, next_attempt_n - 1),
+            "terminal": terminal_kind,
+            "spend": parsed.get("spent"),
+        }
+    except Exception:  # noqa: BLE001 -- fail-soft: never let a torn campaign.json break a row
+        logger.warning("leaderboard: failed to read campaign.json for %s", run_dir.name, exc_info=True)
+        return None
 
 
 def _read_run(run_dir: Path) -> LeaderboardRow | None:
@@ -144,7 +183,7 @@ def _read_run(run_dir: Path) -> LeaderboardRow | None:
     # β5: extract_scores handles nested-rubric and flat-rubric_score schemas.
     overall_score, compute_adjusted_score = extract_scores(data)
 
-    return LeaderboardRow(
+    row_kwargs: dict[str, Any] = dict(
         project_id=run_dir.name,
         paper_id=str(paper.get("id") or run_dir.name),
         paper_title=paper.get("title"),
@@ -174,6 +213,14 @@ def _read_run(run_dir: Path) -> LeaderboardRow | None:
         ab_pair_id=(str(_arm["ab_pair_id"]) if _arm.get("ab_pair_id") else None),
         bes_enabled=bool(_as_dict(_arm.get("bes")).get("enabled")),
     )
+
+    # Campaign column (spec §12): attach only when campaign.json exists and
+    # parses — see _read_campaign_column's extra="allow" note on LeaderboardRow.
+    campaign_column = _read_campaign_column(run_dir)
+    if campaign_column is not None:
+        row_kwargs["campaign"] = campaign_column
+
+    return LeaderboardRow(**row_kwargs)
 
 
 def aggregate_leaderboard(

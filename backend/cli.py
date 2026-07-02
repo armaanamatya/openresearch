@@ -75,11 +75,14 @@ import backend.services.ingestion.discovery.events  # noqa: F401
 import backend.services.ingestion.intake.events  # noqa: F401
 import backend.services.ingestion.parser.events  # noqa: F401
 
+from backend.agents.rlm.campaign_composition import CampaignOptions, build_campaign
 from backend.agents.rlm.models import resolve_root_model
+from backend.agents.rlm.reproduction_campaign import CampaignLedgerError
 from backend.agents.rlm.root_validation import (
     RISK_DEGENERATE_LOOP,
     classify_root_model,
 )
+from backend.agents.rlm.run_spec_contract import apply_run_spec
 
 
 def _root_validation_gate(model: str | None) -> tuple[int | None, str | None, str | None]:
@@ -862,18 +865,7 @@ def _load_run_spec(path: str) -> None:
             f"--run-spec: expected a JSON object in {path!r}, got {type(spec).__name__}"
         )
 
-    applied = 0
-    for key, val in spec.items():
-        if key in ("models",):
-            os.environ["OPENRESEARCH_ROLE_MODELS"] = str(val)
-            applied += 1
-        elif key == "baseline_extra_guidance":
-            os.environ["OPENRESEARCH_BASELINE_EXTRA_GUIDANCE"] = str(val)
-            applied += 1
-        elif key.startswith(("OPENRESEARCH_", "REPROLAB_")):
-            os.environ[key] = str(val)
-            applied += 1
-        # Unknown keys silently ignored.
+    applied = apply_run_spec(spec, os.environ)
 
     print(
         f"[run-spec] loaded {path!r}: {applied} env key(s) applied "
@@ -2219,6 +2211,158 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
     return 0
 
 
+def _campaign_float_env(name: str) -> float | None:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def _campaign_int_env(name: str, fallback: int) -> int:
+    # Tolerant: these run at PARSER BUILD time (argparse defaults), so a
+    # garbage env value must not break every other subcommand's parsing.
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return fallback
+    try:
+        return int(raw)
+    except ValueError:
+        return fallback
+
+
+def _campaign_bool_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _campaign_driver_type(value: str) -> str:
+    """argparse ``type=`` for ``--campaign-driver``: applied to the default
+    too (argparse re-parses a string default through ``type``), so an
+    OPENRESEARCH_CAMPAIGN_DRIVER=unified env default is rejected exactly like
+    an explicit flag. All three drivers -- ``live``, ``unified``, ``paired``
+    -- construct; ``paired`` additionally requires explicit operator
+    initiation (an explicit ``--campaign-driver paired`` flag or its
+    env-default equivalent -- there is no other construction path) before it
+    passes ``operator_ack=True`` (spec §7/§20 F8)."""
+    if value not in ("live", "unified", "paired"):
+        raise argparse.ArgumentTypeError(
+            f"invalid --campaign-driver {value!r} (choose from 'live', 'unified', 'paired')"
+        )
+    return value
+
+
+def cmd_campaign(args: argparse.Namespace) -> int:
+    """Repeat-until-reproduced campaign: launch, assess, decide, repeat until
+    a terminal verdict or an operator checkpoint (spec
+    docs/superpowers/specs/2026-07-01-reproduction-campaign-and-self-
+    improving-harness-design.md). Thin route: mirrors cmd_reproduce's ingest
+    chain, then hands off to campaign_composition.build_campaign.
+    """
+    runs_root = Path(args.runs_root)
+    repo_root = Path(__file__).resolve().parents[1]
+
+    store, intake, parser, discovery, indexer, workspace = _make_services(args.database_url, runs_root)
+
+    source = _source_from_cli(args.source, "auto")
+    print(f"[campaign ingest 1/6] Registering project for {args.source}", file=sys.stderr)
+    project_id = intake.register_project(RegisterProject(source=source))
+    print(f"                       project_id={project_id}", file=sys.stderr)
+
+    project_dir = runs_root / project_id
+    skip_ingest = bool(getattr(args, "resume", False)) and project_dir.exists()
+
+    if skip_ingest:
+        print(f"[campaign ingest] --resume: reusing existing project dir {project_dir}", file=sys.stderr)
+    else:
+        print("[campaign ingest 2/6] Fetching paper", file=sys.stderr)
+        if not intake.fetch_paper(FetchPaper(project_id=project_id)):
+            print("                       FAILED — see paper_fetch_failed event", file=sys.stderr)
+            return 1
+
+        print("[campaign ingest 3/6] Parsing", file=sys.stderr)
+        if not parser.start_parsing(StartParsing(project_id=project_id)):
+            print("                       FAILED — see parsing_failed event", file=sys.stderr)
+            return 1
+
+        print("[campaign ingest 4/6] Discovering external artifacts", file=sys.stderr)
+        if not discovery.discover(DiscoverArtifacts(project_id=project_id)):
+            print("                       FAILED — see discovery_failed event", file=sys.stderr)
+            return 1
+
+        print("[campaign ingest 5/6] Indexing", file=sys.stderr)
+        if not indexer.start_indexing(StartIndexing(project_id=project_id)):
+            print("                       FAILED — see indexing_failed event", file=sys.stderr)
+            return 1
+
+        print("[campaign ingest 6/6] Building workspace", file=sys.stderr)
+        workspace.build_workspace(BuildWorkspace(project_id=project_id, agent_name="default"))
+
+    store.close()
+
+    arxiv_id = source.arxiv_id if isinstance(source, ArxivId) else None
+    if args.scope_ladder:
+        scope_ladder = tuple(rung.strip() for rung in args.scope_ladder.split(",") if rung.strip())
+    else:
+        scope_ladder = (args.scope_spec,) if args.scope_spec else ("full",)
+
+    opts = CampaignOptions(
+        paper_ref=args.source,
+        runs_root=runs_root,
+        repo_root=repo_root,
+        max_llm_usd=args.max_llm_usd,
+        max_gpu_usd=args.max_gpu_usd,
+        max_gpu_hours=args.max_gpu_hours,
+        max_attempts=args.max_attempts,
+        wall_clock_s=args.wall_clock_s,
+        mode=args.mode,
+        driver=args.driver,
+        width=args.width,
+        plateau_k=args.plateau_k,
+        sandbox=args.sandbox,
+        billing_sandbox=args.billing_sandbox,
+        gpu_usd_per_hr=args.gpu_usd_per_hr,
+        est_gpu_hours=args.est_gpu_hours,
+        run_spec_path=args.run_spec,
+        scope_spec=args.scope_spec,
+        scope_ladder=scope_ladder,
+        paper_hint=args.paper_hint,
+        require_cpu_tier=bool(args.require_cpu_tier),
+        arxiv_id=arxiv_id,
+        paper_class=args.paper_class,
+        resume=bool(args.resume),
+    )
+
+    campaign = build_campaign(project_id, opts)
+
+    try:
+        outcome = campaign.run()
+    except CampaignLedgerError as exc:
+        print(
+            "\n[MONEY-HALT] campaign ledger write/read failed — halting before any "
+            f"further spend to avoid a double-launch or an unrecorded cost: {exc}\n",
+            file=sys.stderr,
+        )
+        return 3
+
+    kind = outcome.get("kind")
+    if kind == "PAUSED":
+        print(
+            f"[campaign] project_id={project_id} kind=PAUSED pending_approval={outcome.get('pending_approval')}",
+            file=sys.stderr,
+        )
+        return 2
+
+    print(
+        f"[campaign] project_id={project_id} kind={kind} rule={outcome.get('rule')} "
+        f"stop_reason={outcome.get('stop_reason')} champion_attempt_n={outcome.get('champion_attempt_n')} "
+        f"spent={outcome.get('spent')}",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Build and return the reprolab argument parser (testable without calling main)."""
     parser = argparse.ArgumentParser(prog="reprolab")
@@ -2690,6 +2834,106 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     reproduce.set_defaults(func=cmd_reproduce)
+
+    campaign = sub.add_parser(
+        "campaign", help="Repeat-until-reproduced campaign: launch, assess, decide, repeat."
+    )
+    campaign.add_argument("source", help="PDF path, arXiv id/URL, or DOI/doi.org URL.")
+    campaign.add_argument(
+        "--max-llm-usd", dest="max_llm_usd", type=float, required=True,
+        help="Campaign-wide cap on LLM/SDK spend (never GPU dollars; spec §10.1).",
+    )
+    campaign.add_argument(
+        "--max-gpu-usd", dest="max_gpu_usd", type=float, required=True,
+        help="Campaign-wide cap on GPU dollar spend.",
+    )
+    campaign.add_argument(
+        "--max-gpu-hours", dest="max_gpu_hours", type=float, required=True,
+        help="Campaign-wide cap on GPU-hour spend.",
+    )
+    campaign.add_argument(
+        "--max-attempts", dest="max_attempts", type=int,
+        default=_campaign_int_env("OPENRESEARCH_CAMPAIGN_MAX_ATTEMPTS", 6),
+        help="Maximum attempts before EXHAUSTED (default 6; env OPENRESEARCH_CAMPAIGN_MAX_ATTEMPTS).",
+    )
+    campaign.add_argument(
+        "--wall-clock-s", dest="wall_clock_s", type=float,
+        default=_campaign_float_env("OPENRESEARCH_CAMPAIGN_WALL_CLOCK_S"),
+        help="Optional campaign-wide wall-clock ceiling in seconds (env OPENRESEARCH_CAMPAIGN_WALL_CLOCK_S).",
+    )
+    campaign.add_argument(
+        "--mode", dest="mode", choices=("unattended", "checkpoint"),
+        default=os.environ.get("OPENRESEARCH_CAMPAIGN_MODE", "unattended"),
+        help="Autonomy mode (default unattended; env OPENRESEARCH_CAMPAIGN_MODE).",
+    )
+    campaign.add_argument(
+        "--campaign-driver", dest="driver", type=_campaign_driver_type,
+        default=os.environ.get("OPENRESEARCH_CAMPAIGN_DRIVER", "live"),
+        help=(
+            "Attempt driver: 'live' (default), 'unified' (experimental), or "
+            "'paired' (experimental; runs live+unified side by side, requires "
+            "explicit operator initiation). Env OPENRESEARCH_CAMPAIGN_DRIVER."
+        ),
+    )
+    campaign.add_argument(
+        "--width", dest="width", type=int,
+        default=_campaign_int_env("OPENRESEARCH_CAMPAIGN_WIDTH", 1),
+        help="Budget-gated candidate width (default 1; env OPENRESEARCH_CAMPAIGN_WIDTH).",
+    )
+    campaign.add_argument(
+        "--plateau-k", dest="plateau_k", type=int,
+        default=_campaign_int_env("OPENRESEARCH_CAMPAIGN_PLATEAU_K", 2),
+        help="Consecutive non-improving attempts before EXHAUSTED{plateau} (default 2).",
+    )
+    campaign.add_argument(
+        "--sandbox", dest="sandbox",
+        choices=("auto", "local", "docker", "runpod", "azure", "gcp", "gke"),
+        default="local", help="Experiment backend for attempts (default local).",
+    )
+    campaign.add_argument(
+        "--billing-sandbox", dest="billing_sandbox", default=None,
+        help="Sandbox used for money-enforceability accounting when it differs from --sandbox "
+             "(default: mirrors --sandbox).",
+    )
+    campaign.add_argument(
+        "--gpu-usd-per-hr", dest="gpu_usd_per_hr", type=float, default=None,
+        help="Known GPU $/hr rate (default: resolved from rlm_state/gpu_plan.json at plan time).",
+    )
+    campaign.add_argument(
+        "--est-gpu-hours", dest="est_gpu_hours", type=float, default=2.0,
+        help="Conservative next-attempt GPU-hour estimate for DECIDE's budget-floor lookahead (default 2.0).",
+    )
+    campaign.add_argument(
+        "--run-spec", dest="run_spec", default="configs/campaign_run_spec.json",
+        help="Canonical campaign run-spec profile (default configs/campaign_run_spec.json).",
+    )
+    campaign.add_argument(
+        "--scope-spec", dest="scope_spec", default=None,
+        help="Operator-stated reproduction scope (inline JSON or file path; same vocabulary as reproduce).",
+    )
+    campaign.add_argument(
+        "--scope-ladder", dest="scope_ladder", default=None,
+        help="Comma-joined rung specs for the scope ladder (default: the scope-spec as a single rung, "
+             "else a single full rung).",
+    )
+    campaign.add_argument(
+        "--paper-hint", dest="paper_hint", default=None,
+        help="Paper-specific hint id (same vocabulary as reproduce).",
+    )
+    campaign.add_argument(
+        "--paper-class", dest="paper_class", default="generic",
+        help="Paper class label recorded on admitted positive recipes (default generic).",
+    )
+    campaign.add_argument(
+        "--require-cpu-tier", dest="require_cpu_tier", action="store_true",
+        default=_campaign_bool_env("OPENRESEARCH_CAMPAIGN_REQUIRE_CPU_TIER"),
+        help="Unattended attempts require a validated real-CPU-tier strategy (default off).",
+    )
+    campaign.add_argument(
+        "--resume", action="store_true", default=False,
+        help="Resume an existing campaign for this paper's project id.",
+    )
+    campaign.set_defaults(func=cmd_campaign)
 
     from backend.cli_paperbench import add_paperbench_subparser
     add_paperbench_subparser(sub)
