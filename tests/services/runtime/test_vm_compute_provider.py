@@ -27,6 +27,7 @@ _ENV_KEYS = (
     "OPENRESEARCH_GCP_SSH_USER",
     "OPENRESEARCH_GCP_ZONE",
     "OPENRESEARCH_REMOTE_DIR",
+    "OPENRESEARCH_GCP_CPU_INSTANCE",
 )
 
 
@@ -181,3 +182,60 @@ def test_launch_argv_runs_backend_cli_reproduce_sandbox_local():
         "--model", "foundry", "--project-id", "sdar_gcp_e2e",
     ]
     assert handle.id == "sdar_gcp_e2e"
+
+
+# ---------------------------------------------------------------------------
+# cpu_warm_disk_then_gpu_attach two-VM tiering (Phase 1d, Unit C)
+# ---------------------------------------------------------------------------
+
+
+def _cpu_warm_provider(runner) -> VmComputeProvider:
+    prof = CloudProfile(cloud="gcp", vm=VmSpec(
+        zone="us-central1-b", cpu_machine_type="e2-standard-16", gpu_machine_type="a2-highgpu-4g",
+        machine_image="sdar-ultra", cache_disk_name="sdar-cache",
+        tiering_strategy="cpu_warm_disk_then_gpu_attach"))
+    return VmComputeProvider(prof, runner=runner)
+
+
+def _stage_on_gpu_provider(runner) -> VmComputeProvider:
+    return VmComputeProvider(_gcp_profile(), runner=runner)
+
+
+def test_cpu_warm_disk_provision_uses_cheap_cpu_vm_and_attaches_disk(tmp_path):
+    calls = []
+    from backend.services.runtime.cloud_profile import CloudProfile, VmSpec
+    from backend.services.runtime.vm_compute_provider import VmComputeProvider
+
+    prof = CloudProfile(cloud="gcp", vm=VmSpec(
+        zone="us-central1-b", cpu_machine_type="e2-standard-16", gpu_machine_type="a2-highgpu-4g",
+        machine_image="sdar-ultra", cache_disk_name="sdar-cache",
+        tiering_strategy="cpu_warm_disk_then_gpu_attach"))
+    prov = VmComputeProvider(prof, runner=lambda a: calls.append(a) or _ok())
+    lease = prov.provision_cpu(_run_plan())
+    joined = [" ".join(a) for a in calls]
+    assert any("e2-standard-16" in j and "instances create" in j for j in joined)   # cheap CPU VM
+    assert any("disks create" in j and "sdar-cache" in j for j in joined) or \
+           any("attach-disk" in j and "sdar-cache" in j for j in joined)            # disk warmed
+    assert any("detach-disk" in j for j in joined)                                  # detached after warm
+    assert lease.gpu is None and lease.disk == "sdar-cache"                          # no GPU billing yet
+
+
+def test_cpu_warm_disk_acquire_gpu_attaches_warmed_disk(tmp_path):
+    calls = []
+    prov = _cpu_warm_provider(lambda a: calls.append(a) or _ok())
+    lease = prov.provision_cpu(_run_plan()); calls.clear()
+    lease = prov.acquire_gpu(lease)
+    joined = [" ".join(a) for a in calls]
+    assert any("a2-highgpu-4g" in j and "instances create" in j for j in joined)    # GPU VM created
+    assert any("attach-disk" in j and "sdar-cache" in j for j in joined)            # warmed disk attached
+    assert lease.gpu is not None
+
+
+def test_stage_on_gpu_default_unchanged(tmp_path):
+    # the default strategy still folds provision_cpu into the GPU create (1c behavior).
+    calls = []
+    prov = _stage_on_gpu_provider(lambda a: calls.append(a) or _ok())
+    prov.provision_cpu(_run_plan())
+    joined = [" ".join(a) for a in calls]
+    assert any("a2-highgpu-4g" in j and "instances create" in j for j in joined)
+    assert not any("e2-standard-16" in j for j in joined)                           # no cheap CPU VM under stage_on_gpu

@@ -25,23 +25,37 @@ report pull + stop-with-local-ssd-retry), and
 ``scripts/cancel_gcp_sdar_run.sh`` (stop).
 
 ``tiering_strategy="stage_on_gpu"`` (:class:`~backend.services.runtime.cloud_profile.VmSpec`'s
-default, and the ONLY strategy this unit implements) means ``provision_cpu``
-FOLDS into the GPU-type ``gcloud compute instances create`` -- there is no
-separate cheap CPU tier -- matching the ported bash's own reasoning: a GPU
-machine type requires ``onHostMaintenance=TERMINATE`` while an on-demand e2
-STANDARD CPU type requires ``MIGRATE``, and there is no valid intermediate
-machine type to flip between them, so SDAR stages directly on the billed GPU
-type. ``acquire_gpu`` is consequently a near no-op: the
+default) means ``provision_cpu`` FOLDS into the GPU-type ``gcloud compute
+instances create`` -- there is no separate cheap CPU tier -- matching the
+ported bash's own reasoning: a GPU machine type requires
+``onHostMaintenance=TERMINATE`` while an on-demand e2 STANDARD CPU type
+requires ``MIGRATE``, and there is no valid intermediate machine type to
+flip between them, so SDAR stages directly on the billed GPU type.
+``acquire_gpu`` is consequently a near no-op: the
 ``--max-run-duration``/``--instance-termination-action=STOP`` billing
 ceiling was already armed by ``provision_cpu``'s create call, so
 ``acquire_gpu`` just stamps the lease's ``gpu`` slot to record that
 GPU-billed compute is considered acquired from this point in the
-``ReproductionRun`` state machine's lifecycle. The other two
-``VmSpec.tiering_strategy`` values (``machine_type_flip``,
-``cpu_warm_disk_then_gpu_attach`` -- which need ``set-scheduling``/
-``set-machine-type`` to flip a STOPPED VM between a cheap CPU type and the
-GPU type) are explicitly OUT OF SCOPE for this unit (deferred to Phase 1d
-per the plan's Self-Review); this provider only implements ``stage_on_gpu``.
+``ReproductionRun`` state machine's lifecycle.
+
+``tiering_strategy="cpu_warm_disk_then_gpu_attach"`` (Phase 1d, Unit C) is a
+genuine two-VM handoff, ported from ``sdar_cpu_stage.sh``'s CPU-side warming
+phases + ``gcp_sdar_preflight.sh``'s ``attach_and_mount_cache_disk`` same-
+zone check: ``provision_cpu`` creates a SEPARATE, cheap CPU-only VM (no
+accelerator, ``vm.cpu_machine_type``) that attaches the shared cache disk,
+runs the ``.warm_ok``-sentinel-gated warm step over ssh, then detaches --
+NO GPU billing starts here. ``acquire_gpu`` creates the actual GPU VM
+(``vm.gpu_machine_type`` -- billing starts HERE, unlike ``stage_on_gpu``)
+and re-attaches the already-warmed disk, same-zone-locked (a zonal
+``pd-ssd`` cannot cross zones; a mismatch fails soft to stage_on_gpu-style
+GPU-only provisioning rather than raising). See
+``_provision_cpu_warm_disk``/``_acquire_gpu_warm_disk`` below.
+
+``VmSpec.tiering_strategy="machine_type_flip"`` (which needs
+``set-scheduling``/``set-machine-type`` to flip a STOPPED VM between a cheap
+CPU type and the GPU type in place, mirroring ``gcp_sdar_preflight.sh``'s
+``ensure_machine_type``) remains explicitly OUT OF SCOPE -- this provider
+implements ``stage_on_gpu`` and ``cpu_warm_disk_then_gpu_attach`` only.
 
 ``--project`` is appended at the END of every built argv (after the
 resource/verb/positional tokens are fully assembled) rather than immediately
@@ -97,8 +111,10 @@ _DEFAULT_SSH_USER = "abheekp"
 _DEFAULT_REMOTE_DIR = "/home/abheekp/openresearch"
 _DEFAULT_ZONE = "us-central1-b"
 _DEFAULT_GPU_MACHINE_TYPE = "a2-highgpu-4g"  # 4x A100-80GB
+_DEFAULT_CPU_MACHINE_TYPE = "e2-standard-16"  # cheap CPU tier (gcp_sdar_preflight.sh CPU_MACHINE_TYPE)
 _DEFAULT_MAX_RUN_DURATION_S = 100800  # 28h hard ceiling (sdar_gcp_optimal_run.sh MAX_RUN_DUR)
 _DEFAULT_IMAGE_PROJECT = "deeplearning-platform-release"
+_DEFAULT_CACHE_MOUNT = "/mnt/sdar-cache"  # cpu_warm_disk_then_gpu_attach's .warm_ok sentinel lives here
 
 # Capacity/stockout stderr substrings (case-insensitive), matching the bash's
 # `grep -qiE 'STOCKOUT|enough resources|EXHAUSTED|currently unavailable'`.
@@ -211,6 +227,22 @@ class VmComputeProvider(ComputeProvider):
         return self._vm.gpu_machine_type or _DEFAULT_GPU_MACHINE_TYPE
 
     @property
+    def _cpu_machine_type(self) -> str:
+        return self._vm.cpu_machine_type or _DEFAULT_CPU_MACHINE_TYPE
+
+    @property
+    def _cpu_instance(self) -> str:
+        """Distinct instance name for the cheap CPU staging VM under
+        ``cpu_warm_disk_then_gpu_attach`` -- ``self._instance`` is reserved
+        for the GPU VM this strategy creates in ``acquire_gpu`` (unlike
+        ``stage_on_gpu``, where ``self._instance`` IS the one VM that folds
+        both roles). Defaults to ``<gpu-instance>-cpu``, independently
+        overridable so an operator can point at an already-running CPU
+        staging box without colliding with the GPU instance name.
+        """
+        return _env("OPENRESEARCH_GCP_CPU_INSTANCE", f"{self._instance}-cpu")
+
+    @property
     def _max_run_duration_s(self) -> int:
         return self._vm.max_run_duration_s if self._vm.max_run_duration_s else _DEFAULT_MAX_RUN_DURATION_S
 
@@ -228,9 +260,14 @@ class VmComputeProvider(ComputeProvider):
         """
         return ["gcloud", *args, "--project", self._project]
 
-    def _ssh_argv(self, remote_command: str) -> list[str]:
+    def _ssh_argv(self, remote_command: str, *, instance: str | None = None) -> list[str]:
+        """``instance`` defaults to ``self._instance`` (every stage_on_gpu
+        call site keeps that byte-identical behavior); the
+        cpu_warm_disk_then_gpu_attach CPU warm step passes the CPU instance
+        name explicitly since it targets a different VM."""
+        target = instance or self._instance
         return self._gcloud(
-            "compute", "ssh", f"{self._ssh_user}@{self._instance}",
+            "compute", "ssh", f"{self._ssh_user}@{target}",
             "--zone", self._zone, "--quiet", "--command", remote_command,
         )
 
@@ -246,6 +283,30 @@ class VmComputeProvider(ComputeProvider):
             if sig.lower() in lowered:
                 return sig
         return None
+
+    def _create_instance_or_raise(self, argv: list[str]) -> VmExecResult:
+        """Shared create-then-classify-failure helper for the NEW
+        cpu_warm_disk_then_gpu_attach create call sites (CPU VM in
+        ``_provision_cpu_warm_disk``, GPU VM in ``_acquire_gpu_warm_disk``).
+
+        The stage_on_gpu branch of ``provision_cpu`` keeps its own inline
+        copy of this exact error-classification pattern untouched, so this
+        helper is additive only -- it can never regress stage_on_gpu's
+        byte-identical argv/behavior.
+        """
+        result = self._run(argv)
+        if result.returncode != 0:
+            sig = self._match_capacity_signature(result.stderr)
+            if sig is not None:
+                raise SandboxRuntimeError(
+                    RuntimeCauseKind.backend_unavailable,
+                    f"gcp capacity signature matched during create: {sig}",
+                )
+            raise SandboxRuntimeError(
+                RuntimeCauseKind.command_failed,
+                f"gcloud compute instances create failed: {(result.stderr or '').strip()[:500]}",
+            )
+        return result
 
     # ------------------------------------------------------------------
     # ComputeProvider: preflight
@@ -278,13 +339,20 @@ class VmComputeProvider(ComputeProvider):
     def provision_cpu(self, plan) -> ComputeLease:
         """Create the instance directly on the GPU machine type.
 
-        Under ``stage_on_gpu`` (the only strategy this unit implements)
+        Under ``stage_on_gpu`` (this method's default/fallback branch)
         there is no separate cheap CPU tier -- see the module docstring for
         why. ``--max-run-duration``/``--instance-termination-action=STOP``
         on this create call is the control-plane cost ceiling;
         ``acquire_gpu`` later just stamps the lease (billing is already
         armed here).
+
+        Under ``cpu_warm_disk_then_gpu_attach`` this delegates to
+        :meth:`_provision_cpu_warm_disk` instead, which creates a genuinely
+        separate, cheap CPU-only VM -- NO GPU billing starts here for that
+        strategy (see that method's docstring).
         """
+        if self._vm.tiering_strategy == "cpu_warm_disk_then_gpu_attach":
+            return self._provision_cpu_warm_disk(plan)
         vm = self._vm
         args = [
             "compute", "instances", "create", self._instance,
@@ -337,17 +405,81 @@ class VmComputeProvider(ComputeProvider):
             lease = self._attach_cache_disk(lease)
         return lease
 
-    def _attach_cache_disk(self, lease: ComputeLease) -> ComputeLease:
+    def _provision_cpu_warm_disk(self, plan) -> ComputeLease:
+        """``cpu_warm_disk_then_gpu_attach``: a cheap CPU VM (no accelerator,
+        ``vm.cpu_machine_type``) warms the persistent cache disk, then
+        detaches -- NO GPU billing starts here (mirrors
+        ``sdar_cpu_stage.sh``'s ``.warm_ok``-sentinel-gated staging phase,
+        invoked over ssh against the CPU instance).
+
+        Detaching immediately after warming means the disk is never
+        attached to two instances at once, so ``acquire_gpu`` can freely
+        re-attach it to the GPU VM without a "disk already in use" error.
+        """
+        vm = self._vm
+        cpu_instance = self._cpu_instance
+        args = [
+            "compute", "instances", "create", cpu_instance,
+            "--zone", self._zone, "--machine-type", self._cpu_machine_type,
+        ]
+        if vm.machine_image:
+            args += ["--source-machine-image", vm.machine_image]
+        elif vm.image:
+            args += [
+                "--image-family", vm.image, "--image-project", _DEFAULT_IMAGE_PROJECT,
+                "--boot-disk-size", "200", "--boot-disk-type", "pd-ssd",
+            ]
+        else:
+            raise ValueError(
+                "VmSpec must set either `machine_image` or `image` before "
+                "provision_cpu can build the cpu_warm_disk_then_gpu_attach CPU-VM create argv"
+            )
+        self._create_instance_or_raise(self._gcloud(*args))
+
+        lease = ComputeLease(
+            cloud="gcp", cpu=cpu_instance, ref=cpu_instance,
+            meta={
+                "zone": self._zone, "project": self._project,
+                "machine_type": self._cpu_machine_type,
+                "strategy": "cpu_warm_disk_then_gpu_attach",
+            },
+        )
+        if vm.cache_disk_name:
+            lease = self._attach_cache_disk(lease, instance=cpu_instance)
+            self._run(self._ssh_argv(self._warm_remote_command(), instance=cpu_instance))
+            self._run(self._detach_disk_argv(vm.cache_disk_name, instance=cpu_instance))
+        return lease
+
+    def _warm_remote_command(self) -> str:
+        """The ``.warm_ok``-sentinel-gated remote shell one-liner: skip
+        re-staging if a prior warm already completed on this cache disk
+        (mirrors ``sdar_cpu_stage.sh``'s own idempotent/resumable design --
+        see that script's header)."""
+        mount = _DEFAULT_CACHE_MOUNT
+        remote_dir = self._remote_dir
+        return (
+            f"if [ -f {mount}/.warm_ok ]; then echo '[cpu-warm] already warm'; "
+            f"else bash {remote_dir}/scripts/sdar_cpu_stage.sh; fi"
+        )
+
+    def _attach_cache_disk(self, lease: ComputeLease, *, instance: str | None = None) -> ComputeLease:
         """Idempotent, fail-soft (mirrors the bash: a create/attach error just
-        falls back to boot-disk cache mode -- it never aborts provisioning)."""
+        falls back to boot-disk cache mode -- it never aborts provisioning).
+
+        ``instance`` defaults to ``self._instance`` (the stage_on_gpu
+        single-VM shape, unchanged); ``cpu_warm_disk_then_gpu_attach`` passes
+        the CPU or GPU instance name explicitly since that strategy
+        provisions two distinct VMs.
+        """
         disk = self._vm.cache_disk_name
+        target = instance or self._instance
         create_argv = self._gcloud(
             "compute", "disks", "create", disk,
             "--zone", self._zone, "--size=1000GB", "--type=pd-ssd",
         )
         self._run(create_argv)
         attach_argv = self._gcloud(
-            "compute", "instances", "attach-disk", self._instance,
+            "compute", "instances", "attach-disk", target,
             "--zone", self._zone, "--disk", disk,
             "--mode=rw", "--device-name=sdar-cache",
         )
@@ -355,6 +487,18 @@ class VmComputeProvider(ComputeProvider):
         meta = dict(lease.meta)
         meta["cache_disk"] = disk
         return replace(lease, disk=(disk if result.returncode == 0 else lease.disk), meta=meta)
+
+    def _detach_disk_argv(self, disk: str, *, instance: str | None = None) -> list[str]:
+        """``gcloud compute instances detach-disk ... --disk <disk>`` --
+        releases the cache disk from the CPU staging VM once warming
+        completes, so ``acquire_gpu`` can re-attach it to the GPU VM
+        without a "disk already in use by another instance" error.
+        """
+        target = instance or self._instance
+        return self._gcloud(
+            "compute", "instances", "detach-disk", target,
+            "--zone", self._zone, "--disk", disk,
+        )
 
     # ------------------------------------------------------------------
     # ComputeProvider: stage (redaction-safe)
@@ -398,7 +542,65 @@ class VmComputeProvider(ComputeProvider):
     # ------------------------------------------------------------------
 
     def acquire_gpu(self, lease: ComputeLease) -> ComputeLease:
+        if self._vm.tiering_strategy == "cpu_warm_disk_then_gpu_attach":
+            return self._acquire_gpu_warm_disk(lease)
         return replace(lease, gpu=self._instance)
+
+    def _acquire_gpu_warm_disk(self, lease: ComputeLease) -> ComputeLease:
+        """``cpu_warm_disk_then_gpu_attach``: create the GPU VM (billing
+        starts HERE, unlike stage_on_gpu where it starts in
+        ``provision_cpu``) and attach the already-warmed cache disk.
+
+        Same-zone-locked: a zonal ``pd-ssd`` cannot cross zones (mirrors
+        ``gcp_sdar_preflight.sh``'s ``attach_and_mount_cache_disk`` WARN
+        path, lines ~289-294). If the disk's recorded zone (stamped into
+        ``lease.meta["zone"]`` by ``_provision_cpu_warm_disk``) no longer
+        matches the GPU VM's zone, fail soft: create the GPU VM anyway but
+        skip the (impossible) cross-zone attach, degrading to
+        stage_on_gpu-style GPU-only provisioning rather than raising.
+        """
+        vm = self._vm
+        gpu_instance = self._instance
+        args = [
+            "compute", "instances", "create", gpu_instance,
+            "--zone", self._zone, "--machine-type", self._gpu_machine_type,
+        ]
+        if vm.machine_image:
+            args += [
+                "--source-machine-image", vm.machine_image,
+                "--maintenance-policy", "TERMINATE",
+                "--no-restart-on-failure",
+            ]
+        elif vm.image:
+            args += [
+                "--image-family", vm.image,
+                "--image-project", _DEFAULT_IMAGE_PROJECT,
+                "--maintenance-policy", "TERMINATE",
+                "--boot-disk-size", "1000", "--boot-disk-type", "pd-ssd",
+                "--metadata", "install-nvidia-driver=True",
+                "--no-restart-on-failure",
+            ]
+        else:
+            raise ValueError(
+                "VmSpec must set either `machine_image` or `image` before "
+                "acquire_gpu can build the cpu_warm_disk_then_gpu_attach GPU-VM create argv"
+            )
+        args += [
+            f"--max-run-duration={self._max_run_duration_s}s",
+            "--instance-termination-action=STOP",
+        ]
+        self._create_instance_or_raise(self._gcloud(*args))
+
+        meta = dict(lease.meta)
+        meta.update({"zone": self._zone, "project": self._project, "machine_type": self._gpu_machine_type})
+        new_lease = replace(lease, gpu=gpu_instance, ref=gpu_instance, meta=meta)
+
+        disk = vm.cache_disk_name
+        disk_zone = lease.meta.get("zone") if isinstance(lease.meta, dict) else None
+        same_zone = disk_zone is None or disk_zone == self._zone
+        if disk and same_zone:
+            new_lease = self._attach_cache_disk(new_lease, instance=gpu_instance)
+        return new_lease
 
     # ------------------------------------------------------------------
     # ComputeProvider: launch
