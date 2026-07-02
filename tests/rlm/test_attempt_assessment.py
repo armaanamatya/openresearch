@@ -23,6 +23,7 @@ from backend.agents.rlm.attempt_assessment import (
     ReportDigest,
     ValidatorStatus,
 )
+from backend.agents.rlm.rubric_gen import CANARY_LEAF_ID
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +178,7 @@ def test_clean_run_assesses_unquarantined(tmp_path: Path) -> None:
     assert assessment.guard_flags == {
         "fabrication": False, "all_models_failed": False,
         "env_unavailable": False, "no_learning_signal": False,
+        "canary_tripped": False,
     }
     assert assessment.validator == ValidatorStatus(status="clean", fingerprint=fp, fresh=True)
     assert assessment.leaf_pass_count == 2
@@ -959,3 +961,96 @@ def test_wall_seconds_clamps_negative_duration_to_zero(tmp_path: Path) -> None:
     )
 
     assert assessment.cost.wall_s == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Canary→ASSESS wiring (spec §10.4, CapCode-style tamper tripwire)
+# ---------------------------------------------------------------------------
+
+
+def test_canary_leaf_credited_hard_quarantines(tmp_path: Path) -> None:
+    run_dir = tmp_path / "attempt_20"
+    run_dir.mkdir()
+    _minimal_final_report(run_dir)
+    _write_json(
+        run_dir / "rubric_evaluation.json",
+        {
+            "leaf_scores": [
+                {"id": "l1", "score": 0.7},
+                {"id": CANARY_LEAF_ID, "score": 0.9},
+            ],
+        },
+    )
+
+    assessment = attempt_assessment.assess_attempt(
+        run_dir, attempt_n=1, driver="live_cli", project_id="proj-1",
+        directives_sha256="abc123", pinned_rubric_sha256=None,
+    )
+
+    assert assessment.guard_flags["canary_tripped"] is True
+    assert assessment.hard_quarantined is True
+    assert "guard:canary_tripped" in assessment.quarantine_reasons
+
+
+def test_canary_leaf_zero_score_not_tripped(tmp_path: Path) -> None:
+    run_dir = tmp_path / "attempt_21"
+    run_dir.mkdir()
+    _minimal_final_report(run_dir)
+    _write_json(
+        run_dir / "rubric_evaluation.json",
+        {
+            "leaf_scores": [
+                {"id": "l1", "score": 0.7},
+                {"id": CANARY_LEAF_ID, "score": 0.0},
+            ],
+        },
+    )
+
+    assessment = attempt_assessment.assess_attempt(
+        run_dir, attempt_n=1, driver="live_cli", project_id="proj-1",
+        directives_sha256="abc123", pinned_rubric_sha256=None,
+    )
+
+    assert assessment.guard_flags["canary_tripped"] is False
+    assert assessment.hard_quarantined is False
+    assert "guard:canary_tripped" not in assessment.quarantine_reasons
+
+
+def test_canary_absent_leaf_or_no_eval_file_is_false(tmp_path: Path) -> None:
+    # A rubric_evaluation.json with no canary leaf at all.
+    run_dir = tmp_path / "attempt_22"
+    run_dir.mkdir()
+    _minimal_final_report(run_dir)
+    _write_json(
+        run_dir / "rubric_evaluation.json",
+        {"leaf_scores": [{"id": "l1", "score": 0.7}]},
+    )
+    assessment = attempt_assessment.assess_attempt(
+        run_dir, attempt_n=1, driver="live_cli", project_id="proj-1",
+        directives_sha256="abc123", pinned_rubric_sha256=None,
+    )
+    assert assessment.guard_flags["canary_tripped"] is False
+    assert "guard:canary_tripped" not in assessment.quarantine_reasons
+
+    # No rubric_evaluation.json on disk at all.
+    run_dir2 = tmp_path / "attempt_22b"
+    run_dir2.mkdir()
+    _minimal_final_report(run_dir2)
+    assessment2 = attempt_assessment.assess_attempt(
+        run_dir2, attempt_n=1, driver="live_cli", project_id="proj-1",
+        directives_sha256="abc123", pinned_rubric_sha256=None,
+    )
+    assert assessment2.guard_flags["canary_tripped"] is False
+    assert "guard:canary_tripped" not in assessment2.quarantine_reasons
+
+    # An unparseable rubric_evaluation.json.
+    run_dir3 = tmp_path / "attempt_22c"
+    run_dir3.mkdir()
+    _minimal_final_report(run_dir3)
+    (run_dir3 / "rubric_evaluation.json").write_text("not json{{{")
+    assessment3 = attempt_assessment.assess_attempt(
+        run_dir3, attempt_n=1, driver="live_cli", project_id="proj-1",
+        directives_sha256="abc123", pinned_rubric_sha256=None,
+    )
+    assert assessment3.guard_flags["canary_tripped"] is False
+    assert "guard:canary_tripped" not in assessment3.quarantine_reasons

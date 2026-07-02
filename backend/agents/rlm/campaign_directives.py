@@ -69,6 +69,18 @@ _MAX_IMPROVEMENT_NOTE_CHARS = 400
 _MAX_EXTRA_GUIDANCE_CHARS = 4000
 _TRUNCATION_MARKER = "\n[truncated]"
 
+#: MLE-STAR-style localized-refinement directive (spec, Tier-1 repair-mode
+#: wiring). Prepended right after the [campaign] header whenever a seeded
+#: (non-fresh) lineage has concrete repair guidance to act on -- steers the
+#: implementer to edit the seeded ``code/_best_attempt/`` tree in place
+#: rather than re-implementing from scratch.
+_REPAIR_MODE_TEXT = (
+    "[repair-mode] A seeded working tree from the prior attempt is staged at "
+    "code/_best_attempt/. START from it: copy it into code/ and EDIT IN PLACE. "
+    "Do NOT re-implement from scratch. Change ONLY what the [leaf-repairs]/"
+    "[memory] items below name; keep every passing cell's code byte-identical."
+)
+
 
 class DirectiveContractError(Exception):
     """PLAN_ATTEMPT's clean-context contract was violated. Fail the build --
@@ -237,6 +249,9 @@ def _assemble_extra_guidance(
     target_floor: float | None,
 ) -> str:
     lines: list[str] = [f"[campaign] Attempt {attempt_n} ({plan.lineage}, scope rung {plan.scope_rung})."]
+
+    if plan.lineage != "fresh" and (leaf_plan_entries or memory_hints):
+        lines.append(_REPAIR_MODE_TEXT)
 
     if unresolved_warnings:
         lines.append("[unresolved-understanding]")

@@ -21,7 +21,7 @@ from backend.agents.rlm.campaign_directives import (
     DirectiveContractError,
     synthesize_directives,
 )
-from backend.agents.rlm.campaign_policy import AttemptEnvelope, NextAttemptPlan
+from backend.agents.rlm.campaign_policy import AttemptEnvelope, NextAttemptPlan, directives_fingerprint
 
 # The exact clean-context forbidden-marker vocabulary from the brief (spec
 # §9): any path containing one of these as a substring is transcript/REPL/
@@ -649,3 +649,163 @@ def test_returns_frozen_attempt_directives_instance(tmp_path: Path) -> None:
     assert isinstance(directives, AttemptDirectives)
     with pytest.raises(Exception):  # noqa: B017, PT011 -- frozen dataclass: any mutation attempt raises
         directives.attempt_n = 2  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# repair-mode directive (MLE-STAR-style localized refinement)
+# ---------------------------------------------------------------------------
+
+
+def test_repair_mode_section_for_seeded_lineage_with_leaf_repairs(tmp_path: Path) -> None:
+    leaf_path = _write_leaf_triage(
+        tmp_path / "rlm_state" / "leaf_triage.json",
+        [
+            {
+                "leaf_id": "l1",
+                "score": 0.1,
+                "repair_class": "protocol_gap",
+                "cost": "targeted_rerun",
+                "directive": "fix the dropout rate",
+                "justification": "j",
+            }
+        ],
+    )
+    directives = synthesize_directives(
+        **_base_kwargs(
+            tmp_path,
+            plan=_plan(lineage="champion", seed_attempt_n=2, scope_rung=1),
+            prior_run_artifacts={"leaf_triage": str(leaf_path)},
+        )
+    )
+    assert "[repair-mode]" in directives.extra_guidance
+    assert "code/_best_attempt/" in directives.extra_guidance
+    assert (
+        directives.extra_guidance.index("[campaign]")
+        < directives.extra_guidance.index("[repair-mode]")
+        < directives.extra_guidance.index("[leaf-repairs]")
+    )
+
+
+def test_repair_mode_section_for_seeded_lineage_with_memory_hints_only(tmp_path: Path) -> None:
+    directives = synthesize_directives(
+        **_base_kwargs(
+            tmp_path,
+            plan=_plan(lineage="runner_up", seed_attempt_n=1, scope_rung=0),
+            memory_hints=["past infra failure: dataset mirror flaky"],
+        )
+    )
+    assert "[repair-mode]" in directives.extra_guidance
+    assert (
+        directives.extra_guidance.index("[repair-mode]")
+        < directives.extra_guidance.index("[memory]")
+    )
+
+
+def test_repair_mode_section_absent_for_fresh_lineage(tmp_path: Path) -> None:
+    leaf_path = _write_leaf_triage(
+        tmp_path / "rlm_state" / "leaf_triage.json",
+        [
+            {
+                "leaf_id": "l1",
+                "score": 0.1,
+                "repair_class": "protocol_gap",
+                "cost": "targeted_rerun",
+                "directive": "fix the dropout rate",
+                "justification": "j",
+            }
+        ],
+    )
+    directives = synthesize_directives(
+        **_base_kwargs(
+            tmp_path,
+            plan=_plan(lineage="fresh", seed_attempt_n=None, scope_rung=0),
+            prior_run_artifacts={"leaf_triage": str(leaf_path)},
+            memory_hints=["hint"],
+        )
+    )
+    assert "[repair-mode]" not in directives.extra_guidance
+
+
+def test_repair_mode_section_absent_when_seeded_but_no_leaf_or_memory(tmp_path: Path) -> None:
+    directives = synthesize_directives(
+        **_base_kwargs(
+            tmp_path,
+            plan=_plan(lineage="champion", seed_attempt_n=2, scope_rung=1),
+        )
+    )
+    assert "[repair-mode]" not in directives.extra_guidance
+
+
+def test_repair_mode_section_counts_toward_cap(tmp_path: Path) -> None:
+    big_leaf_path = _write_leaf_triage(
+        tmp_path / "rlm_state_big2" / "leaf_triage.json",
+        [
+            {
+                "leaf_id": f"leaf_{i}",
+                "score": 0.1,
+                "repair_class": "protocol_gap",
+                "cost": "targeted_rerun",
+                "directive": "d" * 300,
+                "justification": "j",
+            }
+            for i in range(8)
+        ],
+    )
+    huge = synthesize_directives(
+        **_base_kwargs(
+            tmp_path,
+            out_dir=tmp_path / "c_huge_repair",
+            plan=_plan(lineage="champion", seed_attempt_n=2, scope_rung=1),
+            unresolved_warnings=["w" * 300 for _ in range(5)],
+            prior_run_artifacts={"leaf_triage": str(big_leaf_path)},
+            improvement_notes=["n" * 400 for _ in range(8)],
+            memory_hints=["m" * 200 for _ in range(5)],
+            scope_spec="s" * 300,
+            target_floor=0.5,
+        )
+    )
+    assert len(huge.extra_guidance) <= 4000
+    assert huge.extra_guidance.endswith("[truncated]")
+    assert "[repair-mode]" in huge.extra_guidance
+
+
+def test_fingerprint_unaffected_by_repair_mode_section(tmp_path: Path) -> None:
+    """The repair-mode prose lives only in extra_guidance; the fingerprint is
+    computed from typed inputs only (spec F10) via
+    ``campaign_policy.directives_fingerprint`` -- it must match a direct call
+    with the same typed inputs regardless of whether the repair-mode section
+    fires in extra_guidance."""
+    leaf_path = _write_leaf_triage(
+        tmp_path / "rlm_state" / "leaf_triage.json",
+        [
+            {
+                "leaf_id": "l1",
+                "score": 0.1,
+                "repair_class": "protocol_gap",
+                "cost": "targeted_rerun",
+                "directive": "d",
+                "justification": "j",
+            }
+        ],
+    )
+    plan = _plan(lineage="champion", seed_attempt_n=2, scope_rung=1)
+    envelope = _envelope()
+    directives = synthesize_directives(
+        **_base_kwargs(
+            tmp_path,
+            plan=plan,
+            envelope=envelope,
+            prior_run_artifacts={"leaf_triage": str(leaf_path)},
+            failure_classes=["cuda_oom"],
+        )
+    )
+    assert "[repair-mode]" in directives.extra_guidance
+
+    expected_fp = directives_fingerprint(
+        seed_lineage=f"{plan.lineage}:{plan.seed_attempt_n or 0}",
+        scope_rung=plan.scope_rung,
+        repair_action_kinds=["protocol_gap"],
+        failure_classes=["cuda_oom"],
+        envelope=envelope.to_dict(),
+    )
+    assert directives.fingerprint == expected_fp

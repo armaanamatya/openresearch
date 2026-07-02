@@ -31,6 +31,7 @@ from typing import Any
 
 from backend.agents.rlm import evidence_audit, external_validator, failure_attribution
 from backend.agents.rlm.campaign_types import CampaignSpend
+from backend.agents.rlm.rubric_gen import canary_tripped
 
 __all__ = [
     "CampaignSpend",
@@ -380,6 +381,17 @@ def _run_warning_codes(run_dir: Path) -> set[str]:
     return codes
 
 
+def _canary_flag(run_dir: Path) -> bool:
+    """Evaluator-lockdown canary (spec §10.4): False when
+    ``rubric_evaluation.json`` is absent/unparseable OR the canary leaf isn't
+    present in ``leaf_scores`` -- both cases fall through to
+    :func:`rubric_gen.canary_tripped`'s own conservative default."""
+    data = _read_json(run_dir / "rubric_evaluation.json")
+    if not isinstance(data, dict):
+        return False
+    return canary_tripped(data)
+
+
 def _guard_flags(latest_row: dict[str, Any] | None, run_dir: Path) -> dict[str, bool]:
     fclass = str(latest_row.get("failure_class") or "") if latest_row else ""
     warn_codes = _run_warning_codes(run_dir)
@@ -388,6 +400,7 @@ def _guard_flags(latest_row: dict[str, Any] | None, run_dir: Path) -> dict[str, 
         "all_models_failed": fclass == _ALL_MODELS_FAILED_CLASS,
         "env_unavailable": "env_unavailable" in warn_codes,
         "no_learning_signal": "no_learning_signal" in warn_codes,
+        "canary_tripped": _canary_flag(run_dir),
     }
 
 
@@ -587,6 +600,8 @@ def assess_attempt(
         quarantine_reasons.append(f"guard:fabrication:{subsource}")
     if guard_flags["all_models_failed"]:
         quarantine_reasons.append("guard:all_models_failed")
+    if guard_flags["canary_tripped"]:
+        quarantine_reasons.append("guard:canary_tripped")
 
     evidence_predicates, audit_reasons = _evidence_predicates(run_dir)
     quarantine_reasons.extend(audit_reasons)
@@ -604,7 +619,10 @@ def assess_attempt(
     cost = _cost(run_dir, report_data)
 
     hard_quarantined = (
-        guard_flags["fabrication"] or guard_flags["all_models_failed"] or rubric_sha256_ok is False
+        guard_flags["fabrication"]
+        or guard_flags["all_models_failed"]
+        or guard_flags["canary_tripped"]
+        or rubric_sha256_ok is False
     )
     soft_quarantined = validator.status != "clean" or not validator.fresh
 
