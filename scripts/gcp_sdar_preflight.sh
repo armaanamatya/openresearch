@@ -10,6 +10,9 @@
 #   scripts/gcp_sdar_preflight.sh launch
 #   scripts/gcp_sdar_preflight.sh monitor
 #   scripts/gcp_sdar_preflight.sh stop
+#   scripts/gcp_sdar_preflight.sh preflight [root_token]
+#       Run credential preflight without provisioning (e.g. preflight foundry).
+#       Exits 1 on a dead credential. Also available via scripts/sdar_cred_preflight.sh --self-check.
 #
 # `prepare` runs on the cheap CPU machine type (no GPU billing): flips to
 # CPU_MACHINE_TYPE, syncs the repo, installs SDAR deps, warms datasets/model caches,
@@ -31,6 +34,22 @@ MIN_GPUS="${OPENRESEARCH_SDAR_MIN_GPUS:-8}"
 CPU_MACHINE_TYPE="${OPENRESEARCH_GCP_CPU_MACHINE_TYPE:-e2-standard-16}"
 GPU_MACHINE_TYPE="${OPENRESEARCH_GCP_GPU_MACHINE_TYPE:-a2-highgpu-8g}"
 PROVISIONING_MODEL="${OPENRESEARCH_GCP_PROVISIONING_MODEL:-SPOT}"
+# --- Persistent cache disk + machine image (default OFF — no regression) -----
+# OPENRESEARCH_SDAR_USE_CACHE_DISK=1: attach a named pd-ssd data disk that
+# survives VM delete/recreate. The cache disk must be in the same zone as the VM.
+# ZONE MISMATCH NOTE: sdar-ultra (1 TB, 1000 GB, existing) is in us-central1-c;
+# the optimal runner VM (sdar-a100-od) is in us-central1-b. GCP forbids cross-zone
+# disk attach. OPERATOR STEP before enabling: snapshot sdar-ultra and recreate a
+# new 'sdar-cache' disk in the same zone as your VM, then set
+# OPENRESEARCH_SDAR_CACHE_DISK_ZONE to that zone.
+USE_CACHE_DISK="${OPENRESEARCH_SDAR_USE_CACHE_DISK:-0}"
+CACHE_DISK="${OPENRESEARCH_SDAR_CACHE_DISK:-sdar-cache}"
+CACHE_MOUNT="${OPENRESEARCH_SDAR_CACHE_MOUNT:-/mnt/sdar-cache}"
+CACHE_DISK_ZONE="${OPENRESEARCH_SDAR_CACHE_DISK_ZONE:-${ZONE}}"
+# OPENRESEARCH_SDAR_USE_MI=1: boot from a named machine image at CREATE time and
+# refresh it after each successful prepare. Machine images are multi-zonal.
+USE_MI="${OPENRESEARCH_SDAR_USE_MI:-0}"
+MI_NAME="${OPENRESEARCH_SDAR_MI_NAME:-sdar-mi-20260620}"
 
 export CLOUDSDK_CONFIG
 
@@ -260,6 +279,66 @@ stop_vm() {
   "${gcloud_base[@]}" compute instances stop "$INSTANCE" --zone "$ZONE"
 }
 
+# attach_and_mount_cache_disk: idempotent, fail-soft (logs a warning and returns
+# 0 on any error, falling back to boot-disk cache mode). Call after start_vm.
+attach_and_mount_cache_disk() {
+  [[ "${USE_CACHE_DISK:-0}" != "1" ]] && return 0
+  local disk="${CACHE_DISK:-sdar-cache}"
+  local mount="${CACHE_MOUNT:-/mnt/sdar-cache}"
+  local disk_zone="${CACHE_DISK_ZONE:-$ZONE}"
+  if [[ "$disk_zone" != "$ZONE" ]]; then
+    echo "[cache-disk] WARN: disk zone '${disk_zone}' != VM zone '${ZONE}'"
+    echo "  Zonal pd-ssd cannot cross zones. OPERATOR STEP: snapshot sdar-ultra"
+    echo "  (us-central1-c) and recreate '${disk}' in ${ZONE}, then set"
+    echo "  OPENRESEARCH_SDAR_CACHE_DISK_ZONE=${ZONE}. Falling back to boot-disk cache."
+    return 0
+  fi
+  # Create the disk if it does not exist yet (idempotent — errors are non-fatal).
+  if ! "${gcloud_base[@]}" compute disks describe "$disk" --zone "$ZONE" \
+       --format='value(name)' >/dev/null 2>&1; then
+    echo "[cache-disk] '${disk}' absent in ${ZONE} — creating 1000 GB pd-ssd ..."
+    "${gcloud_base[@]}" compute disks create "$disk" --zone "$ZONE" \
+      --size=1000GB --type=pd-ssd >/dev/null 2>&1 \
+      && echo "[cache-disk] created ${disk}" \
+      || { echo "[cache-disk] WARN: create failed — boot-disk cache mode"; return 0; }
+  fi
+  # Attach if not already attached.
+  local users
+  users="$("${gcloud_base[@]}" compute disks describe "$disk" --zone "$ZONE" \
+    --format='value(users)' 2>/dev/null || true)"
+  if echo "$users" | grep -qF "$INSTANCE"; then
+    echo "[cache-disk] '${disk}' already attached to $INSTANCE"
+  else
+    "${gcloud_base[@]}" compute instances attach-disk "$INSTANCE" --zone "$ZONE" \
+      --disk "$disk" --mode=rw --device-name=sdar-cache >/dev/null 2>&1 \
+      && echo "[cache-disk] attached '${disk}' to $INSTANCE" \
+      || { echo "[cache-disk] WARN: attach failed — boot-disk cache mode"; return 0; }
+  fi
+  # Format (first attach only) and mount on the VM.
+  # $mount is expanded locally; \$DEV / \$MNT / \$(...) are evaluated on the VM.
+  local _mount_cmd
+  _mount_cmd="set -eo pipefail
+DEV=/dev/disk/by-id/google-sdar-cache
+MNT=${mount}
+if ! blkid \"\$DEV\" >/dev/null 2>&1; then
+  echo '[cache-disk] formatting \$DEV as ext4 (first attach)...'
+  sudo mkfs.ext4 -F \"\$DEV\"
+fi
+sudo mkdir -p \"\$MNT\"
+if mountpoint -q \"\$MNT\"; then
+  echo '[cache-disk] already mounted at \$MNT'
+else
+  sudo mount -o discard,defaults \"\$DEV\" \"\$MNT\"
+  echo '[cache-disk] mounted \$DEV at \$MNT'
+fi
+sudo mkdir -p \"\$MNT/hf\" \"\$MNT/envs\" \"\$MNT/pip\"
+sudo chown -R \"\$(id -un):\$(id -gn)\" \"\$MNT\"
+echo '[cache-disk] ready: hf/ envs/ pip/'"
+  "${ssh_base[@]}" "$_mount_cmd" \
+    && echo "[cache-disk] mounted at ${mount}" \
+    || { echo "[cache-disk] WARN: VM-side mount failed — boot-disk cache mode"; return 0; }
+}
+
 sync_repo() {
   start_vm
   "${ssh_base[@]}" "mkdir -p $REMOTE_DIR"
@@ -317,6 +396,7 @@ remote_prepare() {
     ensure_machine_type "$CPU_MACHINE_TYPE"
   fi
   start_vm
+  attach_and_mount_cache_disk
   sync_repo
   # System build prerequisites for source-built Python deps. Ubuntu 24.04 ships
   # only `python3`, but some sdists shell out to bare `python` and build native
@@ -337,7 +417,109 @@ remote_prepare() {
   # dedicated venv. `--seed` gives the uv venv pip/setuptools (uv omits them by
   # default). `sudo rm` clears any root-owned files a prior `sudo pip` left behind.
   # Idempotent: an existing 3.12 venv is reused as-is.
-  "${ssh_base[@]}" "export PATH=\"\$HOME/.local/bin:\$PATH\" && cd $REMOTE_DIR && if [ ! -x .venv/bin/python ] || ! .venv/bin/python --version 2>&1 | grep -q '3\\.12'; then sudo rm -rf .venv && uv venv --python 3.12 --seed .venv; fi && .venv/bin/python -m pip install -r backend/requirements.txt && .venv/bin/python scripts/sdar_gcp_assets.py --prepare --check"
+  # Repoint asset caches to the persistent data disk when USE_CACHE_DISK=1 and
+  # the disk zone matches. sdar_gcp_assets.py honours OPENRESEARCH_SDAR_CACHE_ROOT
+  # when it is a mountpoint (falls back to runs/.cache/ if not mounted).
+  local _assets_cache_prefix=""
+  if [[ "${USE_CACHE_DISK:-0}" == "1" && "${CACHE_DISK_ZONE:-$ZONE}" == "$ZONE" ]]; then
+    _assets_cache_prefix="OPENRESEARCH_SDAR_CACHE_ROOT=${CACHE_MOUNT}"
+  fi
+  "${ssh_base[@]}" "export PATH=\"\$HOME/.local/bin:\$PATH\" && cd $REMOTE_DIR && if [ ! -x .venv/bin/python ] || ! .venv/bin/python --version 2>&1 | grep -q '3\\.12'; then sudo rm -rf .venv && uv venv --python 3.12 --seed .venv; fi && .venv/bin/python -m pip install -r backend/requirements.txt && ${_assets_cache_prefix:+${_assets_cache_prefix} }.venv/bin/python scripts/sdar_gcp_assets.py --prepare --check"
+  # --- Layer 2: VM-side systemd idle watchdog (idempotent; survives local-host death) ---
+  # Writes 3 unit files and enables the timer. Uses `sudo shutdown -h now` (not gcloud)
+  # so no IAM scope is needed and the a2-ultragpu local-SSD discard API gotcha is avoided.
+  "${ssh_base[@]}" "$(cat <<'WATCHDOG_INSTALL'
+sudo tee /usr/local/sbin/sdar-idle-watchdog.sh >/dev/null <<'WD'
+#!/usr/bin/env bash
+# VM-side idle backstop: stop the instance when no reproduction is alive AND the
+# GPU is idle past a grace window. Survives local-host death. Guest shutdown halts
+# billing on a2-ultragpu with no local-SSD discard gotcha and needs no IAM scope.
+#
+# Two-grace model (Task 2 — fast-shutdown on error/exit):
+#   Process alive (pgrep hit or GPU util >5%) -> long grace (SDAR_IDLE_GRACE_S, 3600s)
+#   Process dead + .sdar_run_exited sentinel present -> short grace (SDAR_DEAD_GRACE_S, 300s)
+#   Process dead + no sentinel -> long grace (process may be about to start)
+# When OPENRESEARCH_SDAR_NO_AUTOSTOP=1 is set in the env file, skip shutdown
+# entirely (the remote watcher, sdar_gcp_watch.sh, handles the stop instead).
+set -uo pipefail
+REPO="/home/abheekp/openresearch"
+STATE=/run/sdar_last_active            # tmpfs -> fresh grace window each boot
+GRACE="${SDAR_IDLE_GRACE_S:-3600}"
+DEAD_GRACE="${SDAR_DEAD_GRACE_S:-300}"
+SENTINEL="$REPO/.sdar_run_exited"
+ENV_FILE="$REPO/runs/.cache/sdar_gcp.env"
+# Respect NO_AUTOSTOP: source the run env file to pick up the flag. Fail-soft.
+if [ -f "$ENV_FILE" ]; then
+  . "$ENV_FILE" >/dev/null 2>&1 || true
+fi
+if [ "${OPENRESEARCH_SDAR_NO_AUTOSTOP:-0}" = "1" ]; then
+  # Watcher (sdar_gcp_watch.sh) handles the stop; watchdog stays hands-off.
+  exit 0
+fi
+live() {
+  pgrep -f 'backend.cli reproduce' >/dev/null 2>&1 && return 0
+  local u
+  u=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | sort -rn | head -1)
+  [[ "${u:-0}" =~ ^[0-9]+$ ]] && [ "${u:-0}" -gt 5 ] && return 0
+  return 1
+}
+if live; then date +%s > "$STATE"; exit 0; fi
+[ -f "$STATE" ] || { date +%s > "$STATE"; exit 0; }
+now=$(date +%s); last=$(cat "$STATE" 2>/dev/null || echo "$now")
+elapsed=$(( now - last ))
+# Short grace when the run is known dead (exit trap wrote the sentinel).
+if [ -f "$SENTINEL" ]; then
+  grace="$DEAD_GRACE"
+  logger -t sdar-idle-watchdog "run sentinel present — dead-grace ${DEAD_GRACE}s (elapsed=${elapsed}s)"
+else
+  grace="$GRACE"
+fi
+if [ "$elapsed" -ge "$grace" ]; then
+  logger -t sdar-idle-watchdog "idle > ${grace}s, no reproduction running — shutting down"
+  sudo shutdown -h now
+fi
+WD
+sudo tee /etc/systemd/system/sdar-idle-watchdog.service >/dev/null <<'SVC'
+[Unit]
+Description=SDAR idle VM backstop
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sdar-idle-watchdog.sh
+SVC
+sudo tee /etc/systemd/system/sdar-idle-watchdog.timer >/dev/null <<'TMR'
+[Unit]
+Description=Run SDAR idle watchdog
+[Timer]
+OnBootSec=30min
+OnUnitActiveSec=5min
+Persistent=true
+[Install]
+WantedBy=timers.target
+TMR
+sudo chmod +x /usr/local/sbin/sdar-idle-watchdog.sh && sudo systemctl daemon-reload && sudo systemctl enable --now sdar-idle-watchdog.timer
+WATCHDOG_INSTALL
+  )"
+  echo "[prepare] installed sdar-idle-watchdog.timer (VM-side idle backstop)"
+  # Write .warm_ok sentinel to the cache disk so future boots on a fresh VM can
+  # skip the expensive model/dataset re-download (prepare sees cached assets and
+  # skips downloads; only pip install + env provisioning runs).
+  if [[ "${USE_CACHE_DISK:-0}" == "1" && "${CACHE_DISK_ZONE:-$ZONE}" == "$ZONE" ]]; then
+    "${ssh_base[@]}" "touch ${CACHE_MOUNT}/.warm_ok && echo '[prepare] warm sentinel written: ${CACHE_MOUNT}/.warm_ok'" \
+      || echo "[prepare] WARN: could not write warm sentinel (non-fatal)"
+  fi
+  # Refresh machine image after a good prepare (opt-in, OPENRESEARCH_SDAR_USE_MI=1).
+  # GCP supports machine-image creation from a running instance. The image captures
+  # OS + NVIDIA driver + venv state; bulk model/index data lives on the cache disk
+  # so the image stays lean. A new image each prepare-day prevents stale-image drift.
+  if [[ "${USE_MI:-0}" == "1" ]]; then
+    local _mi_ts; _mi_ts="$(date +%Y%m%d)"
+    local _new_mi="sdar-mi-${_mi_ts}"
+    echo "[prepare] refreshing machine image ${_new_mi} from ${INSTANCE} ..."
+    "${gcloud_base[@]}" compute machine-images create "$_new_mi" \
+      --source-instance "$INSTANCE" --zone "$ZONE" >/dev/null 2>&1 \
+      && echo "[prepare] machine image ${_new_mi} created" \
+      || echo "[prepare] WARN: machine image refresh failed (non-fatal)"
+  fi
 }
 
 assert_running() {
@@ -359,6 +541,7 @@ launch_run() {
   ensure_provisioning_model "$PROVISIONING_MODEL"
   ensure_machine_type "$GPU_MACHINE_TYPE"
   start_vm
+  attach_and_mount_cache_disk
   # GPU-COST GATE: never start a GPU run until env + data + GPUs are verified
   # installed. Re-runs the asset readiness check (datasets, model snapshots,
   # ALFWorld/Search-QA, visible GPUs); a [RED] result aborts BEFORE any GPU work,
@@ -417,10 +600,42 @@ launch_run() {
   _spec_add OPENRESEARCH_SDAR_NO_AUTOSTOP     "${OPENRESEARCH_SDAR_NO_AUTOSTOP:-}"
   _spec_add OPENRESEARCH_SDAR_OUTER_WALL_S    "${OPENRESEARCH_SDAR_OUTER_WALL_S:-}"
   _spec_add OPENRESEARCH_SDAR_REPORT_GCS      "${OPENRESEARCH_SDAR_REPORT_GCS:-}"
-  _spec_add OPENRESEARCH_EVIDENCE_GATE        "${OPENRESEARCH_EVIDENCE_GATE:-}"
-  _spec_add OPENRESEARCH_ARG_CONTRACTS        "${OPENRESEARCH_ARG_CONTRACTS:-}"
-  _spec_add OPENRESEARCH_STUB_METRICS_GUARD   "${OPENRESEARCH_STUB_METRICS_GUARD:-}"
   _spec_add OPENRESEARCH_LLM_AUTH_STRATEGY    "${OPENRESEARCH_LLM_AUTH_STRATEGY:-}"
+  # --- SDAR harness-grid "perfect-logic" reproduction flags (overridable via env) ---
+  _spec_add OPENRESEARCH_USE_AUTHOR_REPO          "${OPENRESEARCH_USE_AUTHOR_REPO:-1}"
+  _spec_add OPENRESEARCH_REPRODUCTION_MODE        "${OPENRESEARCH_REPRODUCTION_MODE:-adapt}"
+  _spec_add OPENRESEARCH_REPO_URL                 "${OPENRESEARCH_REPO_URL:-https://github.com/ZJU-REAL/SDAR}"
+  _spec_add OPENRESEARCH_LIFECYCLE_DRIVE          "${OPENRESEARCH_LIFECYCLE_DRIVE:-1}"
+  _spec_add OPENRESEARCH_ALFWORLD_SHAPING         "${OPENRESEARCH_ALFWORLD_SHAPING:-1}"
+  _spec_add OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S "${OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S:-64800}"
+  _spec_add OPENRESEARCH_ENV_LIVENESS_GATE        "${OPENRESEARCH_ENV_LIVENESS_GATE:-1}"
+  _spec_add OPENRESEARCH_ZERO_METRICS_GUARD       "${OPENRESEARCH_ZERO_METRICS_GUARD:-1}"
+  _spec_add OPENRESEARCH_EVIDENCE_GATE            "${OPENRESEARCH_EVIDENCE_GATE:-1}"
+  _spec_add OPENRESEARCH_ARG_CONTRACTS            "${OPENRESEARCH_ARG_CONTRACTS:-1}"
+  _spec_add OPENRESEARCH_STUB_METRICS_GUARD       "${OPENRESEARCH_STUB_METRICS_GUARD:-1}"
+  _spec_add OPENRESEARCH_PER_MODEL_STATUS_GATE    "${OPENRESEARCH_PER_MODEL_STATUS_GATE:-1}"
+  _spec_add OPENRESEARCH_METRICS_COMPLETENESS_CHECK "${OPENRESEARCH_METRICS_COMPLETENESS_CHECK:-1}"
+  _spec_add OPENRESEARCH_NO_LEARNING_SIGNAL_GATE  "${OPENRESEARCH_NO_LEARNING_SIGNAL_GATE:-1}"
+  _spec_add OPENRESEARCH_EMIT_FIGURE_SIDECARS     "${OPENRESEARCH_EMIT_FIGURE_SIDECARS:-1}"
+  # Undertrained-cell floor (empty => guard off; forwarded here too so it reaches
+  # os.environ via --run-spec in addition to the sdar_gcp.env shell export).
+  _spec_add OPENRESEARCH_MIN_TRAIN_STEPS          "${OPENRESEARCH_MIN_TRAIN_STEPS:-}"
+  # Cross-run + intra-run self-learning (default ON for the SDAR recipe): capture
+  # redacted failure tails into repair prompts, mine per-paper negative lessons, and
+  # admit evidence-gated positive recipes so each attempt/run teaches the next.
+  _spec_add OPENRESEARCH_FAILURE_CAPSULES         "${OPENRESEARCH_FAILURE_CAPSULES:-1}"
+  _spec_add OPENRESEARCH_NEGATIVE_LESSONS         "${OPENRESEARCH_NEGATIVE_LESSONS:-1}"
+  _spec_add OPENRESEARCH_POSITIVE_RECIPES         "${OPENRESEARCH_POSITIVE_RECIPES:-1}"
+  # EVAL_PROVENANCE_GUARD OFF for run 1 (false-veto risk until the smoke confirms record_eval).
+  _spec_add OPENRESEARCH_EVAL_PROVENANCE_GUARD    "${OPENRESEARCH_EVAL_PROVENANCE_GUARD:-0}"
+  _spec_add OPENRESEARCH_SDAR_CACHE_ROOT          "${OPENRESEARCH_SDAR_CACHE_ROOT:-/mnt/sdar-cache}"
+  _spec_add WEBSHOP_DATA_DIR                      "${WEBSHOP_DATA_DIR:-}"
+  _spec_add SEARCH_QA_INDEX_DIR                   "${SEARCH_QA_INDEX_DIR:-}"
+  _spec_add OPENRESEARCH_WEBSHOP_PYTHON           "${OPENRESEARCH_WEBSHOP_PYTHON:-}"
+  # Point HF + ALFWorld at the warm cache so the GPU run loads pre-staged weights /
+  # game data instead of re-downloading them on paid GPU time (empty => unset).
+  _spec_add HF_HOME                              "${HF_HOME:-}"
+  _spec_add ALFWORLD_DATA                        "${ALFWORLD_DATA:-}"
 
   # Multi-line scope guidance: fold from the staged text file (backward-compat)
   # or from OPENRESEARCH_BASELINE_EXTRA_GUIDANCE if set directly.
@@ -476,6 +691,23 @@ case "$ACTION" in
   prepare) remote_prepare ;;
   launch) launch_run ;;
   monitor) monitor_run ;;
+  preflight)
+    # Run credential preflight checks without touching the VM.
+    # Usage: gcp_sdar_preflight.sh preflight [root_token]   (default: foundry)
+    _pf_root="${2:-foundry}"
+    _pf_helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sdar_cred_preflight.sh"
+    if [ ! -f "$_pf_helper" ]; then
+      echo "ERROR: sdar_cred_preflight.sh not found at $_pf_helper" >&2
+      exit 1
+    fi
+    # shellcheck source=scripts/sdar_cred_preflight.sh
+    . "$_pf_helper"
+    echo "[preflight] running credential check for root='${_pf_root}' ..."
+    preflight_root_credential "$_pf_root"
+    echo ""
+    preflight_subagent_oauth
+    echo "[preflight] done"
+    ;;
   *)
     echo "unknown action: $ACTION" >&2
     exit 2

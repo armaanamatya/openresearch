@@ -781,6 +781,48 @@ def audit_headline_coverage(
         return []
 
 
+def _comparable_value(leaf: dict[str, Any] | None) -> float | None:
+    """Pull one comparable scalar from an ok leaf (reward first, then a rate)."""
+    if not isinstance(leaf, dict) or leaf.get("status") != "ok":
+        return None
+    for key in ("reward_mean", "metric", "accuracy", "success_rate", "em", "score"):
+        v = leaf.get(key)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return float(v)
+    return None
+
+
+def _derive_baseline_comparison(
+    per_model: dict[str, Any],
+) -> dict[str, dict[str, dict[str, float]]]:
+    """Derive the SDAR-vs-GRPO lift from the aggregated leaves (the paper's headline).
+
+    For every ``(model_key, env)`` with BOTH an ok ``sdar`` and an ok ``grpo`` leaf,
+    emit ``{sdar, grpo, sdar_lift}``.  Deterministic + GPU-free, so the comparison
+    leaves score even when the agent omits its own ``baselines_vs_sdar`` delta table.
+    Empty when no paired arms exist (so non-SDAR papers stay byte-identical).
+    """
+    out: dict[str, dict[str, dict[str, float]]] = {}
+    if not isinstance(per_model, dict):
+        return out
+    for mk, envs in per_model.items():
+        if not isinstance(envs, dict):
+            continue
+        for env, baselines in envs.items():
+            if not isinstance(baselines, dict):
+                continue
+            sdar_v = _comparable_value(baselines.get("sdar"))
+            grpo_v = _comparable_value(baselines.get("grpo"))
+            if sdar_v is None or grpo_v is None:
+                continue
+            out.setdefault(mk, {})[env] = {
+                "sdar": sdar_v,
+                "grpo": grpo_v,
+                "sdar_lift": round(sdar_v - grpo_v, 6),
+            }
+    return out
+
+
 def aggregate_cell_metrics(
     matrix_result: dict[str, dict[str, Any]],
     cells: list[dict[str, Any]],
@@ -940,11 +982,19 @@ def aggregate_cell_metrics(
         "gaps": gaps,
     }
 
-    return {
+    result: dict[str, Any] = {
         "status": top_status,
         "per_model": per_model,
         "scope": scope,
     }
+    # Headline SDAR-vs-GRPO lift, derived deterministically from the paired arms so
+    # the comparison leaves score even if the agent omits its own delta table. Pure +
+    # additive: emitted only when both a ``sdar`` and a ``grpo`` ok leaf exist for a
+    # (model, env), so non-SDAR papers are byte-identical.
+    comparison = _derive_baseline_comparison(per_model)
+    if comparison:
+        result["baselines_vs_sdar"] = comparison
+    return result
 
 
 def _leaf_for_axes(

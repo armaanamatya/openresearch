@@ -441,11 +441,19 @@ def compute_reproducibility_verdict(
     claims: list[MeasuredClaim],
     min_seeds_for_contradiction: int = 2,
     faithful_min: float = DEFAULT_FAITHFUL_MIN_SCORE,
+    no_learning_signal: bool = False,
 ) -> ReproducibilityVerdict:
     """Adjudicate the two-axis verdict from pre-computed inputs.
 
     See the module docstring for the locked rules.  This function never raises
     on plausible inputs and is fully deterministic.
+
+    Args:
+        no_learning_signal: When True, forces ``replication_verdict="inconclusive"``
+            regardless of the claim-grading result.  The implementation verdict and
+            legacy verdict are computed as normal (the method may still be faithful
+            even if the training run was under-powered).  Default False ⇒ byte-
+            identical to prior behaviour.
     """
     rationale: list[str] = []
 
@@ -467,6 +475,25 @@ def compute_reproducibility_verdict(
         rationale.append(
             "replication=inconclusive — build is not certified faithful, so no "
             "claim about the paper can be trusted (gating decision 1)"
+        )
+        return ReproducibilityVerdict(
+            implementation_verdict=impl,
+            replication_verdict="inconclusive",
+            replication_credit=0.0,
+            legacy_verdict=_legacy_verdict_from_fidelity(impl),
+            schema_version=SCHEMA_VERSION,
+            fidelity_score=fidelity_score,
+            per_claim=per_claim,
+            rationale=tuple(rationale),
+        )
+
+    # F3 — no-learning-signal gate.  Fires only after the faithful-build gate
+    # (decision 1) so a broken build still correctly shows "broken / inconclusive"
+    # rather than a misleading "faithful / inconclusive (no learning)".
+    if no_learning_signal:
+        rationale.append(
+            "replication=inconclusive — training curves show no learning signal; "
+            "the result is not evidenced by the run"
         )
         return ReproducibilityVerdict(
             implementation_verdict=impl,

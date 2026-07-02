@@ -47,6 +47,7 @@ _RUN_EXPERIMENT_REPAIRABLE_FAILURES = {
     "code_bug",
     "cell_execution_error",   # Phase 0C: all run cells errored (non-OOM) → repair
     "degenerate_training",
+    "undertrained",           # OPENRESEARCH_MIN_TRAIN_STEPS: cell ran < min optimizer steps
     "disk_exhausted",
     "incomplete_metrics",
     "all_models_failed",      # Workstream C Fix 1: per_model non-empty, no ok status (flag-gated)
@@ -1750,6 +1751,11 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
     _payload = {"method_spec": method_spec, "env_spec": env_spec}
     _cached = _cache.maybe_get(ctx.project_dir, "plan_reproduction", payload=_payload)
     if _cached is not None:
+        try:
+            from backend.agents.rlm.reproduction_contract_store import activate as _activate_contract
+            _activate_contract(ctx, _cached)
+        except Exception:  # noqa: BLE001 -- optional migration must not affect cache hits
+            pass
         return _with_outcome(_cached, PrimitiveOutcome.ok)
 
     # β3: extend the planning prompt when compute is clipped.
@@ -1894,6 +1900,11 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
             data["data_recipes"] = []
 
         contract_out = ReproductionContract(**data).model_dump()
+        try:
+            from backend.agents.rlm.reproduction_contract_store import activate as _activate_contract
+            _activate_contract(ctx, contract_out)
+        except Exception:  # noqa: BLE001 -- optional migration must not affect planning
+            pass
         # ReproductionContract is extra="ignore" — re-attach harness feedback
         # (e.g. the compute_scope shape correction) AFTER the dump so the agent
         # actually sees it on the returned plan instead of it being silently
@@ -2966,6 +2977,34 @@ def _backend_for_sandbox_mode(
     return LocalDockerBackend()
 
 
+def _resolve_run_backend(sandbox_mode, *, run_budget=None, gpu_plan=None):
+    """Select the run's execution backend, honoring ``OPENRESEARCH_CLOUD_FAILOVER``.
+
+    When the flag lists clouds (e.g. ``"gcp,azure"``) AND the sandbox is a cloud
+    backend, the clouds are tried in order via the GCP<->Azure failover selector
+    (``cloud_failover.select_backend_with_failover``) so a down / at-capacity
+    first cloud falls back to the next. An empty/unset flag is BYTE-IDENTICAL to
+    the direct ``_backend_for_sandbox_mode`` call (today's single-cloud
+    selection). The cloud NAMES come from the preference list ("gcp"/"azure"),
+    not from ``sandbox_mode`` — the mode check only decides "is this a cloud run
+    at all". Fail-soft: an empty preference or a non-cloud mode takes the direct
+    path unchanged.
+    """
+    from backend.services.runtime.cloud_failover import (
+        failover_preference,
+        select_backend_with_failover,
+    )
+
+    preference = failover_preference()
+    if preference:
+        mode_value = str(getattr(sandbox_mode, "value", sandbox_mode or "")).strip().lower()
+        if mode_value in ("gcp", "gke", "azure", "aks"):
+            return select_backend_with_failover(
+                preference, run_budget=run_budget, gpu_plan=gpu_plan
+            ).backend
+    return _backend_for_sandbox_mode(sandbox_mode, run_budget=run_budget, gpu_plan=gpu_plan)
+
+
 def _combine_command_output(results: list) -> str:
     """Join sandbox command results into one log — stdout AND stderr, in order.
 
@@ -2988,6 +3027,11 @@ def _combine_command_output(results: list) -> str:
 _STEP_COUNT_KEYS = frozenset({
     "train_steps", "global_step", "optimizer_steps", "steps_completed", "completed_steps",
 })
+# Broader alias set used by the undertrained guard — adds common short forms the cells
+# route trainer emits (e.g. ``step: 19``, ``steps: 19``, ``total_steps``, ``final_step``).
+_UNDERTRAINED_STEP_KEYS: frozenset[str] = (
+    frozenset({"step", "steps", "total_steps", "final_step"}) | _STEP_COUNT_KEYS
+)
 
 
 def _max_train_steps(metrics: dict) -> int | None:
@@ -3066,6 +3110,33 @@ def _scalar_rewards(mv: dict) -> list[float]:
     return out
 
 
+def _model_result_leaves(mv: dict) -> list[dict]:
+    """Result leaves under a ``per_model[model]`` value, handling BOTH shapes.
+
+    Flat monolithic: ``mv`` itself carries ``status`` → ``[mv]``.
+    Nested cells-route: ``mv = {env: {baseline: leaf}}`` → the innermost dicts
+    carrying a ``status`` key.
+
+    Fix (BUG-2026-06-24): the old guard read ``mv['status']`` directly, so for the
+    nested cells-route shape (every SDAR-style run) it skipped EVERY model and was a
+    silent dead letter.  Descending to the leaves restores the intended check.
+    """
+    if "status" in mv:
+        return [mv]
+    leaves: list[dict] = []
+    for ev in mv.values():
+        if not isinstance(ev, dict):
+            continue
+        if "status" in ev:
+            leaves.append(ev)
+        else:
+            leaves.extend(
+                leaf for leaf in ev.values()
+                if isinstance(leaf, dict) and "status" in leaf
+            )
+    return leaves
+
+
 def _degenerate_training_violation(metrics: dict, *, epsilon: float = 1e-6) -> tuple[str, str] | None:
     """Flag a model the agent marked succeeded that shows NO learning signal.
 
@@ -3073,33 +3144,106 @@ def _degenerate_training_violation(metrics: dict, *, epsilon: float = 1e-6) -> t
     unambiguous cases fire), per-model so a mixed run names the offender:
       (1) status=ok but an EXPLICIT 0 optimizer steps — 'completed' without training;
       (2) status=ok but EVERY recorded reward MAGNITUDE is ~0 (|reward| <= epsilon
-          across the whole curve + scalar reward fields) — broken matching / no signal.
+          across ALL of the model's leaves) — broken matching / no signal anywhere.
+    Handles BOTH the flat ``per_model[model]=leaf`` and the nested cells-route
+    ``per_model[model]={env:{baseline:leaf}}`` shapes (via ``_model_result_leaves``).
+    Condition (2) is judged at the MODEL level so a model with ANY non-zero leaf is
+    never flagged — byte-identical to the monolithic single-leaf semantics, so this
+    introduces no new false-positive on a partial run that learned on some env.
     Uses ``abs`` so a legitimately NEGATIVE reward (step/length/KL penalties are
     normal in RL) is NOT mistaken for "no reward"; and does NOT flag a constant but
     non-zero curve (that can be a converged plateau, not degeneracy). Only judges
-    models whose status is in :data:`_OK_STATUSES`.
+    leaves whose status is in :data:`_OK_STATUSES`.
     """
     per_model = metrics.get("per_model")
     if not isinstance(per_model, dict):
         return None
     for m, mv in per_model.items():
-        if not isinstance(mv, dict) or str(mv.get("status", "")).lower() not in _OK_STATUSES:
+        if not isinstance(mv, dict):
             continue
-        # (1) claimed success but explicitly zero optimizer steps.
-        if _max_train_steps(mv) == 0:
-            return ("degenerate_training",
-                    f"degenerate_training: model {m!r} status=ok but ran 0 optimizer steps "
-                    "— it 'completed' without training. Ensure the loop runs optimizer.step() "
-                    "and records steps/reward.")
-        # (2) every recorded reward magnitude ~0 — no signal at all.
-        rewards = _reward_curve(mv) + _scalar_rewards(mv)
+        ok_leaves = [
+            lf for lf in _model_result_leaves(mv)
+            if str(lf.get("status", "")).lower() in _OK_STATUSES
+        ]
+        if not ok_leaves:
+            continue
+        # (1) claimed success but explicitly zero optimizer steps (any leaf).
+        for lf in ok_leaves:
+            if _max_train_steps(lf) == 0:
+                return ("degenerate_training",
+                        f"degenerate_training: model {m!r} status=ok but ran 0 optimizer steps "
+                        "— it 'completed' without training. Ensure the loop runs optimizer.step() "
+                        "and records steps/reward.")
+        # (2) every recorded reward magnitude ~0 across ALL the model's leaves — no signal anywhere.
+        rewards: list[float] = []
+        for lf in ok_leaves:
+            rewards += _reward_curve(lf) + _scalar_rewards(lf)
         if rewards and max(abs(x) for x in rewards) <= epsilon:
             return ("degenerate_training",
                     f"degenerate_training: model {m!r} status=ok but EVERY recorded reward "
-                    f"is ~0 ({len(rewards)} value(s)) — training produced no signal. Fix the "
-                    "reward/answer-matching so it is non-zero BEFORE the RL loop (extract the "
-                    "answer span; token-F1 over the full gold-alias list; print zero-shot "
-                    "accuracy first), and confirm optimizer.step() actually runs.")
+                    f"is ~0 ({len(rewards)} value(s)) across all cells — training produced no "
+                    "signal. Fix the reward/answer-matching so it is non-zero BEFORE the RL loop "
+                    "(extract the answer span; token-F1 over the full gold-alias list; print "
+                    "zero-shot accuracy first), and confirm optimizer.step() actually runs.")
+    return None
+
+
+def _undertrained_cell_violation(metrics: dict, *, min_steps: int) -> tuple[str, str] | None:
+    """Flag a per-model cell the agent marked succeeded that ran fewer optimizer steps
+    than the paper's required minimum (``OPENRESEARCH_MIN_TRAIN_STEPS``).
+
+    Handles BOTH the flat ``per_model[model]=leaf`` and the nested cells-route
+    ``per_model[model]={env:{baseline:leaf}}`` shapes via :func:`_model_result_leaves`.
+    Only judges leaves whose status is in :data:`_OK_STATUSES`.
+
+    Conservative exemptions (never false-fires):
+
+    - ``min_steps <= 0`` → always returns None (flag off, byte-identical off-state).
+    - No step field recorded in the leaf → skip (cannot judge).
+    - Leaf already failed/errored → skip (:data:`_OK_STATUSES` filter).
+    - Step count >= min_steps → pass.
+
+    Step-field aliases accepted: :data:`_UNDERTRAINED_STEP_KEYS` — everything in
+    :data:`_STEP_COUNT_KEYS` plus the short forms ``step``, ``steps``,
+    ``total_steps``, ``final_step`` that the cells-route trainer commonly emits.
+    """
+    if min_steps <= 0:
+        return None
+    per_model = metrics.get("per_model")
+    if not isinstance(per_model, dict):
+        return None
+    for m, mv in per_model.items():
+        if not isinstance(mv, dict):
+            continue
+        ok_leaves = [
+            lf for lf in _model_result_leaves(mv)
+            if str(lf.get("status", "")).lower() in _OK_STATUSES
+        ]
+        for lf in ok_leaves:
+            recorded_steps: int | None = None
+            for k in _UNDERTRAINED_STEP_KEYS:
+                v = lf.get(k)
+                if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0:
+                    recorded_steps = int(v)
+                    break
+            if recorded_steps is None:
+                continue  # no step field recorded — cannot judge
+            if recorded_steps < min_steps:
+                env_key = lf.get("env") or lf.get("dataset") or ""
+                baseline_key = lf.get("baseline") or lf.get("method") or ""
+                coord = str(m)
+                if env_key:
+                    coord = f"{coord}/{env_key}"
+                if baseline_key:
+                    coord = f"{coord}/{baseline_key}"
+                return (
+                    "undertrained",
+                    f"undertrained: cell {coord!r} ran {recorded_steps} optimizer step(s) "
+                    f"but the paper requires >= {min_steps}. Sparse-reward RL environments "
+                    f"cannot learn in so few steps — increase the step/epoch count so every "
+                    f"cell reaches the floor. Do NOT reduce steps further; scale down "
+                    f"batch size, sequence length, or eval examples instead.",
+                )
     return None
 
 
@@ -3336,6 +3480,14 @@ def _training_health_violation(result: dict) -> tuple[str, str] | None:
         _deg = _degenerate_training_violation(result.get("metrics") or {}, epsilon=_deg_eps)
         if _deg is not None:
             return _deg
+    # (4) undertrained — exited 0, status=ok, but fewer steps than the paper-required floor
+    # (OPENRESEARCH_MIN_TRAIN_STEPS). Per-cell check via _model_result_leaves so it fires
+    # on the cells-route nested shape (``step: 19`` in each leaf) that the flat
+    # ``insufficient_train_steps`` check above misses when ``step`` is not at the top level.
+    # Flag-gated default-OFF: ``min_steps`` was already resolved above; 0 → no-op.
+    _ut = _undertrained_cell_violation(result.get("metrics") or {}, min_steps=min_steps)
+    if _ut is not None:
+        return _ut
     return None
 
 
@@ -3624,7 +3776,7 @@ async def _execute_in_sandbox(
     artifact_root = code_dir / "outputs" / run_id
     artifact_root.mkdir(parents=True, exist_ok=True)
 
-    service = RuntimeAppService(_backend_for_sandbox_mode(
+    service = RuntimeAppService(_resolve_run_backend(
         sandbox_mode, run_budget=run_budget, gpu_plan=gpu_plan,
     ))
     # gpu_mode threads ctx.gpu_mode → SandboxConfig so LocalDockerBackend's
@@ -4328,6 +4480,38 @@ def _persist_experiment_result(
     if _fclass and _fclass != "ok":
         result.setdefault("failure_class", _fclass)
         result.setdefault("suggested_fix", _fsuggest)
+
+    # Durable failure capsule (default OFF via OPENRESEARCH_FAILURE_CAPSULES).
+    # On a failure, atomically persist a bounded/redacted capsule of the REAL
+    # evidence (traceback tail, log tail, command + env fingerprints, artifact
+    # paths, error signature) and stamp its rendered text onto the result dict.
+    # The root sets plan['repair_context'] to this failed result, so the text
+    # flows into the next implementer prompt — the agent repairs from concrete
+    # evidence, not a generic message. Fully fail-soft: never breaks the run.
+    if not result.get("success"):
+        try:
+            from backend.agents.rlm import failure_capsule as _fcap
+            if _fcap.capsules_enabled():
+                _cap = _fcap.build_capsule(
+                    result,
+                    command=str(result.get("command") or "") or None,
+                    env=dict(os.environ),
+                    artifacts=[
+                        str(p) for p in (
+                            (result.get("metrics") or {}).get("artifact_paths")
+                            or result.get("artifacts")
+                            or []
+                        )
+                    ] or None,
+                    project_id=getattr(ctx, "project_id", None),
+                )
+                _fcap.persist_capsule(ctx.project_dir, _cap)
+                _cap_text = _fcap.render_capsule_text(_cap)
+                if _cap_text:
+                    result.setdefault("failure_capsule_text", _cap_text)
+        except Exception:  # noqa: BLE001 — capsule path must NEVER break the run
+            logger.debug("failure_capsule: build/persist failed", exc_info=True)
+
     _with_outcome(result, _classify_run_experiment_outcome(result))
 
     # P2 manifest: bind metric→artifact (metrics_sha256) + name the backend.
@@ -5599,6 +5783,16 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
                 _prov.build_cell_provenance(code, run_id=run_id)
             except Exception:  # noqa: BLE001 — provenance must never break the run
                 logger.debug("cell-matrix: provenance build failed (non-fatal)", exc_info=True)
+            # Harness-owned training-curve + figure sidecars for the text-only
+            # grader.  Flag-gated (OPENRESEARCH_EMIT_FIGURE_SIDECARS, default OFF)
+            # so unset ⇒ byte-identical.  Recommended ON for SDAR via run-spec.
+            try:
+                from backend.agents.rlm import figure_sidecars as _fig_sc  # noqa: PLC0415
+                _fig_sc.emit_sidecars(code, m)
+            except Exception:  # noqa: BLE001 — sidecars must never break the run
+                logger.debug(
+                    "cell-matrix: figure_sidecars emission failed (non-fatal)", exc_info=True
+                )
 
     try:
         manifest = json.loads((code / "cells.json").read_text(encoding="utf-8"))
@@ -5912,6 +6106,53 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         matrix_result, kept, capacity_gaps=cap_gaps, dataset_gaps=ds_gaps,
         models_skipped=models_skipped, environments_skipped=envs_skipped,
         budget_dropped=_staged_out.get("dropped_cells_full") if _staged_out is not None else None)
+    # F2 env-liveness (flag-gated, default OFF): a cell whose env served NO real
+    # episodes (server unreachable / all zero-turn — the WebShop silent-zero) is an
+    # env-SETUP failure, not an honest ok r=0 result. The harness-owned rollout wrote
+    # per-cell env_health.jsonl the agent cannot suppress; detect dead envs and add a
+    # VERIFIED env_setup_failed Exclusion to ctx.env_setup_exclusions, which
+    # _apply_operator_scope (next line) folds into the scope on the SAME fairness
+    # footing as a run-start provisioning failure — excluded from the strict score,
+    # never scored as a fake 0 that pollutes the grade / a baseline comparison. Fail-soft.
+    try:
+        from backend.agents.rlm.env_liveness import (  # noqa: PLC0415
+            dead_envs as _el_dead,
+            env_liveness_gate_enabled as _el_enabled,
+        )
+        if _el_enabled():
+            from pathlib import Path as _ElPath  # noqa: PLC0415
+
+            from backend.agents.rlm import exclusion as _el_excl  # noqa: PLC0415
+            _el_dead_list = _el_dead(_ElPath(getattr(ctx, "project_dir", "") or ".") / "code")
+            if _el_dead_list:
+                _el_excls = list(getattr(ctx, "env_setup_exclusions", None) or [])
+                for _el_env, _el_reason in _el_dead_list:
+                    try:
+                        _el_excls.append(_el_excl.Exclusion(
+                            item=str(_el_env),
+                            axis=_el_excl.AXIS_ENVIRONMENT,
+                            kind=_el_excl.KIND_ENV_SETUP_FAILED,
+                            reason=_el_reason,
+                            verified=True,
+                            evidence="env-liveness: 0 episodes served (env_health.jsonl)",
+                        ))
+                    except Exception:  # noqa: BLE001 — one malformed record must not block the rest
+                        continue
+                ctx.env_setup_exclusions = _el_excls
+                for _el_env, _el_reason in _el_dead_list:
+                    try:
+                        _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                            "code": "env_unavailable", "message": _el_reason,
+                        })
+                    except Exception:  # noqa: BLE001
+                        pass
+                logger.warning(
+                    "run_experiment[%s]: env-liveness flagged dead env(s) as "
+                    "env_setup_failed (excluded from scoring): %s",
+                    getattr(ctx, "run_id", "?"), [e for e, _ in _el_dead_list],
+                )
+    except Exception:  # noqa: BLE001 — env-liveness must never crash the cells route
+        logger.debug("cells route: env-liveness gate failed", exc_info=True)
     metrics = _apply_operator_scope(metrics, ctx)
     logs = _summarize_cell_logs(kept, matrix_result, gpus)
 
@@ -6904,6 +7145,40 @@ def run_experiment(
                     )
         except Exception:  # noqa: BLE001 — the metric-semantics guard must never crash the run
             logger.debug("run_experiment: metric-semantics guard failed", exc_info=True)
+
+    # Eval-metric provenance guard (flag-gated, default OFF). A result-claiming rate
+    # metric (accuracy/success_rate/f1/em) must be recomputable from persisted per-example
+    # eval records (eval_provenance.json beside the cell's metrics.json); a value that is
+    # not the mean of real [0,1] outcomes (e.g. reward×100) is degraded to the repairable
+    # fabrication_suspected. Complements metric_semantics (range) — catches an in-range,
+    # non-zero, real-keyed metric that is NOT a real held-out measurement. Fail-soft.
+    if result.get("success"):
+        try:
+            from pathlib import Path as _EpPath  # noqa: PLC0415
+            from backend.agents.rlm.eval_provenance import (  # noqa: PLC0415
+                eval_provenance_should_veto,
+                eval_provenance_repair_message,
+            )
+            _ep_code = None
+            _ep_pd = getattr(ctx, "project_dir", None)
+            if _ep_pd is not None:
+                _ep_code = _EpPath(_ep_pd) / "code"
+            if _ep_code is not None:
+                _ep_veto, _ep_detail = eval_provenance_should_veto(_ep_code)
+                if _ep_veto:
+                    _ep_msg = eval_provenance_repair_message(_ep_detail or "")
+                    result = {
+                        **result,
+                        "success": False,
+                        "failure_class": "fabrication_suspected",
+                        "error": _ep_msg,
+                    }
+                    _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                        "code": "fabrication_suspected", "message": _ep_msg,
+                    })
+                    logger.warning("run_experiment[%s]: %s", getattr(ctx, "run_id", "?"), _ep_msg)
+        except Exception:  # noqa: BLE001 — the eval-provenance guard must never crash the run
+            logger.debug("run_experiment: eval-provenance guard failed", exc_info=True)
 
     # Unified evidence-audit veto (Pillar-1 wiring, spec 2026-06-20 §3). Flag-gated INSIDE
     # result_is_fabricated (OPENRESEARCH_EVIDENCE_AUDIT, default OFF → returns None → this is
@@ -8256,7 +8531,27 @@ def recommend_next_tool(situation: str, *, ctx: "RunContext") -> dict:
 
     The root calls this when uncertain about how to proceed. The recommendation
     comes from a single llm_query call (no recursion, bounded cost).
+
+    Deterministic next-action card (feature #18, ``OPENRESEARCH_ACTION_CARDS``,
+    default OFF): when the next action is mechanically determined by lifecycle
+    state (e.g. no baseline yet → ``implement_baseline``), short-circuit the PAID
+    LLM call and return a deterministic card instead. Fail-soft: any error or an
+    ambiguous state falls through to today's LLM path (byte-for-byte unchanged
+    when the flag is off).
     """
+    try:
+        from backend.agents.rlm.action_card import (
+            action_cards_enabled,
+            build_action_card,
+        )
+
+        if action_cards_enabled():
+            card = build_action_card(situation, ctx)
+            if card is not None:
+                return card
+    except Exception:  # noqa: BLE001 — short-circuit must never break the primitive
+        pass
+
     prompt = (
         "You are advising an RLM root model on which tool to use next.\n\n"
         f"CURRENT SITUATION:\n{situation}\n\n"

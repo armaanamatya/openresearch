@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -71,6 +72,7 @@ _HARNESS_CODE_HELPERS: tuple[str, ...] = (
     "alfworld_env.py",
     "webshop_env.py",
     "provenance.py",  # D2: emit_provenance / emit_figure_sidecar — legibility for the grader
+    "eval_provenance.py",  # eval-metric provenance producer (record_eval) — verifiable held-out metric sidecar
     "convergence_evidence.py",  # Module A: structured convergence/sweep evidence (rubric_guard consults it)
     "fair_comparison.py",  # Module B: identical-init snapshot + verifiable init fingerprint
 )
@@ -513,11 +515,13 @@ _NO_STUB_BLOCK = (
     "the paper's GitHub release, etc.). If the paper's full dataset is too large, use the "
     "paper's *own* released eval split or a public subset — NOT a synthesised stand-in.\n"
     "Scale-down is allowed ONLY along these axes, in this order:\n"
-    "  1. shorter training (e.g. 5 steps instead of 150)\n"
-    "  2. smaller batch / sequence length\n"
-    "  3. fewer eval examples (but real ones, not synthetic)\n"
-    "  4. smaller model variant FROM THE SAME FAMILY if the paper offers one "
+    "  1. smaller batch / sequence length\n"
+    "  2. fewer eval examples (but real ones, not synthetic)\n"
+    "  3. smaller model variant FROM THE SAME FAMILY if the paper offers one "
     "(e.g. Qwen2.5-0.5B if Qwen2.5-3B won't fit — never a random tiny transformer)\n"
+    "  4. shorter training — LAST RESORT ONLY; if the paper (or your extra guidance) "
+    "specifies a training-step count, NEVER shorten below it — scale batch size, "
+    "sequence length, and eval-example count down first.\n"
     "If even (1)–(4) cannot make the run fit, FAIL the experiment with a clear "
     "`metrics.json = {\"error\": \"compute_infeasible\", \"required_vram_gb\": N}` so the rubric "
     "scorer records honest zero on result-match instead of getting fake numbers from a surrogate.\n"
@@ -1160,6 +1164,43 @@ _PROVENANCE_BLOCK = (
     "calls in try/except (FAIL-SOFT, exactly like the figures). This is the single biggest\n"
     "lever on the 'Artifact completeness', 'Evaluation protocol', and 'Experiment execution'\n"
     "rubric areas.\n"
+)
+
+
+# FIX 6 — eval-metric provenance guidance (2026-06-24, always-on, self-gating).
+# Instructs the agent to compute held-out eval metrics via record_eval() instead of
+# deriving accuracy from training reward (the SDAR reward×100 anti-pattern).
+# Self-gating: the block explicitly says "when your cell reports a rate metric" —
+# cells that emit only RL reward are unaffected.  eval_provenance.py is already in
+# _HARNESS_CODE_HELPERS so the helper is always available in code/.
+_EVAL_PROVENANCE_GUIDANCE_BLOCK = (
+    "\n\nEVAL-METRIC PROVENANCE — when your cell reports accuracy/success_rate/f1/em:\n"
+    "A reported rate metric MUST be a real held-out measurement against gold — NOT a\n"
+    "rescaled or reward-derived value.  NEVER set accuracy = reward × 100 or 128;\n"
+    "NEVER set success_rate ≡ mean(reward) unless reward IS a binary gold-judged {0,1}\n"
+    "outcome on a held-out slice.  (A true success of 0.008 becomes 'accuracy 0.83'\n"
+    "via ×100 — the harness eval-provenance guard catches this and rejects the cell.)\n"
+    "Do ALL three:\n"
+    "  1. Collect a HELD-OUT eval slice — task-ids DISJOINT from the training rollouts;\n"
+    "     score each against gold: F1/EM for QA tasks, task-success {0,1} for agentic\n"
+    "     envs (ALFWorld/WebShop).  Aim for >= 8 held-out examples per cell.\n"
+    "  2. Call record_eval (harness helper auto-copied into code/ — zero deps):\n"
+    "       from eval_provenance import record_eval\n"
+    "       rate = record_eval(\n"
+    "           output_dir, model_key=MODEL, env=ENV, baseline=BASELINE,\n"
+    "           metric_name='success_rate',\n"
+    "           records=[{'id': tid, 'outcome': score_0_to_1,\n"
+    "                     'prediction': pred, 'gold': gold}\n"
+    "                    for tid, pred, gold in eval_slice],\n"
+    "           train_ids=list(training_task_ids))  # guard checks disjointness\n"
+    "  3. Write the RETURNED value (always in [0,1]) to metrics.json:\n"
+    "       metrics['success_rate'] = rate   # NOT rate * 100\n"
+    "record_eval computes mean(outcome) in [0,1] and writes eval_provenance.json beside\n"
+    "metrics.json.  When OPENRESEARCH_EVAL_PROVENANCE_GUARD=1 the harness recomputes the\n"
+    "metric from those records and rejects a cell whose reported value disagrees\n"
+    "(catches ×100-scaling and in-sample derivations).  Wrap in try/except (fail-soft).\n"
+    "reward_mean in metrics.json stays the mean episode reward from training rollouts —\n"
+    "it is separate from the held-out eval metric and is NOT what the grader scores.\n"
 )
 
 
@@ -2041,6 +2082,24 @@ def _budget_awareness_block(remaining_s: float | None) -> str:
     return "\n" + _BUDGET_AWARENESS_BLOCK_TEMPLATE.format(budget_s=rounded) + "\n"
 
 
+def _min_train_steps_block(min_steps: int) -> str:
+    """Return the minimum-training-steps guidance block, or "" when OPENRESEARCH_MIN_TRAIN_STEPS is unset/0.
+
+    When set, this block is injected after the budget-awareness block so it overrides
+    any shorter-training suggestion the budget block might imply.  The guard in
+    ``primitives._undertrained_cell_violation`` enforces the same floor at execution time.
+    """
+    if min_steps <= 0:
+        return ""
+    return (
+        f"\n\nMINIMUM TRAINING STEPS — hard floor: every training cell MUST run at "
+        f"least {min_steps} optimizer steps (the paper's protocol). A cell that runs "
+        f"fewer is rejected as `undertrained` and you will be asked to repair it. "
+        f"Do not hardcode a smaller step count; size batch/seq/eval to fit the budget "
+        f"instead.\n"
+    )
+
+
 _MINIMIZE_COMPUTE_BLOCK = (
     "\n\nMINIMIZE-COMPUTE MODE — reproduce the CLAIM, not the recipe:\n"
     "The user enabled minimize-compute (--minimize-compute or the lab UI\n"
@@ -2347,6 +2406,14 @@ def _compute_constraint_guidance(
         guidance += _CELL_CONTRACT_BLOCK
     if _inject_budget:
         guidance += _budget_awareness_block(remaining_s)
+    # Min-train-steps floor (OPENRESEARCH_MIN_TRAIN_STEPS, default-OFF): overrides any
+    # shorter-training suggestion from the budget block when set.  The matching
+    # postflight guard (_undertrained_cell_violation) enforces this at execution time.
+    try:
+        _floor_steps = int(os.environ.get("OPENRESEARCH_MIN_TRAIN_STEPS", "0") or "0")
+    except (ValueError, AttributeError):
+        _floor_steps = 0
+    guidance += _min_train_steps_block(_floor_steps)
     # Lane AA — per-model block adapts to multi-env papers
     # by nesting per_dataset under each model. Arxiv id drives the lookup.
     guidance += _per_model_metrics_block(arxiv_id=arxiv_id)
@@ -2412,6 +2479,13 @@ def _compute_constraint_guidance(
     guidance += _OUTPUT_DISCIPLINE_BLOCK
     guidance += _ARTIFACT_COMPLETENESS_BLOCK
     guidance += _PROVENANCE_BLOCK
+    # 5.75. Eval-metric provenance — always-on, self-gating (only matters when
+    # the cell reports a rate metric; cells that emit only RL reward are unaffected).
+    # Teaches the agent to use record_eval() for a verifiable held-out measurement
+    # instead of deriving accuracy from training reward (the SDAR reward×100 bug).
+    # eval_provenance.py is already in _HARNESS_CODE_HELPERS, so the import always
+    # resolves.  Grouped with _PROVENANCE_BLOCK since both emit verifiable sidecars.
+    guidance += _EVAL_PROVENANCE_GUIDANCE_BLOCK
     # Layer 1: only ask the agent to write smoke-aware code when the execution smoke
     # is actually enabled — keeps the prompt lean otherwise (flag default-OFF).
     try:
@@ -2766,6 +2840,19 @@ async def run_with_sdk(
     )
 
     if repair_context:
+        # Durable failure capsule (OPENRESEARCH_FAILURE_CAPSULES): when the
+        # failed run_experiment result carries a rendered capsule of real
+        # on-disk evidence, surface it ABOVE the raw repair_context JSON so the
+        # agent fixes from concrete evidence. Flag-gated + fail-soft: OFF or
+        # absent → the prompt is byte-for-byte unchanged.
+        _capsule_block = ""
+        try:
+            from backend.agents.rlm import failure_capsule as _fcap
+            _cap_text = (repair_context or {}).get("failure_capsule_text")
+            if _fcap.capsules_enabled() and _cap_text:
+                _capsule_block = f"{_cap_text}\n\n"
+        except Exception:  # noqa: BLE001 — capsule inlining must never block repair
+            _capsule_block = ""
         prompt = (
             f"The baseline for project {project_id} was already implemented in "
             f"{code_dir}, but running the experiment FAILED. Diagnose the failure "
@@ -2775,6 +2862,7 @@ async def run_with_sdk(
             f"results as a flat JSON object (metric name → number) to a file named "
             f"metrics.json in the code root, because that file is how the "
             f"reproduction's metrics are read back.\n\n"
+            f"{_capsule_block}"
             f"Experiment failure:\n```json\n"
             f"{json.dumps(repair_context, indent=2, default=str)}\n```\n\n"
             f"Reproduction context:\n```json\n{json.dumps(context, indent=2)}\n```"

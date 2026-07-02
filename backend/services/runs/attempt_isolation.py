@@ -245,6 +245,126 @@ def _reset_demo_status(project_dir: Path, project_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _has_attempt_residue(project_dir: Path) -> bool:
+    """True iff ``_archive_now`` would move at least one item for *project_dir*.
+
+    Mirrors the exact move manifest below (top-level files, per-attempt
+    rlm_state/ files, the REPL pickle, ``code/``) as a cheap existence probe
+    so :func:`force_archive_incomplete` can return ``None`` without creating
+    an empty timestamped ``attempts/`` directory and taking the archive lock.
+    """
+    if any((project_dir / name).exists() for name in _ARCHIVE_FILES):
+        return True
+    rlm_state = project_dir / "rlm_state"
+    if any((rlm_state / name).exists() for name in _RLM_STATE_PER_ATTEMPT):
+        return True
+    if (project_dir / _REPL_PICKLE).exists():
+        return True
+    return (project_dir / _CODE_DIR).is_dir()
+
+
+def _archive_now(
+    project_dir: Path,
+    project_id: str,
+    *,
+    dir_suffix: str = "",
+    reason: str | None = None,
+) -> dict | None:
+    """Move every per-attempt artifact into a fresh ``attempts/<ts><dir_suffix>/``.
+
+    The single move manifest shared by ``maybe_archive_prior_attempt``
+    (heuristic-gated: warm-retry + trigger-file checks happen in the caller)
+    and ``force_archive_incomplete`` (unconditional, Codex F6). Returns
+    ``None`` when the per-project archive lock cannot be acquired immediately
+    (Codex finding B2). When *reason* is given, an ``archive_reason.json``
+    audit-trail file is written inside the archive dir and ``"reason"`` is
+    added to the returned dict.
+    """
+    # --- per-project lock (POSIX only) ---
+    lock_path = project_dir / ".archive.lock"
+    lock_fh = None
+    if _HAS_FCNTL:
+        try:
+            lock_fh = lock_path.open("w")
+            _fcntl.flock(lock_fh, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        except (IOError, BlockingIOError):
+            if lock_fh is not None:
+                lock_fh.close()
+            logger.warning(
+                "attempt_isolation: lock held for %s — skipping archive "
+                "(another process is archiving concurrently)",
+                project_id,
+            )
+            return None
+
+    try:
+        ts = _fs_safe_ts()
+        attempt_dir = project_dir / "attempts" / f"{ts}{dir_suffix}"
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+
+        moved: list[str] = []
+
+        # 1. Top-level files.
+        for name in _ARCHIVE_FILES:
+            src = project_dir / name
+            if src.exists() and src.is_file():
+                shutil.move(str(src), str(attempt_dir / name))
+                moved.append(name)
+
+        # 2. Per-attempt rlm_state/ files (iterations.jsonl + gpu_escalation_state.json).
+        # _RLM_STATE_PER_ATTEMPT supersedes the legacy _RLM_STATE_ITER single-file
+        # block: any file in this tuple is archived together so the next attempt
+        # starts with a fresh rlm_state/ surface AND a reset escalation count.
+        for _rlm_name in _RLM_STATE_PER_ATTEMPT:
+            _rlm_src = project_dir / "rlm_state" / _rlm_name
+            if _rlm_src.exists() and _rlm_src.is_file():
+                (attempt_dir / "rlm_state").mkdir(parents=True, exist_ok=True)
+                shutil.move(str(_rlm_src), str(attempt_dir / "rlm_state" / _rlm_name))
+                moved.append(f"rlm_state/{_rlm_name}")
+
+        # 3. repl_state.pickle.
+        pickle_src = project_dir / _REPL_PICKLE
+        if pickle_src.exists() and pickle_src.is_file():
+            shutil.move(str(pickle_src), str(attempt_dir / _REPL_PICKLE))
+            moved.append(_REPL_PICKLE)
+
+        # 4. code/ directory — rebuild from scratch on the new attempt.
+        # Reclaim ownership FIRST: docker containers run as root inside and
+        # bind-mounted writes land as root on the host; without the chown the
+        # subsequent shutil.move trips PermissionError on every root-owned file.
+        # (Fail-soft — see _chown_root_owned_code for the failure narrative.)
+        code_src = project_dir / _CODE_DIR
+        if code_src.exists() and code_src.is_dir():
+            _chown_root_owned_code(code_src)
+            shutil.move(str(code_src), str(attempt_dir / _CODE_DIR))
+            moved.append(_CODE_DIR + "/")
+
+        msg = (
+            f"attempt_isolation: archiving prior attempt to "
+            f"runs/{project_id}/attempts/{ts}{dir_suffix}/ "
+            f"({len(moved)} item(s) moved)"
+        )
+        logger.info(msg)
+        print(msg, file=sys.stderr)
+
+        # 5. Reset demo_status.json so the UI shows the new attempt from the start.
+        _reset_demo_status(project_dir, project_id)
+
+        result: dict[str, Any] = {"attempt_dir": str(attempt_dir), "moved": moved}
+        if reason is not None:
+            (attempt_dir / "archive_reason.json").write_text(
+                json.dumps({"reason": reason}), encoding="utf-8"
+            )
+            result["reason"] = reason
+        return result
+
+    finally:
+        if lock_fh is not None:
+            if _HAS_FCNTL:
+                _fcntl.flock(lock_fh, _fcntl.LOCK_UN)
+            lock_fh.close()
+
+
 def maybe_archive_prior_attempt(project_id: str, runs_root: Path) -> dict | None:
     """Archive prior-attempt artifacts if a completed run is present.
 
@@ -291,83 +411,39 @@ def maybe_archive_prior_attempt(project_id: str, runs_root: Path) -> dict | None
     if not (project_dir / _TRIGGER_FILE).exists():
         return None
 
-    # --- per-project lock (POSIX only) ---
-    lock_path = project_dir / ".archive.lock"
-    lock_fh = None
-    if _HAS_FCNTL:
-        try:
-            lock_fh = lock_path.open("w")
-            _fcntl.flock(lock_fh, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
-        except (IOError, BlockingIOError):
-            if lock_fh is not None:
-                lock_fh.close()
-            logger.warning(
-                "attempt_isolation: lock held for %s — skipping archive "
-                "(another process is archiving concurrently)",
-                project_id,
-            )
-            return None
-
-    try:
-        ts = _fs_safe_ts()
-        attempt_dir = project_dir / "attempts" / ts
-        attempt_dir.mkdir(parents=True, exist_ok=True)
-
-        moved: list[str] = []
-
-        # 1. Top-level files.
-        for name in _ARCHIVE_FILES:
-            src = project_dir / name
-            if src.exists() and src.is_file():
-                shutil.move(str(src), str(attempt_dir / name))
-                moved.append(name)
-
-        # 2. Per-attempt rlm_state/ files (iterations.jsonl + gpu_escalation_state.json).
-        # _RLM_STATE_PER_ATTEMPT supersedes the legacy _RLM_STATE_ITER single-file
-        # block: any file in this tuple is archived together so the next attempt
-        # starts with a fresh rlm_state/ surface AND a reset escalation count.
-        for _rlm_name in _RLM_STATE_PER_ATTEMPT:
-            _rlm_src = project_dir / "rlm_state" / _rlm_name
-            if _rlm_src.exists() and _rlm_src.is_file():
-                (attempt_dir / "rlm_state").mkdir(parents=True, exist_ok=True)
-                shutil.move(str(_rlm_src), str(attempt_dir / "rlm_state" / _rlm_name))
-                moved.append(f"rlm_state/{_rlm_name}")
-
-        # 3. repl_state.pickle.
-        pickle_src = project_dir / _REPL_PICKLE
-        if pickle_src.exists() and pickle_src.is_file():
-            shutil.move(str(pickle_src), str(attempt_dir / _REPL_PICKLE))
-            moved.append(_REPL_PICKLE)
-
-        # 4. code/ directory — rebuild from scratch on the new attempt.
-        # Reclaim ownership FIRST: docker containers run as root inside and
-        # bind-mounted writes land as root on the host; without the chown the
-        # subsequent shutil.move trips PermissionError on every root-owned file.
-        # (Fail-soft — see _chown_root_owned_code for the failure narrative.)
-        code_src = project_dir / _CODE_DIR
-        if code_src.exists() and code_src.is_dir():
-            _chown_root_owned_code(code_src)
-            shutil.move(str(code_src), str(attempt_dir / _CODE_DIR))
-            moved.append(_CODE_DIR + "/")
-
-        msg = (
-            f"attempt_isolation: archiving prior attempt to "
-            f"runs/{project_id}/attempts/{ts}/ "
-            f"({len(moved)} item(s) moved)"
-        )
-        logger.info(msg)
-        print(msg, file=sys.stderr)
-
-        # 5. Reset demo_status.json so the UI shows the new attempt from the start.
-        _reset_demo_status(project_dir, project_id)
-
-        return {"attempt_dir": str(attempt_dir), "moved": moved}
-
-    finally:
-        if lock_fh is not None:
-            if _HAS_FCNTL:
-                _fcntl.flock(lock_fh, _fcntl.LOCK_UN)
-            lock_fh.close()
+    return _archive_now(project_dir, project_id)
 
 
-__all__ = ["maybe_archive_prior_attempt"]
+def force_archive_incomplete(
+    project_id: str, runs_root: Path, *, reason: str
+) -> dict | None:
+    """Explicit-archive entry point for the campaign (Codex F6).
+
+    Archives attempt residue UNCONDITIONALLY — the warm-retry heuristic
+    (``_is_warm_retry`` / ``maybe_archive_prior_attempt``) is deliberately
+    never consulted, so a campaign never silently reuses a killed attempt's
+    ``code/``. Returns the same shape as ``maybe_archive_prior_attempt``,
+    with ``"reason"`` added, or ``None`` when the run dir holds no attempt
+    residue at all (nothing to quarantine) or does not exist.
+
+    Archive dir naming: ``attempts/<ts>_incomplete/`` when
+    ``final_report.json`` is absent (a killed/incomplete attempt), else the
+    same ``attempts/<ts>/`` naming ``maybe_archive_prior_attempt`` uses for a
+    completed run.
+    """
+    runs_root = Path(runs_root)
+    project_dir = runs_root / project_id
+
+    if not project_dir.is_dir():
+        return None
+    if not _has_attempt_residue(project_dir):
+        return None
+
+    dir_suffix = "" if (project_dir / _TRIGGER_FILE).exists() else "_incomplete"
+    return _archive_now(project_dir, project_id, dir_suffix=dir_suffix, reason=reason)
+
+
+__all__ = [
+    "force_archive_incomplete",
+    "maybe_archive_prior_attempt",
+]

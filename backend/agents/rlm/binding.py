@@ -94,6 +94,37 @@ _LONG_RUNNING_PRIMITIVES: dict[str, int] = {
 }
 
 
+def _resolve_primitive_timeout_s(name: str) -> int:
+    """Per-primitive wall-clock cap, with an env override for the table primitives.
+
+    ``OPENRESEARCH_<PRIMITIVE>_TIMEOUT_S`` (e.g.
+    ``OPENRESEARCH_VERIFY_AGAINST_RUBRIC_TIMEOUT_S``) raises one primitive's cap when set
+    to a positive int — the same operational lever ``run_experiment`` already exposes via
+    its internal resolver. ``run_experiment``/``implement_baseline`` keep their fixed
+    long-tail bracket (their real caps are enforced internally), so the override only
+    affects the short table primitives. Unset ⇒ byte-identical to the static table.
+    """
+    if name in _LONG_RUNNING_PRIMITIVES:
+        return _LONG_RUNNING_PRIMITIVES[name]
+    import os as _os
+    raw = _os.environ.get(f"OPENRESEARCH_{name.upper()}_TIMEOUT_S", "").strip()
+    if raw:
+        try:
+            override = int(raw)
+            if override > 0:
+                logger.info(
+                    "primitive %s: wall-clock cap overridden to %ds via "
+                    "OPENRESEARCH_%s_TIMEOUT_S", name, override, name.upper(),
+                )
+                return override
+        except ValueError:
+            logger.warning(
+                "primitive %s: ignoring non-int OPENRESEARCH_%s_TIMEOUT_S=%r",
+                name, name.upper(), raw,
+            )
+    return PRIMITIVE_TIMEOUT_S.get(name, _DEFAULT_PRIMITIVE_TIMEOUT_S)
+
+
 def _coerce_args(fn: Callable[..., Any], args: tuple, kwargs: dict) -> tuple[tuple, dict, bool]:
     """Attempt one simple coercion pass when a positional arg has an obvious type mismatch.
 
@@ -489,16 +520,9 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
             except Exception:  # noqa: BLE001
                 _wr_report = None
 
-        # PR-γ.2 — per-primitive wall-clock enforcement.
-        # Resolution order:
-        #   1. _LONG_RUNNING_PRIMITIVES (run_experiment, implement_baseline)
-        #      — they have inner caps; outer wrap is a defensive long-tail.
-        #   2. PRIMITIVE_TIMEOUT_S — explicit table.
-        #   3. _DEFAULT_PRIMITIVE_TIMEOUT_S (1800s) — catch-all for everything else.
-        if name in _LONG_RUNNING_PRIMITIVES:
-            _timeout_s = _LONG_RUNNING_PRIMITIVES[name]
-        else:
-            _timeout_s = PRIMITIVE_TIMEOUT_S.get(name, _DEFAULT_PRIMITIVE_TIMEOUT_S)
+        # PR-γ.2 — per-primitive wall-clock enforcement via _resolve_primitive_timeout_s:
+        # OPENRESEARCH_<PRIMITIVE>_TIMEOUT_S override → long-tail bracket → table → default.
+        _timeout_s = _resolve_primitive_timeout_s(name)
 
         try:
             try:

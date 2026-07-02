@@ -43,6 +43,16 @@ ENV_TARGET_FLOOR_FLAG = "OPENRESEARCH_TARGET_BEST_FLOOR"
 
 REFERENCE_DIR_NAME = "_best_attempt"
 
+# Campaign seed-marker seam (Codex F5 delivery half). The campaign-owned
+# guard-filtered champion selection (spec §8.2) writes this file to hand an
+# EXPLICIT seed pointer + target floor to the run subprocess it launches —
+# under ``campaign/``, a directory attempt_isolation never archives, so the
+# marker survives the run's own ``maybe_archive_prior_attempt`` call at
+# start-of-run. When present it is authoritative: the raw score-ranked scan
+# below (``find_best_attempt``) is a legacy/non-campaign fallback only and is
+# never consulted once a campaign is driving.
+CAMPAIGN_SEED_MARKER = "campaign/seed_staging.json"
+
 # Heavy / recomputable artifacts never copied into the reference seed.
 _SEED_SKIP_DIRS = frozenset({"outputs", "__pycache__", "datasets", REFERENCE_DIR_NAME})
 _SEED_SKIP_SUFFIXES = (".pt", ".pth", ".ckpt", ".safetensors", ".bin", ".npz")
@@ -51,6 +61,55 @@ _SEED_SKIP_SUFFIXES = (".pt", ".pth", ".ckpt", ".safetensors", ".bin", ".npz")
 def _flag_on(name: str) -> bool:
     val = os.environ.get(name, "").strip().lower()
     return bool(val) and val not in ("0", "false", "off")
+
+
+def _read_seed_marker(project_dir: Path) -> dict[str, Any] | None:
+    """Read+parse ``campaign/seed_staging.json``; ``None`` if absent/invalid.
+
+    Never raises (mirrors the rest of this module's fail-soft contract) —
+    a torn/partial marker is treated identically to "no marker".
+    """
+    path = project_dir / CAMPAIGN_SEED_MARKER
+    try:
+        if not path.is_file():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:  # noqa: BLE001 — a torn marker never breaks the rail
+        logger.debug("best_attempt: seed marker unreadable at %s", path, exc_info=True)
+        return None
+
+
+def _copy_code_tree(src: Path, dst: Path) -> int:
+    """Copy *src* into *dst*, skipping heavy/recomputable artifacts.
+
+    Shared by the marker-driven (campaign) and score-ranked (legacy) seeding
+    paths so the skip-set lives in exactly one place. Idempotent: *dst* is
+    wiped and recreated fresh each call.
+    """
+    if dst.exists():
+        shutil.rmtree(dst, ignore_errors=True)
+    dst.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for child in src.iterdir():
+        if child.name in _SEED_SKIP_DIRS:
+            continue
+        if child.is_file():
+            if child.suffix in _SEED_SKIP_SUFFIXES:
+                continue
+            shutil.copy2(child, dst / child.name)
+            copied += 1
+        elif child.is_dir():
+            shutil.copytree(
+                child, dst / child.name,
+                ignore=shutil.ignore_patterns(
+                    "outputs", "__pycache__", "datasets",
+                    *(f"*{s}" for s in _SEED_SKIP_SUFFIXES),
+                ),
+                dirs_exist_ok=True,
+            )
+            copied += 1
+    return copied
 
 
 def _read_report(path: Path) -> dict[str, Any] | None:
@@ -159,16 +218,60 @@ def leaf_regressions(
 
 
 def seed_reference_code(project_dir: Path | str) -> str | None:
-    """Copy the best prior attempt's ``code/`` into ``code/_best_attempt/``.
+    """Copy the campaign-selected or best prior attempt's ``code/`` into
+    ``code/_best_attempt/``.
 
-    Reference material for the implementer (it copies what it wants) — heavy
-    artifacts skipped, idempotent (re-seeds fresh each call), flag-gated.
-    Returns the relative path seeded, or None.
+    FIRST checks ``OPENRESEARCH_SEED_BEST_ATTEMPT``: off means no campaign
+    env is driving this run, so a stale ``campaign/seed_staging.json`` left
+    over from an earlier campaign must be inert — "no campaign env set =>
+    byte-identical behavior" for a manual run. Only once the flag is on does
+    the campaign seed marker (``CAMPAIGN_SEED_MARKER``) get consulted: when
+    present, its ``source_code_dir`` is staged verbatim and the score-ranked
+    scan below is never consulted (Codex F5 — campaign-owned, guard-filtered
+    selection must never be second-guessed by a raw score). A marker whose
+    ``source_code_dir`` is missing fails CLOSED (returns None; no fallback to
+    the scan) rather than silently reverting to score-ranked seeding under a
+    campaign.
+
+    With no marker (flag still on), behavior is unchanged: reference
+    material for the implementer (it copies what it wants) — heavy artifacts
+    skipped, idempotent (re-seeds fresh each call). Returns the relative
+    path seeded, or None.
     """
-    if not _flag_on(ENV_SEED_FLAG):
-        return None
     try:
         project_dir = Path(project_dir)
+
+        if not _flag_on(ENV_SEED_FLAG):
+            return None
+
+        marker = _read_seed_marker(project_dir)
+        if marker is not None:
+            raw_src = marker.get("source_code_dir")
+            src = Path(raw_src) if raw_src else None
+            if src is None or not src.is_dir():
+                logger.debug(
+                    "best_attempt: seed marker present but source_code_dir "
+                    "missing/invalid: %r", raw_src,
+                )
+                return None
+            dst = project_dir / "code" / REFERENCE_DIR_NAME
+            copied = _copy_code_tree(src, dst)
+            (dst / "_BEST_ATTEMPT_README.txt").write_text(
+                f"Campaign-selected seed: attempt {marker.get('attempt_n')} "
+                f"({marker.get('lineage')}) — source {src}.\n"
+                "This is the COMPLETE working code of the campaign-selected seed.\n"
+                "Start from it; copy files verbatim and change only what your\n"
+                "directives/guidance names.\n",
+                encoding="utf-8",
+            )
+            logger.info(
+                "best_attempt: seeded %d item(s) from campaign marker "
+                "(attempt %s, lineage %s) into code/%s",
+                copied, marker.get("attempt_n"), marker.get("lineage"),
+                REFERENCE_DIR_NAME,
+            )
+            return f"code/{REFERENCE_DIR_NAME}"
+
         best = find_best_attempt(project_dir)
         if best is None:
             return None
@@ -176,28 +279,7 @@ def seed_reference_code(project_dir: Path | str) -> str | None:
         if not src.is_dir():
             return None
         dst = project_dir / "code" / REFERENCE_DIR_NAME
-        if dst.exists():
-            shutil.rmtree(dst, ignore_errors=True)
-        dst.mkdir(parents=True, exist_ok=True)
-        copied = 0
-        for child in src.iterdir():
-            if child.name in _SEED_SKIP_DIRS:
-                continue
-            if child.is_file():
-                if child.suffix in _SEED_SKIP_SUFFIXES:
-                    continue
-                shutil.copy2(child, dst / child.name)
-                copied += 1
-            elif child.is_dir():
-                shutil.copytree(
-                    child, dst / child.name,
-                    ignore=shutil.ignore_patterns(
-                        "outputs", "__pycache__", "datasets",
-                        *(f"*{s}" for s in _SEED_SKIP_SUFFIXES),
-                    ),
-                    dirs_exist_ok=True,
-                )
-                copied += 1
+        copied = _copy_code_tree(src, dst)
         (dst / "_BEST_ATTEMPT_README.txt").write_text(
             f"Best prior attempt: {best['dir'].name} — rubric {best['score']:.4f}.\n"
             "This is the COMPLETE working code of the best-scoring prior attempt.\n"
@@ -347,14 +429,42 @@ def best_attempt_guidance_block(project_dir: Path | str, *, max_chars: int = 240
 
 
 def floored_target(project_dir: Path | str, target: float | None) -> float | None:
-    """Raise ``target_score`` to the best prior attempt's score (flag-gated).
+    """Raise ``target_score`` to the campaign seed marker's floor, else the
+    best prior attempt's score (flag-gated).
 
-    The forced-iteration policy then refuses FINAL_VAR below the proven
-    baseline while iterations/budget remain — the wall-clock bypass is
-    untouched, so an honest partial still ships at the deadline.
+    FIRST checks ``OPENRESEARCH_TARGET_BEST_FLOOR``: off means no campaign
+    env is driving this run, so a stale ``campaign/seed_staging.json`` left
+    over from an earlier campaign must be inert (``target`` returned
+    unchanged, never even reading the marker) — "no campaign env set =>
+    byte-identical behavior" for a manual run.
+
+    Only once the flag is on does the campaign seed marker (Codex F5) get
+    consulted: when present, its numeric ``target_floor`` (if any) is
+    applied via ``max(target, floor)`` WITHOUT scanning ``attempts/`` — the
+    campaign, not a raw score-ranked scan, owns the floor once it is
+    driving. A marker without a numeric ``target_floor`` leaves ``target``
+    unchanged (still without scanning).
+
+    With no marker (flag still on), behavior is unchanged: raises
+    ``target_score`` to the best prior attempt's score. The forced-iteration
+    policy then refuses FINAL_VAR below the proven baseline while
+    iterations/budget remain — the wall-clock bypass is untouched, so an
+    honest partial still ships at the deadline.
     """
     if not _flag_on(ENV_TARGET_FLOOR_FLAG):
         return target
+
+    try:
+        marker = _read_seed_marker(Path(project_dir))
+    except Exception:  # noqa: BLE001
+        marker = None
+    if marker is not None:
+        floor = marker.get("target_floor")
+        if isinstance(floor, (int, float)) and not isinstance(floor, bool):
+            floor = float(floor)
+            return floor if (target is None or floor > target) else target
+        return target
+
     try:
         best = find_best_attempt(project_dir)
         if best is None:
@@ -368,6 +478,7 @@ def floored_target(project_dir: Path | str, target: float | None) -> float | Non
 
 
 __all__ = [
+    "CAMPAIGN_SEED_MARKER",
     "ENV_SEED_FLAG",
     "ENV_TARGET_FLOOR_FLAG",
     "REFERENCE_DIR_NAME",

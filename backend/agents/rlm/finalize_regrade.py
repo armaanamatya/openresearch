@@ -314,13 +314,22 @@ def regrade_and_emit(ctx: Any, report: Any, emit: Any) -> dict | None:
             _safe_emit(emit, "run_warning", {
                 "code": "finalize_regrade_adopted",
                 "message": (
-                    "finalize re-graded the complete on-disk grid (it grew after "
-                    f"the last verify) and adopted the higher score {fresh.get('overall_score')}."
+                    "finalize re-graded the complete on-disk grid and adopted score "
+                    f"{fresh.get('overall_score')} (recovered evidence the in-loop grade "
+                    "was stale on or never reached — e.g. a verify_against_rubric timeout)."
                 ),
             })
             try:
-                if report.verdict == "failed" and bool(fresh.get("meets_target")):
-                    report.verdict = "reproduced"
+                # A 'failed' verdict here may be a false-negative — the run was marked
+                # failed because verify timed out / never ran, not because the science
+                # failed. Now that the complete grid is graded, set the verdict from the
+                # recovered score band (reconcile_verdict_with_score caps DOWNWARD, so
+                # starting from 'reproduced' yields reproduced/partial/failed by score).
+                if report.verdict == "failed":
+                    _sc = fresh.get("overall_score")
+                    if _sc is not None:
+                        from backend.agents.rlm.report import reconcile_verdict_with_score
+                        report.verdict = reconcile_verdict_with_score("reproduced", float(_sc))
             except Exception:  # noqa: BLE001
                 pass
             return fresh

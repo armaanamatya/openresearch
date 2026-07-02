@@ -290,6 +290,73 @@ export interface WorkerReportFailedEvent {
   blockers?: unknown[];
 }
 
+// ─── Campaign events (2026-07-01, ReproductionCampaign — spec §12, F13) ───────
+// Vocabulary registration only: no fold/reducer logic and no UI components
+// consume these yet. The generic dashboard bucket already displays any
+// unknown-typed row, so this addition is purely additive display vocabulary.
+
+export interface CampaignStartedEvent {
+  event: "campaign_started";
+  timestamp: string;
+  project_id: string;
+  paper_ref: string;
+  mode: string; // "unattended" | "checkpoint"
+  driver: string;
+  budget: Record<string, unknown>;
+}
+
+export interface AttemptStartedEvent {
+  event: "attempt_started";
+  timestamp: string;
+  attempt_n: number;
+  directives_sha256: string;
+  envelope: Record<string, unknown>;
+}
+
+export interface AttemptAssessedEvent {
+  event: "attempt_assessed";
+  timestamp: string;
+  attempt_n: number;
+  assessment: Record<string, unknown>;
+}
+
+export interface CampaignDecisionEvent {
+  event: "campaign_decision";
+  timestamp: string;
+  attempt_n: number;
+  kind: string; // "REPRODUCED" | "CONTRADICTED" | "INFEASIBLE" | "EXHAUSTED" | "CONTINUE"
+  rule: string;
+  stop_reason: string | null;
+  fingerprint: string | null;
+}
+
+export interface CampaignAwaitingOperatorEvent {
+  event: "campaign_awaiting_operator";
+  timestamp: string;
+  reason?: string;
+  decision?: Record<string, unknown>;
+}
+
+export interface CampaignTerminalEvent {
+  event: "campaign_terminal";
+  timestamp: string;
+  kind: string; // "REPRODUCED" | "CONTRADICTED" | "INFEASIBLE" | "EXHAUSTED"
+  rule: string;
+  stop_reason: string | null;
+  champion_attempt_n: number | null;
+  spent: { llm_usd: number; gpu_usd: number; gpu_hours: number; wall_s: number };
+}
+
+/** Mirrors POST /runs/{id}/campaign/messages (F13) into the dashboard stream. */
+export interface CampaignUserMessageEvent {
+  event: "campaign_user_message";
+  timestamp: string;
+  id: string;
+  op: "set_mode" | "note";
+  mode?: "unattended" | "checkpoint";
+  content?: string;
+}
+
 export const RLM_EVENT_TYPES = [
   "repl_iteration",
   "primitive_call",
@@ -312,6 +379,13 @@ export const RLM_EVENT_TYPES = [
   "worker_report_started",
   "worker_report_completed",
   "worker_report_failed",
+  "campaign_started",
+  "attempt_started",
+  "attempt_assessed",
+  "campaign_decision",
+  "campaign_awaiting_operator",
+  "campaign_terminal",
+  "campaign_user_message",
 ] as const;
 
 export type RlmDashboardEvent =
@@ -335,7 +409,14 @@ export type RlmDashboardEvent =
   | GpuResolvedEvent
   | WorkerReportStartedEvent
   | WorkerReportCompletedEvent
-  | WorkerReportFailedEvent;
+  | WorkerReportFailedEvent
+  | CampaignStartedEvent
+  | AttemptStartedEvent
+  | AttemptAssessedEvent
+  | CampaignDecisionEvent
+  | CampaignAwaitingOperatorEvent
+  | CampaignTerminalEvent
+  | CampaignUserMessageEvent;
 
 export function isRlmEvent(value: unknown): value is RlmDashboardEvent {
   if (typeof value !== "object" || value === null) return false;

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "numeric_keys": {
+    "OPENRESEARCH_REPAIR_MAX_ITERATIONS": {"min": 2, "max": 8, "kind": "int"},
+    "OPENRESEARCH_DEGENERATE_REFUSAL_THRESHOLD": {"min": 2, "max": 6, "kind": "int"}
+  },
+  "guidance_blocks": {
+    "campaign_preamble_suffix": {"max_chars": 200}
+  }
+}

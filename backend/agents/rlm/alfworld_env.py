@@ -317,6 +317,10 @@ class ALFWorldEnv(AgenticEnv):
     never raises and never kills the GPU cell.
     """
 
+    #: Canonical env-axis name (matches the per_model env key + rubric leaf text);
+    #: used by the F2 env-liveness producer + dead-env exclusion matching.
+    env_name: str = "alfworld"
+
     max_turns: int = 30
 
     def __init__(
@@ -847,12 +851,26 @@ class ALFWorldEnv(AgenticEnv):
 
         TextWorld's batched env returns each info key as a length-batch list;
         with batch_size=1 we take index 0.  A fake may already pass scalars.
+
+        Also surfaces ``task_id`` from ``infos["extra.gamefile"]`` (the stable
+        game-file path that uniquely identifies the ALFRED task instance) so
+        eval-provenance callers can record per-episode task ids without importing
+        alfworld internals.  Fail-soft: absent key → ``task_id`` omitted.
         """
         if not isinstance(infos, dict):
             return {}
         out: dict[str, Any] = {}
         for key, value in infos.items():
             out[key] = _first(value, default=value) if isinstance(value, (list, tuple)) else value
+        # Surface the stable task id from the game-file path (TextWorld populates
+        # "extra.gamefile" via EnvInfos(extras=["gamefile"]); fall back gracefully
+        # when the field is absent so the module never raises on a fake env.
+        try:
+            gamefile = out.get("extra.gamefile")
+            if gamefile is not None:
+                out["task_id"] = str(gamefile)
+        except Exception:  # noqa: BLE001 — fail-soft: task_id is advisory only
+            pass
         return out
 
     @staticmethod

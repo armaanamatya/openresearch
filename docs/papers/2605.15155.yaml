@@ -6,8 +6,8 @@ algorithm_invariants:
   gate_formula: "g_t = sigmoid(beta * Delta_t) where Delta_t = log pi_student(y_t|x_t) - log pi_teacher(y_t|x_t, c_priv)"
   stop_gradient_on_gate: true
   loss: "L = L_GRPO + lambda * L_OPSD"
-  lambda: 0.1
-  beta: 10
+  lambda: 0.01   # authors' released scripts (sdar_coef); paper text states 0.1
+  beta: 5.0      # authors' released scripts (gate_beta); paper text states 10
   divergence: "reverse KL (mode-seeking)"
   gating_strategy: "gap (Teacher-Student gap on student-sampled token)"
 
@@ -17,7 +17,7 @@ hyperparameters:
   epochs_per_batch: 1
   prompt_length: "2048 (ALFWorld), 4096 (Search-QA, WebShop)"
   eps_clip: 0.2
-  seeds: [42, 43, 44]
+  seeds: [0]   # authors' released scripts train a single env.seed=0
 
 models_in_paper:
   # Qwen3 post-trained models have NO "-Instruct" suffix on HuggingFace
@@ -30,14 +30,14 @@ models_in_paper:
 
 datasets:
   alfworld:
-    setup: "pip install alfworld && alfworld-download"
+    setup: "pip install alfworld; export ALFWORLD_DATA first, then alfworld-download"
     paper_split: "GiGPO train split"
     categories: [Pick, Look, Clean, Heat, Cool, Pick2]
   search_qa:
     datasets: [NQ, HotpotQA, TriviaQA, PopQA, 2Wiki, MuSiQue, Bamboogle]
     setup: "datasets.load_dataset('hotpot_qa', 'distractor') etc.; uses E5 retriever from Search-R1"
   webshop:
-    setup: "pip install webshop-text-env (or upstream package); 128 validation tasks"
+    setup: "in-process gym WebAgentTextEnv / SimServer (NO HTTP server); web_agent_site + Lucene index via the authors' webshop setup.sh; 128 validation tasks"
 
 eval_metrics:
   alfworld: "success rate (%)"
@@ -95,7 +95,7 @@ paper_targets:
     - "fig_webshop_*.png"
 
 scope_hints:
-  - "The headline claim is g_t = sigmoid(beta * Delta_t) with beta=10, lambda=0.1, stop-gradient on the gate. The leaf scorer reads code; these constants MUST appear literally."
+  - "The headline claim is g_t = sigmoid(beta * Delta_t) with stop-gradient on the gate. The authors' RELEASED scripts use beta=5.0, sdar_coef(lambda)=0.01 (these reproduce the reported numbers); the paper TEXT states beta=10, lambda=0.1. Implement the released values; the grader accepts either."
   - "Run AT LEAST qwen3_1_7b end-to-end; honest-omit qwen2_5_7b if budget is tight (declare in metrics.json['omitted'])."
   - "Every paper baseline (GRPO, OPSD, Skill-SD, GRPO+OPSD, RLSD) AND the proposed SDAR must appear as a key in per_model — declared omitted with a reason is acceptable, silently skipped is not."
   - "Emit per-step training curves (per (model, env) pair) so the convergence-improvement claim can be graded."

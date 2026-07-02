@@ -23,6 +23,7 @@ from pathlib import Path
 
 from backend.agents.rlm.cell_matrix import (
     DEFAULT_HEADROOM,
+    _derive_baseline_comparison,
     _fold_seed_leaves,
     aggregate_cell_metrics,
     audit_aggregation_completeness,
@@ -965,3 +966,25 @@ class TestCapacityGateFloor:
         kept_models = {c["model_key"] for c in kept}
         assert kept_models == {"qwen3_1_7b"}
         assert skipped == ["qwen2_5_7b"]
+
+
+def test_derive_baseline_comparison_emits_lift():
+    """The SDAR-vs-GRPO lift is derived only for (model, env) pairs with BOTH ok arms."""
+    per_model = {
+        "qwen3_1_7b": {
+            "alfworld": {
+                "sdar": {"status": "ok", "reward_mean": 0.82},
+                "grpo": {"status": "ok", "reward_mean": 0.70},
+            },
+            # Only sdar present → no comparison emitted for this env.
+            "search_qa": {"sdar": {"status": "ok", "reward_mean": 0.5}},
+        },
+    }
+    assert _derive_baseline_comparison(per_model) == {
+        "qwen3_1_7b": {"alfworld": {"sdar": 0.82, "grpo": 0.70, "sdar_lift": 0.12}}
+    }
+    # A failed arm is not comparable → no lift.
+    assert _derive_baseline_comparison(
+        {"m": {"e": {"sdar": {"status": "ok", "reward_mean": 1.0},
+                     "grpo": {"status": "failed"}}}}
+    ) == {}

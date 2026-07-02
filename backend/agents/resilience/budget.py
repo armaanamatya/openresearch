@@ -17,6 +17,7 @@ class RunBudget:
     max_invocations_per_agent: dict[str, int] = field(default_factory=dict)
     rlm_calls_remaining: int = 120
     max_run_gpu_usd: float | None = None
+    max_gpu_hours: float | None = None
 
     def check(
         self,
@@ -92,6 +93,26 @@ class RunBudget:
             raise BudgetExhausted(
                 f"Run pod-USD budget exhausted before invoking {agent_id}: "
                 f"${cumulative_pod_usd:.4f} >= ${self.max_run_gpu_usd:.4f}",
+                provider=None,
+                agent_id=agent_id,
+            )
+
+    def check_gpu_hours(
+        self,
+        *,
+        gpu_hours_used: float,
+        agent_id: str,
+    ) -> None:
+        """Raise BudgetExhausted when cumulative GPU-hours >= max_gpu_hours.
+
+        Cap honored only when set and > 0; None or 0 disables (mirrors check_run_gpu_usd).
+        """
+        if self.max_gpu_hours is None or self.max_gpu_hours <= 0:
+            return
+        if gpu_hours_used >= self.max_gpu_hours:
+            raise BudgetExhausted(
+                f"Run GPU-hours budget exhausted before invoking {agent_id}: "
+                f"{gpu_hours_used:.2f}h >= {self.max_gpu_hours:.2f}h",
                 provider=None,
                 agent_id=agent_id,
             )

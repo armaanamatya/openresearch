@@ -617,6 +617,10 @@ class SearchQAEnv(AgenticEnv):
     global dense index (the fix for the loader that dropped ``row["context"]``).
     """
 
+    #: Canonical env-axis name (matches the per_model env key + rubric leaf text);
+    #: used by the F2 env-liveness producer + dead-env exclusion matching.
+    env_name: str = "search_qa"
+
     max_turns: int = 6
 
     def __init__(
@@ -842,7 +846,7 @@ def _load_nq_open(n: int) -> list[dict[str, Any]]:
         "google-research-datasets/nq_open", split=f"validation[:{n}]"
     )
     tasks: list[dict[str, Any]] = []
-    for row in ds:
+    for i, row in enumerate(ds):
         question = str(row.get("question", "") or "").strip()
         answers = _coerce_answers(row.get("answer"))
         if not question or not answers:
@@ -853,6 +857,7 @@ def _load_nq_open(n: int) -> list[dict[str, Any]]:
                 "answers": answers,
                 "contexts": None,  # NQ-open is open-domain; rely on the dense index
                 "source": "nq",
+                "task_id": f"nq:{i}",
             }
         )
     return tasks
@@ -864,7 +869,7 @@ def _load_hotpotqa(n: int) -> list[dict[str, Any]]:
         "hotpotqa/hotpot_qa", "distractor", split=f"validation[:{n}]"
     )
     tasks: list[dict[str, Any]] = []
-    for row in ds:
+    for i, row in enumerate(ds):
         question = str(row.get("question", "") or "").strip()
         answers = _coerce_answers(row.get("answer"))
         if not question or not answers:
@@ -876,6 +881,7 @@ def _load_hotpotqa(n: int) -> list[dict[str, Any]]:
                 "answers": answers,
                 "contexts": contexts or None,
                 "source": "hotpotqa",
+                "task_id": f"hotpotqa:{i}",
             }
         )
     return tasks

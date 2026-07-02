@@ -106,11 +106,17 @@ class TestSdarHintStructure:
             "SDAR guidance must explain GRPO reward-variance / reward-wiring"
         )
 
-    def test_guidance_requires_webshop_server(self, sdar):
-        """Guidance must instruct starting the WebShop server before its cells."""
+    def test_guidance_webshop_in_process(self, sdar):
+        """Guidance must instruct running WebShop in-process (NOT a :3000 server)."""
         g = sdar.guidance
         assert "WebShop" in g or "webshop" in g.lower(), "SDAR guidance must mention WebShop"
-        assert "3000" in g, "SDAR guidance must name the WebShop server endpoint (127.0.0.1:3000)"
+        assert "IN-PROCESS" in g or "in-process" in g.lower(), (
+            "SDAR guidance must instruct running WebShop in-process"
+        )
+        assert "3000" not in g, (
+            "SDAR guidance must NOT depend on a WebShop HTTP server at :3000 "
+            "(the authors run WebShop in-process)"
+        )
 
     def test_default_scope_has_three_models(self, sdar):
         assert sdar.default_scope is not None
@@ -137,8 +143,8 @@ class TestSdarHintStructure:
         for required in (
             "sigmoid_gate_on_advantage",
             "stop_gradient_on_gate",
-            "lambda_self_distill_weight_0p1",
-            "beta_gate_sharpness_10",
+            "opsd_self_distill_weight",
+            "gate_sharpness_beta",
             "real_qwen_weights_not_surrogate",
         ):
             assert required in names, f"SDAR invariant {required!r} missing — names: {names}"
@@ -165,6 +171,8 @@ class TestInvariantPatternsMatchRealCode:
         inv = next(i for i in sdar.invariants if i.name == "sigmoid_gate_on_advantage")
         assert self._matches_any(inv.must_match, "g_t = torch.sigmoid(beta * delta_t)")
         assert self._matches_any(inv.must_match, "gate = torch.sigmoid(self.beta * advantage_diff)")
+        # The authors' released code names the variable gate_beta — must match too.
+        assert self._matches_any(inv.must_match, "g = torch.sigmoid(gate_beta * delta)")
 
     def test_stop_gradient_matches_detach_or_no_grad(self, sdar):
         inv = next(i for i in sdar.invariants if i.name == "stop_gradient_on_gate")
@@ -172,15 +180,19 @@ class TestInvariantPatternsMatchRealCode:
         assert self._matches_any(inv.must_match, "with torch.no_grad():\n    gate = ...")
 
     def test_lambda_matches_common_assignments(self, sdar):
-        inv = next(i for i in sdar.invariants if i.name == "lambda_self_distill_weight_0p1")
+        inv = next(i for i in sdar.invariants if i.name == "opsd_self_distill_weight")
         assert self._matches_any(inv.must_match, "lambda = 0.1")
         assert self._matches_any(inv.must_match, "opsd_weight: 0.1")
         assert self._matches_any(inv.must_match, "self_distill_weight = 0.1")
+        # Accept the authors' released-script value too (sdar_coef = 0.01).
+        assert self._matches_any(inv.must_match, "sdar_coef = 0.01")
 
     def test_beta_matches_assignment(self, sdar):
-        inv = next(i for i in sdar.invariants if i.name == "beta_gate_sharpness_10")
+        inv = next(i for i in sdar.invariants if i.name == "gate_sharpness_beta")
         assert self._matches_any(inv.must_match, "beta = 10")
         assert self._matches_any(inv.must_match, "beta: 10.0")
+        # Accept the authors' released-script value too (gate_beta = 5.0).
+        assert self._matches_any(inv.must_match, "gate_beta = 5.0")
 
     def test_real_qwen_matches_from_pretrained(self, sdar):
         inv = next(i for i in sdar.invariants if i.name == "real_qwen_weights_not_surrogate")

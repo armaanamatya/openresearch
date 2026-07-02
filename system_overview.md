@@ -58,6 +58,63 @@ status snapshot (`demo_status.json`), per-iteration checkpoints (`rlm_state/`),
 `experiment_runs.jsonl`, the reproduced `code/`, and Hermes audit artifacts.
 SQLite (`OPENRESEARCH_DATABASE_URL`) is the event/persistence store.
 
+## Reproduction campaign — the repeat-until-reproduced outer loop (2026-07-02)
+
+`python -m backend.cli campaign <paper> --max-llm-usd X --max-gpu-usd Y
+--max-gpu-hours Z` runs the deterministic outer state machine
+(`ReproductionCampaign`: INIT → UNDERSTAND → per-attempt
+PLAN→LAUNCH→AWAIT→ASSESS→DISTILL→DECIDE → honest terminal
+`REPRODUCED`/`CONTRADICTED`/`INFEASIBLE`/`EXHAUSTED`) that replaces the human
+babysitting `kill_and_restart.sh`. Spec:
+`docs/superpowers/specs/2026-07-01-reproduction-campaign-and-self-improving-harness-design.md`
+(v2, all 16 Codex findings resolved). Design invariants, all structural:
+
+- **Evidence, not grade** — the campaign layer adds no LLM judgment; a recorded
+  grade counts only inside a clean guard envelope (fabrication guards +
+  external-validator clean-and-fresh + rubric-hash pin). Validator absence
+  soft-quarantines a grade exactly like a tripped guard (F4).
+- **Fail-CLOSED money** — `runs/<id>/campaign/{campaign.json,attempts.jsonl}`
+  is a spend ledger (atomic + fsync, torn-tail repair): a write-ahead intent
+  row precedes every launch, an unwritable ledger halts the campaign (exit 3),
+  split meters map to the real knobs (`--max-usd` = LLM-only; GPU via
+  `--max-run-gpu-usd`/env; gpu-hours enforced structurally by wall-clock
+  co-tightening; explicit VM ceiling, never the 28h default; `--max-pod-seconds`
+  on runpod children), and an unenforceable meter refuses to launch unattended.
+- **Clean context** — attempt N+1 receives structured artifacts only
+  (`campaign_directives`: transcript-shaped paths fail the build); residue is
+  force-archived before every launch so the warm-retry heuristic can never fire
+  under a campaign (F6); the campaign-selected seed rides
+  `campaign/seed_staging.json` and the score-ranked rails never pick it (F5).
+- **Driver seam** — `live` (default; spawns `backend.cli reproduce` on the same
+  project id), `unified` (in-process `ReproductionRun`; resume =
+  assess-from-disk), `paired` (alternates both to conduct the Phase-1f A/B;
+  constructing it requires explicit operator initiation — F8). Width mints
+  `<id>_w<k>` child lineages (F16).
+- **Steering** — `POST /runs/<id>/campaign/messages` →
+  `campaign/user_messages.jsonl` (never archived per-attempt), count-based
+  cursor in `campaign.json`; `set_mode` flips unattended⇄checkpoint mid-run.
+  SSE: `campaign_started`, `attempt_started`, `attempt_assessed`,
+  `campaign_decision`, `campaign_awaiting_operator`, `campaign_terminal`,
+  `campaign_user_message`. The leaderboard row gains a `campaign` key only when
+  `campaign/campaign.json` exists.
+- **Self-improvement** — DISTILL invokes the existing miners every attempt
+  (lessons, recipes, `ExperienceMemory` — its first live caller; admission
+  gates unchanged). Phase C (`OPENRESEARCH_SELF_EDIT`, default OFF) adds the
+  staged harness self-edit tier: an explicit whitelist
+  (`backend/agents/rlm/self_edit_surface.json`), a structurally frozen
+  evaluator tier (guards/evidence/rubric/validator/budget/gates/the whitelist
+  itself — proposals touching them are rejected by construction), a dedicated
+  `HarnessEditGate` (shadow replay over executable `HarnessReplayCase`s,
+  fail-closed; canary needs operator-supplied ≥2-papers × ≥2-seeds paired A/Bs
+  beating the measured grader σ plus a clean negative control), and a
+  canary→default flip that only an operator confirmation can perform.
+
+Code: `backend/agents/rlm/{reproduction_campaign,campaign_policy,campaign_types,
+attempt_assessment,campaign_directives,attempt_driver,understanding_gate,
+campaign_report,campaign_composition,doomed_run_comparator,harness_self_edit}.py`;
+profile `configs/campaign_run_spec.json`. The campaign path is opt-in via the
+subcommand — `reproduce`/batch/UI behavior is byte-identical.
+
 ## Repo-first reproduction path (`OPENRESEARCH_USE_AUTHOR_REPO`)
 
 When a paper links an official implementation, `run.py::_build_context()` runs

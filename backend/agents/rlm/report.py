@@ -52,6 +52,13 @@ class RLMFinalReport(BaseModel):
     # this exact record (closing metric → experiment record → metrics.json hash).
     experiment_run_id: str | None = None
     metrics_sha256: str | None = None
+    # Canonical evidence-bundle receipt (OPENRESEARCH_CANONICAL_EVIDENCE_BUNDLE,
+    # default OFF). When the flag is on, carries the immutable receipt binding
+    # {attempt_id, ledger_sequence, metrics_sha256, code_tree_digest,
+    # artifact_dir, coordinates} that scoring + report resolved evidence through,
+    # or {"status": "bundle_unverified"} when no coherent bundle could be minted.
+    # None when the flag is off. See backend/agents/rlm/evidence_bundle.py.
+    evidence_bundle: dict | None = None
     # P3 §5b: the root's self-attested metrics — NON-AUTHORITATIVE. baseline_metrics
     # is projected from the canonical experiment artifact; this preserves what the
     # root reported for diffing/diagnostics, never fed to the scorer/leaderboard.
@@ -1117,6 +1124,34 @@ def build_final_report(
     # selects the same latest-successful record `baseline_metrics` was projected
     # from above (§5b), so the back-link and the projected metrics name one run.
     _prov = _canonical_experiment_provenance(ctx.project_dir)
+    # Canonical evidence bundle (OPENRESEARCH_CANONICAL_EVIDENCE_BUNDLE, default
+    # OFF): mint ONE receipt binding metrics+code+ledger for this run and, when it
+    # resolves coherently, source the provenance back-link from it so the report
+    # and the scorer name the SAME attempt. Off / incoherent / any error ⇒ the
+    # legacy _canonical_experiment_provenance pick above stands (byte-for-byte).
+    try:
+        from backend.agents.rlm import evidence_bundle as _eb
+
+        if _eb.is_enabled():
+            _eb.mint_and_persist(ctx.project_dir)
+            _resolved = _eb.resolve_bundle(ctx.project_dir)
+            if _resolved is not None:
+                if _resolved.get("attempt_id"):
+                    _prov["experiment_run_id"] = _resolved["attempt_id"]
+                if _resolved.get("metrics_sha256"):
+                    _prov["metrics_sha256"] = _resolved["metrics_sha256"]
+                kwargs["evidence_bundle"] = {
+                    "attempt_id": _resolved.get("attempt_id"),
+                    "ledger_sequence": _resolved.get("ledger_sequence"),
+                    "metrics_sha256": _resolved.get("metrics_sha256"),
+                    "code_tree_digest": _resolved.get("code_tree_digest"),
+                    "artifact_dir": _resolved.get("artifact_dir"),
+                    "coordinates": _resolved.get("coordinates"),
+                }
+            else:
+                kwargs["evidence_bundle"] = {"status": _eb.BUNDLE_UNVERIFIED}
+    except Exception:  # noqa: BLE001 — bundle never breaks report writing
+        pass
     kwargs["experiment_run_id"] = _prov.get("experiment_run_id")
     kwargs["metrics_sha256"] = _prov.get("metrics_sha256")
     kwargs["reported_metrics"] = reported_metrics
@@ -1782,6 +1817,7 @@ def write_final_report_rlm(
     run_experiment_calls: int | None = None,
     run_experiment_ok_calls: int | None = None,
     run_experiment_partial_timeout_calls: int | None = None,
+    no_learning_signal: bool = False,
 ) -> tuple[Path, Path]:
     """Write `final_report.json` and `final_report.md` atomically.
 
@@ -2026,7 +2062,7 @@ def write_final_report_rlm(
         from backend.agents.rlm.two_axis_report import compute_and_attach as _attach_two_axis
         _report_dict = report.model_dump()
         _gate_approved_verdict = report.verdict
-        if _attach_two_axis(_report_dict, project_dir):
+        if _attach_two_axis(_report_dict, project_dir, no_learning_signal=no_learning_signal):
             # Gate-order hardening (audit 2026-06-10): two-axis runs AFTER the
             # evidence gate and projects the verdict from ROOT-WRITABLE
             # rlm_state/ artifacts (fidelity_certificate.json, repro_spec.json)
