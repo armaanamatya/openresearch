@@ -221,7 +221,9 @@ def _enforcement_ctx(run_dir: Path, opts: CampaignOptions, mode: str) -> tuple[E
     return ctx, gpu_usd_per_hr
 
 
-def _enforcement_mapping(plan: EnforcementPlan, *, paper_hint: str | None = None) -> dict[str, Any]:
+def _enforcement_mapping(
+    plan: EnforcementPlan, *, paper_hint: str | None = None, sandbox: str | None = None
+) -> dict[str, Any]:
     """Built strictly from ``EnforcementPlan`` fields -- ALWAYS
     ``plan.vm_ceiling_s`` (post-co-tightening), never
     ``AttemptEnvelope.vm_ceiling_s``. ``cli_args`` is list-of-lists so it
@@ -229,10 +231,15 @@ def _enforcement_mapping(plan: EnforcementPlan, *, paper_hint: str | None = None
     ``["--paper-hint", paper_hint]`` is appended to ``cli_args`` -- the
     driver's argv builder (``attempt_driver.build_reproduce_argv``) already
     emits every ``cli_args`` pair verbatim, so no driver-side change is
-    needed for the child to receive it."""
+    needed for the child to receive it. ``sandbox`` rides the same channel:
+    without it the child falls to the repo DEFAULT sandbox (runpod), not the
+    campaign's -- the 2026-07-02 live SDAR launch died at RunPod preflight on
+    a GCP VM exactly this way."""
     cli_args = [[flag, value] for flag, value in plan.cli_args]
     if paper_hint:
         cli_args.append(["--paper-hint", paper_hint])
+    if sandbox:
+        cli_args.append(["--sandbox", sandbox])
     return {
         "cli_args": cli_args,
         "env": dict(plan.env),
@@ -562,7 +569,9 @@ def _plan_attempt_impl(
         width_k = _count_prior_width_launches(project_id, rows, attempt_n=attempt_n) + 1
         launch_project_id = mint_width_project_ids(project_id, width_k)[-1]
 
-    enforcement_mapping = _enforcement_mapping(enforcement_plan, paper_hint=opts.paper_hint)
+    enforcement_mapping = _enforcement_mapping(
+        enforcement_plan, paper_hint=opts.paper_hint, sandbox=opts.sandbox
+    )
     # Self-edit env seam (Unit 11, flag-gated): promoted numeric knob
     # overrides ride the child env alongside the enforceability plan's own.
     # active_overrides() may also carry the diagnostic "_dropped" key (names

@@ -1175,3 +1175,19 @@ def test_self_edit_env_merge_excludes_dropped_diagnostic_key(tmp_path, neutral_p
     planned = cc._plan_attempt_impl(run_dir, opts, "prj_t", _state(next_attempt_n=1), [])
 
     assert "_dropped" not in planned["launch_payload"].enforcement["env"]
+
+def test_plan_attempt_sandbox_reaches_child_argv(tmp_path, neutral_profile):
+    """The campaign's --sandbox choice MUST reach the child argv: without it
+    the child falls to the repo default sandbox (runpod) — the 2026-07-02
+    live SDAR launch died at RunPod preflight on a GCP VM exactly this way."""
+    from backend.agents.rlm.attempt_driver import build_reproduce_argv
+
+    opts = _opts(tmp_path, run_spec_path=str(neutral_profile))
+    run_dir = opts.runs_root / "prj_t"
+    (run_dir / "campaign").mkdir(parents=True)
+
+    planned = cc._plan_attempt_impl(run_dir, opts, "prj_t", _state(next_attempt_n=1), [])
+
+    argv = build_reproduce_argv(planned["launch_payload"], python_exe="/usr/bin/python3")
+    assert "--sandbox" in argv
+    assert argv[argv.index("--sandbox") + 1] == opts.sandbox
