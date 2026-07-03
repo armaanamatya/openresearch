@@ -1,0 +1,75 @@
+[run-spec] loaded 'configs/sdar_campaign_run_spec.json': 32 env key(s) applied (explicit CLI flags override).
+[paper-hint] Applied 2605.15155 (6678 chars guidance, 6 invariants, scope).
+[full-scope] ALFWorld + WebShop + Search-QA active in scope — appended agentic-env (AgenticEnv + shipped modules) guidance for the agent.
+[benchmark-guard] 1 blocked resource(s) active — the RuntimeGuard refuses agent access to them.
+[cred-preflight] AZURE_FOUNDRY_API_KEY accepted.
+[archive] Moved 3 prior-attempt artifact(s) to runs/prj_09047604e591d969/attempts/20260702T162144-271434-7d5e90
+[ingest 1/6] Registering project for 2605.15155
+             project_id=prj_09047604e591d969
+[ingest 2/6] Fetching paper
+[ingest 3/6] Parsing
+[ingest 4/6] Discovering external artifacts
+[ingest 5/6] Indexing
+[ingest 6/6] Building workspace
+
+============================================================
+Workspace ready — 4 variables
+Starting agent pipeline (rlm mode)...
+============================================================
+
+Execution profile: max; sandbox: local
+run_pipeline_rlm: root model 'azure-foundry' is NOT paper-validated as an RLM root (root_model_unvalidated) — results may not match paper expectations
+run_pipeline_rlm: rlm.completion failed: data: {'error': {"message":{"error":{"code":"Bad Request","message":"{\"code\":\"Client specified an invalid argument\",\"error\":\"This model's maximum prompt length is 200000 but the request contains 278886
+Please check this guide to understand why this error code might have been returned 
+https://docs.microsoft.com/en-us/azure/machine-learning/how-to-troubleshoot-online-endpoints#http-status-codes
+Traceback (most recent call last):
+  File "/home/abheekp/openresearch/backend/agents/rlm/run.py", line 3715, in run_pipeline_rlm
+    result_obj = await asyncio.to_thread(_run_completion_on_worker)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/abheekp/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/asyncio/threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/abheekp/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/concurrent/futures/thread.py", line 59, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/abheekp/openresearch/backend/agents/rlm/run.py", line 3691, in _run_completion_on_worker
+    return rlm.completion(context_dict, active_prompt)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/abheekp/openresearch/.venv/lib/python3.12/site-packages/rlm/core/rlm.py", line 340, in completion
+    iteration: RLMIteration = self._completion_turn(
+                              ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/abheekp/openresearch/.venv/lib/python3.12/site-packages/rlm/core/rlm.py", line 596, in _completion_turn
+    response = lm_handler.completion(prompt)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/abheekp/openresearch/.venv/lib/python3.12/site-packages/rlm/core/lm_handler.py", line 201, in completion
+    return self.get_client(model).completion(prompt)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/abheekp/openresearch/.venv/lib/python3.12/site-packages/rlm/clients/openai.py", line 73, in completion
+    response = self.client.chat.completions.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/abheekp/openresearch/.venv/lib/python3.12/site-packages/openai/_utils/_utils.py", line 298, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/abheekp/openresearch/.venv/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py", line 1251, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/home/abheekp/openresearch/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1332, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/abheekp/openresearch/.venv/lib/python3.12/site-packages/openai/_base_client.py", line 1105, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.BadRequestError: data: {'error': {"message":{"error":{"code":"Bad Request","message":"{\"code\":\"Client specified an invalid argument\",\"error\":\"This model's maximum prompt length is 200000 but the request contains 278886
+Please check this guide to understand why this error code might have been returned 
+https://docs.microsoft.com/en-us/azure/machine-learning/how-to-troubleshoot-online-endpoints#http-status-codes
+report: two-axis verdict upgrade 'failed' -> 'partial' clamped — no success-compatible run_experiment call backs the artifacts
+{
+  "project_id": "prj_09047604e591d969",
+  "status": "failed",
+  "output_dir": "runs/prj_09047604e591d969",
+  "iterations": 19,
+  "rubric_score": 0.0,
+  "cost_usd": 0.0,
+  "final_report_path": "/home/abheekp/openresearch/runs/prj_09047604e591d969/final_report.json",
+  "execution_mode": "max",
+  "sandbox": "local"
+}

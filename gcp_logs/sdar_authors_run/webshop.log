@@ -1,0 +1,1941 @@
+[2026-07-01 21:13:21] === PHASE: webshop ===
+[2026-07-01 21:13:21] Heartbeat started (pid=12414, target=/run/sdar_last_active)
+[2026-07-01 21:13:21] Running WebShop setup.sh -d all
+[2026-07-01 21:13:21]   Step 1: pip install requirements.txt (webshop Python deps)
+[2026-07-01 21:13:21]   Step 2: conda install mkl + faiss-cpu (via conda in verl-webshop env)
+[2026-07-01 21:13:21]   Step 3: gdown product JSON from Google Drive (~3–5 GB, may rate-limit)
+[2026-07-01 21:13:21]   Step 4: python -m spacy download en_core_web_lg/sm
+[2026-07-01 21:13:21]   Step 5: pyserini Lucene index build (CPU + Java, ~10–30 min)
+[2026-07-01 21:13:21] NOTE: gdown can hit Google Drive rate limits; wrapping in retry (5× / 30s)
+Collecting beautifulsoup4==4.11.1 (from -r requirements.txt (line 1))
+  Downloading beautifulsoup4-4.11.1-py3-none-any.whl.metadata (3.5 kB)
+Collecting cleantext==1.1.4 (from -r requirements.txt (line 2))
+  Downloading cleantext-1.1.4-py3-none-any.whl.metadata (3.5 kB)
+Collecting env==0.1.0 (from -r requirements.txt (line 3))
+  Downloading env-0.1.0.tar.gz (1.8 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Collecting Flask==2.1.2 (from -r requirements.txt (line 4))
+  Downloading Flask-2.1.2-py3-none-any.whl.metadata (3.9 kB)
+Collecting gdown (from -r requirements.txt (line 5))
+  Downloading gdown-6.1.0-py3-none-any.whl.metadata (8.3 kB)
+Collecting gradio==4.26.0 (from -r requirements.txt (line 6))
+  Downloading gradio-4.26.0-py3-none-any.whl.metadata (15 kB)
+Collecting gym==0.24.0 (from -r requirements.txt (line 7))
+  Downloading gym-0.24.0.tar.gz (694 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 694.4/694.4 kB 20.3 MB/s  0:00:00
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Collecting numpy==1.26.4 (from -r requirements.txt (line 8))
+  Downloading numpy-1.26.4-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (61 kB)
+Collecting pandas==2.2.3 (from -r requirements.txt (line 9))
+  Downloading pandas-2.2.3-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (89 kB)
+Collecting peft==0.17.0 (from -r requirements.txt (line 10))
+  Downloading peft-0.17.0-py3-none-any.whl.metadata (14 kB)
+Collecting pyserini==0.17.0 (from -r requirements.txt (line 11))
+  Downloading pyserini-0.17.0-py3-none-any.whl.metadata (4.5 kB)
+Collecting pytest==8.3.5 (from -r requirements.txt (line 12))
+  Downloading pytest-8.3.5-py3-none-any.whl.metadata (7.6 kB)
+Collecting PyYAML==6.0.2 (from -r requirements.txt (line 13))
+  Downloading PyYAML-6.0.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (2.1 kB)
+Collecting rank_bm25==0.2.2 (from -r requirements.txt (line 14))
+  Downloading rank_bm25-0.2.2-py3-none-any.whl.metadata (3.2 kB)
+Collecting requests==2.27.1 (from -r requirements.txt (line 15))
+  Downloading requests-2.27.1-py2.py3-none-any.whl.metadata (5.0 kB)
+Collecting requests_mock (from -r requirements.txt (line 16))
+  Downloading requests_mock-1.12.1-py2.py3-none-any.whl.metadata (4.1 kB)
+Collecting rich==12.4.4 (from -r requirements.txt (line 17))
+  Downloading rich-12.4.4-py3-none-any.whl.metadata (18 kB)
+Collecting scikit_learn (from -r requirements.txt (line 18))
+  Using cached scikit_learn-1.7.2-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (11 kB)
+Collecting selenium==4.2.0 (from -r requirements.txt (line 19))
+  Downloading selenium-4.2.0-py3-none-any.whl.metadata (6.5 kB)
+Collecting spacy==3.7.2 (from -r requirements.txt (line 20))
+  Downloading spacy-3.7.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (25 kB)
+Collecting thefuzz==0.19.0 (from -r requirements.txt (line 21))
+  Downloading thefuzz-0.19.0-py2.py3-none-any.whl.metadata (3.9 kB)
+Collecting torch==2.6.0 (from -r requirements.txt (line 22))
+  Downloading torch-2.6.0-cp310-cp310-manylinux1_x86_64.whl.metadata (28 kB)
+Collecting tqdm==4.64.0 (from -r requirements.txt (line 23))
+  Downloading tqdm-4.64.0-py2.py3-none-any.whl.metadata (57 kB)
+Collecting train==0.0.5 (from -r requirements.txt (line 24))
+  Downloading train-0.0.5.tar.gz (8.1 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Collecting transformers==4.51.1 (from -r requirements.txt (line 25))
+  Downloading transformers-4.51.1-py3-none-any.whl.metadata (38 kB)
+Collecting pydantic==2.10.6 (from -r requirements.txt (line 26))
+  Downloading pydantic-2.10.6-py3-none-any.whl.metadata (30 kB)
+Collecting Werkzeug==2.1.0 (from -r requirements.txt (line 27))
+  Downloading Werkzeug-2.1.0-py3-none-any.whl.metadata (4.4 kB)
+Collecting soupsieve>1.2 (from beautifulsoup4==4.11.1->-r requirements.txt (line 1))
+  Downloading soupsieve-2.8.4-py3-none-any.whl.metadata (4.6 kB)
+Collecting nltk (from cleantext==1.1.4->-r requirements.txt (line 2))
+  Downloading nltk-3.9.4-py3-none-any.whl.metadata (3.2 kB)
+Collecting Jinja2>=3.0 (from Flask==2.1.2->-r requirements.txt (line 4))
+  Using cached jinja2-3.1.6-py3-none-any.whl.metadata (2.9 kB)
+Collecting itsdangerous>=2.0 (from Flask==2.1.2->-r requirements.txt (line 4))
+  Using cached itsdangerous-2.2.0-py3-none-any.whl.metadata (1.9 kB)
+Collecting click>=8.0 (from Flask==2.1.2->-r requirements.txt (line 4))
+  Using cached click-8.4.2-py3-none-any.whl.metadata (2.6 kB)
+Collecting aiofiles<24.0,>=22.0 (from gradio==4.26.0->-r requirements.txt (line 6))
+  Downloading aiofiles-23.2.1-py3-none-any.whl.metadata (9.7 kB)
+Collecting altair<6.0,>=4.2.0 (from gradio==4.26.0->-r requirements.txt (line 6))
+  Downloading altair-5.5.0-py3-none-any.whl.metadata (11 kB)
+Collecting fastapi (from gradio==4.26.0->-r requirements.txt (line 6))
+  Using cached fastapi-0.139.0-py3-none-any.whl.metadata (26 kB)
+Collecting ffmpy (from gradio==4.26.0->-r requirements.txt (line 6))
+  Downloading ffmpy-1.0.0-py3-none-any.whl.metadata (3.0 kB)
+Collecting gradio-client==0.15.1 (from gradio==4.26.0->-r requirements.txt (line 6))
+  Downloading gradio_client-0.15.1-py3-none-any.whl.metadata (7.1 kB)
+Collecting httpx>=0.24.1 (from gradio==4.26.0->-r requirements.txt (line 6))
+  Using cached httpx-0.28.1-py3-none-any.whl.metadata (7.1 kB)
+Collecting huggingface-hub>=0.19.3 (from gradio==4.26.0->-r requirements.txt (line 6))
+  Using cached huggingface_hub-1.21.0-py3-none-any.whl.metadata (14 kB)
+Collecting importlib-resources<7.0,>=1.3 (from gradio==4.26.0->-r requirements.txt (line 6))
+  Downloading importlib_resources-6.5.2-py3-none-any.whl.metadata (3.9 kB)
+Collecting markupsafe~=2.0 (from gradio==4.26.0->-r requirements.txt (line 6))
+  Downloading MarkupSafe-2.1.5-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (3.0 kB)
+Collecting matplotlib~=3.0 (from gradio==4.26.0->-r requirements.txt (line 6))
+  Downloading matplotlib-3.10.9-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (52 kB)
+Collecting orjson~=3.0 (from gradio==4.26.0->-r requirements.txt (line 6))
+  Downloading orjson-3.11.9-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (41 kB)
+Requirement already satisfied: packaging in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from gradio==4.26.0->-r requirements.txt (line 6)) (26.0)
+Collecting pillow<11.0,>=8.0 (from gradio==4.26.0->-r requirements.txt (line 6))
+  Downloading pillow-10.4.0-cp310-cp310-manylinux_2_28_x86_64.whl.metadata (9.2 kB)
+Collecting pydub (from gradio==4.26.0->-r requirements.txt (line 6))
+  Downloading pydub-0.25.1-py2.py3-none-any.whl.metadata (1.4 kB)
+Collecting python-multipart>=0.0.9 (from gradio==4.26.0->-r requirements.txt (line 6))
+  Using cached python_multipart-0.0.32-py3-none-any.whl.metadata (2.1 kB)
+Collecting ruff>=0.2.2 (from gradio==4.26.0->-r requirements.txt (line 6))
+  Downloading ruff-0.15.20-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (26 kB)
+Collecting semantic-version~=2.0 (from gradio==4.26.0->-r requirements.txt (line 6))
+  Downloading semantic_version-2.10.0-py2.py3-none-any.whl.metadata (9.7 kB)
+Collecting tomlkit==0.12.0 (from gradio==4.26.0->-r requirements.txt (line 6))
+  Downloading tomlkit-0.12.0-py3-none-any.whl.metadata (2.7 kB)
+Collecting typer<1.0,>=0.9 (from typer[all]<1.0,>=0.9; sys_platform != "emscripten"->gradio==4.26.0->-r requirements.txt (line 6))
+  Using cached typer-0.26.8-py3-none-any.whl.metadata (15 kB)
+Collecting typing-extensions~=4.0 (from gradio==4.26.0->-r requirements.txt (line 6))
+  Using cached typing_extensions-4.15.0-py3-none-any.whl.metadata (3.3 kB)
+Collecting uvicorn>=0.14.0 (from gradio==4.26.0->-r requirements.txt (line 6))
+  Using cached uvicorn-0.49.0-py3-none-any.whl.metadata (6.7 kB)
+Collecting python-dateutil>=2.8.2 (from pandas==2.2.3->-r requirements.txt (line 9))
+  Using cached python_dateutil-2.9.0.post0-py2.py3-none-any.whl.metadata (8.4 kB)
+Collecting pytz>=2020.1 (from pandas==2.2.3->-r requirements.txt (line 9))
+  Using cached pytz-2026.2-py2.py3-none-any.whl.metadata (22 kB)
+Collecting tzdata>=2022.7 (from pandas==2.2.3->-r requirements.txt (line 9))
+  Using cached tzdata-2026.2-py2.py3-none-any.whl.metadata (1.4 kB)
+Collecting cloudpickle>=1.2.0 (from gym==0.24.0->-r requirements.txt (line 7))
+  Using cached cloudpickle-3.1.2-py3-none-any.whl.metadata (7.1 kB)
+Collecting gym_notices>=0.0.4 (from gym==0.24.0->-r requirements.txt (line 7))
+  Using cached gym_notices-0.1.0-py3-none-any.whl.metadata (1.2 kB)
+Collecting psutil (from peft==0.17.0->-r requirements.txt (line 10))
+  Using cached psutil-7.2.2-cp36-abi3-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl.metadata (22 kB)
+Collecting accelerate>=0.21.0 (from peft==0.17.0->-r requirements.txt (line 10))
+  Downloading accelerate-1.14.0-py3-none-any.whl.metadata (19 kB)
+Collecting safetensors (from peft==0.17.0->-r requirements.txt (line 10))
+  Using cached safetensors-0.8.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.2 kB)
+Collecting Cython>=0.29.21 (from pyserini==0.17.0->-r requirements.txt (line 11))
+  Using cached cython-3.2.8-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (4.2 kB)
+Collecting pyjnius>=1.4.0 (from pyserini==0.17.0->-r requirements.txt (line 11))
+  Using cached pyjnius-1.7.0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (13 kB)
+Collecting scipy>=1.4.1 (from pyserini==0.17.0->-r requirements.txt (line 11))
+  Using cached scipy-1.15.3-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (61 kB)
+Collecting sentencepiece>=0.1.95 (from pyserini==0.17.0->-r requirements.txt (line 11))
+  Using cached sentencepiece-0.2.1-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (10 kB)
+Collecting nmslib>=2.1.1 (from pyserini==0.17.0->-r requirements.txt (line 11))
+  Downloading nmslib-2.1.2-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (1.1 kB)
+Collecting onnxruntime>=1.8.1 (from pyserini==0.17.0->-r requirements.txt (line 11))
+  Using cached onnxruntime-1.23.2-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (5.1 kB)
+Collecting lightgbm>=3.3.2 (from pyserini==0.17.0->-r requirements.txt (line 11))
+  Downloading lightgbm-4.6.0-py3-none-manylinux_2_28_x86_64.whl.metadata (17 kB)
+Collecting exceptiongroup>=1.0.0rc8 (from pytest==8.3.5->-r requirements.txt (line 12))
+  Using cached exceptiongroup-1.3.1-py3-none-any.whl.metadata (6.7 kB)
+Collecting iniconfig (from pytest==8.3.5->-r requirements.txt (line 12))
+  Downloading iniconfig-2.3.0-py3-none-any.whl.metadata (2.5 kB)
+Collecting pluggy<2,>=1.5 (from pytest==8.3.5->-r requirements.txt (line 12))
+  Downloading pluggy-1.6.0-py3-none-any.whl.metadata (4.8 kB)
+Collecting tomli>=1 (from pytest==8.3.5->-r requirements.txt (line 12))
+  Downloading tomli-2.4.1-py3-none-any.whl.metadata (10 kB)
+Collecting urllib3<1.27,>=1.21.1 (from requests==2.27.1->-r requirements.txt (line 15))
+  Downloading urllib3-1.26.20-py2.py3-none-any.whl.metadata (50 kB)
+Collecting certifi>=2017.4.17 (from requests==2.27.1->-r requirements.txt (line 15))
+  Using cached certifi-2026.6.17-py3-none-any.whl.metadata (2.5 kB)
+Collecting charset-normalizer~=2.0.0 (from requests==2.27.1->-r requirements.txt (line 15))
+  Downloading charset_normalizer-2.0.12-py3-none-any.whl.metadata (11 kB)
+Collecting idna<4,>=2.5 (from requests==2.27.1->-r requirements.txt (line 15))
+  Using cached idna-3.18-py3-none-any.whl.metadata (6.1 kB)
+Collecting commonmark<0.10.0,>=0.9.0 (from rich==12.4.4->-r requirements.txt (line 17))
+  Downloading commonmark-0.9.2-py2.py3-none-any.whl.metadata (6.3 kB)
+Collecting pygments<3.0.0,>=2.6.0 (from rich==12.4.4->-r requirements.txt (line 17))
+  Using cached pygments-2.20.0-py3-none-any.whl.metadata (2.5 kB)
+Collecting trio~=0.17 (from selenium==4.2.0->-r requirements.txt (line 19))
+  Downloading trio-0.33.0-py3-none-any.whl.metadata (8.5 kB)
+Collecting trio-websocket~=0.9 (from selenium==4.2.0->-r requirements.txt (line 19))
+  Downloading trio_websocket-0.12.2-py3-none-any.whl.metadata (5.1 kB)
+Collecting spacy-legacy<3.1.0,>=3.0.11 (from spacy==3.7.2->-r requirements.txt (line 20))
+  Using cached spacy_legacy-3.0.12-py2.py3-none-any.whl.metadata (2.8 kB)
+Collecting spacy-loggers<2.0.0,>=1.0.0 (from spacy==3.7.2->-r requirements.txt (line 20))
+  Using cached spacy_loggers-1.0.5-py3-none-any.whl.metadata (23 kB)
+Collecting murmurhash<1.1.0,>=0.28.0 (from spacy==3.7.2->-r requirements.txt (line 20))
+  Downloading murmurhash-1.0.15-cp310-cp310-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl.metadata (2.3 kB)
+Collecting cymem<2.1.0,>=2.0.2 (from spacy==3.7.2->-r requirements.txt (line 20))
+  Downloading cymem-2.0.13-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (9.7 kB)
+Collecting preshed<3.1.0,>=3.0.2 (from spacy==3.7.2->-r requirements.txt (line 20))
+  Downloading preshed-3.0.13-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (5.2 kB)
+Collecting thinc<8.3.0,>=8.1.8 (from spacy==3.7.2->-r requirements.txt (line 20))
+  Downloading thinc-8.2.5-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (15 kB)
+Collecting wasabi<1.2.0,>=0.9.1 (from spacy==3.7.2->-r requirements.txt (line 20))
+  Using cached wasabi-1.1.3-py3-none-any.whl.metadata (28 kB)
+Collecting srsly<3.0.0,>=2.4.3 (from spacy==3.7.2->-r requirements.txt (line 20))
+  Downloading srsly-2.5.3-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (19 kB)
+Collecting catalogue<2.1.0,>=2.0.6 (from spacy==3.7.2->-r requirements.txt (line 20))
+  Using cached catalogue-2.0.10-py3-none-any.whl.metadata (14 kB)
+Collecting weasel<0.4.0,>=0.1.0 (from spacy==3.7.2->-r requirements.txt (line 20))
+  Downloading weasel-0.3.4-py3-none-any.whl.metadata (4.7 kB)
+Collecting typer<1.0,>=0.9 (from typer[all]<1.0,>=0.9; sys_platform != "emscripten"->gradio==4.26.0->-r requirements.txt (line 6))
+  Downloading typer-0.9.4-py3-none-any.whl.metadata (14 kB)
+Collecting smart-open<7.0.0,>=5.2.1 (from spacy==3.7.2->-r requirements.txt (line 20))
+  Downloading smart_open-6.4.0-py3-none-any.whl.metadata (21 kB)
+Requirement already satisfied: setuptools in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from spacy==3.7.2->-r requirements.txt (line 20)) (82.0.1)
+Collecting langcodes<4.0.0,>=3.2.0 (from spacy==3.7.2->-r requirements.txt (line 20))
+  Downloading langcodes-3.5.1-py3-none-any.whl.metadata (30 kB)
+Collecting annotated-types>=0.6.0 (from pydantic==2.10.6->-r requirements.txt (line 26))
+  Using cached annotated_types-0.7.0-py3-none-any.whl.metadata (15 kB)
+Collecting pydantic-core==2.27.2 (from pydantic==2.10.6->-r requirements.txt (line 26))
+  Downloading pydantic_core-2.27.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (6.6 kB)
+Collecting filelock (from torch==2.6.0->-r requirements.txt (line 22))
+  Using cached filelock-3.29.4-py3-none-any.whl.metadata (2.0 kB)
+Collecting networkx (from torch==2.6.0->-r requirements.txt (line 22))
+  Using cached networkx-3.4.2-py3-none-any.whl.metadata (6.3 kB)
+Collecting fsspec (from torch==2.6.0->-r requirements.txt (line 22))
+  Using cached fsspec-2026.6.0-py3-none-any.whl.metadata (10 kB)
+Collecting nvidia-cuda-nvrtc-cu12==12.4.127 (from torch==2.6.0->-r requirements.txt (line 22))
+  Downloading nvidia_cuda_nvrtc_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl.metadata (1.5 kB)
+Collecting nvidia-cuda-runtime-cu12==12.4.127 (from torch==2.6.0->-r requirements.txt (line 22))
+  Downloading nvidia_cuda_runtime_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl.metadata (1.5 kB)
+Collecting nvidia-cuda-cupti-cu12==12.4.127 (from torch==2.6.0->-r requirements.txt (line 22))
+  Downloading nvidia_cuda_cupti_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl.metadata (1.6 kB)
+Collecting nvidia-cudnn-cu12==9.1.0.70 (from torch==2.6.0->-r requirements.txt (line 22))
+  Downloading nvidia_cudnn_cu12-9.1.0.70-py3-none-manylinux2014_x86_64.whl.metadata (1.6 kB)
+Collecting nvidia-cublas-cu12==12.4.5.8 (from torch==2.6.0->-r requirements.txt (line 22))
+  Downloading nvidia_cublas_cu12-12.4.5.8-py3-none-manylinux2014_x86_64.whl.metadata (1.5 kB)
+Collecting nvidia-cufft-cu12==11.2.1.3 (from torch==2.6.0->-r requirements.txt (line 22))
+  Downloading nvidia_cufft_cu12-11.2.1.3-py3-none-manylinux2014_x86_64.whl.metadata (1.5 kB)
+Collecting nvidia-curand-cu12==10.3.5.147 (from torch==2.6.0->-r requirements.txt (line 22))
+  Downloading nvidia_curand_cu12-10.3.5.147-py3-none-manylinux2014_x86_64.whl.metadata (1.5 kB)
+Collecting nvidia-cusolver-cu12==11.6.1.9 (from torch==2.6.0->-r requirements.txt (line 22))
+  Downloading nvidia_cusolver_cu12-11.6.1.9-py3-none-manylinux2014_x86_64.whl.metadata (1.6 kB)
+Collecting nvidia-cusparse-cu12==12.3.1.170 (from torch==2.6.0->-r requirements.txt (line 22))
+  Downloading nvidia_cusparse_cu12-12.3.1.170-py3-none-manylinux2014_x86_64.whl.metadata (1.6 kB)
+Collecting nvidia-cusparselt-cu12==0.6.2 (from torch==2.6.0->-r requirements.txt (line 22))
+  Downloading nvidia_cusparselt_cu12-0.6.2-py3-none-manylinux2014_x86_64.whl.metadata (6.8 kB)
+Collecting nvidia-nccl-cu12==2.21.5 (from torch==2.6.0->-r requirements.txt (line 22))
+  Downloading nvidia_nccl_cu12-2.21.5-py3-none-manylinux2014_x86_64.whl.metadata (1.8 kB)
+Collecting nvidia-nvtx-cu12==12.4.127 (from torch==2.6.0->-r requirements.txt (line 22))
+  Downloading nvidia_nvtx_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl.metadata (1.7 kB)
+Collecting nvidia-nvjitlink-cu12==12.4.127 (from torch==2.6.0->-r requirements.txt (line 22))
+  Downloading nvidia_nvjitlink_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl.metadata (1.5 kB)
+Collecting triton==3.2.0 (from torch==2.6.0->-r requirements.txt (line 22))
+  Downloading triton-3.2.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (1.4 kB)
+Collecting sympy==1.13.1 (from torch==2.6.0->-r requirements.txt (line 22))
+  Using cached sympy-1.13.1-py3-none-any.whl.metadata (12 kB)
+Collecting huggingface-hub>=0.19.3 (from gradio==4.26.0->-r requirements.txt (line 6))
+  Downloading huggingface_hub-0.36.2-py3-none-any.whl.metadata (15 kB)
+Collecting regex!=2019.12.17 (from transformers==4.51.1->-r requirements.txt (line 25))
+  Using cached regex-2026.6.28-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (40 kB)
+Collecting tokenizers<0.22,>=0.21 (from transformers==4.51.1->-r requirements.txt (line 25))
+  Downloading tokenizers-0.21.4-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (6.7 kB)
+Collecting websockets<12.0,>=10.0 (from gradio-client==0.15.1->gradio==4.26.0->-r requirements.txt (line 6))
+  Downloading websockets-11.0.3-cp310-cp310-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (6.6 kB)
+Collecting mpmath<1.4,>=1.1.0 (from sympy==1.13.1->torch==2.6.0->-r requirements.txt (line 22))
+  Using cached mpmath-1.3.0-py3-none-any.whl.metadata (8.6 kB)
+Collecting jsonschema>=3.0 (from altair<6.0,>=4.2.0->gradio==4.26.0->-r requirements.txt (line 6))
+  Using cached jsonschema-4.26.0-py3-none-any.whl.metadata (7.6 kB)
+Collecting narwhals>=1.14.2 (from altair<6.0,>=4.2.0->gradio==4.26.0->-r requirements.txt (line 6))
+  Downloading narwhals-2.23.0-py3-none-any.whl.metadata (15 kB)
+Collecting hf-xet<2.0.0,>=1.1.3 (from huggingface-hub>=0.19.3->gradio==4.26.0->-r requirements.txt (line 6))
+  Using cached hf_xet-1.5.1-cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (4.9 kB)
+Collecting contourpy>=1.0.1 (from matplotlib~=3.0->gradio==4.26.0->-r requirements.txt (line 6))
+  Downloading contourpy-1.3.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (5.5 kB)
+Collecting cycler>=0.10 (from matplotlib~=3.0->gradio==4.26.0->-r requirements.txt (line 6))
+  Using cached cycler-0.12.1-py3-none-any.whl.metadata (3.8 kB)
+Collecting fonttools>=4.22.0 (from matplotlib~=3.0->gradio==4.26.0->-r requirements.txt (line 6))
+  Downloading fonttools-4.63.0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (118 kB)
+Collecting kiwisolver>=1.3.1 (from matplotlib~=3.0->gradio==4.26.0->-r requirements.txt (line 6))
+  Downloading kiwisolver-1.5.0-cp310-cp310-manylinux_2_12_x86_64.manylinux2010_x86_64.whl.metadata (5.1 kB)
+Collecting pyparsing>=3 (from matplotlib~=3.0->gradio==4.26.0->-r requirements.txt (line 6))
+  Using cached pyparsing-3.3.2-py3-none-any.whl.metadata (5.8 kB)
+Collecting blis<0.8.0,>=0.7.8 (from thinc<8.3.0,>=8.1.8->spacy==3.7.2->-r requirements.txt (line 20))
+  Downloading blis-0.7.11-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (7.4 kB)
+Collecting confection<1.0.0,>=0.0.1 (from thinc<8.3.0,>=8.1.8->spacy==3.7.2->-r requirements.txt (line 20))
+  Downloading confection-0.1.5-py3-none-any.whl.metadata (19 kB)
+Collecting attrs>=23.2.0 (from trio~=0.17->selenium==4.2.0->-r requirements.txt (line 19))
+  Using cached attrs-26.1.0-py3-none-any.whl.metadata (8.8 kB)
+Collecting sortedcontainers (from trio~=0.17->selenium==4.2.0->-r requirements.txt (line 19))
+  Downloading sortedcontainers-2.4.0-py2.py3-none-any.whl.metadata (10 kB)
+Collecting outcome (from trio~=0.17->selenium==4.2.0->-r requirements.txt (line 19))
+  Downloading outcome-1.3.0.post0-py2.py3-none-any.whl.metadata (2.6 kB)
+Collecting sniffio>=1.3.0 (from trio~=0.17->selenium==4.2.0->-r requirements.txt (line 19))
+  Using cached sniffio-1.3.1-py3-none-any.whl.metadata (3.9 kB)
+Collecting wsproto>=0.14 (from trio-websocket~=0.9->selenium==4.2.0->-r requirements.txt (line 19))
+  Downloading wsproto-1.3.2-py3-none-any.whl.metadata (5.2 kB)
+INFO: pip is looking at multiple versions of typer[all] to determine which version is compatible with other requirements. This could take a while.
+Collecting typer[all]<1.0,>=0.9 (from gradio==4.26.0->-r requirements.txt (line 6))
+  Downloading typer-0.26.7-py3-none-any.whl.metadata (16 kB)
+  Downloading typer-0.26.6-py3-none-any.whl.metadata (16 kB)
+  Downloading typer-0.26.5-py3-none-any.whl.metadata (16 kB)
+  Downloading typer-0.26.4-py3-none-any.whl.metadata (16 kB)
+  Downloading typer-0.26.3-py3-none-any.whl.metadata (16 kB)
+  Downloading typer-0.26.2-py3-none-any.whl.metadata (16 kB)
+  Downloading typer-0.26.1-py3-none-any.whl.metadata (16 kB)
+INFO: pip is still looking at multiple versions of typer[all] to determine which version is compatible with other requirements. This could take a while.
+  Downloading typer-0.26.0-py3-none-any.whl.metadata (16 kB)
+  Using cached typer-0.25.1-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.25.0-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.24.2-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.24.1-py3-none-any.whl.metadata (16 kB)
+INFO: This is taking longer than usual. You might need to provide the dependency resolver with stricter constraints to reduce runtime. See https://pip.pypa.io/warnings/backtracking for guidance. If you want to abort this run, press Ctrl + C.
+  Downloading typer-0.24.0-py3-none-any.whl.metadata (16 kB)
+  Downloading typer-0.23.2-py3-none-any.whl.metadata (16 kB)
+  Downloading typer-0.23.1-py3-none-any.whl.metadata (16 kB)
+  Downloading typer-0.23.0-py3-none-any.whl.metadata (16 kB)
+  Downloading typer-0.22.0-py3-none-any.whl.metadata (16 kB)
+  Downloading typer-0.21.2-py3-none-any.whl.metadata (16 kB)
+  Downloading typer-0.21.1-py3-none-any.whl.metadata (16 kB)
+  Downloading typer-0.21.0-py3-none-any.whl.metadata (16 kB)
+  Downloading typer-0.20.1-py3-none-any.whl.metadata (16 kB)
+  Downloading typer-0.20.0-py3-none-any.whl.metadata (16 kB)
+  Downloading typer-0.19.2-py3-none-any.whl.metadata (16 kB)
+  Downloading typer-0.19.1-py3-none-any.whl.metadata (16 kB)
+  Downloading typer-0.19.0-py3-none-any.whl.metadata (16 kB)
+  Downloading typer-0.18.0-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.17.5-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.17.4-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.17.3-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.17.2-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.17.1-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.17.0-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.16.1-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.16.0-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.15.4-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.15.3-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.15.2-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.15.1-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.15.0-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.14.0-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.13.1-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.13.0-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.12.5-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.12.4-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.12.3-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.12.2-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.12.1-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.12.0-py3-none-any.whl.metadata (15 kB)
+  Downloading typer-0.11.1-py3-none-any.whl.metadata (13 kB)
+  Downloading typer-0.11.0-py3-none-any.whl.metadata (13 kB)
+  Downloading typer-0.10.0-py3-none-any.whl.metadata (14 kB)
+Collecting colorama<0.5.0,>=0.4.3 (from typer[all]<1.0,>=0.9; sys_platform != "emscripten"->gradio==4.26.0->-r requirements.txt (line 6))
+  Downloading colorama-0.4.6-py2.py3-none-any.whl.metadata (17 kB)
+Collecting shellingham<2.0.0,>=1.3.0 (from typer[all]<1.0,>=0.9; sys_platform != "emscripten"->gradio==4.26.0->-r requirements.txt (line 6))
+  Using cached shellingham-1.5.4-py2.py3-none-any.whl.metadata (3.5 kB)
+Collecting PySocks!=1.5.7,<2.0,>=1.5.6 (from urllib3[secure,socks]~=1.26->selenium==4.2.0->-r requirements.txt (line 19))
+  Downloading PySocks-1.7.1-py3-none-any.whl.metadata (13 kB)
+Collecting pyOpenSSL>=0.14 (from urllib3[secure,socks]~=1.26->selenium==4.2.0->-r requirements.txt (line 19))
+  Downloading pyopenssl-26.3.0-py3-none-any.whl.metadata (22 kB)
+Collecting cryptography>=1.3.4 (from urllib3[secure,socks]~=1.26->selenium==4.2.0->-r requirements.txt (line 19))
+  Using cached cryptography-49.0.0-cp39-abi3-manylinux_2_34_x86_64.whl.metadata (4.3 kB)
+Collecting urllib3-secure-extra (from urllib3[secure,socks]~=1.26->selenium==4.2.0->-r requirements.txt (line 19))
+  Downloading urllib3_secure_extra-0.1.0-py2.py3-none-any.whl.metadata (828 bytes)
+Collecting cloudpathlib<0.17.0,>=0.7.0 (from weasel<0.4.0,>=0.1.0->spacy==3.7.2->-r requirements.txt (line 20))
+  Downloading cloudpathlib-0.16.0-py3-none-any.whl.metadata (14 kB)
+Collecting joblib>=1.2.0 (from scikit_learn->-r requirements.txt (line 18))
+  Using cached joblib-1.5.3-py3-none-any.whl.metadata (5.5 kB)
+Collecting threadpoolctl>=3.1.0 (from scikit_learn->-r requirements.txt (line 18))
+  Using cached threadpoolctl-3.6.0-py3-none-any.whl.metadata (13 kB)
+Collecting cffi>=2.0.0 (from cryptography>=1.3.4->urllib3[secure,socks]~=1.26->selenium==4.2.0->-r requirements.txt (line 19))
+  Using cached cffi-2.0.0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (2.6 kB)
+Collecting pycparser (from cffi>=2.0.0->cryptography>=1.3.4->urllib3[secure,socks]~=1.26->selenium==4.2.0->-r requirements.txt (line 19))
+  Using cached pycparser-3.0-py3-none-any.whl.metadata (8.2 kB)
+Collecting anyio (from httpx>=0.24.1->gradio==4.26.0->-r requirements.txt (line 6))
+  Using cached anyio-4.14.1-py3-none-any.whl.metadata (4.6 kB)
+Collecting httpcore==1.* (from httpx>=0.24.1->gradio==4.26.0->-r requirements.txt (line 6))
+  Using cached httpcore-1.0.9-py3-none-any.whl.metadata (21 kB)
+Collecting h11>=0.16 (from httpcore==1.*->httpx>=0.24.1->gradio==4.26.0->-r requirements.txt (line 6))
+  Using cached h11-0.16.0-py3-none-any.whl.metadata (8.3 kB)
+Collecting jsonschema-specifications>=2023.03.6 (from jsonschema>=3.0->altair<6.0,>=4.2.0->gradio==4.26.0->-r requirements.txt (line 6))
+  Using cached jsonschema_specifications-2025.9.1-py3-none-any.whl.metadata (2.9 kB)
+Collecting referencing>=0.28.4 (from jsonschema>=3.0->altair<6.0,>=4.2.0->gradio==4.26.0->-r requirements.txt (line 6))
+  Using cached referencing-0.37.0-py3-none-any.whl.metadata (2.8 kB)
+Collecting rpds-py>=0.25.0 (from jsonschema>=3.0->altair<6.0,>=4.2.0->gradio==4.26.0->-r requirements.txt (line 6))
+  Using cached rpds_py-0.30.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.1 kB)
+Collecting pybind11>=2.2.3 (from nmslib>=2.1.1->pyserini==0.17.0->-r requirements.txt (line 11))
+  Downloading pybind11-3.0.4-py3-none-any.whl.metadata (10 kB)
+Collecting coloredlogs (from onnxruntime>=1.8.1->pyserini==0.17.0->-r requirements.txt (line 11))
+  Using cached coloredlogs-15.0.1-py2.py3-none-any.whl.metadata (12 kB)
+Collecting flatbuffers (from onnxruntime>=1.8.1->pyserini==0.17.0->-r requirements.txt (line 11))
+  Using cached flatbuffers-25.12.19-py2.py3-none-any.whl.metadata (1.0 kB)
+Collecting protobuf (from onnxruntime>=1.8.1->pyserini==0.17.0->-r requirements.txt (line 11))
+  Using cached protobuf-7.35.1-cp310-abi3-manylinux2014_x86_64.whl.metadata (595 bytes)
+Collecting six>=1.5 (from python-dateutil>=2.8.2->pandas==2.2.3->-r requirements.txt (line 9))
+  Using cached six-1.17.0-py2.py3-none-any.whl.metadata (1.7 kB)
+Collecting humanfriendly>=9.1 (from coloredlogs->onnxruntime>=1.8.1->pyserini==0.17.0->-r requirements.txt (line 11))
+  Using cached humanfriendly-10.0-py2.py3-none-any.whl.metadata (9.2 kB)
+Collecting starlette>=0.46.0 (from fastapi->gradio==4.26.0->-r requirements.txt (line 6))
+  Using cached starlette-1.3.1-py3-none-any.whl.metadata (6.4 kB)
+Collecting typing-inspection>=0.4.2 (from fastapi->gradio==4.26.0->-r requirements.txt (line 6))
+  Using cached typing_inspection-0.4.2-py3-none-any.whl.metadata (2.6 kB)
+Collecting annotated-doc>=0.0.2 (from fastapi->gradio==4.26.0->-r requirements.txt (line 6))
+  Using cached annotated_doc-0.0.4-py3-none-any.whl.metadata (6.6 kB)
+Downloading beautifulsoup4-4.11.1-py3-none-any.whl (128 kB)
+Downloading cleantext-1.1.4-py3-none-any.whl (4.9 kB)
+Downloading Flask-2.1.2-py3-none-any.whl (95 kB)
+Downloading gradio-4.26.0-py3-none-any.whl (17.1 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 17.1/17.1 MB 118.7 MB/s  0:00:00
+Downloading numpy-1.26.4-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (18.2 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 18.2/18.2 MB 202.5 MB/s  0:00:00
+Downloading pandas-2.2.3-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (13.1 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 13.1/13.1 MB 200.9 MB/s  0:00:00
+Downloading PyYAML-6.0.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (751 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 751.2/751.2 kB 41.2 MB/s  0:00:00
+Downloading peft-0.17.0-py3-none-any.whl (503 kB)
+Downloading pyserini-0.17.0-py3-none-any.whl (109.5 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 109.5/109.5 MB 65.1 MB/s  0:00:01
+Downloading pytest-8.3.5-py3-none-any.whl (343 kB)
+Downloading rank_bm25-0.2.2-py3-none-any.whl (8.6 kB)
+Downloading requests-2.27.1-py2.py3-none-any.whl (63 kB)
+Downloading rich-12.4.4-py3-none-any.whl (232 kB)
+Downloading selenium-4.2.0-py3-none-any.whl (983 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 983.2/983.2 kB 56.3 MB/s  0:00:00
+Downloading spacy-3.7.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (6.6 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 6.6/6.6 MB 147.0 MB/s  0:00:00
+Downloading tqdm-4.64.0-py2.py3-none-any.whl (78 kB)
+Downloading pydantic-2.10.6-py3-none-any.whl (431 kB)
+Downloading thefuzz-0.19.0-py2.py3-none-any.whl (17 kB)
+Downloading torch-2.6.0-cp310-cp310-manylinux1_x86_64.whl (766.7 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 766.7/766.7 MB 101.1 MB/s  0:00:04
+Downloading transformers-4.51.1-py3-none-any.whl (10.4 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 10.4/10.4 MB 129.3 MB/s  0:00:00
+Downloading Werkzeug-2.1.0-py3-none-any.whl (224 kB)
+Downloading gradio_client-0.15.1-py3-none-any.whl (313 kB)
+Downloading nvidia_cublas_cu12-12.4.5.8-py3-none-manylinux2014_x86_64.whl (363.4 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 363.4/363.4 MB 133.7 MB/s  0:00:02
+Downloading nvidia_cuda_cupti_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl (13.8 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 13.8/13.8 MB 154.7 MB/s  0:00:00
+Downloading nvidia_cuda_nvrtc_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl (24.6 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 24.6/24.6 MB 162.9 MB/s  0:00:00
+Downloading nvidia_cuda_runtime_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl (883 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 883.7/883.7 kB 48.3 MB/s  0:00:00
+Downloading nvidia_cudnn_cu12-9.1.0.70-py3-none-manylinux2014_x86_64.whl (664.8 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 664.8/664.8 MB 105.4 MB/s  0:00:04
+Downloading nvidia_cufft_cu12-11.2.1.3-py3-none-manylinux2014_x86_64.whl (211.5 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 211.5/211.5 MB 166.6 MB/s  0:00:01
+Downloading nvidia_curand_cu12-10.3.5.147-py3-none-manylinux2014_x86_64.whl (56.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 56.3/56.3 MB 179.5 MB/s  0:00:00
+Downloading nvidia_cusolver_cu12-11.6.1.9-py3-none-manylinux2014_x86_64.whl (127.9 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 127.9/127.9 MB 149.1 MB/s  0:00:00
+Downloading nvidia_cusparse_cu12-12.3.1.170-py3-none-manylinux2014_x86_64.whl (207.5 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 207.5/207.5 MB 121.8 MB/s  0:00:01
+Downloading nvidia_cusparselt_cu12-0.6.2-py3-none-manylinux2014_x86_64.whl (150.1 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 150.1/150.1 MB 127.8 MB/s  0:00:01
+Downloading nvidia_nccl_cu12-2.21.5-py3-none-manylinux2014_x86_64.whl (188.7 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 188.7/188.7 MB 139.1 MB/s  0:00:01
+Downloading nvidia_nvjitlink_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl (21.1 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 21.1/21.1 MB 130.5 MB/s  0:00:00
+Downloading nvidia_nvtx_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl (99 kB)
+Downloading pydantic_core-2.27.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (2.0 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.0/2.0 MB 89.8 MB/s  0:00:00
+Using cached sympy-1.13.1-py3-none-any.whl (6.2 MB)
+Downloading tomlkit-0.12.0-py3-none-any.whl (37 kB)
+Downloading triton-3.2.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (253.1 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 253.1/253.1 MB 127.3 MB/s  0:00:01
+Downloading aiofiles-23.2.1-py3-none-any.whl (15 kB)
+Downloading altair-5.5.0-py3-none-any.whl (731 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 731.2/731.2 kB 33.5 MB/s  0:00:00
+Using cached catalogue-2.0.10-py3-none-any.whl (17 kB)
+Downloading charset_normalizer-2.0.12-py3-none-any.whl (39 kB)
+Downloading commonmark-0.9.2-py2.py3-none-any.whl (51 kB)
+Downloading cymem-2.0.13-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (229 kB)
+Downloading huggingface_hub-0.36.2-py3-none-any.whl (566 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 566.4/566.4 kB 30.1 MB/s  0:00:00
+Using cached hf_xet-1.5.1-cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (4.5 MB)
+Using cached idna-3.18-py3-none-any.whl (65 kB)
+Downloading importlib_resources-6.5.2-py3-none-any.whl (37 kB)
+Using cached jinja2-3.1.6-py3-none-any.whl (134 kB)
+Downloading langcodes-3.5.1-py3-none-any.whl (183 kB)
+Downloading MarkupSafe-2.1.5-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (25 kB)
+Downloading matplotlib-3.10.9-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (8.8 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 8.8/8.8 MB 114.1 MB/s  0:00:00
+Using cached mpmath-1.3.0-py3-none-any.whl (536 kB)
+Downloading murmurhash-1.0.15-cp310-cp310-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl (122 kB)
+Downloading orjson-3.11.9-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (134 kB)
+Downloading pillow-10.4.0-cp310-cp310-manylinux_2_28_x86_64.whl (4.5 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.5/4.5 MB 91.9 MB/s  0:00:00
+Downloading pluggy-1.6.0-py3-none-any.whl (20 kB)
+Downloading preshed-3.0.13-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (779 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 779.7/779.7 kB 32.8 MB/s  0:00:00
+Using cached pygments-2.20.0-py3-none-any.whl (1.2 MB)
+Downloading semantic_version-2.10.0-py2.py3-none-any.whl (15 kB)
+Downloading smart_open-6.4.0-py3-none-any.whl (57 kB)
+Using cached spacy_legacy-3.0.12-py2.py3-none-any.whl (29 kB)
+Using cached spacy_loggers-1.0.5-py3-none-any.whl (22 kB)
+Downloading srsly-2.5.3-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (1.1 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.1/1.1 MB 48.5 MB/s  0:00:00
+Downloading thinc-8.2.5-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (922 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 922.4/922.4 kB 40.3 MB/s  0:00:00
+Downloading blis-0.7.11-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (10.2 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 10.2/10.2 MB 117.3 MB/s  0:00:00
+Downloading confection-0.1.5-py3-none-any.whl (35 kB)
+Downloading tokenizers-0.21.4-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (3.1 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.1/3.1 MB 87.2 MB/s  0:00:00
+Downloading trio-0.33.0-py3-none-any.whl (510 kB)
+Downloading trio_websocket-0.12.2-py3-none-any.whl (21 kB)
+Downloading typer-0.9.4-py3-none-any.whl (45 kB)
+Using cached click-8.4.2-py3-none-any.whl (119 kB)
+Downloading colorama-0.4.6-py2.py3-none-any.whl (25 kB)
+Using cached shellingham-1.5.4-py2.py3-none-any.whl (9.8 kB)
+Using cached typing_extensions-4.15.0-py3-none-any.whl (44 kB)
+Downloading urllib3-1.26.20-py2.py3-none-any.whl (144 kB)
+Downloading PySocks-1.7.1-py3-none-any.whl (16 kB)
+Using cached wasabi-1.1.3-py3-none-any.whl (27 kB)
+Downloading weasel-0.3.4-py3-none-any.whl (50 kB)
+Downloading cloudpathlib-0.16.0-py3-none-any.whl (45 kB)
+Downloading websockets-11.0.3-cp310-cp310-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl (129 kB)
+Downloading gdown-6.1.0-py3-none-any.whl (19 kB)
+Downloading requests_mock-1.12.1-py2.py3-none-any.whl (27 kB)
+Using cached scikit_learn-1.7.2-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (9.7 MB)
+Downloading accelerate-1.14.0-py3-none-any.whl (389 kB)
+Using cached annotated_types-0.7.0-py3-none-any.whl (13 kB)
+Using cached attrs-26.1.0-py3-none-any.whl (67 kB)
+Using cached certifi-2026.6.17-py3-none-any.whl (133 kB)
+Using cached cloudpickle-3.1.2-py3-none-any.whl (22 kB)
+Downloading contourpy-1.3.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (325 kB)
+Using cached cryptography-49.0.0-cp39-abi3-manylinux_2_34_x86_64.whl (4.7 MB)
+Using cached cffi-2.0.0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (216 kB)
+Using cached cycler-0.12.1-py3-none-any.whl (8.3 kB)
+Using cached cython-3.2.8-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (3.5 MB)
+Using cached exceptiongroup-1.3.1-py3-none-any.whl (16 kB)
+Downloading fonttools-4.63.0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (4.9 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.9/4.9 MB 94.5 MB/s  0:00:00
+Using cached fsspec-2026.6.0-py3-none-any.whl (203 kB)
+Using cached gym_notices-0.1.0-py3-none-any.whl (3.3 kB)
+Using cached httpx-0.28.1-py3-none-any.whl (73 kB)
+Using cached httpcore-1.0.9-py3-none-any.whl (78 kB)
+Using cached h11-0.16.0-py3-none-any.whl (37 kB)
+Using cached itsdangerous-2.2.0-py3-none-any.whl (16 kB)
+Using cached joblib-1.5.3-py3-none-any.whl (309 kB)
+Using cached jsonschema-4.26.0-py3-none-any.whl (90 kB)
+Using cached jsonschema_specifications-2025.9.1-py3-none-any.whl (18 kB)
+Downloading kiwisolver-1.5.0-cp310-cp310-manylinux_2_12_x86_64.manylinux2010_x86_64.whl (1.6 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.6/1.6 MB 62.4 MB/s  0:00:00
+Downloading lightgbm-4.6.0-py3-none-manylinux_2_28_x86_64.whl (3.6 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.6/3.6 MB 95.8 MB/s  0:00:00
+Downloading narwhals-2.23.0-py3-none-any.whl (458 kB)
+Downloading nmslib-2.1.2-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (1.1 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.1/1.1 MB 45.9 MB/s  0:00:00
+Using cached onnxruntime-1.23.2-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (17.4 MB)
+Downloading outcome-1.3.0.post0-py2.py3-none-any.whl (10 kB)
+Downloading pybind11-3.0.4-py3-none-any.whl (314 kB)
+Using cached pyjnius-1.7.0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (1.6 MB)
+Downloading pyopenssl-26.3.0-py3-none-any.whl (56 kB)
+Using cached pyparsing-3.3.2-py3-none-any.whl (122 kB)
+Using cached python_dateutil-2.9.0.post0-py2.py3-none-any.whl (229 kB)
+Using cached python_multipart-0.0.32-py3-none-any.whl (30 kB)
+Using cached pytz-2026.2-py2.py3-none-any.whl (510 kB)
+Using cached referencing-0.37.0-py3-none-any.whl (26 kB)
+Using cached regex-2026.6.28-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (794 kB)
+Using cached rpds_py-0.30.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (390 kB)
+Downloading ruff-0.15.20-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (11.5 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 11.5/11.5 MB 117.4 MB/s  0:00:00
+Using cached safetensors-0.8.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (516 kB)
+Using cached scipy-1.15.3-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (37.7 MB)
+Using cached sentencepiece-0.2.1-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (1.4 MB)
+Using cached six-1.17.0-py2.py3-none-any.whl (11 kB)
+Using cached sniffio-1.3.1-py3-none-any.whl (10 kB)
+Downloading soupsieve-2.8.4-py3-none-any.whl (37 kB)
+Using cached threadpoolctl-3.6.0-py3-none-any.whl (18 kB)
+Downloading tomli-2.4.1-py3-none-any.whl (14 kB)
+Using cached tzdata-2026.2-py2.py3-none-any.whl (349 kB)
+Using cached uvicorn-0.49.0-py3-none-any.whl (71 kB)
+Downloading wsproto-1.3.2-py3-none-any.whl (24 kB)
+Using cached anyio-4.14.1-py3-none-any.whl (124 kB)
+Using cached coloredlogs-15.0.1-py2.py3-none-any.whl (46 kB)
+Using cached humanfriendly-10.0-py2.py3-none-any.whl (86 kB)
+Using cached fastapi-0.139.0-py3-none-any.whl (130 kB)
+Using cached annotated_doc-0.0.4-py3-none-any.whl (5.3 kB)
+Using cached starlette-1.3.1-py3-none-any.whl (73 kB)
+Using cached typing_inspection-0.4.2-py3-none-any.whl (14 kB)
+Downloading ffmpy-1.0.0-py3-none-any.whl (5.6 kB)
+Using cached filelock-3.29.4-py3-none-any.whl (42 kB)
+Using cached flatbuffers-25.12.19-py2.py3-none-any.whl (26 kB)
+Downloading iniconfig-2.3.0-py3-none-any.whl (7.5 kB)
+Using cached networkx-3.4.2-py3-none-any.whl (1.7 MB)
+Downloading nltk-3.9.4-py3-none-any.whl (1.6 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.6/1.6 MB 63.2 MB/s  0:00:00
+Using cached protobuf-7.35.1-cp310-abi3-manylinux2014_x86_64.whl (327 kB)
+Using cached psutil-7.2.2-cp36-abi3-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl (155 kB)
+Using cached pycparser-3.0-py3-none-any.whl (48 kB)
+Downloading pydub-0.25.1-py2.py3-none-any.whl (32 kB)
+Downloading sortedcontainers-2.4.0-py2.py3-none-any.whl (29 kB)
+Downloading urllib3_secure_extra-0.1.0-py2.py3-none-any.whl (1.4 kB)
+Building wheels for collected packages: env, gym, train
+  Building wheel for env (pyproject.toml): started
+  Building wheel for env (pyproject.toml): finished with status 'done'
+  Created wheel for env: filename=env-0.1.0-py3-none-any.whl size=2059 sha256=17f1cdb041e6259fe96b2da85a2650d025f11608170c3c40a02f685288db1e80
+  Stored in directory: /home/abheekp/.cache/pip/wheels/f2/0a/55/c971729efb2d554c110d5d852b0e891e44da5ae8503208228e
+  Building wheel for gym (pyproject.toml): started
+  Building wheel for gym (pyproject.toml): finished with status 'done'
+  Created wheel for gym: filename=gym-0.24.0-py3-none-any.whl size=790817 sha256=ca95aa52721b17b79069439384e9f153bb0253ef44b26f7a3d534f61c057823f
+  Stored in directory: /home/abheekp/.cache/pip/wheels/2f/a1/b1/5f4110c8943b36e6cdfcc0e5768481639fa042b3c8357e82cc
+  Building wheel for train (pyproject.toml): started
+  Building wheel for train (pyproject.toml): finished with status 'done'
+  Created wheel for train: filename=train-0.0.5-py3-none-any.whl size=8555 sha256=a4f583dbfb3d1f28951ed612c890539ad8071fb963e11d12cab7d9ddc6bbfbf8
+  Stored in directory: /home/abheekp/.cache/pip/wheels/70/b9/f3/c3ff20f48c8602e236ed0f8d51817962f176c304ef0a3011ec
+Successfully built env gym train
+Installing collected packages: urllib3-secure-extra, triton, thefuzz, sortedcontainers, pytz, pyjnius, pydub, nvidia-cusparselt-cu12, mpmath, gym_notices, flatbuffers, env, commonmark, Werkzeug, websockets, wasabi, urllib3, tzdata, typing-extensions, tqdm, tomlkit, tomli, threadpoolctl, sympy, spacy-loggers, spacy-legacy, soupsieve, sniffio, smart-open, six, shellingham, sentencepiece, semantic-version, safetensors, ruff, rpds-py, regex, PyYAML, python-multipart, PySocks, pyparsing, pygments, pycparser, pybind11, psutil, protobuf, pluggy, pillow, orjson, nvidia-nvtx-cu12, nvidia-nvjitlink-cu12, nvidia-nccl-cu12, nvidia-curand-cu12, nvidia-cufft-cu12, nvidia-cuda-runtime-cu12, nvidia-cuda-nvrtc-cu12, nvidia-cuda-cupti-cu12, nvidia-cublas-cu12, numpy, networkx, narwhals, murmurhash, markupsafe, langcodes, kiwisolver, joblib, itsdangerous, iniconfig, importlib-resources, idna, humanfriendly, hf-xet, h11, fsspec, fonttools, filelock, ffmpy, Cython, cymem, cycler, colorama, cloudpickle, click, charset-normalizer, certifi, catalogue, attrs, annotated-types, annotated-doc, aiofiles, wsproto, uvicorn, typing-inspection, typer, train, srsly, scipy, rich, requests, referencing, rank_bm25, python-dateutil, pydantic-core, preshed, outcome, nvidia-cusparse-cu12, nvidia-cudnn-cu12, nltk, Jinja2, httpcore, gym, exceptiongroup, contourpy, coloredlogs, cloudpathlib, cffi, blis, beautifulsoup4, trio, scikit_learn, requests_mock, pytest, pydantic, pandas, onnxruntime, nvidia-cusolver-cu12, nmslib, matplotlib, lightgbm, jsonschema-specifications, huggingface-hub, Flask, cryptography, cleantext, anyio, trio-websocket, torch, tokenizers, starlette, pyOpenSSL, jsonschema, httpx, gdown, confection, weasel, transformers, thinc, gradio-client, fastapi, altair, accelerate, spacy, selenium, peft, gradio, pyserini
+
+Successfully installed Cython-3.2.8 Flask-2.1.2 Jinja2-3.1.6 PySocks-1.7.1 PyYAML-6.0.2 Werkzeug-2.1.0 accelerate-1.14.0 aiofiles-23.2.1 altair-5.5.0 annotated-doc-0.0.4 annotated-types-0.7.0 anyio-4.14.1 attrs-26.1.0 beautifulsoup4-4.11.1 blis-0.7.11 catalogue-2.0.10 certifi-2026.6.17 cffi-2.0.0 charset-normalizer-2.0.12 cleantext-1.1.4 click-8.4.2 cloudpathlib-0.16.0 cloudpickle-3.1.2 colorama-0.4.6 coloredlogs-15.0.1 commonmark-0.9.2 confection-0.1.5 contourpy-1.3.2 cryptography-49.0.0 cycler-0.12.1 cymem-2.0.13 env-0.1.0 exceptiongroup-1.3.1 fastapi-0.139.0 ffmpy-1.0.0 filelock-3.29.4 flatbuffers-25.12.19 fonttools-4.63.0 fsspec-2026.6.0 gdown-6.1.0 gradio-4.26.0 gradio-client-0.15.1 gym-0.24.0 gym_notices-0.1.0 h11-0.16.0 hf-xet-1.5.1 httpcore-1.0.9 httpx-0.28.1 huggingface-hub-0.36.2 humanfriendly-10.0 idna-3.18 importlib-resources-6.5.2 iniconfig-2.3.0 itsdangerous-2.2.0 joblib-1.5.3 jsonschema-4.26.0 jsonschema-specifications-2025.9.1 kiwisolver-1.5.0 langcodes-3.5.1 lightgbm-4.6.0 markupsafe-2.1.5 matplotlib-3.10.9 mpmath-1.3.0 murmurhash-1.0.15 narwhals-2.23.0 networkx-3.4.2 nltk-3.9.4 nmslib-2.1.2 numpy-1.26.4 nvidia-cublas-cu12-12.4.5.8 nvidia-cuda-cupti-cu12-12.4.127 nvidia-cuda-nvrtc-cu12-12.4.127 nvidia-cuda-runtime-cu12-12.4.127 nvidia-cudnn-cu12-9.1.0.70 nvidia-cufft-cu12-11.2.1.3 nvidia-curand-cu12-10.3.5.147 nvidia-cusolver-cu12-11.6.1.9 nvidia-cusparse-cu12-12.3.1.170 nvidia-cusparselt-cu12-0.6.2 nvidia-nccl-cu12-2.21.5 nvidia-nvjitlink-cu12-12.4.127 nvidia-nvtx-cu12-12.4.127 onnxruntime-1.23.2 orjson-3.11.9 outcome-1.3.0.post0 pandas-2.2.3 peft-0.17.0 pillow-10.4.0 pluggy-1.6.0 preshed-3.0.13 protobuf-7.35.1 psutil-7.2.2 pyOpenSSL-26.3.0 pybind11-3.0.4 pycparser-3.0 pydantic-2.10.6 pydantic-core-2.27.2 pydub-0.25.1 pygments-2.20.0 pyjnius-1.7.0 pyparsing-3.3.2 pyserini-0.17.0 pytest-8.3.5 python-dateutil-2.9.0.post0 python-multipart-0.0.32 pytz-2026.2 rank_bm25-0.2.2 referencing-0.37.0 regex-2026.6.28 requests-2.27.1 requests_mock-1.12.1 rich-12.4.4 rpds-py-0.30.0 ruff-0.15.20 safetensors-0.8.0 scikit_learn-1.7.2 scipy-1.15.3 selenium-4.2.0 semantic-version-2.10.0 sentencepiece-0.2.1 shellingham-1.5.4 six-1.17.0 smart-open-6.4.0 sniffio-1.3.1 sortedcontainers-2.4.0 soupsieve-2.8.4 spacy-3.7.2 spacy-legacy-3.0.12 spacy-loggers-1.0.5 srsly-2.5.3 starlette-1.3.1 sympy-1.13.1 thefuzz-0.19.0 thinc-8.2.5 threadpoolctl-3.6.0 tokenizers-0.21.4 tomli-2.4.1 tomlkit-0.12.0 torch-2.6.0 tqdm-4.64.0 train-0.0.5 transformers-4.51.1 trio-0.33.0 trio-websocket-0.12.2 triton-3.2.0 typer-0.9.4 typing-extensions-4.15.0 typing-inspection-0.4.2 tzdata-2026.2 urllib3-1.26.20 urllib3-secure-extra-0.1.0 uvicorn-0.49.0 wasabi-1.1.3 weasel-0.3.4 websockets-11.0.3 wsproto-1.3.2
+2 channel Terms of Service accepted
+Channels:
+ - defaults
+Platform: linux-64
+Collecting package metadata (repodata.json): - \ | / - \ | / - done
+Solving environment: | done
+
+
+==> WARNING: A newer version of conda exists. <==
+    current version: 26.3.2
+    latest version: 26.5.3
+
+Please update conda by running
+
+    $ conda update -n base -c defaults conda
+
+
+
+## Package Plan ##
+
+  environment location: /mnt/sdar-cache/conda/envs/verl-webshop
+
+  added / updated specs:
+    - mkl
+
+
+The following packages will be downloaded:
+
+    package                    |            build
+    ---------------------------|-----------------
+    tbb-2022.0.0               |       hdb19cb5_0         188 KB
+    tbb-devel-2022.0.0         |       hdb19cb5_0         1.1 MB
+    ------------------------------------------------------------
+                                           Total:         1.3 MB
+
+The following NEW packages will be INSTALLED:
+
+  intel-openmp       pkgs/main/linux-64::intel-openmp-2025.0.0-h06a4308_1172 
+  libstdcxx-ng       pkgs/main/linux-64::libstdcxx-ng-15.2.0-hc03a8fd_8 
+  mkl                pkgs/main/linux-64::mkl-2025.0.0-h6d8faa4_942 
+  tbb                pkgs/main/linux-64::tbb-2022.0.0-hdb19cb5_0 
+  tbb-devel          pkgs/main/linux-64::tbb-devel-2022.0.0-hdb19cb5_0 
+
+
+Proceed ([y]/n)? 
+
+Downloading and Extracting Packages: ...working...tbb-devel-2022.0.0   | 1.1 MB    |            |   0% 
+tbb-2022.0.0         | 188 KB    |            |   0% [A
+tbb-2022.0.0         | 188 KB    | ###3       |  34% [Atbb-devel-2022.0.0   | 1.1 MB    | 7          |   7% 
+tbb-2022.0.0         | 188 KB    | ########## | 100% [A
+tbb-2022.0.0         | 188 KB    | ########## | 100% [Atbb-devel-2022.0.0   | 1.1 MB    | ########## | 100% tbb-devel-2022.0.0   | 1.1 MB    | ########## | 100% tbb-devel-2022.0.0   | 1.1 MB    | ########## | 100%                                                      
+                                                     [A done
+Preparing transaction: - done
+Verifying transaction: | done
+Executing transaction: - done
+2 channel Terms of Service accepted
+Channels:
+ - conda-forge
+ - defaults
+Platform: linux-64
+Collecting package metadata (repodata.json): - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | / - \ | done
+Solving environment: - \ done
+
+## Package Plan ##
+
+  environment location: /mnt/sdar-cache/conda/envs/verl-webshop
+
+  added / updated specs:
+    - faiss-cpu
+
+
+The following packages will be downloaded:
+
+    package                    |            build
+    ---------------------------|-----------------
+    faiss-1.9.0                |py310he38f182_0_cpu         1.4 MB  conda-forge
+    faiss-cpu-1.9.0            |       h718b53a_0          18 KB  conda-forge
+    libblas-3.11.0             |8_h4a7cf45_openblas          18 KB  conda-forge
+    libcblas-3.11.0            |8_h0358290_openblas          18 KB  conda-forge
+    libfaiss-1.9.0             |   h72e5a87_0_cpu         1.6 MB  conda-forge
+    libgfortran-15.2.0         |      h69a702a_19          27 KB  conda-forge
+    libgfortran5-15.2.0        |      h68bc16d_19         2.4 MB  conda-forge
+    liblapack-3.11.0           |8_h47877c9_openblas          18 KB  conda-forge
+    libopenblas-0.3.33         |pthreads_h94d23a6_0         5.7 MB  conda-forge
+    numpy-1.26.4               |  py310hb13e2d6_0         6.7 MB  conda-forge
+    python_abi-3.10            |          2_cp310           4 KB  conda-forge
+    ------------------------------------------------------------
+                                           Total:        17.8 MB
+
+The following NEW packages will be INSTALLED:
+
+  faiss              conda-forge/linux-64::faiss-1.9.0-py310he38f182_0_cpu 
+  faiss-cpu          conda-forge/linux-64::faiss-cpu-1.9.0-h718b53a_0 
+  libblas            conda-forge/linux-64::libblas-3.11.0-8_h4a7cf45_openblas 
+  libcblas           conda-forge/linux-64::libcblas-3.11.0-8_h0358290_openblas 
+  libfaiss           conda-forge/linux-64::libfaiss-1.9.0-h72e5a87_0_cpu 
+  libgfortran        conda-forge/linux-64::libgfortran-15.2.0-h69a702a_19 
+  libgfortran5       conda-forge/linux-64::libgfortran5-15.2.0-h68bc16d_19 
+  liblapack          conda-forge/linux-64::liblapack-3.11.0-8_h47877c9_openblas 
+  libopenblas        conda-forge/linux-64::libopenblas-0.3.33-pthreads_h94d23a6_0 
+  numpy              conda-forge/linux-64::numpy-1.26.4-py310hb13e2d6_0 
+  python_abi         conda-forge/linux-64::python_abi-3.10-2_cp310 
+
+
+Proceed ([y]/n)? 
+
+Downloading and Extracting Packages: ...working...numpy-1.26.4         | 6.7 MB    |            |   0% 
+libopenblas-0.3.33   | 5.7 MB    |            |   0% [A
+
+libgfortran5-15.2.0  | 2.4 MB    |            |   0% [A[A
+
+
+libfaiss-1.9.0       | 1.6 MB    |            |   0% [A[A[A
+
+
+
+faiss-1.9.0          | 1.4 MB    |            |   0% [A[A[A[A
+
+
+
+
+libgfortran-15.2.0   | 27 KB     |            |   0% [A[A[A[A[A
+
+
+
+
+
+libblas-3.11.0       | 18 KB     |            |   0% [A[A[A[A[A[A
+
+
+
+
+
+
+liblapack-3.11.0     | 18 KB     |            |   0% [A[A[A[A[A[A[A
+
+
+
+
+
+
+
+libcblas-3.11.0      | 18 KB     |            |   0% [A[A[A[A[A[A[A[A
+
+
+
+
+
+
+
+
+faiss-cpu-1.9.0      | 18 KB     |            |   0% [A[A[A[A[A[A[A[A[A
+
+
+
+
+
+
+
+
+
+python_abi-3.10      | 4 KB      |            |   0% [A[A[A[A[A[A[A[A[A[A
+libopenblas-0.3.33   | 5.7 MB    | 1          |   2% [Anumpy-1.26.4         | 6.7 MB    | 1          |   2% 
+
+libgfortran5-15.2.0  | 2.4 MB    | 2          |   3% [A[A
+
+
+libfaiss-1.9.0       | 1.6 MB    |            |   1% [A[A[A
+
+
+
+faiss-1.9.0          | 1.4 MB    | 1          |   1% [A[A[A[A
+libopenblas-0.3.33   | 5.7 MB    | #######    |  70% [Anumpy-1.26.4         | 6.7 MB    | #######4   |  75% 
+
+
+libfaiss-1.9.0       | 1.6 MB    | ########## | 100% [A[A[A
+
+
+
+
+libgfortran-15.2.0   | 27 KB     | #####9     |  59% [A[A[A[A[A
+
+
+
+
+libgfortran-15.2.0   | 27 KB     | ########## | 100% [A[A[A[A[A
+
+libgfortran5-15.2.0  | 2.4 MB    | ########## | 100% [A[A
+
+libgfortran5-15.2.0  | 2.4 MB    | ########## | 100% [A[A
+
+
+
+faiss-1.9.0          | 1.4 MB    | ########## | 100% [A[A[A[A
+
+
+
+faiss-1.9.0          | 1.4 MB    | ########## | 100% [A[A[A[A
+
+
+
+
+
+libblas-3.11.0       | 18 KB     | ########7  |  87% [A[A[A[A[A[A
+
+
+
+
+
+libblas-3.11.0       | 18 KB     | ########## | 100% [A[A[A[A[A[A
+
+
+
+
+
+
+liblapack-3.11.0     | 18 KB     | ########7  |  87% [A[A[A[A[A[A[A
+
+
+
+
+
+
+liblapack-3.11.0     | 18 KB     | ########## | 100% [A[A[A[A[A[A[A
+
+
+
+
+
+
+
+libcblas-3.11.0      | 18 KB     | ########7  |  87% [A[A[A[A[A[A[A[A
+
+
+
+
+
+
+
+libcblas-3.11.0      | 18 KB     | ########## | 100% [A[A[A[A[A[A[A[A
+
+
+
+
+
+
+
+
+faiss-cpu-1.9.0      | 18 KB     | ########9  |  90% [A[A[A[A[A[A[A[A[A
+
+
+
+
+
+
+
+
+faiss-cpu-1.9.0      | 18 KB     | ########## | 100% [A[A[A[A[A[A[A[A[A
+
+
+
+
+
+
+
+
+
+python_abi-3.10      | 4 KB      | ########## | 100% [A[A[A[A[A[A[A[A[A[A
+
+
+
+
+
+
+
+
+
+python_abi-3.10      | 4 KB      | ########## | 100% [A[A[A[A[A[A[A[A[A[A
+
+
+
+
+libgfortran-15.2.0   | 27 KB     | ########## | 100% [A[A[A[A[A
+
+
+
+
+libgfortran-15.2.0   | 27 KB     | ########## | 100% [A[A[A[A[A
+libopenblas-0.3.33   | 5.7 MB    | ########## | 100% [Anumpy-1.26.4         | 6.7 MB    | ########## | 100% 
+
+libgfortran5-15.2.0  | 2.4 MB    | ########## | 100% [A[A
+
+
+libfaiss-1.9.0       | 1.6 MB    | ########## | 100% [A[A[A
+
+
+libfaiss-1.9.0       | 1.6 MB    | ########## | 100% [A[A[A
+
+
+
+
+
+libblas-3.11.0       | 18 KB     | ########## | 100% [A[A[A[A[A[A
+
+
+
+
+
+
+liblapack-3.11.0     | 18 KB     | ########## | 100% [A[A[A[A[A[A[A
+
+
+
+
+
+
+
+libcblas-3.11.0      | 18 KB     | ########## | 100% [A[A[A[A[A[A[A[A
+
+
+
+
+
+
+
+
+
+python_abi-3.10      | 4 KB      | ########## | 100% [A[A[A[A[A[A[A[A[A[A
+
+
+
+
+
+
+
+
+faiss-cpu-1.9.0      | 18 KB     | ########## | 100% [A[A[A[A[A[A[A[A[A
+
+
+
+faiss-1.9.0          | 1.4 MB    | ########## | 100% [A[A[A[A
+libopenblas-0.3.33   | 5.7 MB    | ########## | 100% [Anumpy-1.26.4         | 6.7 MB    | ########## | 100%                                                      
+                                                     [A
+
+                                                     [A[A
+
+
+                                                     [A[A[A
+
+
+
+                                                     [A[A[A[A
+
+
+
+
+                                                     [A[A[A[A[A
+
+
+
+
+
+                                                     [A[A[A[A[A[A
+
+
+
+
+
+
+                                                     [A[A[A[A[A[A[A
+
+
+
+
+
+
+
+                                                     [A[A[A[A[A[A[A[A
+
+
+
+
+
+
+
+
+                                                     [A[A[A[A[A[A[A[A[A
+
+
+
+
+
+
+
+
+
+                                                     [A[A[A[A[A[A[A[A[A[A done
+Preparing transaction: / done
+Verifying transaction: \ | / - done
+Executing transaction: | / - done
+2 channel Terms of Service accepted
+Channels:
+ - conda-forge
+ - defaults
+Platform: linux-64
+Collecting package metadata (repodata.json): - \ | / - \ | / - \ | / done
+Solving environment: \ | done
+
+# All requested packages already installed.
+
+/mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages/bs4/__init__.py:435: MarkupResemblesLocatorWarning: The input looks more like a filename than markup. You may want to open this file and pass the filehandle into Beautiful Soup.
+  warnings.warn(
+Failed to retrieve file url:
+
+	Cannot retrieve the public link of the file. You may need to change
+	the permission to 'Anyone with the link', or have had many accesses.
+	Check FAQ in https://github.com/wkentaro/gdown?tab=readme-ov-file#faq.
+
+You may still be able to access the file from the browser:
+
+	https://drive.google.com/uc?id=1EgHdxQ_YxqIQlvvq5iKlCrkEKR6-j0Ib
+
+but Gdown can't. Please check connections and permissions.
+/mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages/bs4/__init__.py:435: MarkupResemblesLocatorWarning: The input looks more like a filename than markup. You may want to open this file and pass the filehandle into Beautiful Soup.
+  warnings.warn(
+Failed to retrieve file url:
+
+	Cannot retrieve the public link of the file. You may need to change
+	the permission to 'Anyone with the link', or have had many accesses.
+	Check FAQ in https://github.com/wkentaro/gdown?tab=readme-ov-file#faq.
+
+You may still be able to access the file from the browser:
+
+	https://drive.google.com/uc?id=1IduG0xl544V_A_jv3tHXC0kyFi7PnyBu
+
+but Gdown can't. Please check connections and permissions.
+/mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages/bs4/__init__.py:435: MarkupResemblesLocatorWarning: The input looks more like a filename than markup. You may want to open this file and pass the filehandle into Beautiful Soup.
+  warnings.warn(
+Failed to retrieve file url:
+
+	Cannot retrieve the public link of the file. You may need to change
+	the permission to 'Anyone with the link', or have had many accesses.
+	Check FAQ in https://github.com/wkentaro/gdown?tab=readme-ov-file#faq.
+
+You may still be able to access the file from the browser:
+
+	https://drive.google.com/uc?id=1A2whVgOO0euk5O13n2iYDM0bQRkkRduB
+
+but Gdown can't. Please check connections and permissions.
+/mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages/bs4/__init__.py:435: MarkupResemblesLocatorWarning: The input looks more like a filename than markup. You may want to open this file and pass the filehandle into Beautiful Soup.
+  warnings.warn(
+Failed to retrieve file url:
+
+	Cannot retrieve the public link of the file. You may need to change
+	the permission to 'Anyone with the link', or have had many accesses.
+	Check FAQ in https://github.com/wkentaro/gdown?tab=readme-ov-file#faq.
+
+You may still be able to access the file from the browser:
+
+	https://drive.google.com/uc?id=1s2j6NgHljiZzQNL3veZaAiyW_qDEgBNi
+
+but Gdown can't. Please check connections and permissions.
+/mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages/bs4/__init__.py:435: MarkupResemblesLocatorWarning: The input looks more like a filename than markup. You may want to open this file and pass the filehandle into Beautiful Soup.
+  warnings.warn(
+Failed to retrieve file url:
+
+	Cannot retrieve the public link of the file. You may need to change
+	the permission to 'Anyone with the link', or have had many accesses.
+	Check FAQ in https://github.com/wkentaro/gdown?tab=readme-ov-file#faq.
+
+You may still be able to access the file from the browser:
+
+	https://drive.google.com/uc?id=14Kb5SPBk_jfdLZ_CDBNitW98QLDlKR5O
+
+but Gdown can't. Please check connections and permissions.
+/mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages/torch/cuda/__init__.py:734: UserWarning: Can't initialize NVML
+  warnings.warn("Can't initialize NVML")
+Collecting https://github.com/explosion/spacy-models/releases/download/-en_core_web_lg/-en_core_web_lg.tar.gz
+  ERROR: HTTP error 404 while getting https://github.com/explosion/spacy-models/releases/download/-en_core_web_lg/-en_core_web_lg.tar.gz
+ERROR: Could not install requirement https://github.com/explosion/spacy-models/releases/download/-en_core_web_lg/-en_core_web_lg.tar.gz because of HTTP error 404 Client Error: Not Found for url: https://github.com/explosion/spacy-models/releases/download/-en_core_web_lg/-en_core_web_lg.tar.gz for URL https://github.com/explosion/spacy-models/releases/download/-en_core_web_lg/-en_core_web_lg.tar.gz
+/mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages/torch/cuda/__init__.py:734: UserWarning: Can't initialize NVML
+  warnings.warn("Can't initialize NVML")
+Collecting https://github.com/explosion/spacy-models/releases/download/-en_core_web_sm/-en_core_web_sm.tar.gz
+  ERROR: HTTP error 404 while getting https://github.com/explosion/spacy-models/releases/download/-en_core_web_sm/-en_core_web_sm.tar.gz
+ERROR: Could not install requirement https://github.com/explosion/spacy-models/releases/download/-en_core_web_sm/-en_core_web_sm.tar.gz because of HTTP error 404 Client Error: Not Found for url: https://github.com/explosion/spacy-models/releases/download/-en_core_web_sm/-en_core_web_sm.tar.gz for URL https://github.com/explosion/spacy-models/releases/download/-en_core_web_sm/-en_core_web_sm.tar.gz
+Traceback (most recent call last):
+  File "/mnt/sdar-cache/SDAR/agent_system/environments/env_package/webshop/webshop/search_engine/convert_product_file_format.py", line 9, in <module>
+    all_products, *_ = load_products(filepath=DEFAULT_FILE_PATH, attrpath=DEFAULT_ATTR_PATH)
+  File "/mnt/sdar-cache/SDAR/agent_system/environments/env_package/webshop/webshop/search_engine/../web_agent_site/engine/engine.py", line 232, in load_products
+    with open(filepath) as f:
+FileNotFoundError: [Errno 2] No such file or directory: '/mnt/sdar-cache/SDAR/agent_system/environments/env_package/webshop/webshop/web_agent_site/../data/items_shuffle_1000.json'
+WARNING: sun.reflect.Reflection.getCallerClass is not supported. This will impact performance.
+2026-07-01 21:18:00,019 INFO  [main] index.IndexCollection (IndexCollection.java:645) - Setting log level to INFO
+2026-07-01 21:18:00,023 INFO  [main] index.IndexCollection (IndexCollection.java:648) - Starting indexer...
+2026-07-01 21:18:00,023 INFO  [main] index.IndexCollection (IndexCollection.java:649) - ============ Loading Parameters ============
+2026-07-01 21:18:00,024 INFO  [main] index.IndexCollection (IndexCollection.java:650) - DocumentCollection path: resources_100
+2026-07-01 21:18:00,024 INFO  [main] index.IndexCollection (IndexCollection.java:651) - CollectionClass: JsonCollection
+2026-07-01 21:18:00,025 INFO  [main] index.IndexCollection (IndexCollection.java:652) - Generator: DefaultLuceneDocumentGenerator
+2026-07-01 21:18:00,025 INFO  [main] index.IndexCollection (IndexCollection.java:653) - Threads: 1
+2026-07-01 21:18:00,025 INFO  [main] index.IndexCollection (IndexCollection.java:654) - Language: en
+2026-07-01 21:18:00,026 INFO  [main] index.IndexCollection (IndexCollection.java:655) - Stemmer: porter
+2026-07-01 21:18:00,026 INFO  [main] index.IndexCollection (IndexCollection.java:656) - Keep stopwords? false
+2026-07-01 21:18:00,026 INFO  [main] index.IndexCollection (IndexCollection.java:657) - Stopwords: null
+2026-07-01 21:18:00,027 INFO  [main] index.IndexCollection (IndexCollection.java:658) - Store positions? true
+2026-07-01 21:18:00,027 INFO  [main] index.IndexCollection (IndexCollection.java:659) - Store docvectors? true
+2026-07-01 21:18:00,028 INFO  [main] index.IndexCollection (IndexCollection.java:660) - Store document "contents" field? false
+2026-07-01 21:18:00,028 INFO  [main] index.IndexCollection (IndexCollection.java:661) - Store document "raw" field? true
+2026-07-01 21:18:00,029 INFO  [main] index.IndexCollection (IndexCollection.java:662) - Additional fields to index: []
+2026-07-01 21:18:00,029 INFO  [main] index.IndexCollection (IndexCollection.java:663) - Optimize (merge segments)? false
+2026-07-01 21:18:00,029 INFO  [main] index.IndexCollection (IndexCollection.java:664) - Whitelist: null
+2026-07-01 21:18:00,030 INFO  [main] index.IndexCollection (IndexCollection.java:665) - Pretokenized?: false
+2026-07-01 21:18:00,030 INFO  [main] index.IndexCollection (IndexCollection.java:685) - Directly building Lucene indexes...
+2026-07-01 21:18:00,030 INFO  [main] index.IndexCollection (IndexCollection.java:686) - Index path: indexes_100
+2026-07-01 21:18:00,036 INFO  [main] index.IndexCollection (IndexCollection.java:741) - ============ Indexing Collection ============
+2026-07-01 21:18:00,354 INFO  [main] index.IndexCollection (IndexCollection.java:845) - Thread pool with 1 threads initialized.
+2026-07-01 21:18:00,354 INFO  [main] index.IndexCollection (IndexCollection.java:847) - Initializing collection in resources_100
+2026-07-01 21:18:00,359 INFO  [main] index.IndexCollection (IndexCollection.java:856) - 0 files found
+2026-07-01 21:18:00,360 INFO  [main] index.IndexCollection (IndexCollection.java:857) - Starting to index...
+2026-07-01 21:18:00,399 INFO  [main] index.IndexCollection (IndexCollection.java:941) - Indexing Complete! 0 documents indexed
+2026-07-01 21:18:00,399 INFO  [main] index.IndexCollection (IndexCollection.java:942) - ============ Final Counter Values ============
+2026-07-01 21:18:00,399 INFO  [main] index.IndexCollection (IndexCollection.java:943) - indexed:                0
+2026-07-01 21:18:00,400 INFO  [main] index.IndexCollection (IndexCollection.java:944) - unindexable:            0
+2026-07-01 21:18:00,400 INFO  [main] index.IndexCollection (IndexCollection.java:945) - empty:                  0
+2026-07-01 21:18:00,400 INFO  [main] index.IndexCollection (IndexCollection.java:946) - skipped:                0
+2026-07-01 21:18:00,400 INFO  [main] index.IndexCollection (IndexCollection.java:947) - errors:                 0
+2026-07-01 21:18:00,409 INFO  [main] index.IndexCollection (IndexCollection.java:950) - Total 0 documents indexed in 00:00:00
+WARNING: sun.reflect.Reflection.getCallerClass is not supported. This will impact performance.
+2026-07-01 21:18:02,506 INFO  [main] index.IndexCollection (IndexCollection.java:645) - Setting log level to INFO
+2026-07-01 21:18:02,509 INFO  [main] index.IndexCollection (IndexCollection.java:648) - Starting indexer...
+2026-07-01 21:18:02,509 INFO  [main] index.IndexCollection (IndexCollection.java:649) - ============ Loading Parameters ============
+2026-07-01 21:18:02,510 INFO  [main] index.IndexCollection (IndexCollection.java:650) - DocumentCollection path: resources
+2026-07-01 21:18:02,510 INFO  [main] index.IndexCollection (IndexCollection.java:651) - CollectionClass: JsonCollection
+2026-07-01 21:18:02,510 INFO  [main] index.IndexCollection (IndexCollection.java:652) - Generator: DefaultLuceneDocumentGenerator
+2026-07-01 21:18:02,511 INFO  [main] index.IndexCollection (IndexCollection.java:653) - Threads: 1
+2026-07-01 21:18:02,511 INFO  [main] index.IndexCollection (IndexCollection.java:654) - Language: en
+2026-07-01 21:18:02,511 INFO  [main] index.IndexCollection (IndexCollection.java:655) - Stemmer: porter
+2026-07-01 21:18:02,511 INFO  [main] index.IndexCollection (IndexCollection.java:656) - Keep stopwords? false
+2026-07-01 21:18:02,512 INFO  [main] index.IndexCollection (IndexCollection.java:657) - Stopwords: null
+2026-07-01 21:18:02,512 INFO  [main] index.IndexCollection (IndexCollection.java:658) - Store positions? true
+2026-07-01 21:18:02,512 INFO  [main] index.IndexCollection (IndexCollection.java:659) - Store docvectors? true
+2026-07-01 21:18:02,512 INFO  [main] index.IndexCollection (IndexCollection.java:660) - Store document "contents" field? false
+2026-07-01 21:18:02,513 INFO  [main] index.IndexCollection (IndexCollection.java:661) - Store document "raw" field? true
+2026-07-01 21:18:02,513 INFO  [main] index.IndexCollection (IndexCollection.java:662) - Additional fields to index: []
+2026-07-01 21:18:02,514 INFO  [main] index.IndexCollection (IndexCollection.java:663) - Optimize (merge segments)? false
+2026-07-01 21:18:02,514 INFO  [main] index.IndexCollection (IndexCollection.java:664) - Whitelist: null
+2026-07-01 21:18:02,514 INFO  [main] index.IndexCollection (IndexCollection.java:665) - Pretokenized?: false
+2026-07-01 21:18:02,514 INFO  [main] index.IndexCollection (IndexCollection.java:685) - Directly building Lucene indexes...
+2026-07-01 21:18:02,515 INFO  [main] index.IndexCollection (IndexCollection.java:686) - Index path: indexes
+2026-07-01 21:18:02,517 INFO  [main] index.IndexCollection (IndexCollection.java:741) - ============ Indexing Collection ============
+2026-07-01 21:18:02,798 INFO  [main] index.IndexCollection (IndexCollection.java:845) - Thread pool with 1 threads initialized.
+2026-07-01 21:18:02,799 INFO  [main] index.IndexCollection (IndexCollection.java:847) - Initializing collection in resources
+2026-07-01 21:18:02,802 INFO  [main] index.IndexCollection (IndexCollection.java:856) - 0 files found
+2026-07-01 21:18:02,802 INFO  [main] index.IndexCollection (IndexCollection.java:857) - Starting to index...
+2026-07-01 21:18:02,825 INFO  [main] index.IndexCollection (IndexCollection.java:941) - Indexing Complete! 0 documents indexed
+2026-07-01 21:18:02,825 INFO  [main] index.IndexCollection (IndexCollection.java:942) - ============ Final Counter Values ============
+2026-07-01 21:18:02,826 INFO  [main] index.IndexCollection (IndexCollection.java:943) - indexed:                0
+2026-07-01 21:18:02,826 INFO  [main] index.IndexCollection (IndexCollection.java:944) - unindexable:            0
+2026-07-01 21:18:02,826 INFO  [main] index.IndexCollection (IndexCollection.java:945) - empty:                  0
+2026-07-01 21:18:02,826 INFO  [main] index.IndexCollection (IndexCollection.java:946) - skipped:                0
+2026-07-01 21:18:02,827 INFO  [main] index.IndexCollection (IndexCollection.java:947) - errors:                 0
+2026-07-01 21:18:02,834 INFO  [main] index.IndexCollection (IndexCollection.java:950) - Total 0 documents indexed in 00:00:00
+WARNING: sun.reflect.Reflection.getCallerClass is not supported. This will impact performance.
+2026-07-01 21:18:04,583 INFO  [main] index.IndexCollection (IndexCollection.java:645) - Setting log level to INFO
+2026-07-01 21:18:04,585 INFO  [main] index.IndexCollection (IndexCollection.java:648) - Starting indexer...
+2026-07-01 21:18:04,585 INFO  [main] index.IndexCollection (IndexCollection.java:649) - ============ Loading Parameters ============
+2026-07-01 21:18:04,586 INFO  [main] index.IndexCollection (IndexCollection.java:650) - DocumentCollection path: resources_1k
+2026-07-01 21:18:04,586 INFO  [main] index.IndexCollection (IndexCollection.java:651) - CollectionClass: JsonCollection
+2026-07-01 21:18:04,586 INFO  [main] index.IndexCollection (IndexCollection.java:652) - Generator: DefaultLuceneDocumentGenerator
+2026-07-01 21:18:04,586 INFO  [main] index.IndexCollection (IndexCollection.java:653) - Threads: 1
+2026-07-01 21:18:04,587 INFO  [main] index.IndexCollection (IndexCollection.java:654) - Language: en
+2026-07-01 21:18:04,587 INFO  [main] index.IndexCollection (IndexCollection.java:655) - Stemmer: porter
+2026-07-01 21:18:04,587 INFO  [main] index.IndexCollection (IndexCollection.java:656) - Keep stopwords? false
+2026-07-01 21:18:04,587 INFO  [main] index.IndexCollection (IndexCollection.java:657) - Stopwords: null
+2026-07-01 21:18:04,588 INFO  [main] index.IndexCollection (IndexCollection.java:658) - Store positions? true
+2026-07-01 21:18:04,588 INFO  [main] index.IndexCollection (IndexCollection.java:659) - Store docvectors? true
+2026-07-01 21:18:04,588 INFO  [main] index.IndexCollection (IndexCollection.java:660) - Store document "contents" field? false
+2026-07-01 21:18:04,588 INFO  [main] index.IndexCollection (IndexCollection.java:661) - Store document "raw" field? true
+2026-07-01 21:18:04,589 INFO  [main] index.IndexCollection (IndexCollection.java:662) - Additional fields to index: []
+2026-07-01 21:18:04,589 INFO  [main] index.IndexCollection (IndexCollection.java:663) - Optimize (merge segments)? false
+2026-07-01 21:18:04,589 INFO  [main] index.IndexCollection (IndexCollection.java:664) - Whitelist: null
+2026-07-01 21:18:04,589 INFO  [main] index.IndexCollection (IndexCollection.java:665) - Pretokenized?: false
+2026-07-01 21:18:04,590 INFO  [main] index.IndexCollection (IndexCollection.java:685) - Directly building Lucene indexes...
+2026-07-01 21:18:04,590 INFO  [main] index.IndexCollection (IndexCollection.java:686) - Index path: indexes_1k
+2026-07-01 21:18:04,592 INFO  [main] index.IndexCollection (IndexCollection.java:741) - ============ Indexing Collection ============
+2026-07-01 21:18:04,808 INFO  [main] index.IndexCollection (IndexCollection.java:845) - Thread pool with 1 threads initialized.
+2026-07-01 21:18:04,808 INFO  [main] index.IndexCollection (IndexCollection.java:847) - Initializing collection in resources_1k
+2026-07-01 21:18:04,810 INFO  [main] index.IndexCollection (IndexCollection.java:856) - 0 files found
+2026-07-01 21:18:04,811 INFO  [main] index.IndexCollection (IndexCollection.java:857) - Starting to index...
+2026-07-01 21:18:04,831 INFO  [main] index.IndexCollection (IndexCollection.java:941) - Indexing Complete! 0 documents indexed
+2026-07-01 21:18:04,831 INFO  [main] index.IndexCollection (IndexCollection.java:942) - ============ Final Counter Values ============
+2026-07-01 21:18:04,831 INFO  [main] index.IndexCollection (IndexCollection.java:943) - indexed:                0
+2026-07-01 21:18:04,831 INFO  [main] index.IndexCollection (IndexCollection.java:944) - unindexable:            0
+2026-07-01 21:18:04,831 INFO  [main] index.IndexCollection (IndexCollection.java:945) - empty:                  0
+2026-07-01 21:18:04,832 INFO  [main] index.IndexCollection (IndexCollection.java:946) - skipped:                0
+2026-07-01 21:18:04,832 INFO  [main] index.IndexCollection (IndexCollection.java:947) - errors:                 0
+2026-07-01 21:18:04,837 INFO  [main] index.IndexCollection (IndexCollection.java:950) - Total 0 documents indexed in 00:00:00
+WARNING: sun.reflect.Reflection.getCallerClass is not supported. This will impact performance.
+2026-07-01 21:18:06,464 INFO  [main] index.IndexCollection (IndexCollection.java:645) - Setting log level to INFO
+2026-07-01 21:18:06,466 INFO  [main] index.IndexCollection (IndexCollection.java:648) - Starting indexer...
+2026-07-01 21:18:06,467 INFO  [main] index.IndexCollection (IndexCollection.java:649) - ============ Loading Parameters ============
+2026-07-01 21:18:06,467 INFO  [main] index.IndexCollection (IndexCollection.java:650) - DocumentCollection path: resources_100k
+2026-07-01 21:18:06,467 INFO  [main] index.IndexCollection (IndexCollection.java:651) - CollectionClass: JsonCollection
+2026-07-01 21:18:06,468 INFO  [main] index.IndexCollection (IndexCollection.java:652) - Generator: DefaultLuceneDocumentGenerator
+2026-07-01 21:18:06,468 INFO  [main] index.IndexCollection (IndexCollection.java:653) - Threads: 1
+2026-07-01 21:18:06,468 INFO  [main] index.IndexCollection (IndexCollection.java:654) - Language: en
+2026-07-01 21:18:06,469 INFO  [main] index.IndexCollection (IndexCollection.java:655) - Stemmer: porter
+2026-07-01 21:18:06,469 INFO  [main] index.IndexCollection (IndexCollection.java:656) - Keep stopwords? false
+2026-07-01 21:18:06,469 INFO  [main] index.IndexCollection (IndexCollection.java:657) - Stopwords: null
+2026-07-01 21:18:06,469 INFO  [main] index.IndexCollection (IndexCollection.java:658) - Store positions? true
+2026-07-01 21:18:06,470 INFO  [main] index.IndexCollection (IndexCollection.java:659) - Store docvectors? true
+2026-07-01 21:18:06,470 INFO  [main] index.IndexCollection (IndexCollection.java:660) - Store document "contents" field? false
+2026-07-01 21:18:06,470 INFO  [main] index.IndexCollection (IndexCollection.java:661) - Store document "raw" field? true
+2026-07-01 21:18:06,470 INFO  [main] index.IndexCollection (IndexCollection.java:662) - Additional fields to index: []
+2026-07-01 21:18:06,471 INFO  [main] index.IndexCollection (IndexCollection.java:663) - Optimize (merge segments)? false
+2026-07-01 21:18:06,471 INFO  [main] index.IndexCollection (IndexCollection.java:664) - Whitelist: null
+2026-07-01 21:18:06,471 INFO  [main] index.IndexCollection (IndexCollection.java:665) - Pretokenized?: false
+2026-07-01 21:18:06,471 INFO  [main] index.IndexCollection (IndexCollection.java:685) - Directly building Lucene indexes...
+2026-07-01 21:18:06,472 INFO  [main] index.IndexCollection (IndexCollection.java:686) - Index path: indexes_100k
+2026-07-01 21:18:06,474 INFO  [main] index.IndexCollection (IndexCollection.java:741) - ============ Indexing Collection ============
+2026-07-01 21:18:06,681 INFO  [main] index.IndexCollection (IndexCollection.java:845) - Thread pool with 1 threads initialized.
+2026-07-01 21:18:06,681 INFO  [main] index.IndexCollection (IndexCollection.java:847) - Initializing collection in resources_100k
+2026-07-01 21:18:06,683 INFO  [main] index.IndexCollection (IndexCollection.java:856) - 0 files found
+2026-07-01 21:18:06,683 INFO  [main] index.IndexCollection (IndexCollection.java:857) - Starting to index...
+2026-07-01 21:18:06,703 INFO  [main] index.IndexCollection (IndexCollection.java:941) - Indexing Complete! 0 documents indexed
+2026-07-01 21:18:06,704 INFO  [main] index.IndexCollection (IndexCollection.java:942) - ============ Final Counter Values ============
+2026-07-01 21:18:06,704 INFO  [main] index.IndexCollection (IndexCollection.java:943) - indexed:                0
+2026-07-01 21:18:06,704 INFO  [main] index.IndexCollection (IndexCollection.java:944) - unindexable:            0
+2026-07-01 21:18:06,704 INFO  [main] index.IndexCollection (IndexCollection.java:945) - empty:                  0
+2026-07-01 21:18:06,704 INFO  [main] index.IndexCollection (IndexCollection.java:946) - skipped:                0
+2026-07-01 21:18:06,705 INFO  [main] index.IndexCollection (IndexCollection.java:947) - errors:                 0
+2026-07-01 21:18:06,710 INFO  [main] index.IndexCollection (IndexCollection.java:950) - Total 0 documents indexed in 00:00:00
+[2026-07-01 21:18:07] WebShop setup.sh complete
+[2026-07-01 21:18:07] Installing torch 2.6.0 / cu124 into verl-webshop env
+Looking in indexes: https://download.pytorch.org/whl/cu124
+Requirement already satisfied: torch==2.6.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (2.6.0)
+Requirement already satisfied: filelock in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0) (3.29.4)
+Requirement already satisfied: typing-extensions>=4.10.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0) (4.15.0)
+Requirement already satisfied: networkx in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0) (3.4.2)
+Requirement already satisfied: jinja2 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0) (3.1.6)
+Requirement already satisfied: fsspec in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0) (2026.6.0)
+Requirement already satisfied: nvidia-cuda-nvrtc-cu12==12.4.127 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0) (12.4.127)
+Requirement already satisfied: nvidia-cuda-runtime-cu12==12.4.127 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0) (12.4.127)
+Requirement already satisfied: nvidia-cuda-cupti-cu12==12.4.127 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0) (12.4.127)
+Requirement already satisfied: nvidia-cudnn-cu12==9.1.0.70 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0) (9.1.0.70)
+Requirement already satisfied: nvidia-cublas-cu12==12.4.5.8 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0) (12.4.5.8)
+Requirement already satisfied: nvidia-cufft-cu12==11.2.1.3 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0) (11.2.1.3)
+Requirement already satisfied: nvidia-curand-cu12==10.3.5.147 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0) (10.3.5.147)
+Requirement already satisfied: nvidia-cusolver-cu12==11.6.1.9 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0) (11.6.1.9)
+Requirement already satisfied: nvidia-cusparse-cu12==12.3.1.170 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0) (12.3.1.170)
+Requirement already satisfied: nvidia-cusparselt-cu12==0.6.2 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0) (0.6.2)
+Requirement already satisfied: nvidia-nccl-cu12==2.21.5 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0) (2.21.5)
+Requirement already satisfied: nvidia-nvtx-cu12==12.4.127 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0) (12.4.127)
+Requirement already satisfied: nvidia-nvjitlink-cu12==12.4.127 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0) (12.4.127)
+Requirement already satisfied: triton==3.2.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0) (3.2.0)
+Requirement already satisfied: sympy==1.13.1 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0) (1.13.1)
+Requirement already satisfied: mpmath<1.4,>=1.1.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from sympy==1.13.1->torch==2.6.0) (1.3.0)
+Requirement already satisfied: MarkupSafe>=2.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from jinja2->torch==2.6.0) (2.1.5)
+[2026-07-01 21:18:08] Installing flash-attn==2.7.4.post1 into verl-webshop env
+Collecting flash-attn==2.7.4.post1
+  Downloading flash_attn-2.7.4.post1.tar.gz (6.0 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 6.0/6.0 MB 82.8 MB/s  0:00:00
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Requirement already satisfied: torch in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from flash-attn==2.7.4.post1) (2.6.0)
+Collecting einops (from flash-attn==2.7.4.post1)
+  Using cached einops-0.8.2-py3-none-any.whl.metadata (13 kB)
+Requirement already satisfied: filelock in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->flash-attn==2.7.4.post1) (3.29.4)
+Requirement already satisfied: typing-extensions>=4.10.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->flash-attn==2.7.4.post1) (4.15.0)
+Requirement already satisfied: networkx in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->flash-attn==2.7.4.post1) (3.4.2)
+Requirement already satisfied: jinja2 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->flash-attn==2.7.4.post1) (3.1.6)
+Requirement already satisfied: fsspec in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->flash-attn==2.7.4.post1) (2026.6.0)
+Requirement already satisfied: nvidia-cuda-nvrtc-cu12==12.4.127 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->flash-attn==2.7.4.post1) (12.4.127)
+Requirement already satisfied: nvidia-cuda-runtime-cu12==12.4.127 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->flash-attn==2.7.4.post1) (12.4.127)
+Requirement already satisfied: nvidia-cuda-cupti-cu12==12.4.127 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->flash-attn==2.7.4.post1) (12.4.127)
+Requirement already satisfied: nvidia-cudnn-cu12==9.1.0.70 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->flash-attn==2.7.4.post1) (9.1.0.70)
+Requirement already satisfied: nvidia-cublas-cu12==12.4.5.8 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->flash-attn==2.7.4.post1) (12.4.5.8)
+Requirement already satisfied: nvidia-cufft-cu12==11.2.1.3 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->flash-attn==2.7.4.post1) (11.2.1.3)
+Requirement already satisfied: nvidia-curand-cu12==10.3.5.147 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->flash-attn==2.7.4.post1) (10.3.5.147)
+Requirement already satisfied: nvidia-cusolver-cu12==11.6.1.9 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->flash-attn==2.7.4.post1) (11.6.1.9)
+Requirement already satisfied: nvidia-cusparse-cu12==12.3.1.170 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->flash-attn==2.7.4.post1) (12.3.1.170)
+Requirement already satisfied: nvidia-cusparselt-cu12==0.6.2 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->flash-attn==2.7.4.post1) (0.6.2)
+Requirement already satisfied: nvidia-nccl-cu12==2.21.5 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->flash-attn==2.7.4.post1) (2.21.5)
+Requirement already satisfied: nvidia-nvtx-cu12==12.4.127 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->flash-attn==2.7.4.post1) (12.4.127)
+Requirement already satisfied: nvidia-nvjitlink-cu12==12.4.127 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->flash-attn==2.7.4.post1) (12.4.127)
+Requirement already satisfied: triton==3.2.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->flash-attn==2.7.4.post1) (3.2.0)
+Requirement already satisfied: sympy==1.13.1 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->flash-attn==2.7.4.post1) (1.13.1)
+Requirement already satisfied: mpmath<1.4,>=1.1.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from sympy==1.13.1->torch->flash-attn==2.7.4.post1) (1.3.0)
+Requirement already satisfied: MarkupSafe>=2.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from jinja2->torch->flash-attn==2.7.4.post1) (2.1.5)
+Using cached einops-0.8.2-py3-none-any.whl (65 kB)
+Building wheels for collected packages: flash-attn
+  Building wheel for flash-attn (pyproject.toml): started
+  Building wheel for flash-attn (pyproject.toml): finished with status 'done'
+  Created wheel for flash-attn: filename=flash_attn-2.7.4.post1-cp310-cp310-linux_x86_64.whl size=187815087 sha256=ffe17686fa1a0f288de9eae7c32af209d32a27b037ef28614f042b377af5b15a
+  Stored in directory: /home/abheekp/.cache/pip/wheels/59/ce/d5/08ea07bfc16ba218dc65a3a7ef9b6a270530bcbd2cea2ee1ca
+Successfully built flash-attn
+Installing collected packages: einops, flash-attn
+
+Successfully installed einops-0.8.2 flash-attn-2.7.4.post1
+[2026-07-01 21:18:33] Installing verl (pip install -e . from repo root) into verl-webshop env
+Obtaining file:///mnt/sdar-cache/SDAR
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Checking if build backend supports build_editable: started
+  Checking if build backend supports build_editable: finished with status 'done'
+  Getting requirements to build editable: started
+  Getting requirements to build editable: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Preparing editable metadata (pyproject.toml): finished with status 'done'
+Requirement already satisfied: accelerate in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from sdar==0.3.1.dev0) (1.14.0)
+Collecting codetiming (from sdar==0.3.1.dev0)
+  Using cached codetiming-1.4.0-py3-none-any.whl.metadata (7.7 kB)
+Collecting datasets (from sdar==0.3.1.dev0)
+  Using cached datasets-5.0.0-py3-none-any.whl.metadata (23 kB)
+Collecting dill (from sdar==0.3.1.dev0)
+  Using cached dill-0.4.1-py3-none-any.whl.metadata (10 kB)
+Collecting hydra-core (from sdar==0.3.1.dev0)
+  Using cached hydra_core-1.3.3-py3-none-any.whl.metadata (5.7 kB)
+Requirement already satisfied: numpy in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from sdar==0.3.1.dev0) (1.26.4)
+Requirement already satisfied: pandas in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from sdar==0.3.1.dev0) (2.2.3)
+Requirement already satisfied: peft in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from sdar==0.3.1.dev0) (0.17.0)
+Collecting pyarrow>=19.0.0 (from sdar==0.3.1.dev0)
+  Using cached pyarrow-24.0.0-cp310-cp310-manylinux_2_28_x86_64.whl.metadata (3.0 kB)
+Requirement already satisfied: pybind11 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from sdar==0.3.1.dev0) (3.0.4)
+Collecting pylatexenc (from sdar==0.3.1.dev0)
+  Downloading pylatexenc-2.10.tar.gz (162 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Collecting ray<=2.50.0,>=2.41.0 (from ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Downloading ray-2.50.0-cp310-cp310-manylinux2014_x86_64.whl.metadata (21 kB)
+Collecting torchdata (from sdar==0.3.1.dev0)
+  Downloading torchdata-0.11.0-py3-none-any.whl.metadata (6.3 kB)
+Collecting tensordict!=0.9.0,<=0.10.0,>=0.8.0 (from sdar==0.3.1.dev0)
+  Downloading tensordict-0.10.0-cp310-cp310-manylinux_2_28_x86_64.whl.metadata (9.3 kB)
+Requirement already satisfied: transformers<=4.57.3 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from sdar==0.3.1.dev0) (4.51.1)
+Collecting wandb (from sdar==0.3.1.dev0)
+  Downloading wandb-0.28.0-py3-none-manylinux_2_28_x86_64.whl.metadata (11 kB)
+Requirement already satisfied: packaging>=20.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from sdar==0.3.1.dev0) (26.0)
+Collecting qwen-vl-utils[decord] (from sdar==0.3.1.dev0)
+  Downloading qwen_vl_utils-0.0.14-py3-none-any.whl.metadata (9.0 kB)
+Requirement already satisfied: click!=8.3.0,>=7.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from ray<=2.50.0,>=2.41.0->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0) (8.4.2)
+Requirement already satisfied: filelock in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from ray<=2.50.0,>=2.41.0->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0) (3.29.4)
+Requirement already satisfied: jsonschema in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from ray<=2.50.0,>=2.41.0->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0) (4.26.0)
+Collecting msgpack<2.0.0,>=1.0.0 (from ray<=2.50.0,>=2.41.0->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Downloading msgpack-1.2.1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (8.3 kB)
+Requirement already satisfied: protobuf>=3.20.3 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from ray<=2.50.0,>=2.41.0->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0) (7.35.1)
+Requirement already satisfied: pyyaml in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from ray<=2.50.0,>=2.41.0->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0) (6.0.2)
+Requirement already satisfied: requests in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from ray<=2.50.0,>=2.41.0->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0) (2.27.1)
+Collecting aiohttp>=3.7 (from ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Using cached aiohttp-3.14.1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (8.3 kB)
+Collecting aiohttp_cors (from ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Downloading aiohttp_cors-0.8.1-py3-none-any.whl.metadata (20 kB)
+Collecting colorful (from ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Downloading colorful-0.5.8-py2.py3-none-any.whl.metadata (17 kB)
+Collecting py-spy>=0.2.0 (from ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Downloading py_spy-0.4.2-py2.py3-none-manylinux_2_5_x86_64.manylinux1_x86_64.whl.metadata (510 bytes)
+Collecting grpcio>=1.42.0 (from ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Downloading grpcio-1.81.1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (3.7 kB)
+Collecting opencensus (from ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Downloading opencensus-0.11.4-py2.py3-none-any.whl.metadata (12 kB)
+Collecting opentelemetry-sdk>=1.30.0 (from ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Downloading opentelemetry_sdk-1.43.0-py3-none-any.whl.metadata (1.7 kB)
+Collecting opentelemetry-exporter-prometheus (from ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Downloading opentelemetry_exporter_prometheus-0.64b0-py3-none-any.whl.metadata (2.1 kB)
+Collecting opentelemetry-proto (from ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Downloading opentelemetry_proto-1.43.0-py3-none-any.whl.metadata (2.3 kB)
+Requirement already satisfied: pydantic!=2.0.*,!=2.1.*,!=2.2.*,!=2.3.*,!=2.4.*,<3 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0) (2.10.6)
+Collecting prometheus_client>=0.7.1 (from ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Using cached prometheus_client-0.25.0-py3-none-any.whl.metadata (2.1 kB)
+Requirement already satisfied: smart_open in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0) (6.4.0)
+Collecting virtualenv!=20.21.1,>=20.0.24 (from ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Downloading virtualenv-21.5.1-py3-none-any.whl.metadata (3.4 kB)
+Requirement already satisfied: annotated-types>=0.6.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from pydantic!=2.0.*,!=2.1.*,!=2.2.*,!=2.3.*,!=2.4.*,<3->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0) (0.7.0)
+Requirement already satisfied: pydantic-core==2.27.2 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from pydantic!=2.0.*,!=2.1.*,!=2.2.*,!=2.3.*,!=2.4.*,<3->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0) (2.27.2)
+Requirement already satisfied: typing-extensions>=4.12.2 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from pydantic!=2.0.*,!=2.1.*,!=2.2.*,!=2.3.*,!=2.4.*,<3->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0) (4.15.0)
+Requirement already satisfied: torch in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0) (2.6.0)
+Requirement already satisfied: cloudpickle in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0) (3.1.2)
+Collecting importlib_metadata (from tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0)
+  Using cached importlib_metadata-9.0.0-py3-none-any.whl.metadata (4.5 kB)
+Requirement already satisfied: orjson in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0) (3.11.9)
+Collecting pyvers<0.2.0,>=0.1.0 (from tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0)
+  Downloading pyvers-0.1.0-py3-none-any.whl.metadata (5.4 kB)
+Collecting packaging>=20.0 (from sdar==0.3.1.dev0)
+  Downloading packaging-25.0-py3-none-any.whl.metadata (3.3 kB)
+Requirement already satisfied: huggingface-hub<1.0,>=0.30.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from transformers<=4.57.3->sdar==0.3.1.dev0) (0.36.2)
+Requirement already satisfied: regex!=2019.12.17 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from transformers<=4.57.3->sdar==0.3.1.dev0) (2026.6.28)
+Requirement already satisfied: tokenizers<0.22,>=0.21 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from transformers<=4.57.3->sdar==0.3.1.dev0) (0.21.4)
+Requirement already satisfied: safetensors>=0.4.3 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from transformers<=4.57.3->sdar==0.3.1.dev0) (0.8.0)
+Requirement already satisfied: tqdm>=4.27 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from transformers<=4.57.3->sdar==0.3.1.dev0) (4.64.0)
+Requirement already satisfied: fsspec>=2023.5.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from huggingface-hub<1.0,>=0.30.0->transformers<=4.57.3->sdar==0.3.1.dev0) (2026.6.0)
+Requirement already satisfied: hf-xet<2.0.0,>=1.1.3 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from huggingface-hub<1.0,>=0.30.0->transformers<=4.57.3->sdar==0.3.1.dev0) (1.5.1)
+Collecting aiohappyeyeballs>=2.5.0 (from aiohttp>=3.7->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Using cached aiohappyeyeballs-2.7.1-py3-none-any.whl.metadata (5.9 kB)
+Collecting aiosignal>=1.4.0 (from aiohttp>=3.7->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Using cached aiosignal-1.4.0-py3-none-any.whl.metadata (3.7 kB)
+Collecting async-timeout<6.0,>=4.0 (from aiohttp>=3.7->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Using cached async_timeout-5.0.1-py3-none-any.whl.metadata (5.1 kB)
+Requirement already satisfied: attrs>=17.3.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from aiohttp>=3.7->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0) (26.1.0)
+Collecting frozenlist>=1.1.1 (from aiohttp>=3.7->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Using cached frozenlist-1.8.0-cp310-cp310-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl.metadata (20 kB)
+Collecting multidict<7.0,>=4.5 (from aiohttp>=3.7->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Using cached multidict-6.7.1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (5.3 kB)
+Collecting propcache>=0.2.0 (from aiohttp>=3.7->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Using cached propcache-0.5.2-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (16 kB)
+Collecting yarl<2.0,>=1.17.0 (from aiohttp>=3.7->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Using cached yarl-1.24.2-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (94 kB)
+Requirement already satisfied: idna>=2.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from yarl<2.0,>=1.17.0->aiohttp>=3.7->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0) (3.18)
+Collecting opentelemetry-api==1.43.0 (from opentelemetry-sdk>=1.30.0->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Downloading opentelemetry_api-1.43.0-py3-none-any.whl.metadata (1.4 kB)
+Collecting opentelemetry-semantic-conventions==0.64b0 (from opentelemetry-sdk>=1.30.0->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Downloading opentelemetry_semantic_conventions-0.64b0-py3-none-any.whl.metadata (2.4 kB)
+Collecting distlib<1,>=0.3.7 (from virtualenv!=20.21.1,>=20.0.24->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Downloading distlib-0.4.3-py2.py3-none-any.whl.metadata (5.3 kB)
+Collecting platformdirs<5,>=3.9.1 (from virtualenv!=20.21.1,>=20.0.24->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Downloading platformdirs-4.10.0-py3-none-any.whl.metadata (5.5 kB)
+Collecting python-discovery>=1.4.2 (from virtualenv!=20.21.1,>=20.0.24->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Downloading python_discovery-1.4.2-py3-none-any.whl.metadata (5.6 kB)
+Requirement already satisfied: psutil in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from accelerate->sdar==0.3.1.dev0) (7.2.2)
+Requirement already satisfied: networkx in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0) (3.4.2)
+Requirement already satisfied: jinja2 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0) (3.1.6)
+Requirement already satisfied: nvidia-cuda-nvrtc-cu12==12.4.127 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0) (12.4.127)
+Requirement already satisfied: nvidia-cuda-runtime-cu12==12.4.127 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0) (12.4.127)
+Requirement already satisfied: nvidia-cuda-cupti-cu12==12.4.127 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0) (12.4.127)
+Requirement already satisfied: nvidia-cudnn-cu12==9.1.0.70 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0) (9.1.0.70)
+Requirement already satisfied: nvidia-cublas-cu12==12.4.5.8 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0) (12.4.5.8)
+Requirement already satisfied: nvidia-cufft-cu12==11.2.1.3 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0) (11.2.1.3)
+Requirement already satisfied: nvidia-curand-cu12==10.3.5.147 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0) (10.3.5.147)
+Requirement already satisfied: nvidia-cusolver-cu12==11.6.1.9 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0) (11.6.1.9)
+Requirement already satisfied: nvidia-cusparse-cu12==12.3.1.170 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0) (12.3.1.170)
+Requirement already satisfied: nvidia-cusparselt-cu12==0.6.2 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0) (0.6.2)
+Requirement already satisfied: nvidia-nccl-cu12==2.21.5 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0) (2.21.5)
+Requirement already satisfied: nvidia-nvtx-cu12==12.4.127 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0) (12.4.127)
+Requirement already satisfied: nvidia-nvjitlink-cu12==12.4.127 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0) (12.4.127)
+Requirement already satisfied: triton==3.2.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0) (3.2.0)
+Requirement already satisfied: sympy==1.13.1 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch->tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0) (1.13.1)
+Requirement already satisfied: mpmath<1.4,>=1.1.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from sympy==1.13.1->torch->tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0) (1.3.0)
+Collecting requests (from ray<=2.50.0,>=2.41.0->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Using cached requests-2.34.2-py3-none-any.whl.metadata (4.8 kB)
+Requirement already satisfied: httpx<1.0.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from datasets->sdar==0.3.1.dev0) (0.28.1)
+Collecting tqdm>=4.27 (from transformers<=4.57.3->sdar==0.3.1.dev0)
+  Using cached tqdm-4.68.3-py3-none-any.whl.metadata (57 kB)
+Collecting xxhash (from datasets->sdar==0.3.1.dev0)
+  Using cached xxhash-3.8.0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (14 kB)
+Collecting multiprocess<0.70.20 (from datasets->sdar==0.3.1.dev0)
+  Using cached multiprocess-0.70.19-py310-none-any.whl.metadata (7.5 kB)
+Collecting fsspec>=2023.5.0 (from huggingface-hub<1.0,>=0.30.0->transformers<=4.57.3->sdar==0.3.1.dev0)
+  Using cached fsspec-2026.4.0-py3-none-any.whl.metadata (10 kB)
+Requirement already satisfied: anyio in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from httpx<1.0.0->datasets->sdar==0.3.1.dev0) (4.14.1)
+Requirement already satisfied: certifi in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from httpx<1.0.0->datasets->sdar==0.3.1.dev0) (2026.6.17)
+Requirement already satisfied: httpcore==1.* in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from httpx<1.0.0->datasets->sdar==0.3.1.dev0) (1.0.9)
+Requirement already satisfied: h11>=0.16 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from httpcore==1.*->httpx<1.0.0->datasets->sdar==0.3.1.dev0) (0.16.0)
+Requirement already satisfied: charset_normalizer<4,>=2 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from requests->ray<=2.50.0,>=2.41.0->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0) (2.0.12)
+Requirement already satisfied: urllib3<3,>=1.26 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from requests->ray<=2.50.0,>=2.41.0->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0) (1.26.20)
+Requirement already satisfied: exceptiongroup>=1.0.2 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from anyio->httpx<1.0.0->datasets->sdar==0.3.1.dev0) (1.3.1)
+Collecting omegaconf<2.4,>=2.2 (from hydra-core->sdar==0.3.1.dev0)
+  Using cached omegaconf-2.3.1-py3-none-any.whl.metadata (4.5 kB)
+Collecting antlr4-python3-runtime==4.9.* (from hydra-core->sdar==0.3.1.dev0)
+  Using cached antlr4-python3-runtime-4.9.3.tar.gz (117 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Collecting zipp>=3.20 (from importlib_metadata->tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0)
+  Using cached zipp-4.1.0-py3-none-any.whl.metadata (3.6 kB)
+Requirement already satisfied: MarkupSafe>=2.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from jinja2->torch->tensordict!=0.9.0,<=0.10.0,>=0.8.0->sdar==0.3.1.dev0) (2.1.5)
+Requirement already satisfied: jsonschema-specifications>=2023.03.6 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from jsonschema->ray<=2.50.0,>=2.41.0->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0) (2025.9.1)
+Requirement already satisfied: referencing>=0.28.4 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from jsonschema->ray<=2.50.0,>=2.41.0->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0) (0.37.0)
+Requirement already satisfied: rpds-py>=0.25.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from jsonschema->ray<=2.50.0,>=2.41.0->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0) (0.30.0)
+Collecting opencensus-context>=0.1.3 (from opencensus->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Downloading opencensus_context-0.1.3-py2.py3-none-any.whl.metadata (3.3 kB)
+Requirement already satisfied: six~=1.16 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from opencensus->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0) (1.17.0)
+Collecting google-api-core<3.0.0,>=1.0.0 (from opencensus->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Downloading google_api_core-2.31.0-py3-none-any.whl.metadata (3.2 kB)
+Collecting googleapis-common-protos<2.0.0,>=1.63.2 (from google-api-core<3.0.0,>=1.0.0->opencensus->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Downloading googleapis_common_protos-1.75.0-py3-none-any.whl.metadata (8.6 kB)
+Collecting proto-plus<2.0.0,>=1.24.0 (from google-api-core<3.0.0,>=1.0.0->opencensus->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Downloading proto_plus-1.28.0-py3-none-any.whl.metadata (2.2 kB)
+Collecting google-auth<3.0.0,>=2.14.1 (from google-api-core<3.0.0,>=1.0.0->opencensus->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Downloading google_auth-2.55.1-py3-none-any.whl.metadata (5.1 kB)
+Collecting pyasn1-modules>=0.2.1 (from google-auth<3.0.0,>=2.14.1->google-api-core<3.0.0,>=1.0.0->opencensus->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Downloading pyasn1_modules-0.4.2-py3-none-any.whl.metadata (3.5 kB)
+Requirement already satisfied: cryptography>=38.0.3 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from google-auth<3.0.0,>=2.14.1->google-api-core<3.0.0,>=1.0.0->opencensus->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0) (49.0.0)
+Requirement already satisfied: cffi>=2.0.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from cryptography>=38.0.3->google-auth<3.0.0,>=2.14.1->google-api-core<3.0.0,>=1.0.0->opencensus->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0) (2.0.0)
+Requirement already satisfied: pycparser in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from cffi>=2.0.0->cryptography>=38.0.3->google-auth<3.0.0,>=2.14.1->google-api-core<3.0.0,>=1.0.0->opencensus->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0) (3.0)
+Collecting pyasn1<0.7.0,>=0.6.1 (from pyasn1-modules>=0.2.1->google-auth<3.0.0,>=2.14.1->google-api-core<3.0.0,>=1.0.0->opencensus->ray[default]<=2.50.0,>=2.41.0->sdar==0.3.1.dev0)
+  Downloading pyasn1-0.6.3-py3-none-any.whl.metadata (8.4 kB)
+Requirement already satisfied: python-dateutil>=2.8.2 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from pandas->sdar==0.3.1.dev0) (2.9.0.post0)
+Requirement already satisfied: pytz>=2020.1 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from pandas->sdar==0.3.1.dev0) (2026.2)
+Requirement already satisfied: tzdata>=2022.7 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from pandas->sdar==0.3.1.dev0) (2026.2)
+Collecting av (from qwen-vl-utils[decord]->sdar==0.3.1.dev0)
+  Downloading av-17.1.0-cp310-cp310-manylinux_2_28_x86_64.whl.metadata (4.6 kB)
+Requirement already satisfied: pillow in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from qwen-vl-utils[decord]->sdar==0.3.1.dev0) (10.4.0)
+Collecting decord (from qwen-vl-utils[decord]->sdar==0.3.1.dev0)
+  Downloading decord-0.6.0-py3-none-manylinux2010_x86_64.whl.metadata (422 bytes)
+Collecting gitpython!=3.1.29,>=1.0.0 (from wandb->sdar==0.3.1.dev0)
+  Downloading gitpython-3.1.50-py3-none-any.whl.metadata (14 kB)
+Collecting sentry-sdk>=2.0.0 (from wandb->sdar==0.3.1.dev0)
+  Using cached sentry_sdk-2.64.0-py3-none-any.whl.metadata (10 kB)
+Collecting gitdb<5,>=4.0.1 (from gitpython!=3.1.29,>=1.0.0->wandb->sdar==0.3.1.dev0)
+  Downloading gitdb-4.0.12-py3-none-any.whl.metadata (1.2 kB)
+Collecting smmap<6,>=3.0.1 (from gitdb<5,>=4.0.1->gitpython!=3.1.29,>=1.0.0->wandb->sdar==0.3.1.dev0)
+  Downloading smmap-5.0.3-py3-none-any.whl.metadata (4.6 kB)
+Downloading ray-2.50.0-cp310-cp310-manylinux2014_x86_64.whl (70.9 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 70.9/70.9 MB 83.6 MB/s  0:00:00
+Downloading msgpack-1.2.1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (407 kB)
+Downloading tensordict-0.10.0-cp310-cp310-manylinux_2_28_x86_64.whl (446 kB)
+Downloading pyvers-0.1.0-py3-none-any.whl (10 kB)
+Downloading packaging-25.0-py3-none-any.whl (66 kB)
+Using cached aiohttp-3.14.1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (1.7 MB)
+Using cached async_timeout-5.0.1-py3-none-any.whl (6.2 kB)
+Using cached multidict-6.7.1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (243 kB)
+Using cached yarl-1.24.2-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (106 kB)
+Using cached aiohappyeyeballs-2.7.1-py3-none-any.whl (15 kB)
+Using cached aiosignal-1.4.0-py3-none-any.whl (7.5 kB)
+Using cached frozenlist-1.8.0-cp310-cp310-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (219 kB)
+Downloading grpcio-1.81.1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (6.8 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 6.8/6.8 MB 95.1 MB/s  0:00:00
+Downloading opentelemetry_sdk-1.43.0-py3-none-any.whl (178 kB)
+Downloading opentelemetry_api-1.43.0-py3-none-any.whl (61 kB)
+Downloading opentelemetry_semantic_conventions-0.64b0-py3-none-any.whl (203 kB)
+Using cached prometheus_client-0.25.0-py3-none-any.whl (64 kB)
+Using cached propcache-0.5.2-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (60 kB)
+Downloading py_spy-0.4.2-py2.py3-none-manylinux_2_5_x86_64.manylinux1_x86_64.whl (2.9 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.9/2.9 MB 85.9 MB/s  0:00:00
+Using cached pyarrow-24.0.0-cp310-cp310-manylinux_2_28_x86_64.whl (48.8 MB)
+Downloading virtualenv-21.5.1-py3-none-any.whl (4.6 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.6/4.6 MB 67.5 MB/s  0:00:00
+Downloading distlib-0.4.3-py2.py3-none-any.whl (470 kB)
+Downloading platformdirs-4.10.0-py3-none-any.whl (22 kB)
+Downloading python_discovery-1.4.2-py3-none-any.whl (33 kB)
+Downloading aiohttp_cors-0.8.1-py3-none-any.whl (25 kB)
+Using cached codetiming-1.4.0-py3-none-any.whl (7.2 kB)
+Downloading colorful-0.5.8-py2.py3-none-any.whl (201 kB)
+Using cached datasets-5.0.0-py3-none-any.whl (555 kB)
+Using cached dill-0.4.1-py3-none-any.whl (120 kB)
+Using cached fsspec-2026.4.0-py3-none-any.whl (203 kB)
+Using cached multiprocess-0.70.19-py310-none-any.whl (134 kB)
+Using cached requests-2.34.2-py3-none-any.whl (73 kB)
+Using cached tqdm-4.68.3-py3-none-any.whl (78 kB)
+Using cached hydra_core-1.3.3-py3-none-any.whl (154 kB)
+Using cached omegaconf-2.3.1-py3-none-any.whl (79 kB)
+Using cached importlib_metadata-9.0.0-py3-none-any.whl (27 kB)
+Using cached zipp-4.1.0-py3-none-any.whl (10 kB)
+Downloading opencensus-0.11.4-py2.py3-none-any.whl (128 kB)
+Downloading google_api_core-2.31.0-py3-none-any.whl (173 kB)
+Downloading google_auth-2.55.1-py3-none-any.whl (252 kB)
+Downloading googleapis_common_protos-1.75.0-py3-none-any.whl (300 kB)
+Downloading proto_plus-1.28.0-py3-none-any.whl (50 kB)
+Downloading opencensus_context-0.1.3-py2.py3-none-any.whl (5.1 kB)
+Downloading pyasn1_modules-0.4.2-py3-none-any.whl (181 kB)
+Downloading pyasn1-0.6.3-py3-none-any.whl (83 kB)
+Downloading opentelemetry_exporter_prometheus-0.64b0-py3-none-any.whl (13 kB)
+Downloading opentelemetry_proto-1.43.0-py3-none-any.whl (72 kB)
+Downloading qwen_vl_utils-0.0.14-py3-none-any.whl (8.1 kB)
+Downloading av-17.1.0-cp310-cp310-manylinux_2_28_x86_64.whl (36.6 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 36.6/36.6 MB 81.2 MB/s  0:00:00
+Downloading decord-0.6.0-py3-none-manylinux2010_x86_64.whl (13.6 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 13.6/13.6 MB 97.4 MB/s  0:00:00
+Downloading torchdata-0.11.0-py3-none-any.whl (61 kB)
+Downloading wandb-0.28.0-py3-none-manylinux_2_28_x86_64.whl (26.8 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 26.8/26.8 MB 66.6 MB/s  0:00:00
+Downloading gitpython-3.1.50-py3-none-any.whl (212 kB)
+Downloading gitdb-4.0.12-py3-none-any.whl (62 kB)
+Downloading smmap-5.0.3-py3-none-any.whl (24 kB)
+Using cached sentry_sdk-2.64.0-py3-none-any.whl (498 kB)
+Using cached xxhash-3.8.0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (217 kB)
+Building wheels for collected packages: sdar, antlr4-python3-runtime, pylatexenc
+  Building editable for sdar (pyproject.toml): started
+  Building editable for sdar (pyproject.toml): finished with status 'done'
+  Created wheel for sdar: filename=sdar-0.3.1.dev0-0.editable-py3-none-any.whl size=12685 sha256=586cc23087882dd8e0c325247a272c49a4bdc8196599c3bbec7767adc75026fa
+  Stored in directory: /tmp/pip-ephem-wheel-cache-s6lmg1b4/wheels/16/08/41/ca79293ff10f50192889da00ad61351926db9714d4f33f3887
+  Building wheel for antlr4-python3-runtime (pyproject.toml): started
+  Building wheel for antlr4-python3-runtime (pyproject.toml): finished with status 'done'
+  Created wheel for antlr4-python3-runtime: filename=antlr4_python3_runtime-4.9.3-py3-none-any.whl size=144590 sha256=e0f8c243ca88097ee3afa54d77b0ffd82049393fab44e0fad9148a6f910d16c1
+  Stored in directory: /home/abheekp/.cache/pip/wheels/12/93/dd/1f6a127edc45659556564c5730f6d4e300888f4bca2d4c5a88
+  Building wheel for pylatexenc (pyproject.toml): started
+  Building wheel for pylatexenc (pyproject.toml): finished with status 'done'
+  Created wheel for pylatexenc: filename=pylatexenc-2.10-py3-none-any.whl size=136897 sha256=cc4d187f7edfb0c7a5fc3fbfdc94a7a44bea0fba896c21af7f856cd827728204
+  Stored in directory: /home/abheekp/.cache/pip/wheels/d3/31/8b/e09b0386afd80cfc556c00408c9aeea5c35c4d484a9c762fd5
+Successfully built sdar antlr4-python3-runtime pylatexenc
+Installing collected packages: pylatexenc, py-spy, opencensus-context, distlib, colorful, antlr4-python3-runtime, zipp, xxhash, tqdm, smmap, sentry-sdk, requests, pyasn1, pyarrow, proto-plus, propcache, prometheus_client, platformdirs, packaging, opentelemetry-proto, opentelemetry-api, omegaconf, multidict, msgpack, grpcio, googleapis-common-protos, fsspec, frozenlist, dill, decord, codetiming, av, async-timeout, aiohappyeyeballs, yarl, qwen-vl-utils, pyvers, python-discovery, pyasn1-modules, opentelemetry-semantic-conventions, multiprocess, importlib_metadata, hydra-core, gitdb, aiosignal, virtualenv, opentelemetry-sdk, google-auth, gitpython, aiohttp, wandb, torchdata, tensordict, ray, opentelemetry-exporter-prometheus, google-api-core, aiohttp_cors, opencensus, datasets, sdar
+  Attempting uninstall: tqdm
+    Found existing installation: tqdm 4.64.0
+    Uninstalling tqdm-4.64.0:
+      Successfully uninstalled tqdm-4.64.0
+  Attempting uninstall: requests
+    Found existing installation: requests 2.27.1
+    Uninstalling requests-2.27.1:
+      Successfully uninstalled requests-2.27.1
+  Attempting uninstall: packaging
+    Found existing installation: packaging 26.0
+    Uninstalling packaging-26.0:
+      Successfully uninstalled packaging-26.0
+  Attempting uninstall: fsspec
+    Found existing installation: fsspec 2026.6.0
+    Uninstalling fsspec-2026.6.0:
+      Successfully uninstalled fsspec-2026.6.0
+
+Successfully installed aiohappyeyeballs-2.7.1 aiohttp-3.14.1 aiohttp_cors-0.8.1 aiosignal-1.4.0 antlr4-python3-runtime-4.9.3 async-timeout-5.0.1 av-17.1.0 codetiming-1.4.0 colorful-0.5.8 datasets-5.0.0 decord-0.6.0 dill-0.4.1 distlib-0.4.3 frozenlist-1.8.0 fsspec-2026.4.0 gitdb-4.0.12 gitpython-3.1.50 google-api-core-2.31.0 google-auth-2.55.1 googleapis-common-protos-1.75.0 grpcio-1.81.1 hydra-core-1.3.3 importlib_metadata-9.0.0 msgpack-1.2.1 multidict-6.7.1 multiprocess-0.70.19 omegaconf-2.3.1 opencensus-0.11.4 opencensus-context-0.1.3 opentelemetry-api-1.43.0 opentelemetry-exporter-prometheus-0.64b0 opentelemetry-proto-1.43.0 opentelemetry-sdk-1.43.0 opentelemetry-semantic-conventions-0.64b0 packaging-25.0 platformdirs-4.10.0 prometheus_client-0.25.0 propcache-0.5.2 proto-plus-1.28.0 py-spy-0.4.2 pyarrow-24.0.0 pyasn1-0.6.3 pyasn1-modules-0.4.2 pylatexenc-2.10 python-discovery-1.4.2 pyvers-0.1.0 qwen-vl-utils-0.0.14 ray-2.50.0 requests-2.34.2 sdar-0.3.1.dev0 sentry-sdk-2.64.0 smmap-5.0.3 tensordict-0.10.0 torchdata-0.11.0 tqdm-4.68.3 virtualenv-21.5.1 wandb-0.28.0 xxhash-3.8.0 yarl-1.24.2 zipp-4.1.0
+[2026-07-01 21:19:11] Installing vllm==0.8.2 into verl-webshop env
+Collecting vllm==0.8.2
+  Downloading vllm-0.8.2-cp38-abi3-manylinux1_x86_64.whl.metadata (27 kB)
+Collecting cachetools (from vllm==0.8.2)
+  Using cached cachetools-7.1.4-py3-none-any.whl.metadata (5.5 kB)
+Requirement already satisfied: psutil in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from vllm==0.8.2) (7.2.2)
+Requirement already satisfied: sentencepiece in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from vllm==0.8.2) (0.2.1)
+Requirement already satisfied: numpy<2.0.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from vllm==0.8.2) (1.26.4)
+Requirement already satisfied: requests>=2.26.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from vllm==0.8.2) (2.34.2)
+Requirement already satisfied: tqdm in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from vllm==0.8.2) (4.68.3)
+Collecting blake3 (from vllm==0.8.2)
+  Downloading blake3-1.0.9-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.9 kB)
+Collecting py-cpuinfo (from vllm==0.8.2)
+  Using cached py_cpuinfo-9.0.0-py3-none-any.whl.metadata (794 bytes)
+Requirement already satisfied: transformers>=4.48.2 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from vllm==0.8.2) (4.51.1)
+Requirement already satisfied: tokenizers>=0.19.1 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from vllm==0.8.2) (0.21.4)
+Requirement already satisfied: protobuf in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from vllm==0.8.2) (7.35.1)
+Requirement already satisfied: fastapi>=0.115.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from fastapi[standard]>=0.115.0->vllm==0.8.2) (0.139.0)
+Requirement already satisfied: aiohttp in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from vllm==0.8.2) (3.14.1)
+Collecting openai>=1.52.0 (from vllm==0.8.2)
+  Using cached openai-2.44.0-py3-none-any.whl.metadata (34 kB)
+Requirement already satisfied: pydantic>=2.9 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from vllm==0.8.2) (2.10.6)
+Requirement already satisfied: prometheus_client>=0.18.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from vllm==0.8.2) (0.25.0)
+Requirement already satisfied: pillow in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from vllm==0.8.2) (10.4.0)
+Collecting prometheus-fastapi-instrumentator>=7.0.0 (from vllm==0.8.2)
+  Using cached prometheus_fastapi_instrumentator-8.0.2-py3-none-any.whl.metadata (13 kB)
+Collecting tiktoken>=0.6.0 (from vllm==0.8.2)
+  Using cached tiktoken-0.13.0-cp310-cp310-manylinux_2_28_x86_64.whl.metadata (6.7 kB)
+Collecting lm-format-enforcer<0.11,>=0.10.11 (from vllm==0.8.2)
+  Downloading lm_format_enforcer-0.10.12-py3-none-any.whl.metadata (17 kB)
+Collecting llguidance<0.8.0,>=0.7.9 (from vllm==0.8.2)
+  Using cached llguidance-0.7.30-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (10 kB)
+Collecting outlines==0.1.11 (from vllm==0.8.2)
+  Downloading outlines-0.1.11-py3-none-any.whl.metadata (17 kB)
+Collecting lark==1.2.2 (from vllm==0.8.2)
+  Using cached lark-1.2.2-py3-none-any.whl.metadata (1.8 kB)
+Collecting xgrammar==0.1.16 (from vllm==0.8.2)
+  Downloading xgrammar-0.1.16-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (3.3 kB)
+Requirement already satisfied: typing_extensions>=4.10 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from vllm==0.8.2) (4.15.0)
+Requirement already satisfied: filelock>=3.16.1 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from vllm==0.8.2) (3.29.4)
+Collecting partial-json-parser (from vllm==0.8.2)
+  Using cached partial_json_parser-0.2.1.1.post7-py3-none-any.whl.metadata (6.1 kB)
+Collecting pyzmq (from vllm==0.8.2)
+  Downloading pyzmq-27.1.0-cp310-cp310-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl.metadata (6.0 kB)
+Collecting msgspec (from vllm==0.8.2)
+  Downloading msgspec-0.21.1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (5.8 kB)
+Collecting gguf==0.10.0 (from vllm==0.8.2)
+  Downloading gguf-0.10.0-py3-none-any.whl.metadata (3.5 kB)
+Requirement already satisfied: importlib_metadata in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from vllm==0.8.2) (9.0.0)
+Collecting mistral_common>=1.5.4 (from mistral_common[opencv]>=1.5.4->vllm==0.8.2)
+  Using cached mistral_common-1.11.5-py3-none-any.whl.metadata (5.9 kB)
+Requirement already satisfied: pyyaml in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from vllm==0.8.2) (6.0.2)
+Requirement already satisfied: einops in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from vllm==0.8.2) (0.8.2)
+Collecting compressed-tensors==0.9.2 (from vllm==0.8.2)
+  Downloading compressed_tensors-0.9.2-py3-none-any.whl.metadata (7.0 kB)
+Collecting depyf==0.18.0 (from vllm==0.8.2)
+  Downloading depyf-0.18.0-py3-none-any.whl.metadata (7.1 kB)
+Requirement already satisfied: cloudpickle in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from vllm==0.8.2) (3.1.2)
+Collecting watchfiles (from vllm==0.8.2)
+  Downloading watchfiles-1.2.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.9 kB)
+Collecting python-json-logger (from vllm==0.8.2)
+  Using cached python_json_logger-4.1.0-py3-none-any.whl.metadata (3.7 kB)
+Requirement already satisfied: scipy in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from vllm==0.8.2) (1.15.3)
+Collecting ninja (from vllm==0.8.2)
+  Using cached ninja-1.13.0-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (5.1 kB)
+Collecting numba==0.60.0 (from vllm==0.8.2)
+  Downloading numba-0.60.0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (2.7 kB)
+Requirement already satisfied: ray>=2.43.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from ray[cgraph]>=2.43.0->vllm==0.8.2) (2.50.0)
+Requirement already satisfied: torch==2.6.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from vllm==0.8.2) (2.6.0)
+Collecting torchaudio==2.6.0 (from vllm==0.8.2)
+  Downloading torchaudio-2.6.0-cp310-cp310-manylinux1_x86_64.whl.metadata (6.6 kB)
+Collecting torchvision==0.21.0 (from vllm==0.8.2)
+  Downloading torchvision-0.21.0-cp310-cp310-manylinux1_x86_64.whl.metadata (6.1 kB)
+Collecting xformers==0.0.29.post2 (from vllm==0.8.2)
+  Downloading xformers-0.0.29.post2-cp310-cp310-manylinux_2_28_x86_64.whl.metadata (1.0 kB)
+Collecting astor (from depyf==0.18.0->vllm==0.8.2)
+  Using cached astor-0.8.1-py2.py3-none-any.whl.metadata (4.2 kB)
+Requirement already satisfied: dill in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from depyf==0.18.0->vllm==0.8.2) (0.4.1)
+Collecting llvmlite<0.44,>=0.43.0dev0 (from numba==0.60.0->vllm==0.8.2)
+  Downloading llvmlite-0.43.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.8 kB)
+Collecting interegular (from outlines==0.1.11->vllm==0.8.2)
+  Using cached interegular-0.3.3-py37-none-any.whl.metadata (3.0 kB)
+Requirement already satisfied: jinja2 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from outlines==0.1.11->vllm==0.8.2) (3.1.6)
+Collecting nest_asyncio (from outlines==0.1.11->vllm==0.8.2)
+  Downloading nest_asyncio-1.6.0-py3-none-any.whl.metadata (2.8 kB)
+Collecting diskcache (from outlines==0.1.11->vllm==0.8.2)
+  Using cached diskcache-5.6.3-py3-none-any.whl.metadata (20 kB)
+Requirement already satisfied: referencing in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from outlines==0.1.11->vllm==0.8.2) (0.37.0)
+Requirement already satisfied: jsonschema in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from outlines==0.1.11->vllm==0.8.2) (4.26.0)
+Collecting pycountry (from outlines==0.1.11->vllm==0.8.2)
+  Using cached pycountry-26.2.16-py3-none-any.whl.metadata (12 kB)
+Collecting airportsdata (from outlines==0.1.11->vllm==0.8.2)
+  Downloading airportsdata-20260315-py3-none-any.whl.metadata (8.0 kB)
+Collecting outlines_core==0.1.26 (from outlines==0.1.11->vllm==0.8.2)
+  Downloading outlines_core-0.1.26-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (3.8 kB)
+Requirement already satisfied: networkx in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0->vllm==0.8.2) (3.4.2)
+Requirement already satisfied: fsspec in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0->vllm==0.8.2) (2026.4.0)
+Requirement already satisfied: nvidia-cuda-nvrtc-cu12==12.4.127 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0->vllm==0.8.2) (12.4.127)
+Requirement already satisfied: nvidia-cuda-runtime-cu12==12.4.127 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0->vllm==0.8.2) (12.4.127)
+Requirement already satisfied: nvidia-cuda-cupti-cu12==12.4.127 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0->vllm==0.8.2) (12.4.127)
+Requirement already satisfied: nvidia-cudnn-cu12==9.1.0.70 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0->vllm==0.8.2) (9.1.0.70)
+Requirement already satisfied: nvidia-cublas-cu12==12.4.5.8 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0->vllm==0.8.2) (12.4.5.8)
+Requirement already satisfied: nvidia-cufft-cu12==11.2.1.3 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0->vllm==0.8.2) (11.2.1.3)
+Requirement already satisfied: nvidia-curand-cu12==10.3.5.147 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0->vllm==0.8.2) (10.3.5.147)
+Requirement already satisfied: nvidia-cusolver-cu12==11.6.1.9 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0->vllm==0.8.2) (11.6.1.9)
+Requirement already satisfied: nvidia-cusparse-cu12==12.3.1.170 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0->vllm==0.8.2) (12.3.1.170)
+Requirement already satisfied: nvidia-cusparselt-cu12==0.6.2 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0->vllm==0.8.2) (0.6.2)
+Requirement already satisfied: nvidia-nccl-cu12==2.21.5 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0->vllm==0.8.2) (2.21.5)
+Requirement already satisfied: nvidia-nvtx-cu12==12.4.127 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0->vllm==0.8.2) (12.4.127)
+Requirement already satisfied: nvidia-nvjitlink-cu12==12.4.127 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0->vllm==0.8.2) (12.4.127)
+Requirement already satisfied: triton==3.2.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0->vllm==0.8.2) (3.2.0)
+Requirement already satisfied: sympy==1.13.1 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from torch==2.6.0->vllm==0.8.2) (1.13.1)
+Requirement already satisfied: mpmath<1.4,>=1.1.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from sympy==1.13.1->torch==2.6.0->vllm==0.8.2) (1.3.0)
+Requirement already satisfied: packaging in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from lm-format-enforcer<0.11,>=0.10.11->vllm==0.8.2) (25.0)
+Requirement already satisfied: starlette>=0.46.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from fastapi>=0.115.0->fastapi[standard]>=0.115.0->vllm==0.8.2) (1.3.1)
+Requirement already satisfied: typing-inspection>=0.4.2 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from fastapi>=0.115.0->fastapi[standard]>=0.115.0->vllm==0.8.2) (0.4.2)
+Requirement already satisfied: annotated-doc>=0.0.2 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from fastapi>=0.115.0->fastapi[standard]>=0.115.0->vllm==0.8.2) (0.0.4)
+Collecting fastapi-cli>=0.0.8 (from fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard]>=0.115.0->vllm==0.8.2)
+  Using cached fastapi_cli-0.0.27-py3-none-any.whl.metadata (6.4 kB)
+Collecting fastar>=0.9.0 (from fastapi[standard]>=0.115.0->vllm==0.8.2)
+  Downloading fastar-0.11.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.0 kB)
+Requirement already satisfied: httpx<1.0.0,>=0.23.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from fastapi[standard]>=0.115.0->vllm==0.8.2) (0.28.1)
+Requirement already satisfied: python-multipart>=0.0.18 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from fastapi[standard]>=0.115.0->vllm==0.8.2) (0.0.32)
+Collecting email-validator>=2.0.0 (from fastapi[standard]>=0.115.0->vllm==0.8.2)
+  Using cached email_validator-2.3.0-py3-none-any.whl.metadata (26 kB)
+Requirement already satisfied: uvicorn>=0.12.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from uvicorn[standard]>=0.12.0; extra == "standard"->fastapi[standard]>=0.115.0->vllm==0.8.2) (0.49.0)
+Collecting pydantic-settings>=2.0.0 (from fastapi[standard]>=0.115.0->vllm==0.8.2)
+  Using cached pydantic_settings-2.14.2-py3-none-any.whl.metadata (3.4 kB)
+Collecting pydantic-extra-types>=2.0.0 (from fastapi[standard]>=0.115.0->vllm==0.8.2)
+  Using cached pydantic_extra_types-2.11.1-py3-none-any.whl.metadata (4.2 kB)
+Requirement already satisfied: anyio in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from httpx<1.0.0,>=0.23.0->fastapi[standard]>=0.115.0->vllm==0.8.2) (4.14.1)
+Requirement already satisfied: certifi in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from httpx<1.0.0,>=0.23.0->fastapi[standard]>=0.115.0->vllm==0.8.2) (2026.6.17)
+Requirement already satisfied: httpcore==1.* in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from httpx<1.0.0,>=0.23.0->fastapi[standard]>=0.115.0->vllm==0.8.2) (1.0.9)
+Requirement already satisfied: idna in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from httpx<1.0.0,>=0.23.0->fastapi[standard]>=0.115.0->vllm==0.8.2) (3.18)
+Requirement already satisfied: h11>=0.16 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from httpcore==1.*->httpx<1.0.0,>=0.23.0->fastapi[standard]>=0.115.0->vllm==0.8.2) (0.16.0)
+Collecting dnspython>=2.0.0 (from email-validator>=2.0.0->fastapi[standard]>=0.115.0->vllm==0.8.2)
+  Using cached dnspython-2.8.0-py3-none-any.whl.metadata (5.7 kB)
+Collecting typer>=0.16.0 (from fastapi-cli>=0.0.8->fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard]>=0.115.0->vllm==0.8.2)
+  Using cached typer-0.26.8-py3-none-any.whl.metadata (15 kB)
+Collecting rich-toolkit>=0.14.8 (from fastapi-cli>=0.0.8->fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard]>=0.115.0->vllm==0.8.2)
+  Using cached rich_toolkit-0.20.1-py3-none-any.whl.metadata (1.0 kB)
+Requirement already satisfied: tomli>=2.0.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from fastapi-cli>=0.0.8->fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard]>=0.115.0->vllm==0.8.2) (2.4.1)
+Collecting fastapi-cloud-cli>=0.1.1 (from fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard]>=0.115.0->vllm==0.8.2)
+  Using cached fastapi_cloud_cli-0.22.0-py3-none-any.whl.metadata (3.1 kB)
+Collecting rignore>=0.5.1 (from fastapi-cloud-cli>=0.1.1->fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard]>=0.115.0->vllm==0.8.2)
+  Downloading rignore-0.7.6-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.2 kB)
+Requirement already satisfied: sentry-sdk>=2.20.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from fastapi-cloud-cli>=0.1.1->fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard]>=0.115.0->vllm==0.8.2) (2.64.0)
+Collecting detect-installer>=0.1.0 (from fastapi-cloud-cli>=0.1.1->fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard]>=0.115.0->vllm==0.8.2)
+  Using cached detect_installer-0.1.0-py3-none-any.whl.metadata (1.2 kB)
+Requirement already satisfied: MarkupSafe>=2.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from jinja2->outlines==0.1.11->vllm==0.8.2) (2.1.5)
+Requirement already satisfied: annotated-types>=0.6.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from pydantic>=2.9->vllm==0.8.2) (0.7.0)
+Requirement already satisfied: pydantic-core==2.27.2 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from pydantic>=2.9->vllm==0.8.2) (2.27.2)
+Requirement already satisfied: attrs>=22.2.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from jsonschema->outlines==0.1.11->vllm==0.8.2) (26.1.0)
+Requirement already satisfied: jsonschema-specifications>=2023.03.6 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from jsonschema->outlines==0.1.11->vllm==0.8.2) (2025.9.1)
+Requirement already satisfied: rpds-py>=0.25.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from jsonschema->outlines==0.1.11->vllm==0.8.2) (0.30.0)
+Collecting opencv-python-headless>=4.0.0 (from mistral_common[opencv]>=1.5.4->vllm==0.8.2)
+  Using cached opencv_python_headless-4.13.0.92-cp37-abi3-manylinux_2_28_x86_64.whl.metadata (19 kB)
+Collecting distro<2,>=1.7.0 (from openai>=1.52.0->vllm==0.8.2)
+  Using cached distro-1.9.0-py3-none-any.whl.metadata (6.8 kB)
+Collecting jiter<1,>=0.10.0 (from openai>=1.52.0->vllm==0.8.2)
+  Using cached jiter-0.16.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (5.2 kB)
+Requirement already satisfied: sniffio in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from openai>=1.52.0->vllm==0.8.2) (1.3.1)
+Requirement already satisfied: exceptiongroup>=1.0.2 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from anyio->httpx<1.0.0,>=0.23.0->fastapi[standard]>=0.115.0->vllm==0.8.2) (1.3.1)
+INFO: pip is looking at multiple versions of opencv-python-headless to determine which version is compatible with other requirements. This could take a while.
+Collecting opencv-python-headless>=4.0.0 (from mistral_common[opencv]>=1.5.4->vllm==0.8.2)
+  Downloading opencv_python_headless-4.13.0.90-cp37-abi3-manylinux_2_28_x86_64.whl.metadata (19 kB)
+  Downloading opencv_python_headless-4.12.0.88-cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (19 kB)
+  Downloading opencv_python_headless-4.11.0.86-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (20 kB)
+Collecting python-dotenv>=0.21.0 (from pydantic-settings>=2.0.0->fastapi[standard]>=0.115.0->vllm==0.8.2)
+  Using cached python_dotenv-1.2.2-py3-none-any.whl.metadata (27 kB)
+Requirement already satisfied: click!=8.3.0,>=7.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from ray>=2.43.0->ray[cgraph]>=2.43.0->vllm==0.8.2) (8.4.2)
+Requirement already satisfied: msgpack<2.0.0,>=1.0.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from ray>=2.43.0->ray[cgraph]>=2.43.0->vllm==0.8.2) (1.2.1)
+Collecting cupy-cuda12x (from ray[cgraph]>=2.43.0->vllm==0.8.2)
+  Downloading cupy_cuda12x-14.1.1-cp310-cp310-manylinux2014_x86_64.whl.metadata (2.8 kB)
+Requirement already satisfied: charset_normalizer<4,>=2 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from requests>=2.26.0->vllm==0.8.2) (2.0.12)
+Requirement already satisfied: urllib3<3,>=1.26 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from requests>=2.26.0->vllm==0.8.2) (1.26.20)
+Collecting rich>=13.7.1 (from rich-toolkit>=0.14.8->fastapi-cli>=0.0.8->fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard]>=0.115.0->vllm==0.8.2)
+  Using cached rich-15.0.0-py3-none-any.whl.metadata (18 kB)
+Collecting markdown-it-py>=2.2.0 (from rich>=13.7.1->rich-toolkit>=0.14.8->fastapi-cli>=0.0.8->fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard]>=0.115.0->vllm==0.8.2)
+  Using cached markdown_it_py-4.2.0-py3-none-any.whl.metadata (7.4 kB)
+Requirement already satisfied: pygments<3.0.0,>=2.13.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from rich>=13.7.1->rich-toolkit>=0.14.8->fastapi-cli>=0.0.8->fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard]>=0.115.0->vllm==0.8.2) (2.20.0)
+Collecting mdurl~=0.1 (from markdown-it-py>=2.2.0->rich>=13.7.1->rich-toolkit>=0.14.8->fastapi-cli>=0.0.8->fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard]>=0.115.0->vllm==0.8.2)
+  Using cached mdurl-0.1.2-py3-none-any.whl.metadata (1.6 kB)
+Requirement already satisfied: regex in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from tiktoken>=0.6.0->vllm==0.8.2) (2026.6.28)
+Requirement already satisfied: huggingface-hub<1.0,>=0.16.4 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from tokenizers>=0.19.1->vllm==0.8.2) (0.36.2)
+Requirement already satisfied: hf-xet<2.0.0,>=1.1.3 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from huggingface-hub<1.0,>=0.16.4->tokenizers>=0.19.1->vllm==0.8.2) (1.5.1)
+Requirement already satisfied: safetensors>=0.4.3 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from transformers>=4.48.2->vllm==0.8.2) (0.8.0)
+Requirement already satisfied: shellingham>=1.3.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from typer>=0.16.0->fastapi-cli>=0.0.8->fastapi-cli[standard]>=0.0.8; extra == "standard"->fastapi[standard]>=0.115.0->vllm==0.8.2) (1.5.4)
+Collecting httptools>=0.8.0 (from uvicorn[standard]>=0.12.0; extra == "standard"->fastapi[standard]>=0.115.0->vllm==0.8.2)
+  Downloading httptools-0.8.0-cp310-cp310-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl.metadata (3.5 kB)
+Collecting uvloop>=0.15.1 (from uvicorn[standard]>=0.12.0; extra == "standard"->fastapi[standard]>=0.115.0->vllm==0.8.2)
+  Downloading uvloop-0.22.1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (4.9 kB)
+Requirement already satisfied: websockets>=10.4 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from uvicorn[standard]>=0.12.0; extra == "standard"->fastapi[standard]>=0.115.0->vllm==0.8.2) (11.0.3)
+Requirement already satisfied: aiohappyeyeballs>=2.5.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from aiohttp->vllm==0.8.2) (2.7.1)
+Requirement already satisfied: aiosignal>=1.4.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from aiohttp->vllm==0.8.2) (1.4.0)
+Requirement already satisfied: async-timeout<6.0,>=4.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from aiohttp->vllm==0.8.2) (5.0.1)
+Requirement already satisfied: frozenlist>=1.1.1 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from aiohttp->vllm==0.8.2) (1.8.0)
+Requirement already satisfied: multidict<7.0,>=4.5 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from aiohttp->vllm==0.8.2) (6.7.1)
+Requirement already satisfied: propcache>=0.2.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from aiohttp->vllm==0.8.2) (0.5.2)
+Requirement already satisfied: yarl<2.0,>=1.17.0 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from aiohttp->vllm==0.8.2) (1.24.2)
+INFO: pip is looking at multiple versions of cupy-cuda12x to determine which version is compatible with other requirements. This could take a while.
+Collecting cupy-cuda12x (from ray[cgraph]>=2.43.0->vllm==0.8.2)
+  Downloading cupy_cuda12x-14.1.0-cp310-cp310-manylinux2014_x86_64.whl.metadata (2.8 kB)
+  Downloading cupy_cuda12x-14.0.1-cp310-cp310-manylinux2014_x86_64.whl.metadata (2.8 kB)
+  Downloading cupy_cuda12x-14.0.0-cp310-cp310-manylinux2014_x86_64.whl.metadata (2.8 kB)
+  Downloading cupy_cuda12x-13.6.0-cp310-cp310-manylinux2014_x86_64.whl.metadata (2.4 kB)
+Collecting fastrlock>=0.5 (from cupy-cuda12x->ray[cgraph]>=2.43.0->vllm==0.8.2)
+  Downloading fastrlock-0.8.3-cp310-cp310-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_28_x86_64.whl.metadata (7.7 kB)
+Requirement already satisfied: zipp>=3.20 in /mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages (from importlib_metadata->vllm==0.8.2) (4.1.0)
+Downloading vllm-0.8.2-cp38-abi3-manylinux1_x86_64.whl (293.6 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 293.6/293.6 MB 76.3 MB/s  0:00:03
+Downloading compressed_tensors-0.9.2-py3-none-any.whl (97 kB)
+Downloading depyf-0.18.0-py3-none-any.whl (38 kB)
+Downloading gguf-0.10.0-py3-none-any.whl (71 kB)
+Using cached lark-1.2.2-py3-none-any.whl (111 kB)
+Downloading numba-0.60.0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (3.7 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.7/3.7 MB 137.1 MB/s  0:00:00
+Downloading outlines-0.1.11-py3-none-any.whl (87 kB)
+Downloading outlines_core-0.1.26-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (343 kB)
+Downloading torchaudio-2.6.0-cp310-cp310-manylinux1_x86_64.whl (3.4 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.4/3.4 MB 137.0 MB/s  0:00:00
+Downloading torchvision-0.21.0-cp310-cp310-manylinux1_x86_64.whl (7.2 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 7.2/7.2 MB 114.2 MB/s  0:00:00
+Downloading xformers-0.0.29.post2-cp310-cp310-manylinux_2_28_x86_64.whl (44.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 44.3/44.3 MB 187.1 MB/s  0:00:00
+Downloading xgrammar-0.1.16-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (4.8 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.8/4.8 MB 54.0 MB/s  0:00:00
+Using cached llguidance-0.7.30-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (15.0 MB)
+Downloading llvmlite-0.43.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (43.9 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 43.9/43.9 MB 190.0 MB/s  0:00:00
+Downloading lm_format_enforcer-0.10.12-py3-none-any.whl (44 kB)
+Using cached email_validator-2.3.0-py3-none-any.whl (35 kB)
+Using cached dnspython-2.8.0-py3-none-any.whl (331 kB)
+Using cached fastapi_cli-0.0.27-py3-none-any.whl (13 kB)
+Using cached fastapi_cloud_cli-0.22.0-py3-none-any.whl (77 kB)
+Using cached detect_installer-0.1.0-py3-none-any.whl (4.5 kB)
+Downloading fastar-0.11.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (823 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 823.0/823.0 kB 46.1 MB/s  0:00:00
+Using cached interegular-0.3.3-py37-none-any.whl (23 kB)
+Using cached mistral_common-1.11.5-py3-none-any.whl (6.6 MB)
+Using cached openai-2.44.0-py3-none-any.whl (1.4 MB)
+Using cached distro-1.9.0-py3-none-any.whl (20 kB)
+Using cached jiter-0.16.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (348 kB)
+Downloading opencv_python_headless-4.11.0.86-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (50.0 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 50.0/50.0 MB 81.3 MB/s  0:00:00
+Using cached prometheus_fastapi_instrumentator-8.0.2-py3-none-any.whl (20 kB)
+Using cached pydantic_extra_types-2.11.1-py3-none-any.whl (79 kB)
+Using cached pycountry-26.2.16-py3-none-any.whl (8.0 MB)
+Using cached pydantic_settings-2.14.2-py3-none-any.whl (61 kB)
+Using cached python_dotenv-1.2.2-py3-none-any.whl (22 kB)
+Using cached rich_toolkit-0.20.1-py3-none-any.whl (35 kB)
+Using cached rich-15.0.0-py3-none-any.whl (310 kB)
+Using cached markdown_it_py-4.2.0-py3-none-any.whl (91 kB)
+Using cached mdurl-0.1.2-py3-none-any.whl (10.0 kB)
+Downloading rignore-0.7.6-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (959 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 959.8/959.8 kB 52.3 MB/s  0:00:00
+Using cached tiktoken-0.13.0-cp310-cp310-manylinux_2_28_x86_64.whl (1.1 MB)
+Downloading typer-0.26.8-py3-none-any.whl (122 kB)
+Downloading httptools-0.8.0-cp310-cp310-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (450 kB)
+Downloading uvloop-0.22.1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (3.7 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.7/3.7 MB 93.0 MB/s  0:00:00
+Downloading watchfiles-1.2.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (457 kB)
+Downloading airportsdata-20260315-py3-none-any.whl (935 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 935.4/935.4 kB 50.9 MB/s  0:00:00
+Using cached astor-0.8.1-py2.py3-none-any.whl (27 kB)
+Downloading blake3-1.0.9-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (387 kB)
+Using cached cachetools-7.1.4-py3-none-any.whl (16 kB)
+Downloading cupy_cuda12x-13.6.0-cp310-cp310-manylinux2014_x86_64.whl (112.2 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 112.2/112.2 MB 75.6 MB/s  0:00:01
+Downloading fastrlock-0.8.3-cp310-cp310-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_28_x86_64.whl (53 kB)
+Using cached diskcache-5.6.3-py3-none-any.whl (45 kB)
+Downloading msgspec-0.21.1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (222 kB)
+Downloading nest_asyncio-1.6.0-py3-none-any.whl (5.2 kB)
+Using cached ninja-1.13.0-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (180 kB)
+Using cached partial_json_parser-0.2.1.1.post7-py3-none-any.whl (10 kB)
+Using cached py_cpuinfo-9.0.0-py3-none-any.whl (22 kB)
+Using cached python_json_logger-4.1.0-py3-none-any.whl (15 kB)
+Downloading pyzmq-27.1.0-cp310-cp310-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl (854 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 854.1/854.1 kB 48.8 MB/s  0:00:00
+Installing collected packages: py-cpuinfo, fastrlock, uvloop, rignore, pyzmq, python-json-logger, python-dotenv, pycountry, partial-json-parser, opencv-python-headless, ninja, nest_asyncio, msgspec, mdurl, llvmlite, llguidance, lark, jiter, interegular, httptools, gguf, fastar, dnspython, distro, diskcache, detect-installer, cupy-cuda12x, cachetools, blake3, astor, airportsdata, tiktoken, numba, markdown-it-py, email-validator, depyf, watchfiles, rich, pydantic-settings, pydantic-extra-types, lm-format-enforcer, xformers, typer, torchvision, torchaudio, rich-toolkit, prometheus-fastapi-instrumentator, outlines_core, openai, xgrammar, outlines, mistral_common, fastapi-cloud-cli, fastapi-cli, compressed-tensors, vllm
+  Attempting uninstall: rich
+    Found existing installation: rich 12.4.4
+    Uninstalling rich-12.4.4:
+      Successfully uninstalled rich-12.4.4
+  Attempting uninstall: typer
+    Found existing installation: typer 0.9.4
+    Uninstalling typer-0.9.4:
+      Successfully uninstalled typer-0.9.4
+
+ERROR: pip's dependency resolver does not currently take into account all the packages that are installed. This behaviour is the source of the following dependency conflicts.
+spacy 3.7.2 requires typer<0.10.0,>=0.3.0, but you have typer 0.26.8 which is incompatible.
+weasel 0.3.4 requires typer<0.10.0,>=0.3.0, but you have typer 0.26.8 which is incompatible.
+Successfully installed airportsdata-20260315 astor-0.8.1 blake3-1.0.9 cachetools-7.1.4 compressed-tensors-0.9.2 cupy-cuda12x-13.6.0 depyf-0.18.0 detect-installer-0.1.0 diskcache-5.6.3 distro-1.9.0 dnspython-2.8.0 email-validator-2.3.0 fastapi-cli-0.0.27 fastapi-cloud-cli-0.22.0 fastar-0.11.0 fastrlock-0.8.3 gguf-0.10.0 httptools-0.8.0 interegular-0.3.3 jiter-0.16.0 lark-1.2.2 llguidance-0.7.30 llvmlite-0.43.0 lm-format-enforcer-0.10.12 markdown-it-py-4.2.0 mdurl-0.1.2 mistral_common-1.11.5 msgspec-0.21.1 nest_asyncio-1.6.0 ninja-1.13.0 numba-0.60.0 openai-2.44.0 opencv-python-headless-4.11.0.86 outlines-0.1.11 outlines_core-0.1.26 partial-json-parser-0.2.1.1.post7 prometheus-fastapi-instrumentator-8.0.2 py-cpuinfo-9.0.0 pycountry-26.2.16 pydantic-extra-types-2.11.1 pydantic-settings-2.14.2 python-dotenv-1.2.2 python-json-logger-4.1.0 pyzmq-27.1.0 rich-15.0.0 rich-toolkit-0.20.1 rignore-0.7.6 tiktoken-0.13.0 torchaudio-2.6.0 torchvision-0.21.0 typer-0.26.8 uvloop-0.22.1 vllm-0.8.2 watchfiles-1.2.0 xformers-0.0.29.post2 xgrammar-0.1.16
+[2026-07-01 21:19:55] verl-webshop env fully installed
+[2026-07-01 21:19:55] Verifying WebAgentTextEnv importability (in-process WebShop)
+Warning: Gym version v0.24.0 has a number of critical issues with `gym.make` such that the `reset` and `step` functions are called before returning the environment. It is recommend to downgrading to v0.23.1 or upgrading to v0.25.1
+Additionally, Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+/mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages/requests/__init__.py:45: DeprecationWarning: 'urllib3[secure]' extra is deprecated and will be removed in a future release of urllib3 2.x. Read more in this issue: https://github.com/urllib3/urllib3/issues/2680
+  import urllib3
+<frozen importlib._bootstrap>:241: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+<frozen importlib._bootstrap>:241: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+<frozen importlib._bootstrap>:241: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+/mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages/torch/cuda/__init__.py:734: UserWarning: Can't initialize NVML
+  warnings.warn("Can't initialize NVML")
+/mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages/spacy/cli/_util.py:23: DeprecationWarning: Importing 'parser.split_arg_string' is deprecated, it will only be available in 'shell_completion' in Click 9.0.
+  from click.parser import split_arg_string
+/mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages/weasel/util/config.py:8: DeprecationWarning: Importing 'parser.split_arg_string' is deprecated, it will only be available in 'shell_completion' in Click 9.0.
+  from click.parser import split_arg_string
+/mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages/thefuzz/fuzz.py:11: UserWarning: Using slow pure-python SequenceMatcher. Install python-Levenshtein to remove this warning
+  warnings.warn('Using slow pure-python SequenceMatcher. Install python-Levenshtein to remove this warning')
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/mnt/sdar-cache/SDAR/agent_system/environments/env_package/webshop/webshop/web_agent_site/envs/__init__.py", line 4, in <module>
+    from web_agent_site.envs.web_agent_text_env import WebAgentTextEnv
+  File "/mnt/sdar-cache/SDAR/agent_system/environments/env_package/webshop/webshop/web_agent_site/envs/web_agent_text_env.py", line 24, in <module>
+    from web_agent_site.engine.goal import get_reward, get_goals
+  File "/mnt/sdar-cache/SDAR/agent_system/environments/env_package/webshop/webshop/web_agent_site/engine/goal.py", line 12, in <module>
+    nlp = spacy.load("en_core_web_sm")
+  File "/mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages/spacy/__init__.py", line 51, in load
+    return util.load_model(
+  File "/mnt/sdar-cache/conda/envs/verl-webshop/lib/python3.10/site-packages/spacy/util.py", line 472, in load_model
+    raise IOError(Errors.E050.format(name=name))
+OSError: [E050] Can't find model 'en_core_web_sm'. It doesn't seem to be a Python package or a valid path to a data directory.
+[2026-07-01 21:20:10] WARNING: WebAgentTextEnv import failed — check verl-webshop env
+[2026-07-01 21:20:10] Heartbeat stopped
+[2026-07-01 21:20:10] === PHASE webshop DONE ===

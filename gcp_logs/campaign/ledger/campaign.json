@@ -1,0 +1,42 @@
+{
+  "budget": {
+    "max_attempts": 6,
+    "max_gpu_hours": 53.0,
+    "max_gpu_usd": 255.0,
+    "max_llm_usd": 19.0,
+    "max_wall_clock_s": 43200.0
+  },
+  "created_at": 1783009302.3069537,
+  "driver": "live",
+  "in_flight": null,
+  "mode": "unattended",
+  "next_attempt_n": 3,
+  "paper_ref": "2605.15155",
+  "pending_approval": null,
+  "project_id": "prj_09047604e591d969",
+  "rubric_sha256": "3c859e3b7e3fef57d55e0a3473ae482bcd31fadd235af3d8c27d3a4a3f6e9db5",
+  "scope_rung": 0,
+  "spent": {
+    "gpu_hours": 0.0,
+    "gpu_usd": 0.0,
+    "llm_usd": 24.23143245,
+    "wall_s": 16260.472965
+  },
+  "state": "terminal",
+  "steering_cursor": 0,
+  "terminal": {
+    "champion_attempt_n": 1,
+    "kind": "EXHAUSTED",
+    "rule": "budget_floor",
+    "spent": {
+      "gpu_hours": 0.0,
+      "gpu_usd": 0.0,
+      "llm_usd": 24.23143245,
+      "wall_s": 16260.472965
+    },
+    "stop_reason": "budget_floor:llm_usd"
+  },
+  "understanding_sha256": "d5e95c81d80c2b15789e343603a070a16b1c175c5efae6738fdf40b7f93ae06d",
+  "updated_at": 1783025578.489293,
+  "warnings": []
+}
