@@ -4,8 +4,9 @@ Logs captured from the GCP VM running the SDAR (arXiv 2605.15155, *Self-Distille
 Agentic Reinforcement Learning*) reproduction effort.
 
 - **VM:** `sdar-2model-a` · `us-central1-a` · `a2-ultragpu-4g` (4×A100-80GB)
-- **Captured:** 2026-07-03 ~03:07 UTC (mid-run snapshot; the authors' Search-QA
-  run was still training at step ~44/150)
+- **Captured:** 2026-07-03 ~18:11 UTC (**final** — the authors' Search-QA run
+  **completed all 150 steps + held-out validation**; see
+  `sdar_authors_run/FINAL_RESULTS.md`)
 - **Secret-scanned:** clean (no API keys / tokens / credentials).
 
 There are **two distinct run types** here, and the difference is the whole story:
@@ -15,9 +16,18 @@ There are **two distinct run types** here, and the difference is the whole story
 Runs the SDAR authors' actual trainer (`verl.trainer.main_sdar`, GRPO+OPSD,
 vLLM 0.11.0) directly on the 4×A100 VM, via the authors' `run_search_3b.sh`.
 
+**FINAL RESULT (150/150 steps + validation):** overall `val/success_rate` = **0.456**
+(macro test_score 0.370). Per-dataset: TriviaQA 0.562 · PopQA 0.406 · NQ 0.402 ·
+2Wiki 0.381 · HotpotQA 0.379 · Bamboogle 0.325 · Musique 0.137. Full breakdown +
+training-signal analysis in **`sdar_authors_run/FINAL_RESULTS.md`**.
+
 | File | What it is |
 |---|---|
-| `run_search_3b.log` | The training log — Qwen2.5-3B, Search-QA, 150 steps. **Reward climbs 0.28 → ~0.50** (success ~28% → ~50%), SDAR gate active — a real, learning reproduction. |
+| `FINAL_RESULTS.md` | **The result** — final validation table, reward trajectory, SDAR-gate/RL-internals analysis, Table-1 framing. |
+| `run_search_3b.log` | The training log — Qwen2.5-3B, Search-QA, **150/150 steps done**. Reward climbs 0.28 → ~0.50, SDAR gate active — a real, learning reproduction. |
+| `metrics/` | `EXTRACTED_METRICS.txt` (clean val + final-step) + `reward_trajectory.txt` (per-step reward). |
+| `config/` | Exact run commands (`run_search_3b.sh`, `run_search3b_proof.sh`). |
+| `final_bundle.tar.gz` | Complete archive incl. the wandb offline run (`wandb sync`-able). Durable copy in `gs://deepinvent-ext-ut-sdar-runs/final_bundles/`. |
 | `search3b_driver.log` | Launcher/driver: verl preflight, retriever startup, run lifecycle. |
 | `retrieval_server.log` | The E5/faiss dense retrieval server (wiki-18, port 8000) serving the Search-QA env. |
 | `debug-internal.log` | wandb offline-run internal log. |
