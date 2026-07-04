@@ -2050,9 +2050,14 @@ def _repo_artifact_index(project_dir: "Path", plan_artifact_index: "dict | None"
 
 
 def _should_seed_code_from_repo(mode: str, repo_dir: "Path", code_dir: "Path") -> bool:
-    """True iff ADAPT mode, the repo exists, and code/ is empty (first call)."""
+    """True iff ADAPT or EXECUTE mode, the repo exists, and code/ is empty (first call).
+
+    EXECUTE mode seeds identically to ADAPT (the repo rides code/ into the sandbox
+    unchanged) — the modes diverge only in the implementer's contract (adapt vs
+    run-verbatim), not in how code/ gets populated.
+    """
     from pathlib import Path as _Path
-    if (mode or "").strip().lower() != "adapt":
+    if (mode or "").strip().lower() not in ("adapt", "execute"):
         return False
     repo_dir = _Path(repo_dir)
     code_dir = _Path(code_dir)
@@ -2341,6 +2346,10 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
         "knowledge_channel_version": _KC_VER,
         "repo_first": _repo_on,
         "repo_commit": (_load_repo_spec(ctx.project_dir).get("commit_sha") if _repo_on else None),
+        # Fold the persisted repo mode into the cache key so switching modes
+        # (e.g. adapt -> execute) between attempts cannot serve a stale
+        # implementation from a prior mode's cache entry.
+        "repo_mode": (_load_repo_spec(ctx.project_dir).get("mode") if _repo_on else None),
     }
     _cached = _cache.maybe_get(ctx.project_dir, "implement_baseline", payload=_payload)
     if _cached is not None:
@@ -2492,21 +2501,23 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
     code_dir = ctx.runs_root / ctx.project_id / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
 
-    # #62: ADAPT mode, first call only (code/ empty) — seed the authors' code into
-    # code/ so the sub-agent ADAPTS rather than rewrites. Re-entrant repair calls
-    # never re-seed (code/ already non-empty). Flag-gated; byte-identical off.
+    # #62: ADAPT or EXECUTE mode, first call only (code/ empty) — seed the authors'
+    # code into code/ so the sub-agent ADAPTS (or, in execute mode, runs it
+    # verbatim behind a thin shim) rather than rewriting from scratch. Re-entrant
+    # repair calls never re-seed (code/ already non-empty). Flag-gated; byte-identical off.
     import os as _os_repo
     if _os_repo.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() in (
         "1", "true", "yes", "on",
     ):
         _rspec = _load_repo_spec(ctx.project_dir)
         _repo_dir = ctx.project_dir / "repo"
-        if _should_seed_code_from_repo(_rspec.get("mode", "adapt"), _repo_dir, code_dir):
+        _rmode = _rspec.get("mode", "adapt")
+        if _should_seed_code_from_repo(_rmode, _repo_dir, code_dir):
             _n = _seed_code_from_repo(_repo_dir, code_dir)
             logger.info("implement_baseline[%s]: seeded code/ from repo/ (%d files)", ctx.project_id, _n)
             _emit_dashboard_event(ctx, event_type="run_warning", payload={
                 "code": "repo_code_seeded",
-                "message": f"adapt-mode: seeded code/ from the authors' repo ({_n} files)",
+                "message": f"{_rmode}-mode: seeded code/ from the authors' repo ({_n} files)",
             })
 
     # Route-retention (2026-06-11): remember whether a cells manifest existed

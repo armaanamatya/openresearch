@@ -75,6 +75,22 @@ def test_clone_failed_returns_none(tmp_path, monkeypatch):
     assert _build_reproduction_block(tmp_path) is None
 
 
+def test_execution_ran_true_with_success_row_execute_mode(tmp_path, monkeypatch):
+    """EXECUTE mode stamps through report._build_reproduction_block exactly
+    like adapt/reference — the report layer never validates mode, it only
+    passes through whatever the resolver persisted."""
+    monkeypatch.setenv("OPENRESEARCH_USE_AUTHOR_REPO", "1")
+    _write_repo_spec(tmp_path, mode="execute")
+    _write_success_experiment(tmp_path)
+    block = _build_reproduction_block(tmp_path)
+    assert block is not None
+    assert block["mode"] == "execute"
+    assert block["repo_url"] == "https://github.com/me/mine"
+    assert block["commit_sha"] == "abc1234"
+    assert block["execution"]["ran"] is True
+    assert block["execution"]["status"] == "success"
+
+
 def test_adaptation_delta_counts(tmp_path):
     repo = tmp_path / "repo"
     code = tmp_path / "code"

@@ -2813,6 +2813,20 @@ async def run_with_sdk(
             "The authors' reference implementation is available read-only at repo/. "
             "Consult it for exact details, but write your own code/ from scratch."
         )
+    elif _repro_mode == "execute":
+        context["execute_repo_note"] = (
+            "EXECUTE mode: the authors' repository has been seeded into code/ verbatim. "
+            "Do NOT reimplement the method — run the authors' own pipeline. Add ONLY: "
+            "(1) the harness entry contract (cells.json + train_cell.py that invoke the authors' "
+            "documented entrypoints/configs for the in-scope grid, or commands.json for a monolithic run); "
+            "(2) dependency wiring (fold the repo's own requirements/setup into requirements.txt); "
+            "(3) a thin output adapter that converts the authors' native results/logs into the canonical "
+            "metrics.json (+ provenance sidecars) WITHOUT altering the measured values. "
+            "Preserve the authors' training/eval code paths unmodified wherever possible — the report's "
+            "adaptation delta (files changed vs the pristine repo) is audited. If the pipeline cannot run "
+            "in this sandbox (missing service, incompatible framework), fail honestly and report the "
+            "blocking reason; never substitute a from-scratch reimplementation in execute mode."
+        )
 
     # θ: extract metrics_shape from the reproduction_contract when not explicitly
     # passed. This path handles calls where the contract is available but the

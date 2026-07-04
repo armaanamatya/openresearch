@@ -101,6 +101,35 @@ def test_default_mode_is_adapt():
     assert spec.mode == "adapt"
 
 
+def test_mode_override_execute():
+    spec = RepoResolver.resolve(
+        user_url="github:me/mine",
+        discovered=[],
+        blacklist=set(),
+        mode_override="execute",
+    )
+    assert spec.url == "https://github.com/me/mine"
+    assert spec.mode == "execute"
+
+
+def test_mode_override_normalizes_case_and_padding():
+    spec = RepoResolver.resolve(
+        user_url="github:me/mine", discovered=[], blacklist=set(), mode_override="  EXECUTE  ",
+    )
+    assert spec.mode == "execute"
+    spec = RepoResolver.resolve(
+        user_url="github:me/mine", discovered=[], blacklist=set(), mode_override="  Reference  ",
+    )
+    assert spec.mode == "reference"
+
+
+def test_mode_override_unknown_value_falls_back_to_adapt():
+    spec = RepoResolver.resolve(
+        user_url="github:me/mine", discovered=[], blacklist=set(), mode_override="scratch-only",
+    )
+    assert spec.mode == "adapt"
+
+
 def test_no_repo_yields_scratch():
     spec = RepoResolver.resolve(
         user_url=None, discovered=[], blacklist=set(), mode_override=None,

@@ -27,7 +27,7 @@ class RepoSpec:
 
     ``url`` is the canonical ``https://github.com/owner/repo`` or ``None`` (no repo).
     ``source`` is ``user`` | ``discovered`` | ``none``.
-    ``mode`` is ``adapt`` | ``reference`` | ``scratch``.
+    ``mode`` is ``adapt`` | ``reference`` | ``execute`` | ``scratch``.
     ``reason`` is a human string for the SSE/event narration.
     """
 
@@ -68,7 +68,8 @@ class RepoResolver:
         blacklist: set[str],
         mode_override: str | None,
     ) -> RepoSpec:
-        mode = "reference" if (mode_override or "").strip().lower() == "reference" else "adapt"
+        _mode_norm = (mode_override or "").strip().lower()
+        mode = _mode_norm if _mode_norm in ("reference", "execute") else "adapt"
 
         # 1. User-provided URL wins.
         norm_user = normalize_repo_url(user_url)
