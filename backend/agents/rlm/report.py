@@ -1962,6 +1962,7 @@ def write_final_report_rlm(
         from backend.agents.rlm.external_validator import (  # noqa: PLC0415
             load_verdict,
             evidence_fingerprint,
+            external_validator_enabled,
         )
         _shipped_metrics: dict = dict(report.baseline_metrics) if report.baseline_metrics else {}
         if not _shipped_metrics:
@@ -1989,6 +1990,17 @@ def write_final_report_rlm(
                     }
                     for p in _v.predicates
                 ],
+            }
+        elif external_validator_enabled():
+            # WS-B: the flag is ON but no fresh verdict exists for this shipped
+            # evidence (fingerprint mismatch, the panel never ran, or a finalize
+            # path timed out before persisting) — stamp an explicit marker so a
+            # caller can tell "validator on but missing" apart from "validator
+            # off" instead of both silently reading `{}`.
+            report.validation = {
+                "status": "missing",
+                "reason": "no fresh validator verdict for the shipped evidence",
+                "evidence_fingerprint": _fp,
             }
     except Exception:  # noqa: BLE001 — stamp is best-effort, never crashes the write
         logger.debug("report: validation stamp skipped", exc_info=True)

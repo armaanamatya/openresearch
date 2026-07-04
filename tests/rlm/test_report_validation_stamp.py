@@ -178,3 +178,72 @@ def test_metrics_loaded_from_disk_when_baseline_empty(tmp_path: Path) -> None:
     val = result.get("validation", {})
     assert val.get("status") == "clean"
     assert val.get("evidence_fingerprint") == fp
+
+
+# ---------------------------------------------------------------------------
+# Test 6 (WS-B) — validator ENABLED + no fresh verdict → an explicit "missing"
+#                 marker, never a silent {}
+# ---------------------------------------------------------------------------
+
+
+def test_validator_enabled_no_verdict_stamps_missing_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WS-B: with the flag ON and no fresh verdict on disk for the shipped evidence,
+    the chokepoint stamps an explicit {"status": "missing", ...} marker (carrying the
+    expected fingerprint) instead of leaving validation == {} — so a caller can tell
+    "validator on but missing" apart from "validator off"."""
+    monkeypatch.setenv("OPENRESEARCH_EXTERNAL_VALIDATOR", "1")
+
+    metrics = _make_metrics()
+    report = _make_report(metrics)
+    write_final_report_rlm(report, tmp_path)
+
+    result = json.loads((tmp_path / "final_report.json").read_text())
+    val = result.get("validation", {})
+    assert val.get("status") == "missing"
+    assert val.get("evidence_fingerprint") == evidence_fingerprint(metrics)
+    assert "reason" in val
+
+
+def test_validator_enabled_mismatched_fingerprint_stamps_missing_not_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WS-B: a stale (fingerprint-mismatched) verdict is still ignored by load_verdict,
+    but with the flag ON the chokepoint now stamps "missing" (keyed to the CURRENT
+    shipped fingerprint) rather than leaving {} — the flag-off case (test 3 above)
+    is the one that stays silently empty."""
+    monkeypatch.setenv("OPENRESEARCH_EXTERNAL_VALIDATOR", "1")
+
+    stale_metrics = {"other_metric": 0.5}
+    stale_fp = evidence_fingerprint(stale_metrics)
+    persist_verdict(tmp_path, _make_verdict(stale_fp, status="clean"))
+
+    shipped_metrics = _make_metrics()
+    report = _make_report(shipped_metrics)
+    write_final_report_rlm(report, tmp_path)
+
+    result = json.loads((tmp_path / "final_report.json").read_text())
+    val = result.get("validation", {})
+    assert val.get("status") == "missing"
+    assert val.get("evidence_fingerprint") == evidence_fingerprint(shipped_metrics)
+
+
+def test_validator_enabled_with_fresh_verdict_stamps_real_verdict_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WS-B sanity check: a fresh, matching verdict is stamped exactly as before —
+    the new "missing" branch only fires when load_verdict returns None."""
+    monkeypatch.setenv("OPENRESEARCH_EXTERNAL_VALIDATOR", "1")
+
+    metrics = _make_metrics()
+    fp = evidence_fingerprint(metrics)
+    persist_verdict(tmp_path, _make_verdict(fp, status="clean"))
+
+    report = _make_report(metrics)
+    write_final_report_rlm(report, tmp_path)
+
+    result = json.loads((tmp_path / "final_report.json").read_text())
+    val = result.get("validation", {})
+    assert val.get("status") == "clean"
+    assert val.get("evidence_fingerprint") == fp

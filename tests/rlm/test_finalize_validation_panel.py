@@ -1,4 +1,5 @@
 """Tests for _run_finalize_validation_panel — the shared finalize validator panel."""
+import time
 from types import SimpleNamespace
 
 
@@ -14,12 +15,20 @@ def test_panel_noop_when_disabled(monkeypatch, tmp_path):
     assert not (tmp_path / "rlm_state" / "validation_verdict.json").exists()
 
 
-def test_panel_noop_when_no_client(monkeypatch, tmp_path):
+def test_panel_persists_unavailable_when_no_client(monkeypatch, tmp_path):
+    """WS-B: flag ON + no ctx.validator_client no longer silently no-ops — a fresh
+    ``status="unavailable"`` verdict is persisted (run_validation_panel(None, ...)
+    already returns that status with no LLM call) so assessment/report.py see an
+    honest, fingerprinted "unavailable" instead of a synthetic "missing"."""
     monkeypatch.setenv("OPENRESEARCH_EXTERNAL_VALIDATOR", "1")
+    from backend.agents.rlm.external_validator import evidence_fingerprint, load_verdict
     from backend.agents.rlm.run import _run_finalize_validation_panel
     ctx = SimpleNamespace(validator_client=None, role_selection=None)
-    _run_finalize_validation_panel(ctx, _report(), tmp_path)  # no client -> no-op
-    assert not (tmp_path / "rlm_state" / "validation_verdict.json").exists()
+    _run_finalize_validation_panel(ctx, _report(), tmp_path)
+    assert (tmp_path / "rlm_state" / "validation_verdict.json").exists()
+    verdict = load_verdict(tmp_path, expect_fingerprint=evidence_fingerprint({}))
+    assert verdict is not None
+    assert verdict.status == "unavailable"
 
 
 def test_panel_runs_when_enabled_with_client(monkeypatch, tmp_path):
@@ -84,3 +93,31 @@ def test_panel_failsoft_on_panel_error(monkeypatch, tmp_path):
     (tmp_path / "code" / "metrics.json").write_text('{"per_model": {}}')
     ctx = SimpleNamespace(validator_client=object(), role_selection=None)
     _run_finalize_validation_panel(ctx, _report(), tmp_path)  # must not raise
+
+
+def test_panel_time_budget_returns_without_blocking(monkeypatch, tmp_path):
+    """WS-B: a slow validator call must not block the caller past time_budget_s — the
+    hard-stop path only has _WATCHDOG_GRACE_S of grace. The panel runs in a background
+    thread; on timeout no verdict is on disk yet at the moment this call returns."""
+    monkeypatch.setenv("OPENRESEARCH_EXTERNAL_VALIDATOR", "1")
+    from backend.agents.rlm.run import _run_finalize_validation_panel
+
+    def slow_panel(**k):
+        time.sleep(0.5)
+        return SimpleNamespace(status="clean", veto_set=[], separation="independent")
+
+    monkeypatch.setattr("backend.agents.rlm.external_validator.run_validation_panel", slow_panel)
+    monkeypatch.setattr(
+        "backend.agents.rlm.external_validator.load_verdict",
+        lambda pd, expect_fingerprint=None: None,
+    )
+    (tmp_path / "code").mkdir()
+    (tmp_path / "code" / "metrics.json").write_text('{"per_model": {}}')
+    ctx = SimpleNamespace(validator_client=object(), role_selection=None)
+
+    started = time.monotonic()
+    _run_finalize_validation_panel(ctx, _report(), tmp_path, time_budget_s=0.05)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.4, f"call should return near-immediately on timeout, took {elapsed:.2f}s"
+    assert not (tmp_path / "rlm_state" / "validation_verdict.json").exists()
