@@ -74,11 +74,6 @@ else
     WANDB_MODE="${WANDB_MODE:-online}"
 fi
 
-# ── Idle-watchdog heartbeat ──
-HEARTBEAT_FILE="/run/sdar_last_active"
-HEARTBEAT_INTERVAL=30     # touch every 30s (well within 60s watchdog deadline)
-_HEARTBEAT_PID=""
-
 # ── Logging ──
 LOG_DIR="${CACHE_ROOT}/logs"
 
@@ -88,24 +83,6 @@ LOG_DIR="${CACHE_ROOT}/logs"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 die() { echo "[ERROR] $*" >&2; exit 1; }
-
-heartbeat_start() {
-    if [[ -n "${_HEARTBEAT_PID}" ]]; then return; fi   # already running
-    mkdir -p "$(dirname "${HEARTBEAT_FILE}")" 2>/dev/null || true
-    while true; do
-        touch "${HEARTBEAT_FILE}" 2>/dev/null || true
-        sleep "${HEARTBEAT_INTERVAL}"
-    done &
-    _HEARTBEAT_PID=$!
-    log "Heartbeat started (pid=${_HEARTBEAT_PID}, target=${HEARTBEAT_FILE})"
-}
-
-heartbeat_stop() {
-    if [[ -z "${_HEARTBEAT_PID}" ]]; then return; fi
-    kill "${_HEARTBEAT_PID}" 2>/dev/null || true
-    _HEARTBEAT_PID=""
-    log "Heartbeat stopped"
-}
 
 # Retry a command up to 5× with 30s back-off (for flaky downloads).
 # Uses `env "$@"` (not bare "$@") so a caller can pass an env-var prefix, e.g.
@@ -242,9 +219,11 @@ retriever_stop() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Cleanup trap — always stop heartbeat + retriever on exit
+# Cleanup trap — stop the retriever, then stamp the completion sentinel. The
+# sentinel is read by the VM-side idle watchdog (gcp_sdar_preflight.sh) to drop
+# into its short dead-run grace instead of waiting out the long idle grace.
 # ─────────────────────────────────────────────────────────────────────────────
-trap 'heartbeat_stop; retriever_stop 2>/dev/null || true' EXIT
+trap 'retriever_stop 2>/dev/null || true; date +%s > /run/sdar_run_exited 2>/dev/null || true' EXIT
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PHASE: base
@@ -253,7 +232,6 @@ trap 'heartbeat_stop; retriever_stop 2>/dev/null || true' EXIT
 # ─────────────────────────────────────────────────────────────────────────────
 phase_base() {
     log "=== PHASE: base ==="
-    heartbeat_start
 
     # Persistent disk layout
     mkdir -p "${CACHE_ROOT}" "${CONDA_ENVS_DIR}" "${HF_HOME}" "${LOG_DIR}" \
@@ -344,7 +322,6 @@ phase_base() {
         log "retriever env ready"
     fi
 
-    heartbeat_stop
     log "=== PHASE base DONE ==="
 }
 
@@ -356,7 +333,6 @@ phase_base() {
 phase_alfworld() {
     log "=== PHASE: alfworld ==="
     [[ -d "${ENV_SDAR}" ]] || die "sdar env missing — run 'base' phase first"
-    heartbeat_start
 
     # Install ALFWorld Python packages into sdar env
     if "${ENV_SDAR}/bin/python3" -c "import alfworld" 2>/dev/null; then
@@ -385,7 +361,6 @@ phase_alfworld() {
         log "ALFWorld data downloaded"
     fi
 
-    heartbeat_stop
     log "=== PHASE alfworld DONE ==="
 }
 
@@ -398,7 +373,6 @@ phase_alfworld() {
 phase_webshop() {
     log "=== PHASE: webshop ==="
     [[ -d "${ENV_WEBSHOP}" ]] || die "verl-webshop env missing — run 'base' phase first"
-    heartbeat_start
 
     local WEBSHOP_DIR="${REPO_DIR}/agent_system/environments/env_package/webshop/webshop"
     local INDEX_DIR="${WEBSHOP_DIR}/search_engine/indexes"
@@ -466,7 +440,6 @@ phase_webshop() {
         "from web_agent_site.envs import WebAgentTextEnv; print('OK: WebAgentTextEnv importable')" \
         || log "WARNING: WebAgentTextEnv import failed — check verl-webshop env"
 
-    heartbeat_stop
     log "=== PHASE webshop DONE ==="
 }
 
@@ -480,7 +453,6 @@ phase_search() {
     log "=== PHASE: search ==="
     [[ -d "${ENV_SDAR}" ]]      || die "sdar env missing — run 'base' phase first"
     [[ -d "${ENV_RETRIEVER}" ]] || die "retriever env missing — run 'base' phase first"
-    heartbeat_start
 
     # 1. Install skyrl_gym (Search-QA's RL gym) + gym==0.26.2 into sdar env
     local THIRD_PARTY="${REPO_DIR}/agent_system/environments/env_package/search/third_party"
@@ -552,7 +524,6 @@ phase_search() {
         fi
     fi
 
-    heartbeat_stop
     log "=== PHASE search DONE ==="
 }
 
@@ -564,7 +535,6 @@ phase_search() {
 phase_smoke() {
     log "=== PHASE: smoke ==="
     [[ -d "${ENV_WEBSHOP}" ]] || die "verl-webshop env missing — run 'base'+'webshop' phases first"
-    heartbeat_start
 
     local log_file="${LOG_DIR}/smoke_webshop_qwen3.log"
     local start_ts
@@ -593,7 +563,6 @@ phase_smoke() {
     [[ -z "${last_reward}" ]] && \
         log "Tip: search the log for 'reward' or 'win_rate' to confirm non-zero learning"
 
-    heartbeat_stop
     log "=== PHASE smoke DONE ==="
 }
 
@@ -610,7 +579,6 @@ phase_grid() {
     log "Confirmed GPU budget: ${ACTUAL_GPUS}×A100-80GB"
     log "ALFWorld fidelity caveat: n_gpus_per_node overridden 8→${ALFWORLD_GPUS}."
     log "  WebShop runs are exact-match (2 GPUs); Search runs are exact-match (4 GPUs)."
-    heartbeat_start
 
     [[ -d "${ENV_SDAR}" ]]      || die "sdar env missing — run 'base' phase"
     [[ -d "${ENV_WEBSHOP}" ]]   || die "verl-webshop env missing — run 'base'+'webshop' phases"
@@ -664,7 +632,6 @@ phase_grid() {
     log "--- ALFWORLD: running 7b (${ALFWORLD_GPUS} GPUs)"
     run_script "run_alfworld_7b.sh"    "${ENV_SDAR}" "0,1,2,3" "${ALF_GPU_SED}"
 
-    heartbeat_stop
     log "=== PHASE grid DONE ==="
 }
 

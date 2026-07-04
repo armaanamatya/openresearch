@@ -431,14 +431,21 @@ remote_prepare() {
   "${ssh_base[@]}" "$(cat <<'WATCHDOG_INSTALL'
 sudo tee /usr/local/sbin/sdar-idle-watchdog.sh >/dev/null <<'WD'
 #!/usr/bin/env bash
-# VM-side idle backstop: stop the instance when no reproduction is alive AND the
-# GPU is idle past a grace window. Survives local-host death. Guest shutdown halts
-# billing on a2-ultragpu with no local-SSD discard gotcha and needs no IAM scope.
+# VM-side idle backstop: stop the instance when there is no measurable activity
+# past a grace window. Survives local-host death. Guest shutdown halts billing
+# on a2-ultragpu with no local-SSD discard gotcha and needs no IAM scope.
+#
+# Activity = GPU util > 5% OR recent file growth in SDAR_ACTIVITY_DIRS. A merely
+# -alive process is NOT activity: a hung teardown (e.g. a wandb finish() call
+# that never returns) can keep the driver process alive for hours after the run
+# has actually finished, so process liveness is never treated as evidence of work
+# (2026-07-04 incident: a finished run idled a 4xA100 VM for ~2.7h this way).
 #
 # Two-grace model (Task 2 — fast-shutdown on error/exit):
-#   Process alive (pgrep hit or GPU util >5%) -> long grace (SDAR_IDLE_GRACE_S, 3600s)
-#   Process dead + .sdar_run_exited sentinel present -> short grace (SDAR_DEAD_GRACE_S, 300s)
-#   Process dead + no sentinel -> long grace (process may be about to start)
+#   Activity present -> long grace (SDAR_IDLE_GRACE_S, 3600s)
+#   No activity + .sdar_run_exited sentinel present ($REPO or /run) -> short
+#     grace (SDAR_DEAD_GRACE_S, 300s)
+#   No activity + no sentinel -> long grace (run may be about to start)
 # When OPENRESEARCH_SDAR_NO_AUTOSTOP=1 is set in the env file, skip shutdown
 # entirely (the remote watcher, sdar_gcp_watch.sh, handles the stop instead).
 set -uo pipefail
@@ -447,6 +454,7 @@ STATE=/run/sdar_last_active            # tmpfs -> fresh grace window each boot
 GRACE="${SDAR_IDLE_GRACE_S:-3600}"
 DEAD_GRACE="${SDAR_DEAD_GRACE_S:-300}"
 SENTINEL="$REPO/.sdar_run_exited"
+SENTINEL_RUN="/run/sdar_run_exited"
 ENV_FILE="$REPO/runs/.cache/sdar_gcp.env"
 # Respect NO_AUTOSTOP: source the run env file to pick up the flag. Fail-soft.
 if [ -f "$ENV_FILE" ]; then
@@ -456,19 +464,23 @@ if [ "${OPENRESEARCH_SDAR_NO_AUTOSTOP:-0}" = "1" ]; then
   # Watcher (sdar_gcp_watch.sh) handles the stop; watchdog stays hands-off.
   exit 0
 fi
-live() {
-  pgrep -f 'backend.cli reproduce' >/dev/null 2>&1 && return 0
+activity_evidence() {
   local u
   u=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | sort -rn | head -1)
   [[ "${u:-0}" =~ ^[0-9]+$ ]] && [ "${u:-0}" -gt 5 ] && return 0
+  local d
+  IFS=':' read -ra _dirs <<< "${SDAR_ACTIVITY_DIRS:-/mnt/sdar-cache/logs:$REPO/runs}"
+  for d in "${_dirs[@]}"; do
+    find "$d" -type f -mmin -10 -print -quit 2>/dev/null | grep -q . && return 0
+  done
   return 1
 }
-if live; then date +%s > "$STATE"; exit 0; fi
+if activity_evidence; then date +%s > "$STATE"; exit 0; fi
 [ -f "$STATE" ] || { date +%s > "$STATE"; exit 0; }
 now=$(date +%s); last=$(cat "$STATE" 2>/dev/null || echo "$now")
 elapsed=$(( now - last ))
-# Short grace when the run is known dead (exit trap wrote the sentinel).
-if [ -f "$SENTINEL" ]; then
+# Short grace when the run is known dead (exit trap wrote a sentinel).
+if [ -f "$SENTINEL" ] || [ -f "$SENTINEL_RUN" ]; then
   grace="$DEAD_GRACE"
   logger -t sdar-idle-watchdog "run sentinel present — dead-grace ${DEAD_GRACE}s (elapsed=${elapsed}s)"
 else

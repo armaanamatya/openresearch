@@ -536,6 +536,12 @@ The handoff's advice — *"if the warm cache lacks the WebShop corpus or wiki-18
 index, populate it once with `bash scripts/sdar_authors_repro.sh base alfworld
 webshop search`"* — is exactly route 2 pre-staging route 1's cache.
 
+**Checkpointing note:** the authors' vendored `run_search_3b.sh` (and its
+siblings) ship `trainer.save_freq=-1` — checkpointing is disabled upstream. For
+a reproduction that needs to retain the final weights (not just the console
+metrics), override it to `trainer.save_freq=150` (or the run's total step
+count) when invoking the vendored script.
+
 ### ALFWorld — one-time multi-GB game download
 
 - **Mechanism:** `env_cache.ensure_alfworld` resolves the `alfworld-download`
@@ -664,10 +670,17 @@ Four independent layers, all armed by the provisioning command:
 1. **GCP `max-run-duration` → STOP** (44 h) — control-plane, survives any
    process / kernel death.
 2. **VM-side systemd idle watchdog** (`sdar-idle-watchdog.timer`, installed
-   during `prepare`) — no `backend.cli reproduce` process *and* GPU idle →
-   `sudo shutdown -h now`. Two-grace model: **300 s** when a run is known-dead
-   (`.sdar_run_exited` sentinel present), **3600 s** otherwise. Honors
-   `NO_AUTOSTOP=1`.
+   during `prepare`) — stops the VM on *evidence-based* idleness, not process
+   liveness: activity = GPU util > 5% **OR** recent (< 10 min) file growth in
+   `SDAR_ACTIVITY_DIRS` (default `/mnt/sdar-cache/logs:$REPO/runs`, so
+   CPU-bound phases like staging/eval post-process still count). A merely-alive
+   process is deliberately NOT activity — the 2026-07-04 incident was a
+   *finished* training run whose hung wandb teardown kept the driver process
+   alive for ~2.7h, and the old `pgrep`-based check treated that as "active"
+   the whole time. No activity past the grace window → `sudo shutdown -h now`.
+   Two-grace model: **300 s** when a run is known-dead (`.sdar_run_exited`
+   sentinel present at either `$REPO/.sdar_run_exited` or the tmpfs
+   `/run/sdar_run_exited`), **3600 s** otherwise. Honors `NO_AUTOSTOP=1`.
 3. **Error / exit fast-shutdown** — `sdar_gcp_run.sh`'s EXIT trap + `self_stop()`:
    on *any* exit (crash / OOM / success), the VM stops in seconds. The boot disk
    persists; flip to a CPU machine type to debug without GPU charges.
