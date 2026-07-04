@@ -131,11 +131,19 @@ class TestCellCheckpointEnvInjection:
         assert dir_a.endswith("cell_a/checkpoints")
         assert dir_b.endswith("cell_b/checkpoints")
 
-    def test_checkpoint_dir_not_mkdir_by_harness(self, tmp_path, monkeypatch):
-        """The harness must NOT create the checkpoint dir (trainer responsibility)."""
+    def test_checkpoint_dir_mkdir_by_harness(self, tmp_path, monkeypatch):
+        """The harness MUST pre-create the checkpoint dir before spawning the trainer.
+
+        2026-07-02 fix: trainers were logging "Parent directory .../checkpoints does
+        not exist" and saving nothing, causing flat-zero reward on every cell.  The
+        harness now calls ``(output_dir / "checkpoints").mkdir(...)`` alongside
+        ``output_dir.mkdir(...)`` so the trainer can always write its first checkpoint.
+        (Previously this test asserted the OPPOSITE — the harness did not mkdir it.
+        That design decision proved wrong in practice.)
+        """
         monkeypatch.delenv("OPENRESEARCH_CELL_CHECKPOINT_INTERVAL_S", raising=False)
         self._call(tmp_path, monkeypatch)
         ckpt_dir = tmp_path / "c0" / "checkpoints"
-        assert not ckpt_dir.exists(), (
-            "Harness must not mkdir the checkpoint dir — the trainer creates it on first write"
+        assert ckpt_dir.exists(), (
+            "Harness must pre-create the checkpoint dir so the trainer can save its first checkpoint"
         )

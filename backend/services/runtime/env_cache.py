@@ -282,11 +282,32 @@ def provision_scope(env_names: list[str], manager: EnvCacheManager) -> Provision
     exactly as many as were acquired. The caller injects ``env_vars`` into the
     child run and merges ``exclusions`` into ``metrics.json::scope`` via
     ``build_scope_block``.
+
+    Asset pre-staging (OPENRESEARCH_ASSET_RESOLVER_V2, default OFF):
+    ``asset_prestage.build_default_resolver()`` returns ``None`` when the flag
+    is unset — the ``if resolver is not None`` guard is never entered, so the
+    loop body below is **byte-identical to today** when the flag is OFF.
     """
+    from backend.services.runtime import asset_prestage  # lazy: avoids import cycle
+
+    # build_default_resolver() → None when OPENRESEARCH_ASSET_RESOLVER_V2 is
+    # off (default).  When None, the inner guard is never entered — flag-off
+    # path is provably byte-identical to the pre-wiring code above.
+    resolver = asset_prestage.build_default_resolver()
+
     env_vars: dict[str, str] = {}
     exclusions: list[Exclusion] = []
     webshop_leases = 0
     for name in env_names or []:
+        # Pre-stage corpus assets (no-op when resolver is None / flag OFF).
+        if resolver is not None:
+            staged = asset_prestage.prestage_env_assets(name, resolver, manager._cache)
+            if staged:
+                import logging as _logging
+                _logging.getLogger(__name__).debug(
+                    "provision_scope: pre-staged %d file(s) for %r: %s",
+                    len(staged), name, staged,
+                )
         res = manager.setup(name)
         if res.ok:
             env_vars.update(res.as_env_vars())

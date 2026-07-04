@@ -240,6 +240,12 @@ timeout --signal=TERM --kill-after=180 "$OUTER_WALL_S" \
 Note `--sandbox local`: on the VM, experiments run as **host subprocesses on the
 local A100s**, no Docker.
 
+Note `--repo-url ...` + the script-set `OPENRESEARCH_USE_AUTHOR_REPO=1`: this
+SDAR run is **repo-first in `adapt` mode** — it clones the authors' repo and
+adapts it into `code/`, *not* reproducing from scratch (which is the global
+default). Full detail:
+[Reproduction source: repo-first vs. from-scratch](#reproduction-source-repo-first-vs-from-scratch-the-modes).
+
 ### The RLM root loop
 
 1. **Ingest + offload.** The paper is parsed and offloaded as the REPL `context`

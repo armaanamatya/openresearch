@@ -171,6 +171,71 @@ except ImportError:  # in-repo import path.
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Long-horizon turn-floor guard (ALFWorld / WebShop)
+# ---------------------------------------------------------------------------
+
+# Minimum max_turns required for environments whose tasks need many primitive
+# commands. An agent-generated trainer that leaves max_turns=6 will NEVER
+# collect a winning episode on ALFWorld (15-50 commands needed) or WebShop
+# (multi-step product-search), guaranteeing reward=0 and no GRPO signal.
+_LONG_HORIZON_TURN_FLOORS: dict[str, int] = {
+    "alfworld": 30,
+    "webshop": 15,
+}
+
+
+def _floor_cell_max_turns(cell: dict) -> dict:
+    """Return a shallow copy of ``cell`` with ``max_turns`` floored for
+    long-horizon agentic environments.
+
+    Determine the cell's environment via ``cell["env"]`` when present, else
+    scan the cell's ``"id"`` string (lowercased) for known env substrings
+    (ids look like ``qwen2_5_3b__sdar__alfworld__s0``).  If the resolved env
+    has a minimum turn floor AND the cell's current ``max_turns`` is missing,
+    non-integer, or below the floor, the returned copy sets it to the floor.
+
+    Cells whose environment is not in ``_LONG_HORIZON_TURN_FLOORS`` and cells
+    already at or above the floor are returned byte-for-byte identical to the
+    caller's dict (a shallow copy is NOT made in those cases — the function is
+    a no-op for the common path).  The caller's original ``cell`` dict is NEVER
+    mutated; when a floor is applied, a fresh ``{**cell}`` copy is returned.
+    """
+    # Determine the environment: prefer the explicit "env" key, else scan id.
+    env_raw: str = cell.get("env", "") or ""
+    if not env_raw:
+        env_raw = cell.get("id", "") or ""
+    env_lower = env_raw.strip().lower()
+
+    floor: int | None = None
+    for env_key, env_floor in _LONG_HORIZON_TURN_FLOORS.items():
+        if env_key in env_lower:
+            floor = env_floor
+            break
+
+    if floor is None:
+        return cell  # not a long-horizon env — original dict, no copy
+
+    # Check the current max_turns.
+    old = cell.get("max_turns")
+    try:
+        current = int(old)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        current = None
+
+    if current is not None and current >= floor:
+        return cell  # already at or above floor — no change
+
+    # Build a shallow copy with the floor applied.
+    cell_id = cell.get("id", "<unknown>")
+    logger.warning(
+        "gpu_cell_runner: floored max_turns for %s cell %s: %s -> %s "
+        "(long-horizon env: fewer turns guarantee reward=0)",
+        env_lower, cell_id, old, floor,
+    )
+    return {**cell, "max_turns": floor}
+
+
 # Signatures that indicate a CUDA out-of-memory event in subprocess output.
 _OOM_SIGNATURES: tuple[str, ...] = (
     "CUDA out of memory",
@@ -575,6 +640,11 @@ def _run_cell_subprocess(
     child_env["CUDA_VISIBLE_DEVICES"] = gpu_id
     child_env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     child_env["OPENRESEARCH_CELL_OUTPUT_DIR"] = str(output_dir)
+    # Floor max_turns for long-horizon envs (ALFWorld/WebShop) before
+    # serialising — an agent-generated trainer that leaves max_turns=6 can
+    # never complete an ALFRED task (15-50 primitive commands needed), so
+    # reward stays 0 and no GRPO signal reaches the policy.
+    cell = _floor_cell_max_turns(cell)
     child_env["OPENRESEARCH_CELL_PARAMS"] = json.dumps(cell)
     # T2 intra-cell checkpoint (2026-06-18): a STABLE per-cell dir on the
     # persistent output disk so a spot preemption mid-cell resumes from the
@@ -601,6 +671,7 @@ def _run_cell_subprocess(
         child_env.pop("OPENRESEARCH_CELL_GRAD_CHECKPOINT", None)
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
 
     cmd = [sys.executable, str(cell_script)] + [
         f"--cell-id={cell.get('id', '')}",
