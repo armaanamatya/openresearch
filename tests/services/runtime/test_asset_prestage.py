@@ -3,19 +3,22 @@
 Coverage:
   1. Flag OFF → build_default_resolver() returns None; prestage_env_assets() returns [].
   2. Flag OFF → provision_scope ProvisionResult is byte-identical (resolver never consulted).
-  3. Flag ON + ok resolve → file copied to WEBSHOP_DATA_DIR/items_shuffle.json.
+  3. Flag ON + ok resolve → file copied to WEBSHOP_DATA_DIR/<dest_subpath>.
   4. Flag ON + resolver returns ok=False → returns [], no raise, provision_scope proceeds.
   5. Unknown env → prestage_env_assets returns [].
   6. WEBSHOP_DATA_DIR unset → no copy attempted, no raise, returns [].
   7. Resolver.resolve raises → swallowed (fail-soft), returns [].
   8. Injected copier called with (local_path, str(dest)).
+  9. Candidate fallback: a failing/rejected first candidate falls through to the next.
+  10. Registry shape: webshop carries 4 ordered-mirror specs with the pinned checksums.
 """
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -78,6 +81,13 @@ def _resolver_raising() -> AssetResolverV2:
         hf_source=lambda i, d: None,
         url_source=lambda i, d: None,
     )
+
+
+def _use_registry(monkeypatch, specs: tuple[PrestageSpec, ...], *, env: str = "webshop") -> None:
+    """Swap ENV_ASSET_REGISTRY for the duration of a test (module-level, patched back after)."""
+    import backend.services.runtime.asset_prestage as _ap
+
+    monkeypatch.setattr(_ap, "ENV_ASSET_REGISTRY", {env: specs})
 
 
 # ---------------------------------------------------------------------------
@@ -198,11 +208,31 @@ def test_provision_scope_flag_off_resolver_never_consulted(tmp_path, monkeypatch
 
 # ---------------------------------------------------------------------------
 # 4. Flag ON + ok resolve → file copied to dest
+#
+# These use a monkeypatched, integrity-pin-free registry so the *mechanism*
+# (resolve -> copy) is tested independently of the real, multi-GB production
+# pins (which fake in-memory content can never satisfy).
 # ---------------------------------------------------------------------------
+
+
+def _two_spec_registry() -> tuple[PrestageSpec, ...]:
+    return (
+        PrestageSpec(
+            env_dir_var="WEBSHOP_DATA_DIR",
+            dest_subpath="items_shuffle.json",
+            asset=RequiredAsset(kind="dataset", identifier="https://mirror.example/items_shuffle.json"),
+        ),
+        PrestageSpec(
+            env_dir_var="WEBSHOP_DATA_DIR",
+            dest_subpath="items_ins_v2.json",
+            asset=RequiredAsset(kind="dataset", identifier="https://mirror.example/items_ins_v2.json"),
+        ),
+    )
 
 
 def test_prestage_env_assets_copies_file_to_dest(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENRESEARCH_ASSET_RESOLVER_V2", "1")
+    _use_registry(monkeypatch, _two_spec_registry())
     data_dir = tmp_path / "webshop_data"
     data_dir.mkdir()
     cache = AssetCache(tmp_path / "cache")
@@ -238,6 +268,7 @@ def test_prestage_env_assets_copies_file_to_dest(tmp_path, monkeypatch):
 def test_prestage_env_assets_webshop_case_insensitive(tmp_path, monkeypatch):
     """Registry lookup is case-insensitive on the env name."""
     monkeypatch.setenv("OPENRESEARCH_ASSET_RESOLVER_V2", "1")
+    _use_registry(monkeypatch, _two_spec_registry())
     data_dir = tmp_path / "ws"
     data_dir.mkdir()
     cache = AssetCache(tmp_path / "cache")
@@ -386,6 +417,7 @@ def test_prestage_env_assets_resolve_raises_swallowed(tmp_path, monkeypatch):
 
 def test_prestage_env_assets_copier_receives_correct_args(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENRESEARCH_ASSET_RESOLVER_V2", "1")
+    _use_registry(monkeypatch, _two_spec_registry())
     data_dir = tmp_path / "ws_data"
     data_dir.mkdir()
     cache = AssetCache(tmp_path / "cache")
@@ -415,24 +447,237 @@ def test_prestage_env_assets_copier_receives_correct_args(tmp_path, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
-# 10. Registry structure sanity
+# 10. Candidate fallback: first candidate fails/rejected -> second is used
 # ---------------------------------------------------------------------------
 
 
-def test_env_asset_registry_webshop_specs():
-    specs = ENV_ASSET_REGISTRY["webshop"]
-    assert len(specs) == 2
-    identifiers = {s.asset.identifier for s in specs}
-    assert "gdrive:1EgHdxQ_YxqIQlvvq5iKlCrkEKR6-j0Ib" in identifiers
-    assert "gdrive:1IduG0xl544V_A_jv3tHXC0kyFi7PnyBu" in identifiers
-    subpaths = {s.dest_subpath for s in specs}
-    assert "items_shuffle.json" in subpaths
-    assert "items_ins_v2.json" in subpaths
-    for s in specs:
-        assert s.asset.kind == "dataset"
-        assert s.env_dir_var == "WEBSHOP_DATA_DIR"
+def test_prestage_env_assets_candidate_fallback_first_fails(tmp_path, monkeypatch):
+    """First candidate's resolve fails outright -> second candidate is tried and staged."""
+    monkeypatch.setenv("OPENRESEARCH_ASSET_RESOLVER_V2", "1")
+    data_dir = tmp_path / "ws"
+    data_dir.mkdir()
+    cache = AssetCache(tmp_path / "cache")
+
+    spec = PrestageSpec(
+        env_dir_var="WEBSHOP_DATA_DIR",
+        dest_subpath="items_shuffle.json",
+        candidates=(
+            RequiredAsset(kind="dataset", identifier="https://mirror-a.example/items_shuffle.json"),
+            RequiredAsset(kind="dataset", identifier="https://mirror-b.example/items_shuffle.json"),
+        ),
+    )
+    _use_registry(monkeypatch, (spec,))
+
+    def _url_src(identifier: str, dest: Path) -> Path | None:
+        if "mirror-a" in identifier:
+            return None  # simulate a dead mirror (404 / network failure)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"content-from-mirror-b")
+        return dest
+
+    resolver = AssetResolverV2(
+        gcs_store=InMemoryGcsStore(),
+        hf_source=lambda i, d: None,
+        url_source=_url_src,
+        gdrive_source=None,
+        recipe_lookup=lambda _: None,
+    )
+
+    def _copier(src, dst):
+        shutil.copy2(src, dst)
+
+    result = prestage_env_assets(
+        "webshop",
+        resolver,
+        cache,
+        env_getter=lambda k, d="": str(data_dir) if k == "WEBSHOP_DATA_DIR" else d,
+        copier=_copier,
+    )
+
+    assert result == [str(data_dir / "items_shuffle.json")]
+    assert (data_dir / "items_shuffle.json").read_bytes() == b"content-from-mirror-b"
+
+
+def test_prestage_env_assets_checksum_mismatch_falls_through(tmp_path, monkeypatch):
+    """Candidate 1 resolves but has the wrong content (bad hash) -> rejected; candidate 2 wins."""
+    monkeypatch.setenv("OPENRESEARCH_ASSET_RESOLVER_V2", "1")
+    data_dir = tmp_path / "ws"
+    data_dir.mkdir()
+    cache = AssetCache(tmp_path / "cache")
+
+    good_content = b"the-real-correct-corpus-bytes"
+    good_sha256 = hashlib.sha256(good_content).hexdigest()
+
+    spec = PrestageSpec(
+        env_dir_var="WEBSHOP_DATA_DIR",
+        dest_subpath="items_shuffle.json",
+        candidates=(
+            RequiredAsset(kind="dataset", identifier="https://mirror-a.example/items_shuffle.json"),
+            RequiredAsset(kind="dataset", identifier="https://mirror-b.example/items_shuffle.json"),
+        ),
+        sha256=good_sha256,
+    )
+    _use_registry(monkeypatch, (spec,))
+
+    def _url_src(identifier: str, dest: Path) -> Path | None:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if "mirror-a" in identifier:
+            dest.write_bytes(b"corrupted-or-truncated-garbage")
+        else:
+            dest.write_bytes(good_content)
+        return dest
+
+    resolver = AssetResolverV2(
+        gcs_store=InMemoryGcsStore(),
+        hf_source=lambda i, d: None,
+        url_source=_url_src,
+        gdrive_source=None,
+        recipe_lookup=lambda _: None,
+    )
+
+    staged_copies: list[tuple[str, str]] = []
+
+    def _copier(src, dst):
+        shutil.copy2(src, dst)
+        staged_copies.append((src, dst))
+
+    result = prestage_env_assets(
+        "webshop",
+        resolver,
+        cache,
+        env_getter=lambda k, d="": str(data_dir) if k == "WEBSHOP_DATA_DIR" else d,
+        copier=_copier,
+    )
+
+    # Only ONE copy ever happened (candidate 1's bad file was never staged).
+    assert len(staged_copies) == 1
+    assert result == [str(data_dir / "items_shuffle.json")]
+    assert (data_dir / "items_shuffle.json").read_bytes() == good_content
+
+
+def test_prestage_env_assets_min_size_violation_rejected(tmp_path, monkeypatch):
+    """A resolved file smaller than min_size_bytes is rejected (never staged)."""
+    monkeypatch.setenv("OPENRESEARCH_ASSET_RESOLVER_V2", "1")
+    data_dir = tmp_path / "ws"
+    data_dir.mkdir()
+    cache = AssetCache(tmp_path / "cache")
+
+    spec = PrestageSpec(
+        env_dir_var="WEBSHOP_DATA_DIR",
+        dest_subpath="items_shuffle_1000.json",
+        candidates=(
+            RequiredAsset(kind="dataset", identifier="https://mirror-a.example/items_shuffle_1000.json"),
+        ),
+        min_size_bytes=1_000_000,  # candidate content below will be a few bytes
+    )
+    _use_registry(monkeypatch, (spec,))
+
+    resolver = _resolver_ok(tmp_path, content=b"too-small")
+
+    staged_copies: list[tuple[str, str]] = []
+
+    def _copier(src, dst):
+        shutil.copy2(src, dst)
+        staged_copies.append((src, dst))
+
+    result = prestage_env_assets(
+        "webshop",
+        resolver,
+        cache,
+        env_getter=lambda k, d="": str(data_dir) if k == "WEBSHOP_DATA_DIR" else d,
+        copier=_copier,
+    )
+
+    assert result == []
+    assert staged_copies == []
+    assert not (data_dir / "items_shuffle_1000.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# 11. PrestageSpec backward-compat + normalization
+# ---------------------------------------------------------------------------
+
+
+def test_prestage_spec_asset_alias_populates_candidates():
+    asset = RequiredAsset(kind="dataset", identifier="https://example.com/f.json")
+    spec = PrestageSpec(env_dir_var="X_DIR", dest_subpath="f.json", asset=asset)
+    assert spec.candidates == (asset,)
+
+
+def test_prestage_spec_explicit_candidates_take_precedence_over_asset():
+    asset = RequiredAsset(kind="dataset", identifier="https://ignored.example/f.json")
+    c1 = RequiredAsset(kind="dataset", identifier="https://a.example/f.json")
+    c2 = RequiredAsset(kind="dataset", identifier="https://b.example/f.json")
+    spec = PrestageSpec(
+        env_dir_var="X_DIR", dest_subpath="f.json", asset=asset, candidates=(c1, c2)
+    )
+    assert spec.candidates == (c1, c2)
+
+
+# ---------------------------------------------------------------------------
+# 12. Registry structure sanity
+# ---------------------------------------------------------------------------
 
 
 def test_registry_keys_are_lowercase():
     for key in ENV_ASSET_REGISTRY:
         assert key == key.lower(), f"registry key {key!r} must be lowercase"
+
+
+def test_env_asset_registry_webshop_shape():
+    specs = ENV_ASSET_REGISTRY["webshop"]
+    assert len(specs) == 4
+
+    by_subpath = {s.dest_subpath: s for s in specs}
+    assert set(by_subpath) == {
+        "items_shuffle.json",
+        "items_ins_v2.json",
+        "items_shuffle_1000.json",
+        "items_ins_v2_1000.json",
+    }
+
+    for spec in specs:
+        assert spec.env_dir_var == "WEBSHOP_DATA_DIR"
+        assert spec.candidates, f"{spec.dest_subpath} must carry >=1 candidate"
+        for cand in spec.candidates:
+            assert cand.kind == "dataset"
+            if cand.identifier.startswith("gdrive:"):
+                continue
+            assert cand.identifier.startswith("https://huggingface.co/"), cand.identifier
+
+    full_shuffle = by_subpath["items_shuffle.json"]
+    full_ins = by_subpath["items_ins_v2.json"]
+    subset_shuffle = by_subpath["items_shuffle_1000.json"]
+    subset_ins = by_subpath["items_ins_v2_1000.json"]
+
+    # Exact sha256 + size pins on the two full files.
+    assert full_shuffle.sha256 == "2ef591d65df3af89e972ab72468eb82cbf124d876552d9f3678667edd620a6c8"
+    assert full_shuffle.min_size_bytes == 5_479_720_229
+    assert full_ins.sha256 == "1d36af476bdb8f82a5da62bd8acdabe54cd8de2fa84010d37da5c4890feb447e"
+    assert full_ins.min_size_bytes == 186_295_270
+
+    # Mirror fallback order 1 -> 2 -> 3 on the full files.
+    shuffle_urls = [c.identifier for c in full_shuffle.candidates if not c.identifier.startswith("gdrive:")]
+    assert shuffle_urls == [
+        "https://huggingface.co/datasets/YWZBrandon/webshop-data/resolve/main/items_shuffle.json",
+        "https://huggingface.co/datasets/HongbangYuan/webshop/resolve/main/items_shuffle.json",
+        "https://huggingface.co/datasets/quanwei0/webshop-minimal/resolve/main/items_shuffle.json",
+    ]
+    ins_urls = [c.identifier for c in full_ins.candidates if not c.identifier.startswith("gdrive:")]
+    assert ins_urls == [
+        "https://huggingface.co/datasets/YWZBrandon/webshop-data/resolve/main/items_ins_v2.json",
+        "https://huggingface.co/datasets/HongbangYuan/webshop/resolve/main/items_ins_v2.json",
+        "https://huggingface.co/datasets/quanwei0/webshop-minimal/resolve/main/items_ins_v2.json",
+    ]
+
+    # gdrive candidates are last-resort (final entry) on the two full files only.
+    assert full_shuffle.candidates[-1].identifier == "gdrive:1EgHdxQ_YxqIQlvvq5iKlCrkEKR6-j0Ib"
+    assert full_ins.candidates[-1].identifier == "gdrive:1IduG0xl544V_A_jv3tHXC0kyFi7PnyBu"
+
+    # 1K subsets: two mirrors only, no gdrive fallback, size-sanity only (no sha256).
+    for s in (subset_shuffle, subset_ins):
+        assert s.sha256 is None
+        assert len(s.candidates) == 2
+        assert all(not c.identifier.startswith("gdrive:") for c in s.candidates)
+    assert subset_shuffle.min_size_bytes == 4_467_013
+    assert subset_ins.min_size_bytes == 147_099
