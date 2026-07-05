@@ -125,3 +125,63 @@ def test_fix_truncated_to_max_len(on, tmp_path):
     ld.mine_lessons(_run_dir(tmp_path, "r1", rows), tmp_path, aid)
     store = json.loads((tmp_path / "_lessons" / "x.json").read_text())
     assert len(store["dockerfile_invalid"]["suggested_fix"]) <= ld.MAX_FIX_LEN
+
+
+# --- hollow-lessons regression (2026-07-02) ---------------------------------
+#
+# Live campaign validation found cell_execution_error/preflight_blocked hit
+# occurrences=2 but never surfaced a suggested_fix, so campaign directives
+# carried memory_hints: []. Root cause: both classes (plus cell_smoke_failed)
+# were absent from CORRECTABLE, so _scan_failures never added them to `seen`
+# at all — no lesson was ever minted, regardless of how good the classifier's
+# fix text was. Pin the fix using the REAL classify_failure() output (not a
+# hand-typed fix) so this exercises the exact pipeline
+# _persist_experiment_result feeds into experiment_runs.jsonl.
+
+def test_campaign_hit_classes_are_correctable(on, tmp_path):
+    assert {"cell_execution_error", "preflight_blocked", "cell_smoke_failed"} <= ld.CORRECTABLE
+
+
+def test_cell_execution_error_mined_with_nonempty_fix(on, tmp_path):
+    from backend.agents.rlm.failure_classifier import classify_failure
+
+    aid = "x"
+    _klass, fix = classify_failure({"success": False, "failure_class": "cell_execution_error"})
+    row = {"success": False, "failure_class": "cell_execution_error", "suggested_fix": fix}
+    ld.mine_lessons(_run_dir(tmp_path, "r1", [row]), tmp_path, aid)
+    ld.mine_lessons(_run_dir(tmp_path, "r2", [row]), tmp_path, aid)  # occurrences=2 -> promoted
+
+    active = ld.active_lessons(tmp_path, aid)
+    assert len(active) == 1
+    assert active[0]["failure_class"] == "cell_execution_error"
+    assert active[0]["suggested_fix"].strip() != ""
+
+
+def test_preflight_blocked_and_cell_smoke_failed_mined_together(on, tmp_path):
+    """Mine all three campaign-hit classes in the SAME rounds (mirrors
+    test_block_caps_and_format) so none accrues retirement staleness while
+    the others are mined separately."""
+    from backend.agents.rlm.failure_classifier import classify_failure
+
+    aid = "x"
+    guard_results = {
+        "cell_execution_error": {"success": False, "failure_class": "cell_execution_error"},
+        "preflight_blocked": {"success": False, "pre_flight_blocked": True},
+        "cell_smoke_failed": {"success": False, "failure_class": "cell_smoke_failed"},
+    }
+    fixes: dict[str, str] = {}
+    rows = []
+    for expected_class, guard_result in guard_results.items():
+        klass, fix = classify_failure(guard_result)
+        assert klass == expected_class
+        assert fix.strip()
+        fixes[expected_class] = fix
+        rows.append({"success": False, "failure_class": expected_class, "suggested_fix": fix})
+
+    for rnd in range(2):  # occurrences=2 for every class -> all promoted
+        ld.mine_lessons(_run_dir(tmp_path, f"r{rnd}", rows), tmp_path, aid)
+
+    active = {a["failure_class"]: a for a in ld.active_lessons(tmp_path, aid)}
+    for expected_class, fix in fixes.items():
+        assert expected_class in active, f"{expected_class} lesson not promoted"
+        assert active[expected_class]["suggested_fix"] == fix[: ld.MAX_FIX_LEN]

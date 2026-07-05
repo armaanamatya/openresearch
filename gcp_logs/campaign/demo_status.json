@@ -1,0 +1,29 @@
+{
+  "paperId": "2605.15155",
+  "paperTitle": "arXiv:2605.15155",
+  "paper": {
+    "id": "2605.15155",
+    "title": "arXiv:2605.15155"
+  },
+  "projectId": "prj_09047604e591d969",
+  "outputDir": "/home/abheekp/openresearch/runs/prj_09047604e591d969",
+  "runMode": "rlm",
+  "status": "completed",
+  "updatedAt": "2026-07-02T20:52:55.727886+00:00",
+  "startedAt": "2026-07-02T18:51:55.049781+00:00",
+  "primitiveProvider": "real",
+  "process_status": "completed",
+  "verdict": "unknown",
+  "pid": 35686,
+  "pidHost": "sdar-2model-a",
+  "root_model_validated": false,
+  "root_model_risk": "unvalidated",
+  "cost_summary": {
+    "usd_total": 7.699671,
+    "usd_this_iter": 2.336225,
+    "iter_count": 18,
+    "usd_per_iter_p50": 0.0,
+    "updated_at": "2026-07-02T20:49:57.664274+00:00"
+  },
+  "completedAt": "2026-07-02T20:52:55.727886+00:00"
+}

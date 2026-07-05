@@ -1,0 +1,14 @@
+[stage 2026-07-01T20:46:49Z] fix #1: accept conda ToS (main + r channels)
+[stage 2026-07-01T20:46:51Z] phase: base
+[stage 2026-07-01T20:46:52Z] fix #4: install verl preprocessing deps into the sdar env (tensordict, ...)
+[stage 2026-07-01T20:46:53Z] phase: alfworld
+[stage 2026-07-01T20:46:53Z] phase: search (resilient; wiki-18 e5 index ~70 GB, resumable, HF rate-limited)
+[stage 2026-07-01T20:49:01Z]   search attempt 1/40 incomplete (resuming); cache=36G
+[stage 2026-07-01T20:51:21Z]   search attempt 2/40 incomplete (resuming); cache=36G
+[stage 2026-07-01T20:53:42Z]   search attempt 3/40 incomplete (resuming); cache=36G
+[stage 2026-07-01T20:56:06Z]   search attempt 4/40 incomplete (resuming); cache=36G
+[stage 2026-07-01T20:58:27Z]   search attempt 5/40 incomplete (resuming); cache=36G
+[stage 2026-07-01T21:00:47Z]   search attempt 6/40 incomplete (resuming); cache=36G
+[stage 2026-07-01T21:03:07Z]   search attempt 7/40 incomplete (resuming); cache=36G
+[stage 2026-07-01T21:13:21Z] phase: webshop
+[stage 2026-07-01T21:20:10Z] === ALL STAGING COMPLETE — /mnt/sdar-cache/.warm_ok written ===

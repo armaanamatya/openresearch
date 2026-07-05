@@ -6,6 +6,10 @@ built with, and a roomy host pre-stages the multi-GB index out-of-band. These pi
   * ``_default_search_qa_index_builder`` honours a pre-staged ``OPENRESEARCH_SEARCH_QA_INDEX_DIR``
     (no download) and falls through cleanly when it holds no index.
   * ``ensure_search_qa_index`` emits ``SEARCH_QA_ENCODER`` alongside the e5 selection.
+
+2026-07-02 fix: a pre-staged on-disk index is ALWAYS used regardless of
+``OPENRESEARCH_SEARCH_QA_DENSE``.  The flag gates only a network BUILD/download.
+``test_dense_disabled_returns_none`` updated to reflect the corrected invariant.
 """
 from __future__ import annotations
 
@@ -37,10 +41,23 @@ class TestPreStagedIndexBuilder:
         monkeypatch.delenv("OPENRESEARCH_SEARCH_QA_INDEX_REPO", raising=False)
         assert EC._default_search_qa_index_builder(tmp_path / "cache") is None
 
-    def test_dense_disabled_returns_none(self, tmp_path, monkeypatch):
+    def test_staged_index_used_even_when_flag_unset(self, tmp_path, monkeypatch):
+        # 2026-07-02 fix: OPENRESEARCH_SEARCH_QA_DENSE gates a network BUILD/download
+        # ONLY — a pre-staged on-disk index is always used even when the flag is unset.
+        # (This test was previously named test_dense_disabled_returns_none and was
+        # asserting the BUG: that a staged index is ignored when the flag is unset.)
         (tmp_path / "x.index").write_bytes(b"fake")
         monkeypatch.delenv("OPENRESEARCH_SEARCH_QA_DENSE", raising=False)
         monkeypatch.setenv("OPENRESEARCH_SEARCH_QA_INDEX_DIR", str(tmp_path))
+        out = EC._default_search_qa_index_builder(tmp_path / "cache")
+        assert out == tmp_path  # staged index is returned even without the opt-in flag
+
+    def test_dense_disabled_no_index_returns_none(self, tmp_path, monkeypatch):
+        # When NO staged index exists and the flag is unset → BM25 fallback.
+        monkeypatch.delenv("OPENRESEARCH_SEARCH_QA_DENSE", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_SEARCH_QA_INDEX_DIR", raising=False)
+        monkeypatch.delenv("SEARCH_QA_INDEX_DIR", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_SEARCH_QA_INDEX_REPO", raising=False)
         assert EC._default_search_qa_index_builder(tmp_path / "cache") is None
 
 

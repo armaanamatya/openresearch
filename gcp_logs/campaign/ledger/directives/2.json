@@ -1,0 +1,110 @@
+{
+  "attempt_n": 2,
+  "project_id": "prj_09047604e591d969",
+  "paper_ref": "2605.15155",
+  "enforcement": {
+    "cli_args": [
+      [
+        "--max-usd",
+        "1.99046"
+      ],
+      [
+        "--max-wall-clock",
+        "7904.19"
+      ],
+      [
+        "--max-run-gpu-usd",
+        "51"
+      ],
+      [
+        "--paper-hint",
+        "2605.15155"
+      ],
+      [
+        "--sandbox",
+        "local"
+      ]
+    ],
+    "env": {
+      "OPENRESEARCH_MAX_RUN_GPU_USD": "51"
+    },
+    "effective_wall_s": 7904.1944556,
+    "vm_ceiling_s": 9704.1944556,
+    "provision_charged_to_gpu": false,
+    "notes": []
+  },
+  "target_floor": 0.0,
+  "understanding_ref": "runs/prj_09047604e591d969/campaign/understanding.json",
+  "unresolved_warnings": [],
+  "leaf_repair_plan": {
+    "plan": [
+      {
+        "leaf_id": "f3503f9b5504487c",
+        "repair_class": "review",
+        "cost": "review",
+        "directive": "Needs judgment \u2014 read the justification; no deterministic repair template applies."
+      },
+      {
+        "leaf_id": "987df24ff12445a2",
+        "repair_class": "review",
+        "cost": "review",
+        "directive": "Needs judgment \u2014 read the justification; no deterministic repair template applies."
+      },
+      {
+        "leaf_id": "8c05f8e56b1c4088",
+        "repair_class": "review",
+        "cost": "review",
+        "directive": "Needs judgment \u2014 read the justification; no deterministic repair template applies."
+      },
+      {
+        "leaf_id": "4e13f27276cf4d12",
+        "repair_class": "review",
+        "cost": "review",
+        "directive": "Needs judgment \u2014 read the justification; no deterministic repair template applies."
+      },
+      {
+        "leaf_id": "35bf4a8476a4491d",
+        "repair_class": "review",
+        "cost": "review",
+        "directive": "Needs judgment \u2014 read the justification; no deterministic repair template applies."
+      },
+      {
+        "leaf_id": "eaeae7c52a4e4948",
+        "repair_class": "review",
+        "cost": "review",
+        "directive": "Needs judgment \u2014 read the justification; no deterministic repair template applies."
+      },
+      {
+        "leaf_id": "992264007b7e4844",
+        "repair_class": "review",
+        "cost": "review",
+        "directive": "Needs judgment \u2014 read the justification; no deterministic repair template applies."
+      },
+      {
+        "leaf_id": "e5a89213fab04e13",
+        "repair_class": "review",
+        "cost": "review",
+        "directive": "Needs judgment \u2014 read the justification; no deterministic repair template applies."
+      }
+    ]
+  },
+  "improvement_notes": [],
+  "failure_capsules_ref": "runs/prj_09047604e591d969/rlm_state/failure_capsules.jsonl",
+  "prior_evidence_ref": "runs/prj_09047604e591d969/code/metrics.json",
+  "memory_hints": [],
+  "injected_lesson_signatures": [],
+  "scope_spec": null,
+  "scope_rung": 0,
+  "seed_lineage": "champion",
+  "seed_pointer": "runs/prj_09047604e591d969/code",
+  "envelope": {
+    "llm_usd": 1.9904622499999998,
+    "gpu_usd": 51.0,
+    "gpu_hours": 10.6,
+    "wall_s": 7904.1944556,
+    "vm_ceiling_s": 9704.1944556
+  },
+  "extra_guidance": "[campaign] Attempt 2 (champion, scope rung 0).\n[leaf-repairs]\n- f3503f9b5504487c [review] Needs judgment \u2014 read the justification; no deterministic repair template applies.\n- 987df24ff12445a2 [review] Needs judgment \u2014 read the justification; no deterministic repair template applies.\n- 8c05f8e56b1c4088 [review] Needs judgment \u2014 read the justification; no deterministic repair template applies.\n- 4e13f27276cf4d12 [review] Needs judgment \u2014 read the justification; no deterministic repair template applies.\n- 35bf4a8476a4491d [review] Needs judgment \u2014 read the justification; no deterministic repair template applies.\n- eaeae7c52a4e4948 [review] Needs judgment \u2014 read the justification; no deterministic repair template applies.\n- 992264007b7e4844 [review] Needs judgment \u2014 read the justification; no deterministic repair template applies.\n- e5a89213fab04e13 [review] Needs judgment \u2014 read the justification; no deterministic repair template applies.\n[target-floor] Prior guard-clean best: 0.0",
+  "run_spec_path": "configs/sdar_campaign_run_spec.json",
+  "fingerprint": "4046f8e98f1dd249732462c4afd018c63aec077dc815ad79d39f612eec1ce6fc"
+}

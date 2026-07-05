@@ -227,6 +227,16 @@ def rollout_episode(
     tokens.  ``max_new_tokens`` is accepted for API symmetry with the trainer's
     ``generate`` wrapper.
     """
+    # WS-C: claim ownership of this episode's health row so AgenticEnv's own
+    # __init_subclass__-wrapped reset/step tracking defers to the row this
+    # function writes below (never double-counts the episode). Fail-soft: a
+    # plain fake/mock env (as several unit tests use) may reject attribute
+    # assignment or simply not care — either way, rollout must not break.
+    try:
+        setattr(env, "_health_owned_by_rollout", True)
+    except Exception:  # noqa: BLE001
+        pass
+
     # Resolve the turn cap: explicit arg > env's declared cap > 1 (single-turn).
     cap = max_turns if max_turns is not None else getattr(env, "max_turns", 1)
     try:
@@ -362,6 +372,7 @@ def rollout_episode(
         "reward": float(reward),
         "unavailable": _unavailable,
         "served": _served,
+        "source": "rollout",
     })
 
     return Trajectory(

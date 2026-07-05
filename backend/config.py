@@ -87,10 +87,21 @@ class Settings(BaseSettings):
     # to today: no resolve/clone, repo_files stays None, inspect_repository returns
     # disabled, detect_environment/implement_baseline/report unchanged.
     use_author_repo: bool = False           # OPENRESEARCH_USE_AUTHOR_REPO (master)
-    reproduction_mode: str = "adapt"        # OPENRESEARCH_REPRODUCTION_MODE: adapt | reference
+    reproduction_mode: str = "adapt"        # OPENRESEARCH_REPRODUCTION_MODE: adapt | reference | execute
+    # Minimal Viable Reproduction (MVR, default-OFF): standalone opt-in mode that
+    # composes with adapt/reference/execute -- run the paper's central claim at the
+    # smallest scope (1 model x 1 env/dataset x 1 seed) on a short budget and judge
+    # directional viability instead of requiring the exact reported number.
+    minimal_viable: bool = False            # OPENRESEARCH_MINIMAL_VIABLE
     repo_clone_timeout_s: int = 300         # OPENRESEARCH_REPO_CLONE_TIMEOUT_S
     repo_clone_max_mb: int = 2048           # OPENRESEARCH_REPO_CLONE_MAX_MB (post-clone size cap)
     repo_clone_lfs: bool = False            # OPENRESEARCH_REPO_CLONE_LFS (off => GIT_LFS_SKIP_SMUDGE=1)
+    # Local-repo reuse + commit pin (2026-07-05). Unset => byte-identical github clone
+    # path in RepoProvisioner.clone. When set, repo_local_path seeds repo/ from a
+    # pre-staged local clone instead of a network `git clone`; repo_commit pins/
+    # records the commit checked out from that local copy.
+    repo_local_path: str = ""               # OPENRESEARCH_REPO_LOCAL_PATH
+    repo_commit: str = ""                   # OPENRESEARCH_REPO_COMMIT
 
     # External provider API keys. We read both the unprefixed names that
     # the upstream SDKs (anthropic, openai) and most CI conventions use,

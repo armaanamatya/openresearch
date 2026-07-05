@@ -75,6 +75,7 @@ _HARNESS_CODE_HELPERS: tuple[str, ...] = (
     "eval_provenance.py",  # eval-metric provenance producer (record_eval) — verifiable held-out metric sidecar
     "convergence_evidence.py",  # Module A: structured convergence/sweep evidence (rubric_guard consults it)
     "fair_comparison.py",  # Module B: identical-init snapshot + verifiable init fingerprint
+    "verl_metrics_adapter.py",  # execute-mode seam: verl-shaped val logs/summary → canonical metrics.json
 )
 
 
@@ -2812,6 +2813,27 @@ async def run_with_sdk(
         context["reference_repo_note"] = (
             "The authors' reference implementation is available read-only at repo/. "
             "Consult it for exact details, but write your own code/ from scratch."
+        )
+    elif _repro_mode == "execute":
+        context["execute_repo_note"] = (
+            "EXECUTE mode: the authors' repository has been seeded into code/ verbatim. "
+            "Do NOT reimplement the method — run the authors' own pipeline. Add ONLY: "
+            "(1) the harness entry contract (cells.json + train_cell.py that invoke the authors' "
+            "documented entrypoints/configs for the in-scope grid, or commands.json for a monolithic run); "
+            "(2) dependency wiring (fold the repo's own requirements/setup into requirements.txt); "
+            "(3) a thin output adapter that converts the authors' native results/logs into the canonical "
+            "metrics.json (+ provenance sidecars) WITHOUT altering the measured values. "
+            "Preserve the authors' training/eval code paths unmodified wherever possible — the report's "
+            "adaptation delta (files changed vs the pristine repo) is audited. If the pipeline cannot run "
+            "in this sandbox (missing service, incompatible framework), fail honestly and report the "
+            "blocking reason; never substitute a from-scratch reimplementation in execute mode. "
+            "A cell in cells.json may declare \"command\" (a raw shell command, e.g. "
+            "\"conda run -n sdar bash examples/sdar_trainer/run_search_3b.sh\") to run the authors' own "
+            "launcher verbatim instead of writing a train_cell.py wrapper; \"cell_env\" for extra per-cell "
+            "env vars (NOT \"env\", which is the environment/dataset axis); and \"metrics_source\": "
+            "{\"kind\": \"verl\", \"log_glob\": \"$OUTPUT_DIR/*.log\", \"success_rate_key\": "
+            "\"val/success_rate\"} so the harness adapts the authors' own val logs into metrics.json "
+            "when the command launcher doesn't write one itself."
         )
 
     # θ: extract metrics_shape from the reproduction_contract when not explicitly

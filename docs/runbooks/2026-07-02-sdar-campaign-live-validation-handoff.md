@@ -248,19 +248,22 @@ Steering: `POST /runs/prj_09047604e591d969/campaign/messages`
 
 ## 7. Open follow-ups (none block a rerun)
 
-1. INIT should apply the profile's `OPENRESEARCH_*` flags to the campaign
-   process env (kills live-bug #3's operational workaround).
-2. `campaign_composition._decide_impl`'s `est_usd = est_gpu_hours × rate`
-   under-counts multi-GPU (misses ×gpu_count) — budget floor fires late; the
-   envelope co-tightening still caps actual spend.
-3. Pre-existing: `recipe_library.admit_recipe`'s evidence-gate key is never
-   written by `report.py` → recipe admission can never fire in production.
+1. ~~INIT applies profile flags to the campaign process env~~ **DONE** (fill-gaps-only,
+   operator env wins) — the §5 recipe's hand-set memory flags are now optional.
+2. ~~est_usd multi-GPU undercount~~ **DONE** (×`ctx.max_gpu_count`). NEW follow-up
+   found in review: `_gpu_plan_rate_and_count` returns a TOTAL $/hr when derived
+   from gpu_plan.json while `check_enforceability` treats `gpu_usd_per_hr` as
+   PER-GPU — double-counts the GPU count in the wall co-tightening (over-tightens:
+   money-safe direction, but fix the convention).
+3. ~~recipe evidence-gate dead key~~ **DONE**: `report.py` now stamps
+   `evidence_gate_passed` (True/False when the gate runs; absent when disabled —
+   note the gate is default-ON, so the key appears on default reports).
 4. Rubric-canary → ASSESS guard_flags wiring (helper `canary_tripped()` is
    shipped + tested; one line at the assessment layer).
 5. Phase-C replay harvest can't reconstruct un-persisted PolicyConfig knobs
    (documented; skips budget_floor cases).
-6. `preflight_blocked` is not in `lesson_distiller.CORRECTABLE` — recurring
-   preflight blocks produce capsules but never a promoted lesson.
+6. ~~CORRECTABLE gap~~ **DONE**: `cell_execution_error`/`preflight_blocked`/
+   `cell_smoke_failed` now mine lessons with actionable classifier-owned fixes.
 7. Frontend: campaign event payload interfaces were shape-corrected; no UI
    panel consumes them yet (leaderboard column ships).
 8. Root registry has no Anthropic-on-Foundry entry (§4 Path B) — the durable
@@ -274,3 +277,15 @@ Steering: `POST /runs/prj_09047604e591d969/campaign/messages`
 - Sonnet executor rides the Claude subscription (OAuth, $0 per-token) until
   the Foundry key path (§4) replaces it.
 - Local All-CNN campaign: <$2 LLM, $0 GPU.
+
+## 9. SI roadmap from SOTA review (2026-07-02, post-live-validation)
+
+Tier 1 (small): canary_tripped -> ASSESS guard_flags; repair-mode directive
+(seeded attempts edit the seeded tree in place, only failing cells — MLE-STAR
+-style localization). Tier 2: capsule-derived lesson enrichment (structured
+fields -> suggested_fix, never LLM prose); similarity-ranked lesson/capsule
+injection vs the current failure signature (R^2-Mem-style); read-time lesson
+validation (SSGM). Tier 3: REx bandit over lineages (longer campaigns);
+per-cell positive recipes keyed (env, model-family); mining in-run repair
+SEQUENCES into ordered playbooks (EvolveR-style). Papers: 2603.24639,
+2605.13941, 2605.13486, 2605.29668, 2603.11768, 2606.08755.

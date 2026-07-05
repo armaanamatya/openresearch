@@ -1534,6 +1534,20 @@ def _has_partial_timeout_evidence(project_dir: Path) -> bool:
     return False
 
 
+def _evidence_gate_flag_enabled() -> bool:
+    """True when ``OPENRESEARCH_EVIDENCE_GATE`` is on (default ON).
+
+    Single source of truth for the verdict-level gate's on/off decision — read
+    by both ``_apply_evidence_gate`` (below) and the ``evidence_gate_passed``
+    report stamp in ``write_final_report_rlm`` so the two can never drift.
+    """
+    return os.environ.get("OPENRESEARCH_EVIDENCE_GATE", "1").strip().lower() not in {
+        "0",
+        "false",
+        "off",
+    }
+
+
 def _apply_evidence_gate(
     report: RLMFinalReport,
     project_dir: Path,
@@ -1612,7 +1626,7 @@ def _apply_evidence_gate(
     Disable with ``OPENRESEARCH_EVIDENCE_GATE=0`` (legacy ``REPROLAB_`` prefix
     bridged at import by config._apply_legacy_env_aliases).
     """
-    if os.environ.get("OPENRESEARCH_EVIDENCE_GATE", "1").strip().lower() in {"0", "false", "off"}:
+    if not _evidence_gate_flag_enabled():
         return report
     # Unified deterministic critic (§3.2): when OPENRESEARCH_EVIDENCE_AUDIT is ON,
     # AND-in the run-level clean predicate — a success-ish verdict additionally
@@ -1844,6 +1858,8 @@ def write_final_report_rlm(
     # ``run_experiment_calls`` (the authoritative in-memory ledger count,
     # threaded from callers that have ``ctx``) lets the gate reject a forged
     # experiment_runs.jsonl row; ``None`` falls back to a content-only check.
+    _evidence_gate_flag = _evidence_gate_flag_enabled()
+    _verdict_before_gate = report.verdict
     report = _apply_evidence_gate(
         report,
         project_dir,
@@ -1851,6 +1867,12 @@ def write_final_report_rlm(
         run_experiment_ok_calls=run_experiment_ok_calls,
         run_experiment_partial_timeout_calls=run_experiment_partial_timeout_calls,
     )
+    # Did the gate veto (downgrade) anything? Both of _apply_evidence_gate's
+    # downgrade branches (forged/no-evidence -> "failed"; reproduced -> capped
+    # "partial") are the ONLY paths that mutate report.verdict, so a verdict
+    # change is exactly a veto. Feeds the evidence_gate_passed report stamp
+    # below (recipe_library's Tier-B positive-recipe admission gate).
+    _evidence_gate_vetoed = _evidence_gate_flag and report.verdict != _verdict_before_gate
 
     project_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1940,6 +1962,7 @@ def write_final_report_rlm(
         from backend.agents.rlm.external_validator import (  # noqa: PLC0415
             load_verdict,
             evidence_fingerprint,
+            external_validator_enabled,
         )
         _shipped_metrics: dict = dict(report.baseline_metrics) if report.baseline_metrics else {}
         if not _shipped_metrics:
@@ -1967,6 +1990,17 @@ def write_final_report_rlm(
                     }
                     for p in _v.predicates
                 ],
+            }
+        elif external_validator_enabled():
+            # WS-B: the flag is ON but no fresh verdict exists for this shipped
+            # evidence (fingerprint mismatch, the panel never ran, or a finalize
+            # path timed out before persisting) — stamp an explicit marker so a
+            # caller can tell "validator on but missing" apart from "validator
+            # off" instead of both silently reading `{}`.
+            report.validation = {
+                "status": "missing",
+                "reason": "no fresh validator verdict for the shipped evidence",
+                "evidence_fingerprint": _fp,
             }
     except Exception:  # noqa: BLE001 — stamp is best-effort, never crashes the write
         logger.debug("report: validation stamp skipped", exc_info=True)
@@ -2058,6 +2092,23 @@ def write_final_report_rlm(
     # gates below agree.  Fail-soft → plain model dump on any error; byte-for-byte
     # unchanged when OPENRESEARCH_TWO_AXIS_VERDICT is off.
     json_content = report.model_dump_json(indent=2)
+
+    # --- Evidence-gate outcome stamp (additive; recipe_library admission signal) ---
+    # recipe_library._evidence_gate_passed(report) reads report["evidence_gate_passed"]
+    # as its Gate-1 admission predicate for Tier-B positive recipes — but until now
+    # nothing ever wrote that key, so admission could never fire. Same serialized-dict
+    # splice pattern as every other additive stamp below; RLMFinalReport needs no new
+    # field. Present ONLY when the gate ran (OPENRESEARCH_EVIDENCE_GATE on, the
+    # default) — absent when the gate is disabled, so the off-state stays
+    # byte-for-byte identical to before this stamp existed.
+    try:
+        if _evidence_gate_flag:
+            _d = json.loads(json_content)
+            _d["evidence_gate_passed"] = not _evidence_gate_vetoed
+            json_content = json.dumps(_d, indent=2)
+    except Exception:  # noqa: BLE001 — stamp is best-effort, never blocks the write
+        logger.warning("report: evidence_gate_passed stamp failed (non-fatal)")
+
     try:
         from backend.agents.rlm.two_axis_report import compute_and_attach as _attach_two_axis
         _report_dict = report.model_dump()

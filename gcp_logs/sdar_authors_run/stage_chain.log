@@ -1,0 +1,77 @@
+[chain 20:32:21] waiting for base phase to finish...
+[chain 20:32:21] base OK — envs present. Running remaining phases.
+[chain 20:32:21] === starting alfworld ===
+[2026-07-01 20:32:21] === PHASE: alfworld ===
+[2026-07-01 20:32:21] Heartbeat started (pid=9028, target=/run/sdar_last_active)
+[2026-07-01 20:32:21] alfworld already importable in sdar env — skipping pip installs
+[2026-07-01 20:32:21] ALFWorld game data already at /mnt/sdar-cache/data/alfworld/json_2.1.1 — skipping download
+[2026-07-01 20:32:21] Heartbeat stopped
+[2026-07-01 20:32:21] === PHASE alfworld DONE ===
+[chain 20:32:21] === alfworld done ===
+[chain 20:32:21] === starting search ===
+[2026-07-01 20:32:21] === PHASE: search ===
+[2026-07-01 20:32:21] Heartbeat started (pid=9044, target=/run/sdar_last_active)
+[2026-07-01 20:32:21] Installing skyrl_gym (third_party pip install -e .)
+Obtaining file:///mnt/sdar-cache/SDAR/agent_system/environments/env_package/search/third_party
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Checking if build backend supports build_editable: started
+  Checking if build backend supports build_editable: finished with status 'done'
+  Getting requirements to build editable: started
+  Getting requirements to build editable: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Preparing editable metadata (pyproject.toml): finished with status 'done'
+Requirement already satisfied: func_timeout in /mnt/sdar-cache/conda/envs/sdar/lib/python3.12/site-packages (from skyrl-gym==0.1.1) (4.3.5)
+Requirement already satisfied: pandas in /mnt/sdar-cache/conda/envs/sdar/lib/python3.12/site-packages (from skyrl-gym==0.1.1) (3.0.3)
+Requirement already satisfied: requests in /mnt/sdar-cache/conda/envs/sdar/lib/python3.12/site-packages (from skyrl-gym==0.1.1) (2.34.2)
+Requirement already satisfied: omegaconf in /mnt/sdar-cache/conda/envs/sdar/lib/python3.12/site-packages (from skyrl-gym==0.1.1) (2.3.1)
+Requirement already satisfied: antlr4-python3-runtime==4.9.* in /mnt/sdar-cache/conda/envs/sdar/lib/python3.12/site-packages (from omegaconf->skyrl-gym==0.1.1) (4.9.3)
+Requirement already satisfied: PyYAML>=5.1.0 in /mnt/sdar-cache/conda/envs/sdar/lib/python3.12/site-packages (from omegaconf->skyrl-gym==0.1.1) (6.0.3)
+Requirement already satisfied: numpy>=1.26.0 in /mnt/sdar-cache/conda/envs/sdar/lib/python3.12/site-packages (from pandas->skyrl-gym==0.1.1) (2.2.6)
+Requirement already satisfied: python-dateutil>=2.8.2 in /mnt/sdar-cache/conda/envs/sdar/lib/python3.12/site-packages (from pandas->skyrl-gym==0.1.1) (2.9.0.post0)
+Requirement already satisfied: six>=1.5 in /mnt/sdar-cache/conda/envs/sdar/lib/python3.12/site-packages (from python-dateutil>=2.8.2->pandas->skyrl-gym==0.1.1) (1.17.0)
+Requirement already satisfied: charset_normalizer<4,>=2 in /mnt/sdar-cache/conda/envs/sdar/lib/python3.12/site-packages (from requests->skyrl-gym==0.1.1) (3.4.7)
+Requirement already satisfied: idna<4,>=2.5 in /mnt/sdar-cache/conda/envs/sdar/lib/python3.12/site-packages (from requests->skyrl-gym==0.1.1) (3.18)
+Requirement already satisfied: urllib3<3,>=1.26 in /mnt/sdar-cache/conda/envs/sdar/lib/python3.12/site-packages (from requests->skyrl-gym==0.1.1) (2.7.0)
+Requirement already satisfied: certifi>=2023.5.7 in /mnt/sdar-cache/conda/envs/sdar/lib/python3.12/site-packages (from requests->skyrl-gym==0.1.1) (2026.6.17)
+Building wheels for collected packages: skyrl-gym
+  Building editable for skyrl-gym (pyproject.toml): started
+  Building editable for skyrl-gym (pyproject.toml): finished with status 'done'
+  Created wheel for skyrl-gym: filename=skyrl_gym-0.1.1-0.editable-py3-none-any.whl size=3291 sha256=d42c2c1ec0a02ff8445c0fdf829b47bde53e83170b845cf85275571cd0a881d2
+  Stored in directory: /tmp/pip-ephem-wheel-cache-i0bvfwzz/wheels/12/63/4d/ef3d51543145270ced089a30345779e7560ab286c55634fa7a
+Successfully built skyrl-gym
+Installing collected packages: skyrl-gym
+  Attempting uninstall: skyrl-gym
+    Found existing installation: skyrl-gym 0.1.1
+    Uninstalling skyrl-gym-0.1.1:
+      Successfully uninstalled skyrl-gym-0.1.1
+Successfully installed skyrl-gym-0.1.1
+Requirement already satisfied: gym==0.26.2 in /mnt/sdar-cache/conda/envs/sdar/lib/python3.12/site-packages (0.26.2)
+Requirement already satisfied: numpy>=1.18.0 in /mnt/sdar-cache/conda/envs/sdar/lib/python3.12/site-packages (from gym==0.26.2) (2.2.6)
+Requirement already satisfied: cloudpickle>=1.2.0 in /mnt/sdar-cache/conda/envs/sdar/lib/python3.12/site-packages (from gym==0.26.2) (3.1.2)
+Requirement already satisfied: gym_notices>=0.0.4 in /mnt/sdar-cache/conda/envs/sdar/lib/python3.12/site-packages (from gym==0.26.2) (0.1.0)
+[2026-07-01 20:32:26] skyrl_gym installed
+[2026-07-01 20:32:26] Preprocessing Search-QA data (PeterJinGo/nq_hotpotqa_train, ~hundreds MB)
+/mnt/sdar-cache/conda/envs/sdar/lib/python3.12/site-packages/huggingface_hub/utils/_validators.py:205: UserWarning: The `local_dir_use_symlinks` argument is deprecated and ignored in `hf_hub_download`. Downloading to a local directory does not use symlinks anymore.
+  warnings.warn(
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+WARNING:2026-07-01 20:32:34,107:Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+/mnt/sdar-cache/conda/envs/sdar/lib/python3.12/site-packages/huggingface_hub/utils/_validators.py:205: UserWarning: The `local_dir_use_symlinks` argument is deprecated and ignored in `hf_hub_download`. Downloading to a local directory does not use symlinks anymore.
+  warnings.warn(
+[2026-07-01 20:34:27] Search-QA data preprocessed → /mnt/sdar-cache/data/searchR1_processed_direct
+[2026-07-01 20:34:27] Downloading wiki-18 e5 index parts + corpus (~60–70 GB, expect 30–90 min)
+[2026-07-01 20:34:27]   Source: PeterJinGo/wiki-18-e5-index (part_aa, part_ab)
+[2026-07-01 20:34:27]           PeterJinGo/wiki-18-corpus (wiki-18.jsonl.gz)
+[2026-07-01 20:34:27]   Retry on transient HuggingFace failures (up to 5×)
+/home/abheekp/sdar_authors_repro.sh: line 113: HF_HOME=/mnt/sdar-cache/hf: No such file or directory
+[2026-07-01 20:34:27] Attempt 1/5 failed — retrying in 30s: HF_HOME=/mnt/sdar-cache/hf /mnt/sdar-cache/conda/envs/retriever/bin/python3 /mnt/sdar-cache/SDAR/examples/search/searchr1_download.py --local_dir /mnt/sdar-cache/data/searchR1
+/home/abheekp/sdar_authors_repro.sh: line 113: HF_HOME=/mnt/sdar-cache/hf: No such file or directory
+[2026-07-01 20:34:57] Attempt 2/5 failed — retrying in 30s: HF_HOME=/mnt/sdar-cache/hf /mnt/sdar-cache/conda/envs/retriever/bin/python3 /mnt/sdar-cache/SDAR/examples/search/searchr1_download.py --local_dir /mnt/sdar-cache/data/searchR1
+/home/abheekp/sdar_authors_repro.sh: line 113: HF_HOME=/mnt/sdar-cache/hf: No such file or directory
+[2026-07-01 20:35:27] Attempt 3/5 failed — retrying in 30s: HF_HOME=/mnt/sdar-cache/hf /mnt/sdar-cache/conda/envs/retriever/bin/python3 /mnt/sdar-cache/SDAR/examples/search/searchr1_download.py --local_dir /mnt/sdar-cache/data/searchR1
+/home/abheekp/sdar_authors_repro.sh: line 113: HF_HOME=/mnt/sdar-cache/hf: No such file or directory
+[2026-07-01 20:35:57] Attempt 4/5 failed — retrying in 30s: HF_HOME=/mnt/sdar-cache/hf /mnt/sdar-cache/conda/envs/retriever/bin/python3 /mnt/sdar-cache/SDAR/examples/search/searchr1_download.py --local_dir /mnt/sdar-cache/data/searchR1
+/home/abheekp/sdar_authors_repro.sh: line 113: HF_HOME=/mnt/sdar-cache/hf: No such file or directory
+[ERROR] Command failed after 5 attempts: HF_HOME=/mnt/sdar-cache/hf /mnt/sdar-cache/conda/envs/retriever/bin/python3 /mnt/sdar-cache/SDAR/examples/search/searchr1_download.py --local_dir /mnt/sdar-cache/data/searchR1
+[2026-07-01 20:36:27] Heartbeat stopped
+[chain] CHAIN_FAILED at search

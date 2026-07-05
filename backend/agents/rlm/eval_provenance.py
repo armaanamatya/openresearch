@@ -307,6 +307,64 @@ def eval_provenance_should_veto(code_dir: str | Path) -> tuple[bool, str | None]
                         break
                     continue
 
+                # Aggregate-provenance schema (execute-mode verl adapter): a
+                # value-preservingly copied aggregate metric with NO per-example
+                # records (verl exposes only an aggregate — synthesizing fake
+                # per-example records would violate the no-fabrication red
+                # line). Verified by a value-preserving cross-check against
+                # metrics.json instead of a records-recompute.
+                if (
+                    sc.get("provenance_kind") == "aggregate"
+                    or sc.get("adapter") == "verl_metrics_adapter"
+                ):
+                    try:
+                        mv = float(sc.get("metric_value"))
+                        if not math.isfinite(mv):
+                            raise ValueError("non-finite metric_value")
+                    except (TypeError, ValueError):
+                        violations.append(
+                            f"{cell_label}: aggregate eval_provenance.json has no"
+                            f" numeric metric_value"
+                        )
+                        if len(violations) >= 3:
+                            break
+                        continue
+
+                    if mv < 0.0 or mv > 1.0 + _RATE_EPS:
+                        violations.append(
+                            f"{cell_label}: aggregate metric_value out of [0,1]"
+                            f" (likely ×100-scaled)"
+                        )
+                        if len(violations) >= 3:
+                            break
+                        continue
+
+                    if abs(reported - mv) > _RECOMPUTE_TOL:
+                        violations.append(
+                            f"{cell_label}: metrics.json disagrees with aggregate"
+                            f" eval_provenance.metric_value"
+                            f" ({rate_key}={reported:.4f} vs sidecar={mv:.4f})"
+                        )
+                        if len(violations) >= 3:
+                            break
+                        continue
+
+                    src = sc.get("source")
+                    if isinstance(src, str) and src.strip():
+                        if not Path(src).exists():
+                            violations.append(
+                                f"{cell_label}: aggregate eval_provenance.json cites a"
+                                f" source file that does not exist ({src})"
+                            )
+                            if len(violations) >= 3:
+                                break
+                            continue
+                    # else: source is absent/blank — fail-soft, not a violation on its
+                    # own (steps 1-3 above already bound honesty).
+
+                    # All checks pass — verifiably the authors' own reported number.
+                    continue
+
                 records = sc.get("records")
                 if not isinstance(records, list) or len(records) == 0:
                     violations.append(

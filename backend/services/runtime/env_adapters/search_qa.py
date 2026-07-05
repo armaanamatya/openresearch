@@ -55,7 +55,8 @@ def _default_search_qa_index_builder(cache_dir: Path) -> "Path | None":
     Returns the index dir on success, ``None`` to fall back to BM25 — NEVER raises.
     Opt-in + configurable so a cold/offline host degrades gracefully:
 
-      * ``OPENRESEARCH_SEARCH_QA_DENSE`` must be truthy to attempt anything;
+      * ``OPENRESEARCH_SEARCH_QA_DENSE`` gates a network BUILD/download only — it is
+        NOT required to USE a pre-staged index that already exists on disk.
       * ``OPENRESEARCH_SEARCH_QA_INDEX_REPO`` — a HF repo holding a prebuilt FAISS index
         + passage store; snapshot-downloaded into ``cache_dir`` when set (fastest,
         no local embedding). ``OPENRESEARCH_SEARCH_QA_INDEX_REPO_TYPE`` selects the HF
@@ -66,30 +67,36 @@ def _default_search_qa_index_builder(cache_dir: Path) -> "Path | None":
     embed with e5 on GPU) is intentionally left to a follow-up — the repo download
     keeps the common case fast and the BM25 fallback keeps every host live.
     """
-    flag = os.environ.get("OPENRESEARCH_SEARCH_QA_DENSE", "").strip().lower()
-    if flag not in ("1", "true", "yes", "on"):
-        return None
-    # A pre-staged local index (operator placed the FAISS index + corpus on a roomy
-    # disk already, e.g. via a one-time download) — use it directly, no network call.
-    direct = os.environ.get("OPENRESEARCH_SEARCH_QA_INDEX_DIR", "").strip()
-    if direct:
+    # (1) USE a pre-staged on-disk dense index if one physically exists — NO opt-in
+    # flag required. OPENRESEARCH_SEARCH_QA_DENSE gates a network BUILD/download
+    # (below), never USE of an index already on disk. Probe BOTH the prefixed
+    # override and the raw SEARCH_QA_INDEX_DIR the env itself reads (set by the SDAR
+    # preflight) so a staged e5_Flat.index is never shadowed by a bm25 fallback.
+    for _var in ("OPENRESEARCH_SEARCH_QA_INDEX_DIR", "SEARCH_QA_INDEX_DIR"):
+        direct = os.environ.get(_var, "").strip()
+        if not direct:
+            continue
         ddir = Path(direct)
         if ddir.is_dir() and (any(ddir.rglob("*.index")) or any(ddir.rglob("*.faiss"))):
             return ddir
         logger.warning(
-            "env_adapters.search_qa: OPENRESEARCH_SEARCH_QA_INDEX_DIR=%s has no .index/.faiss file; "
-            "falling through to repo download / BM25.", direct,
+            "env_adapters.search_qa: %s=%s has no .index/.faiss file; "
+            "falling through to repo download / BM25.", _var, direct,
         )
+    # (2) A network BUILD/download requires the opt-in flag (avoids a surprise
+    # multi-GB fetch on a host with no staged index).
+    flag = os.environ.get("OPENRESEARCH_SEARCH_QA_DENSE", "").strip().lower()
+    if flag not in ("1", "true", "yes", "on"):
+        return None
     repo = os.environ.get("OPENRESEARCH_SEARCH_QA_INDEX_REPO", "").strip()
     if not repo:
         logger.info(
-            "env_adapters.search_qa: OPENRESEARCH_SEARCH_QA_DENSE set but "
-            "OPENRESEARCH_SEARCH_QA_INDEX_REPO is empty — using BM25 (set the repo to "
-            "enable dense E5 retrieval)."
+            "env_adapters.search_qa: OPENRESEARCH_SEARCH_QA_DENSE set but no repo and "
+            "no pre-staged index found — using BM25 (set the repo or stage an index)."
         )
         return None
     try:
-        from huggingface_hub import snapshot_download  # lazy: only the real path needs it
+        from huggingface_hub import snapshot_download
 
         repo_type = os.environ.get("OPENRESEARCH_SEARCH_QA_INDEX_REPO_TYPE", "dataset").strip() or "dataset"
         dest = cache_dir / "search_qa_index"
@@ -98,12 +105,11 @@ def _default_search_qa_index_builder(cache_dir: Path) -> "Path | None":
             repo_id=repo, repo_type=repo_type, local_dir=str(dest),
             local_dir_use_symlinks=False,
         )
-        # Minimal sanity: a FAISS index file must exist for the env to load it.
         if any(dest.rglob("*.index")) or any(dest.rglob("*.faiss")):
             return dest
         logger.warning(
-            "env_adapters.search_qa: index repo %s downloaded but no .index/.faiss file "
-            "found — BM25 fallback.", repo,
+            "env_adapters.search_qa: index repo %s downloaded but no .index/.faiss "
+            "file found — BM25 fallback.", repo,
         )
         return None
     except Exception as exc:  # noqa: BLE001 — dense is best-effort; BM25 always works

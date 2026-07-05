@@ -775,3 +775,149 @@ class TestDisjointnessCheck:
         )
         sc = json.loads((cell_dir / "eval_provenance.json").read_text())
         assert "train_ids" not in sc
+
+
+# ---------------------------------------------------------------------------
+# Aggregate-provenance schema (verl_metrics_adapter) — distinct valid schema
+# ---------------------------------------------------------------------------
+
+class TestAggregateProvenance:
+    """Tests for the aggregate-provenance branch: execute-mode's
+    ``verl_metrics_adapter`` writes a sidecar with a verbatim-copied AGGREGATE
+    ``metric_value`` and NO per-example ``records`` (verl exposes only an
+    aggregate — synthesizing fake per-example records would violate the
+    no-fabrication red line). This schema is verified by a value-preserving
+    cross-check against ``metrics.json`` instead of a records-recompute."""
+
+    def test_aggregate_matching_value_passes(self, tmp_path, monkeypatch):
+        """provenance_kind=aggregate, metric_value matches metrics.json,
+        source exists on disk → veto False."""
+        monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        source_file = tmp_path / "val_log.log"
+        source_file.write_text("val/success_rate: 0.456", encoding="utf-8")
+        prov = {
+            "schema_version": 1,
+            "adapter": "verl_metrics_adapter",
+            "provenance_kind": "aggregate",
+            "metric_value": 0.456,
+            "source": str(source_file),
+            "source_line": "val/success_rate: 0.456",
+        }
+        _make_cell(
+            tmp_path,
+            {"status": "success", "success_rate": 0.456},
+            provenance=prov,
+        )
+        veto, detail = eval_provenance_should_veto(tmp_path)
+        assert veto is False
+        assert detail is None
+
+    def test_aggregate_mismatched_value_vetoed(self, tmp_path, monkeypatch):
+        """metrics.json success_rate disagrees with the sidecar's aggregate
+        metric_value (e.g. metrics.json tampered after the fact) → veto."""
+        monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        source_file = tmp_path / "val_log.log"
+        source_file.write_text("val/success_rate: 0.456", encoding="utf-8")
+        prov = {
+            "provenance_kind": "aggregate",
+            "adapter": "verl_metrics_adapter",
+            "metric_value": 0.456,
+            "source": str(source_file),
+        }
+        _make_cell(
+            tmp_path,
+            {"status": "success", "success_rate": 0.9},
+            provenance=prov,
+        )
+        veto, detail = eval_provenance_should_veto(tmp_path)
+        assert veto is True
+        assert detail is not None
+        assert "aggregate" in detail.lower()
+
+    def test_aggregate_metric_value_out_of_range_vetoed(self, tmp_path, monkeypatch):
+        """metric_value=45.6 (×100-scaled) is out of [0,1] → veto."""
+        monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        prov = {
+            "provenance_kind": "aggregate",
+            "metric_value": 45.6,
+        }
+        _make_cell(
+            tmp_path,
+            {"status": "success", "success_rate": 45.6},
+            provenance=prov,
+        )
+        veto, detail = eval_provenance_should_veto(tmp_path)
+        assert veto is True
+        assert detail is not None
+        assert "[0,1]" in detail or "out of" in detail.lower()
+
+    def test_aggregate_nonexistent_source_vetoed(self, tmp_path, monkeypatch):
+        """source points at a file that does not exist on disk → veto."""
+        monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        prov = {
+            "provenance_kind": "aggregate",
+            "metric_value": 0.456,
+            "source": str(tmp_path / "does_not_exist.log"),
+        }
+        _make_cell(
+            tmp_path,
+            {"status": "success", "success_rate": 0.456},
+            provenance=prov,
+        )
+        veto, detail = eval_provenance_should_veto(tmp_path)
+        assert veto is True
+        assert detail is not None
+        assert "does not exist" in detail.lower()
+
+    def test_aggregate_no_source_key_passes(self, tmp_path, monkeypatch):
+        """No 'source' key at all + a coherent metric_value → veto False
+        (source-absence alone is fail-soft; steps 1-3 already bound honesty)."""
+        monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        prov = {
+            "provenance_kind": "aggregate",
+            "metric_value": 0.456,
+        }
+        _make_cell(
+            tmp_path,
+            {"status": "success", "success_rate": 0.456},
+            provenance=prov,
+        )
+        veto, detail = eval_provenance_should_veto(tmp_path)
+        assert veto is False
+        assert detail is None
+
+    def test_adapter_marker_alone_detected_as_aggregate(self, tmp_path, monkeypatch):
+        """adapter == 'verl_metrics_adapter' alone (no explicit provenance_kind)
+        is also detected as an aggregate sidecar."""
+        monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        prov = {
+            "adapter": "verl_metrics_adapter",
+            "metric_value": 0.456,
+        }
+        _make_cell(
+            tmp_path,
+            {"status": "success", "success_rate": 0.456},
+            provenance=prov,
+        )
+        veto, detail = eval_provenance_should_veto(tmp_path)
+        assert veto is False
+        assert detail is None
+
+    def test_regression_records_based_sidecar_unaffected(self, tmp_path, monkeypatch):
+        """A normal records-based sidecar (no provenance_kind/adapter marker)
+        still goes through the pre-existing records-recompute path unchanged."""
+        monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        records = [{"id": str(i), "outcome": float(i % 2)} for i in range(10)]
+        prov = {
+            "schema_version": SCHEMA_VERSION,
+            "metric_value": 0.5,
+            "records": records,
+        }
+        _make_cell(
+            tmp_path,
+            {"status": "ok", "success_rate": 0.5},
+            provenance=prov,
+        )
+        veto, detail = eval_provenance_should_veto(tmp_path)
+        assert veto is False
+        assert detail is None

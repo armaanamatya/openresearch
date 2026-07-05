@@ -1,0 +1,59 @@
+{
+  "attempt_n": 3,
+  "project_id": "prj_09047604e591d969",
+  "paper_ref": "2605.15155",
+  "enforcement": {
+    "cli_args": [
+      [
+        "--max-usd",
+        "1"
+      ],
+      [
+        "--max-wall-clock",
+        "8550.05"
+      ],
+      [
+        "--max-run-gpu-usd",
+        "63.75"
+      ],
+      [
+        "--paper-hint",
+        "2605.15155"
+      ],
+      [
+        "--sandbox",
+        "local"
+      ]
+    ],
+    "env": {
+      "OPENRESEARCH_MAX_RUN_GPU_USD": "63.75"
+    },
+    "effective_wall_s": 8550.051285,
+    "vm_ceiling_s": 10350.051285,
+    "provision_charged_to_gpu": false,
+    "notes": []
+  },
+  "target_floor": 0.0,
+  "understanding_ref": "runs/prj_09047604e591d969/campaign/understanding.json",
+  "unresolved_warnings": [],
+  "leaf_repair_plan": null,
+  "improvement_notes": [],
+  "failure_capsules_ref": "runs/prj_09047604e591d969/rlm_state/failure_capsules.jsonl",
+  "prior_evidence_ref": "runs/prj_09047604e591d969/code/metrics.json",
+  "memory_hints": [],
+  "injected_lesson_signatures": [],
+  "scope_spec": null,
+  "scope_rung": 0,
+  "seed_lineage": "runner_up",
+  "seed_pointer": "runs/prj_09047604e591d969/code",
+  "envelope": {
+    "llm_usd": 1.0,
+    "gpu_usd": 63.75,
+    "gpu_hours": 13.25,
+    "wall_s": 8550.051285,
+    "vm_ceiling_s": 10350.051285
+  },
+  "extra_guidance": "[campaign] Attempt 3 (runner_up, scope rung 0).\n[target-floor] Prior guard-clean best: 0.0",
+  "run_spec_path": "configs/sdar_campaign_run_spec.json",
+  "fingerprint": "2fea4720e4cc96d22cf10e91cd60a60676b5eb266b49a274b71551d1b4abeeb7"
+}

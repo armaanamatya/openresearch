@@ -1641,6 +1641,8 @@ def cmd_reproduce(args: argparse.Namespace) -> int:
         _os.environ["OPENRESEARCH_DYNAMIC_GPU_HEADROOM"] = str(args.dynamic_gpu_headroom)
     if getattr(args, "vram_gb", None) is not None:
         _os.environ["OPENRESEARCH_VRAM_OVERRIDE_GB"] = str(args.vram_gb)
+    if getattr(args, "minimal_viable", False):
+        _os.environ["OPENRESEARCH_MINIMAL_VIABLE"] = "1"
     if getattr(args, "gpu_parallelism", None) is not None:
         _os.environ["OPENRESEARCH_GPU_PARALLELISM"] = args.gpu_parallelism
     if getattr(args, "accelerator", None) is not None:
@@ -2637,6 +2639,22 @@ def _build_parser() -> argparse.ArgumentParser:
             "Use when budget is tight or the paper's training schedule is "
             "obviously a historical artefact (slow optimizers, excess epochs). "
             "Off by default — strict reproduction is the safer baseline."
+        ),
+    )
+    reproduce.add_argument(
+        "--minimal-viable",
+        dest="minimal_viable",
+        action="store_true",
+        default=False,
+        help=(
+            "Run a cheap minimal-viable reproduction (central claim, smallest "
+            "scope) and emit a viability verdict. Composes with adapt/reference/"
+            "execute mode: narrows the scope to 1 model x 1 env/dataset x 1 seed "
+            "when a paper hint is available and the operator has not already "
+            "scoped the run, and adds a short-budget implementer directive. The "
+            "additive `minimal_viable_reproduction` verdict is computed only from "
+            "the deterministic evidence layer (training curves, metrics.json), "
+            "never the LLM grade. Off by default."
         ),
     )
     reproduce.add_argument(

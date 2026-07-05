@@ -222,6 +222,7 @@ def write_cell_manifest(
         manifest["completed_at"] = now_iso
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
         (output_dir / CELL_MANIFEST_NAME).write_text(
             json.dumps(manifest, indent=2, default=str), encoding="utf-8"
         )

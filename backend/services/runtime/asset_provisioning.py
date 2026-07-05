@@ -337,7 +337,16 @@ def ensure_assets(
     hf_home.mkdir(parents=True, exist_ok=True)
     env_cache.mkdir(parents=True, exist_ok=True)
 
-    os.environ["HF_HOME"] = str(hf_home)
+    # HF_HOME clobber guard (Task #2c): an operator who has explicitly staged
+    # HF_HOME onto the OPENRESEARCH_CELL_ENV_PASSTHROUGH allowlist (e.g. a
+    # persistent-disk cache mounted before the harness runs) keeps their own
+    # value; otherwise HF_HOME is set to the harness's shared cache exactly as
+    # before. PIP_CACHE_DIR / OPENRESEARCH_ENV_CACHE_DIR are unaffected.
+    _passthrough_names = [
+        _n.strip() for _n in os.environ.get("OPENRESEARCH_CELL_ENV_PASSTHROUGH", "").split(",") if _n.strip()
+    ]
+    if not ("HF_HOME" in _passthrough_names and os.environ.get("HF_HOME")):
+        os.environ["HF_HOME"] = str(hf_home)
     os.environ["PIP_CACHE_DIR"] = str(pip_cache)
     os.environ["OPENRESEARCH_ENV_CACHE_DIR"] = str(env_cache)
 

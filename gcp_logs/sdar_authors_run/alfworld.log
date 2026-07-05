@@ -1,0 +1,6 @@
+[2026-07-01 20:46:53] === PHASE: alfworld ===
+[2026-07-01 20:46:53] Heartbeat started (pid=10070, target=/run/sdar_last_active)
+[2026-07-01 20:46:53] alfworld already importable in sdar env — skipping pip installs
+[2026-07-01 20:46:53] ALFWorld game data already at /mnt/sdar-cache/data/alfworld/json_2.1.1 — skipping download
+[2026-07-01 20:46:53] Heartbeat stopped
+[2026-07-01 20:46:53] === PHASE alfworld DONE ===

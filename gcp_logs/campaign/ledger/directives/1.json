@@ -1,0 +1,68 @@
+{
+  "attempt_n": 1,
+  "project_id": "prj_09047604e591d969",
+  "paper_ref": "2605.15155",
+  "enforcement": {
+    "cli_args": [
+      [
+        "--max-usd",
+        "3.16667"
+      ],
+      [
+        "--max-wall-clock",
+        "7200"
+      ],
+      [
+        "--max-run-gpu-usd",
+        "42.5"
+      ],
+      [
+        "--paper-hint",
+        "2605.15155"
+      ],
+      [
+        "--sandbox",
+        "local"
+      ]
+    ],
+    "env": {
+      "OPENRESEARCH_MAX_RUN_GPU_USD": "42.5"
+    },
+    "effective_wall_s": 7200.0,
+    "vm_ceiling_s": 9000.0,
+    "provision_charged_to_gpu": false,
+    "notes": []
+  },
+  "target_floor": null,
+  "understanding_ref": "runs/prj_09047604e591d969/campaign/understanding.json",
+  "unresolved_warnings": [],
+  "leaf_repair_plan": {
+    "plan": [
+      {
+        "leaf_id": "metrics",
+        "repair_class": "validator_veto",
+        "cost": "targeted_rerun",
+        "directive": "FINAL_VAR refused: the external validator vetoed these result claims as unsubstantiated: metrics. Re-implement so each cited metric traces to real model outputs on real data (loss backprops from the model, reward reads env outcomes, eval scores against gold), then run_experiment + verify_against_rubric."
+      }
+    ]
+  },
+  "improvement_notes": [],
+  "failure_capsules_ref": "runs/prj_09047604e591d969/rlm_state/failure_capsules.jsonl",
+  "prior_evidence_ref": "runs/prj_09047604e591d969/final_report.json",
+  "memory_hints": [],
+  "injected_lesson_signatures": [],
+  "scope_spec": null,
+  "scope_rung": 0,
+  "seed_lineage": "fresh",
+  "seed_pointer": null,
+  "envelope": {
+    "llm_usd": 3.1666666666666665,
+    "gpu_usd": 42.5,
+    "gpu_hours": 8.833333333333334,
+    "wall_s": 7200.0,
+    "vm_ceiling_s": 9000.0
+  },
+  "extra_guidance": "[campaign] Attempt 1 (fresh, scope rung 0).\n[leaf-repairs]\n- metrics [validator_veto] FINAL_VAR refused: the external validator vetoed these result claims as unsubstantiated: metrics. Re-implement so each cited metric traces to real model outputs on real data (loss backprops from the model, reward reads env outcomes, eval scores against gold), then run_experiment + verify_against_rubric.",
+  "run_spec_path": "configs/sdar_campaign_run_spec.json",
+  "fingerprint": "37d7cdbfd7f88d644664a29e40dfd2efa43bf2f12f951118359c1950d59d191b"
+}

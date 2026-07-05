@@ -57,11 +57,155 @@ Auth-agnostic by construction (no provider branching, no LLM calls).
 
 from __future__ import annotations
 
+import atexit
+import functools
+import json
+import os
+import weakref
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
 __all__ = ["BaseEnv", "AgenticEnv", "StepResult"]
+
+
+# ---------------------------------------------------------------------------
+# WS-C env-level health recording — harness-owned, agent-cannot-suppress.
+#
+# ``agentic_rollout.rollout_episode`` already writes one env_health.jsonl row
+# per episode it drives, but an agent-written trainer that steps a concrete
+# ``*Env`` directly (never calling ``rollout_episode``) produces NO health rows
+# at all — the F2 env-liveness gate then has no data and (correctly, but
+# unhelpfully) stays silent, so a dead env server scores as a fake real-zero.
+# ``AgenticEnv.__init_subclass__`` (below) transparently wraps every concrete
+# ``reset``/``step`` so a health row is emitted regardless of which code drives
+# the env.  Deliberately duplicated (not imported) from
+# ``agentic_rollout._append_env_health`` — this module must stay import-cycle-
+# free and stdlib-only for the copy-and-paste sandbox route.
+# ---------------------------------------------------------------------------
+
+def _append_env_health(record: dict[str, Any]) -> None:
+    """Append one JSON episode-health line to ``$OPENRESEARCH_CELL_OUTPUT_DIR/env_health.jsonl``.
+
+    No-op when ``OPENRESEARCH_CELL_OUTPUT_DIR`` is unset. Fully fail-soft: any
+    write/serialisation error is silently swallowed — a liveness-write failure
+    must never break training.
+    """
+    try:
+        out_dir = os.environ.get("OPENRESEARCH_CELL_OUTPUT_DIR", "")
+        if not out_dir:
+            return
+        line = json.dumps(record, default=str)
+        health_path = os.path.join(out_dir, "env_health.jsonl")
+        with open(health_path, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except Exception:  # noqa: BLE001 — fail-soft, never break training
+        pass
+
+
+#: Live ``AgenticEnv`` instances, tracked so an abandoned (mid-episode, never
+#: re-reset) trainer still gets its partial episode flushed at interpreter
+#: exit.  A ``WeakSet`` so tracking never keeps an env alive past its own
+#: lifetime.
+_LIVE_ENVS: "weakref.WeakSet[Any]" = weakref.WeakSet()
+_atexit_registered = False
+
+
+def _flush_if_pending(env: Any) -> None:
+    """Flush ``env``'s pending episode iff it has one. Fully fail-soft."""
+    try:
+        if not getattr(env, "_health_flushed", True):
+            env._flush_episode()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _flush_all_live_envs() -> None:
+    """atexit hook: salvage a health row for every live, unflushed episode.
+
+    Covers a trainer that crashes or exits mid-episode without ever calling
+    ``reset`` again. Wrapped defensively throughout — interpreter teardown can
+    leave globals partially torn down, and this must never raise.
+    """
+    try:
+        envs = list(_LIVE_ENVS)
+    except Exception:  # noqa: BLE001
+        return
+    for _env in envs:
+        try:
+            _flush_if_pending(_env)
+        except Exception:  # noqa: BLE001
+            continue
+
+
+def _register_live_env(env: Any) -> None:
+    """Track ``env`` for the atexit partial-flush sweep (lazy hook registration)."""
+    global _atexit_registered
+    try:
+        _LIVE_ENVS.add(env)
+    except Exception:  # noqa: BLE001 — e.g. an exotic subclass disabling __weakref__
+        pass
+    if not _atexit_registered:
+        try:
+            atexit.register(_flush_all_live_envs)
+            _atexit_registered = True
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _wrap_health_reset(orig: Any) -> Any:
+    """Wrap a concrete ``reset`` to manage episode-health bookkeeping.
+
+    Order matters (load-bearing — see the class docstring): flush any PRIOR
+    unflushed episode first (its ownership, if any, is already known), THEN
+    reset per-episode counters for the episode about to start. Never flush
+    the episode this very reset just (maybe) finished — ``rollout_episode``
+    may be about to claim ownership of it; that decision happens next.
+    """
+
+    @functools.wraps(orig)
+    def _reset_wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        _flush_if_pending(self)
+        try:
+            self._health_owned_by_rollout = False
+            self._health_steps = 0
+            self._health_flushed = False
+        except Exception:  # noqa: BLE001
+            pass
+        return orig(self, *args, **kwargs)
+
+    _reset_wrapper._health_wrapped = True
+    return _reset_wrapper
+
+
+def _wrap_health_step(orig: Any) -> Any:
+    """Wrap a concrete ``step`` to count turns and flush on episode end."""
+
+    @functools.wraps(orig)
+    def _step_wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        # Defensive init — an exotic subclass may not have run AgenticEnv.__init__.
+        if not hasattr(self, "_health_steps"):
+            try:
+                self._health_steps = 0
+                self._health_flushed = True
+                self._health_owned_by_rollout = False
+            except Exception:  # noqa: BLE001
+                pass
+        result = orig(self, *args, **kwargs)
+        try:
+            self._health_steps = getattr(self, "_health_steps", 0) + 1
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            done = bool(getattr(self, "done", False)) or bool(getattr(result, "done", False))
+        except Exception:  # noqa: BLE001
+            done = False
+        if done:
+            _flush_if_pending(self)
+        return result
+
+    _step_wrapper._health_wrapped = True
+    return _step_wrapper
 
 
 class BaseEnv(ABC):
@@ -167,10 +311,37 @@ class AgenticEnv(BaseEnv):
     construction-time ABC + the AST pre-flight is that *interface* errors surface
     before the grid; *behavioural* robustness (defensive parsing, turn caps) is
     the subclass's job and is what keeps a live grid from dying mid-rollout.
+
+    **Env-level health recording (WS-C).** Every concrete ``reset``/``step`` a
+    subclass defines is transparently wrapped (via :meth:`__init_subclass__`) to
+    track per-episode turn counts and flush one ``env_health.jsonl`` row per
+    episode — the same schema ``agentic_rollout.rollout_episode`` writes, tagged
+    ``"source": "env"`` instead of ``"source": "rollout"``. This makes the F2
+    env-liveness gate see health data even when a trainer steps the env classes
+    directly and never calls ``rollout_episode``. When ``rollout_episode`` *does*
+    drive the episode it claims ownership (``_health_owned_by_rollout = True``)
+    so this base class defers to its row and never double-counts.
     """
 
     #: Hard cap on model turns per episode (subclasses override; ``1`` == single-turn).
     max_turns: int = 1
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Wrap each concrete ``reset``/``step`` a subclass defines for health
+        tracking (WS-C). Only methods the subclass DEFINES ITSELF are wrapped
+        (``name in cls.__dict__``) — an inherited, already-wrapped method is
+        left alone, but an override in a grandchild class gets its own wrap.
+        The ``_health_wrapped`` marker on the wrapper function guards against
+        double-wrapping the same function object.
+        """
+        super().__init_subclass__(**kwargs)
+        for _name, _wrap in (("reset", _wrap_health_reset), ("step", _wrap_health_step)):
+            if _name not in cls.__dict__:
+                continue
+            _func = cls.__dict__[_name]
+            if not callable(_func) or getattr(_func, "_health_wrapped", False):
+                continue
+            setattr(cls, _name, _wrap(_func))
 
     def __init__(self) -> None:
         # (role, text) pairs; role in {"system", "obs", "act"}.
@@ -179,6 +350,11 @@ class AgenticEnv(BaseEnv):
         self._done: bool = False
         self._turns_taken: int = 0
         self._last_info: dict[str, Any] = {}
+        # WS-C env-level health tracking (harness-owned, agent-cannot-suppress).
+        self._health_steps: int = 0
+        self._health_flushed: bool = True  # no episode started yet -> nothing pending
+        self._health_owned_by_rollout: bool = False
+        _register_live_env(self)
 
     # --- the contract subclasses MUST satisfy --------------------------------
 
@@ -272,3 +448,50 @@ class AgenticEnv(BaseEnv):
     @property
     def last_info(self) -> dict[str, Any]:
         return dict(self._last_info)
+
+    # --- WS-C env-level health recording (see __init_subclass__) -------------
+
+    def _flush_episode(self) -> None:
+        """Emit (or, if ``rollout_episode`` owns this episode, skip) one
+        ``env_health.jsonl`` row for the episode that just ended/was abandoned.
+
+        Idempotent via ``_health_flushed``. When
+        ``self._health_owned_by_rollout`` is set, ``rollout_episode`` already
+        writes this episode's row (``source="rollout"``) — writing here too
+        would double-count the episode, so this returns without writing.
+        Fully fail-soft: never raises, never breaks training.
+        """
+        try:
+            if getattr(self, "_health_flushed", True):
+                return
+            self._health_flushed = True
+            if getattr(self, "_health_owned_by_rollout", False):
+                return
+            try:
+                env_name = str(getattr(self, "env_name", None) or type(self).__name__ or "")
+            except Exception:  # noqa: BLE001
+                env_name = type(self).__name__
+            try:
+                n_turns = int(getattr(self, "_health_steps", 0))
+            except Exception:  # noqa: BLE001
+                n_turns = 0
+            try:
+                reward = float(self.episode_reward())
+            except Exception:  # noqa: BLE001
+                reward = 0.0
+            try:
+                info = self.last_info
+                unavailable = bool(info.get("unavailable", False)) if isinstance(info, dict) else False
+            except Exception:  # noqa: BLE001
+                unavailable = False
+            served = n_turns >= 1 and not unavailable
+            _append_env_health({
+                "env": env_name,
+                "n_turns": n_turns,
+                "reward": reward,
+                "unavailable": unavailable,
+                "served": served,
+                "source": "env",
+            })
+        except Exception:  # noqa: BLE001 — fail-soft, never break training
+            pass

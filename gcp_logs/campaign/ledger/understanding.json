@@ -1,0 +1,21 @@
+{
+  "payload": {
+    "advisory": [],
+    "asset_gaps": [],
+    "blocking": [],
+    "cross_verified": [
+      "paper_ref",
+      "parsed_text_present",
+      "rubric_present"
+    ],
+    "fields": {
+      "paper_ref": "2605.15155",
+      "parsed_text_present": true,
+      "rubric_present": true
+    },
+    "lint_findings": [],
+    "source_spans": {},
+    "unresolved": []
+  },
+  "sha256": "d5e95c81d80c2b15789e343603a070a16b1c175c5efae6738fdf40b7f93ae06d"
+}

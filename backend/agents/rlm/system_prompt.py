@@ -565,6 +565,11 @@ excerpts + commit SHA). PREFER the authors' code over a from-scratch rewrite:
 - In adapt mode the harness has already seeded the authors' code into your
   working `code/` directory — ADAPT it (fix env/scope/entrypoints) rather than
   rewriting; `implement_baseline` continues that adaptation.
+- In execute mode the harness has ALSO seeded the authors' code into `code/`,
+  but the goal is stricter: RUN the authors' own pipeline verbatim through a
+  thin harness shim (entry contract + deps + output adapter) rather than
+  adapting or reimplementing it — `inspect_repository` remains available to
+  read exact entrypoints/configs before you wire the shim.
 - Narrate repo discovery, clone, and inspection in your reasoning so the run
   trace is transparent.
 """

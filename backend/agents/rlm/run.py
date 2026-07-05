@@ -622,6 +622,29 @@ def _resolve_and_clone_repo(
                         ))
                     except Exception:  # noqa: BLE001
                         pass
+            elif mode_override == "execute":
+                # Execute mode has no from-scratch fallback path worth taking: the
+                # implementer contract is "run the authors' pipeline verbatim",
+                # which is meaningless with no usable repo. Silently downgrading to
+                # scratch would make the implementer quietly reimplement instead —
+                # keep mode="execute" so the caller/report can see the gap honestly.
+                from backend.services.ingestion.repo.resolver import RepoSpec
+                spec = RepoSpec(
+                    url=spec.url, source=spec.source, mode="execute",
+                    reason=f"clone failed for {spec.url}; execute mode has no usable repo",
+                )
+                if emit is not None:
+                    try:
+                        from backend.agents.rlm.sse_bridge import build_run_warning_event
+                        emit(build_run_warning_event(
+                            code="repo_execute_unavailable",
+                            message=(
+                                f"clone failed for {spec.url}; execute mode has no usable "
+                                "repo and will not silently reimplement from scratch"
+                            ),
+                        ))
+                    except Exception:  # noqa: BLE001
+                        pass
             else:
                 # Clone failed -> fall back to scratch, but record that we tried.
                 from backend.services.ingestion.repo.resolver import RepoSpec
@@ -1676,44 +1699,64 @@ def _notify_run_terminal(project_dir: Path) -> None:
         logger.debug("run-notify: terminal helper raised", exc_info=True)
 
 
-def _run_finalize_validation_panel(ctx: Any, report: Any, project_dir: Path) -> None:
+def _run_finalize_validation_panel(
+    ctx: Any, report: Any, project_dir: Path, *, time_budget_s: float | None = None,
+) -> None:
     """OFFLINE adversarial validation panel (report-stamping only), shared by every
     ctx-bearing finalize path so the grok validator runs on the normal, fatal-abort,
     AND hard-stop paths — not just the happy one. Gated by OPENRESEARCH_EXTERNAL_VALIDATOR
-    + ctx.validator_client (unset/None -> no-op -> byte-identical). Reuses a verdict the
-    P3 FINAL_VAR gate already persisted for this evidence (no duplicate panel). Fail-soft:
-    a panel failure must NEVER break finalize."""
+    alone (unset/falsey -> no-op -> byte-identical). A missing ``ctx.validator_client``
+    no longer short-circuits: the panel body still runs so an honest
+    ``status="unavailable"`` verdict is persisted for THIS evidence (WS-B —
+    ``run_validation_panel(validator_client=None, ...)`` already returns that status
+    without an LLM call), so the report.py stamp chokepoint sees a fresh verdict
+    instead of falling through to a synthetic "missing". Reuses a verdict the P3
+    FINAL_VAR gate already persisted for this evidence (no duplicate panel).
+    Fail-soft: a panel failure must NEVER break finalize.
+
+    ``time_budget_s``, when given, bounds the (possibly LLM-calling) panel body to a
+    daemon thread joined for at most that long — the wall-clock/SIGTERM hard-stop path
+    only has ``_WATCHDOG_GRACE_S`` of grace to ship a report and must not block on a
+    slow validator call. On a timeout the thread is left running in the background
+    (harmless — a late persist is picked up by a future read) and this call returns
+    without a fresh verdict; the report.py chokepoint's explicit "missing" stamp
+    covers the gap.
+    """
     try:
         from backend.agents.rlm.external_validator import (  # noqa: PLC0415
             external_validator_enabled,
             run_validation_panel,
             persist_verdict,
         )
+        if not external_validator_enabled():
+            return
         _val_client = getattr(ctx, "validator_client", None)
-        if external_validator_enabled() and _val_client is not None:
-            # Gather metrics from the report's baseline_metrics if present, else on-disk.
-            _val_metrics: dict = dict(report.baseline_metrics) if report.baseline_metrics else {}
-            if not _val_metrics:
-                _mpath = project_dir / "code" / "metrics.json"
-                if _mpath.exists():
-                    try:
-                        _val_metrics = json.loads(_mpath.read_text(encoding="utf-8"))
-                    except Exception:  # noqa: BLE001
-                        _val_metrics = {}
-            # Consume a verdict the P3 validator gate ALREADY persisted for THIS
-            # evidence (spec §7.1: the panel is invoked once at the FINAL_VAR-attempt
-            # and consumed — NOT re-run — by _finalize). Skipping the re-run avoids a
-            # duplicate LLM panel and a later stochastic verdict overwriting the gate's.
-            from backend.agents.rlm.external_validator import (  # noqa: PLC0415
-                evidence_fingerprint as _val_efp,
-                load_verdict as _load_verdict,
-            )
-            _already_validated = (
-                _load_verdict(project_dir, expect_fingerprint=_val_efp(_val_metrics)) is not None
-            )
-            if _already_validated:
-                logger.info("finalize-validation: reusing the validator verdict from the FINAL_VAR gate (no re-run)")
-            else:
+
+        def _do_panel_work() -> None:
+            try:
+                # Gather metrics from the report's baseline_metrics if present, else on-disk.
+                _val_metrics: dict = dict(report.baseline_metrics) if report.baseline_metrics else {}
+                if not _val_metrics:
+                    _mpath = project_dir / "code" / "metrics.json"
+                    if _mpath.exists():
+                        try:
+                            _val_metrics = json.loads(_mpath.read_text(encoding="utf-8"))
+                        except Exception:  # noqa: BLE001
+                            _val_metrics = {}
+                # Consume a verdict the P3 validator gate ALREADY persisted for THIS
+                # evidence (spec §7.1: the panel is invoked once at the FINAL_VAR-attempt
+                # and consumed — NOT re-run — by _finalize). Skipping the re-run avoids a
+                # duplicate LLM panel and a later stochastic verdict overwriting the gate's.
+                from backend.agents.rlm.external_validator import (  # noqa: PLC0415
+                    evidence_fingerprint as _val_efp,
+                    load_verdict as _load_verdict,
+                )
+                _already_validated = (
+                    _load_verdict(project_dir, expect_fingerprint=_val_efp(_val_metrics)) is not None
+                )
+                if _already_validated:
+                    logger.info("finalize-validation: reusing the validator verdict from the FINAL_VAR gate (no re-run)")
+                    return
                 # Gather leaf records from rubric_evaluation.json (best-effort).
                 _leaf_records: list[dict] = []
                 _eval_p = project_dir / "rubric_evaluation.json"
@@ -1740,6 +1783,11 @@ def _run_finalize_validation_panel(ctx: Any, report: Any, project_dir: Path) -> 
                         _report_claims_for_panel = _erc(_summary + "\n" + _rm_text)
                     except Exception:  # noqa: BLE001
                         _report_claims_for_panel = None
+                # validator_client=None (ctx never wired one) is handled by
+                # run_validation_panel itself — it returns status="unavailable"
+                # immediately, with no LLM call — and we still persist that verdict
+                # so assessment sees an honest, fresh-fingerprinted "unavailable"
+                # instead of a synthetic "missing" (WS-B).
                 _verdict = run_validation_panel(
                     validator_client=_val_client,
                     panel_models=[_val_label],
@@ -1754,8 +1802,98 @@ def _run_finalize_validation_panel(ctx: Any, report: Any, project_dir: Path) -> 
                     "finalize-validation: validation panel complete — status=%s veto_set=%r separation=%s",
                     _verdict.status, _verdict.veto_set, _verdict.separation,
                 )
+            except Exception:  # noqa: BLE001 — panel failure must never break finalize
+                logger.warning("finalize-validation: external validation panel failed (non-fatal)", exc_info=True)
+
+        if time_budget_s is not None:
+            _panel_thread = threading.Thread(target=_do_panel_work, daemon=True)
+            _panel_thread.start()
+            _panel_thread.join(time_budget_s)
+            if _panel_thread.is_alive():
+                logger.warning(
+                    "finalize-validation: panel exceeded the %.1fs time budget — "
+                    "leaving it running in the background; this finalize proceeds "
+                    "without a fresh verdict",
+                    time_budget_s,
+                )
+            return
+        _do_panel_work()
     except Exception:  # noqa: BLE001 — panel failure must never break finalize
         logger.warning("finalize-validation: external validation panel failed (non-fatal)", exc_info=True)
+
+
+def _minimal_viable_scope_hook(arxiv_id: str | None, scope_spec: Any) -> tuple[Any, str | None]:
+    """MVR (OPENRESEARCH_MINIMAL_VIABLE, default-OFF) scope-hook decision.
+
+    Returns ``(scope_spec, None)`` UNCHANGED — the exact same object, no copy —
+    whenever the flag is off, no paper hint applies, or the operator already
+    narrowed the scope; :func:`minimal_viable.select_viability_scope` already
+    encodes all of that fail-soft logic, so this wrapper only adds the
+    flag gate + the guidance-text pairing. Returns ``(narrowed_scope,
+    viability_guidance())`` when MVR selects a smaller central-claim cell.
+    Pure — no env mutation, no emit; the caller applies both.
+    """
+    from backend.agents.rlm import minimal_viable as _mvr
+    if not _mvr.minimal_viable_enabled():
+        return scope_spec, None
+    try:
+        mvr_scope = _mvr.select_viability_scope(arxiv_id, scope_spec)
+    except Exception:  # noqa: BLE001 — fail-soft, mirrors select_viability_scope itself
+        mvr_scope = None
+    if mvr_scope is None:
+        return scope_spec, None
+    return mvr_scope, _mvr.viability_guidance()
+
+
+def _apply_minimal_viable_reproduction(project_dir: Path, ctx: Any) -> None:
+    """MVR (OPENRESEARCH_MINIMAL_VIABLE, default-OFF) finalize hook.
+
+    Computes the directional-viability verdict from the run's DETERMINISTIC
+    evidence layer only (never the LLM grade) and additively stamps it onto
+    the just-written ``final_report.json`` under the top-level
+    ``minimal_viable_reproduction`` key — never touching any existing score/
+    verdict/meets_target/replication_verdict field. Reads the report back off
+    disk (rather than the in-memory report object) so ``report_dict`` reflects
+    whatever splices (two-axis verdict, validation stamp, evidence-gate
+    outcome) ``write_final_report_rlm`` already applied for THIS finalize —
+    the same data every other honesty guard downstream would see.
+
+    Shared by every finalize path that writes a ``final_report.json``
+    (``_finalize``, ``_finalize_fatal_primitive_abort``,
+    ``_hard_stop_with_report`` — the last of which may pass ``ctx=None``).
+    Fail-soft: any error here must never break finalize. Unset flag ⇒ this
+    function is a complete no-op — byte-identical.
+    """
+    try:
+        from backend.agents.rlm import minimal_viable as _mvr
+        if not _mvr.minimal_viable_enabled():
+            return
+        json_path = project_dir / "final_report.json"
+        if not json_path.exists():
+            return
+        try:
+            report_dict = json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 — a corrupt report is left untouched
+            logger.debug("_apply_minimal_viable_reproduction: unreadable final_report.json", exc_info=True)
+            return
+        if not isinstance(report_dict, dict):
+            return
+        verdict = _mvr.compute_viability_verdict(
+            project_dir / "code",
+            arxiv_id=getattr(ctx, "arxiv_id", None),
+            scope=getattr(ctx, "scope_spec", None),
+            report_dict=report_dict,
+        )
+        report_dict["minimal_viable_reproduction"] = verdict
+        tmp = json_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(report_dict, indent=2), encoding="utf-8")
+        os.replace(tmp, json_path)
+        logger.info(
+            "minimal-viable-reproduction: verdict=%s",
+            verdict.get("verdict") if isinstance(verdict, dict) else None,
+        )
+    except Exception:  # noqa: BLE001 — MVR must never break finalize
+        logger.warning("_apply_minimal_viable_reproduction failed (non-fatal)", exc_info=True)
 
 
 def _finalize_fatal_primitive_abort(
@@ -1821,6 +1959,7 @@ def _finalize_fatal_primitive_abort(
         run_experiment_ok_calls=run_experiment_success_count(ctx),
         run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx)
     )
+    _apply_minimal_viable_reproduction(project_dir, ctx)
     _notify_run_terminal(project_dir)
 
     # Positive recipe admission (OPENRESEARCH_POSITIVE_RECIPES, default-OFF).
@@ -1950,8 +2089,10 @@ def _hard_stop_with_report(
     )
     # Run the adversarial validator on the wall-clock/SIGTERM hard-stop path too (gated;
     # byte-identical when off). ctx may be None here (the watchdog can fire pre-bind).
+    # WS-B: bounded to a 60s time budget — this path only has _WATCHDOG_GRACE_S of
+    # grace to ship a report and must never block indefinitely on a slow validator call.
     if ctx is not None:
-        _run_finalize_validation_panel(ctx, report, project_dir)
+        _run_finalize_validation_panel(ctx, report, project_dir, time_budget_s=60.0)
     try:
         # Evidence-gate trust counts (audit 2026-06-11): without these the
         # watchdog/SIGTERM path fell back to content-only trust — a forging
@@ -1966,6 +2107,7 @@ def _hard_stop_with_report(
         )
     except Exception:  # noqa: BLE001
         logger.exception("run_pipeline_rlm: hard-stop could not write final report")
+    _apply_minimal_viable_reproduction(project_dir, ctx)
     _notify_run_terminal(project_dir)
     # Positive recipe admission (OPENRESEARCH_POSITIVE_RECIPES, default-OFF).
     # The ctx guard is load-bearing here: _hard_stop_with_report has ctx: Any = None.
@@ -2874,6 +3016,33 @@ async def run_pipeline_rlm(
     )
     if _arxiv_id:
         logger.info("run_pipeline_rlm[%s]: arxiv_id=%s", project_id, _arxiv_id)
+
+    # Minimal Viable Reproduction (MVR, OPENRESEARCH_MINIMAL_VIABLE, default-OFF):
+    # narrow to the smallest central-claim cell (1 model x 1 env/dataset x 1 seed)
+    # when a paper hint is available and the operator has not already scoped the
+    # run, and append a short-budget implementer directive. select_viability_scope
+    # respects an explicit operator scope (returns None, this is a no-op) and is
+    # itself fail-soft, so the flag being off — or on with no applicable hint —
+    # leaves _scope_spec and OPENRESEARCH_BASELINE_EXTRA_GUIDANCE byte-identical.
+    _scope_spec, _mvr_guidance = _minimal_viable_scope_hook(_arxiv_id, _scope_spec)
+    if _mvr_guidance:
+        _mvr_existing_guidance = os.environ.get("OPENRESEARCH_BASELINE_EXTRA_GUIDANCE", "").strip()
+        os.environ["OPENRESEARCH_BASELINE_EXTRA_GUIDANCE"] = (
+            f"{_mvr_existing_guidance}\n{_mvr_guidance}" if _mvr_existing_guidance else _mvr_guidance
+        )
+        emit(build_run_warning_event(
+            level="info",
+            code="minimal_viable",
+            message=(
+                "minimal-viable-reproduction: narrowed scope to "
+                f"model={getattr(_scope_spec, 'models', None)} "
+                f"dataset={[d.normalized_id() for d in (getattr(_scope_spec, 'datasets', None) or [])]} "
+                f"seed={getattr(_scope_spec, 'seeds', None)}"
+            ),
+        ))
+        logger.info(
+            "run_pipeline_rlm[%s]: minimal-viable-reproduction scope narrowed", project_id,
+        )
 
     ctx = RunContext(
         project_id=project_id,
@@ -4043,8 +4212,10 @@ def _finalize(
     # P2.3 — OFFLINE adversarial validation panel (report-stamping only). Extracted to
     # _run_finalize_validation_panel so the fatal-abort + hard-stop paths run it too.
     # Runs BEFORE write_final_report_rlm so the verdict is on disk for the stamp chokepoint.
-    if not run_failed:
-        _run_finalize_validation_panel(ctx, report, project_dir)
+    # WS-B: run unconditionally, even when run_failed — mirrors the fatal-abort path's
+    # rationale (a failed run's evidence deserves the critic too); the helper is
+    # fail-soft + fingerprint-cached, so this adds no risk to the failure path.
+    _run_finalize_validation_panel(ctx, report, project_dir)
 
     json_path, _md_path = write_final_report_rlm(
         report, project_dir, run_experiment_calls=run_experiment_call_count(ctx),
@@ -4052,6 +4223,7 @@ def _finalize(
         run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx),
         no_learning_signal=_no_learning_signal,
     )
+    _apply_minimal_viable_reproduction(project_dir, ctx)
     _notify_run_terminal(project_dir)
 
     # Per-paper negative lessons (MUSE-lite, OPENRESEARCH_NEGATIVE_LESSONS): mine

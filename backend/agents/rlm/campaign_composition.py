@@ -24,8 +24,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -73,6 +74,7 @@ from backend.agents.rlm.reproduction_campaign import (
 )
 from backend.agents.rlm.run_spec_contract import (
     RunSpecValidationError,
+    apply_run_spec,
     run_spec_key_applies,
     validate_run_spec_keys,
 )
@@ -780,8 +782,17 @@ def _decide_impl(run_dir: Path, opts: CampaignOptions, state: CampaignState, row
         ladder_len=len(opts.scope_ladder) or 1,
     )
     ctx, rate = _enforcement_ctx(run_dir, opts, state.mode)
+    # ``rate`` is the PER-GPU $/hr (EnforcementContext.gpu_usd_per_hr — see
+    # check_enforceability's own ``ctx.gpu_usd_per_hr * ctx.max_gpu_count``
+    # and attempt_estimate's provisioning-overhead term, which both scale the
+    # per-GPU rate by the GPU count). Omitting that factor here undercounted
+    # the DECIDE budget-floor lookahead on every multi-GPU gpu_plan -- reuse
+    # ctx.max_gpu_count (already resolved by _enforcement_ctx) rather than
+    # re-deriving it.
     next_estimate = attempt_estimate(
-        est_gpu_hours=opts.est_gpu_hours, est_usd=opts.est_gpu_hours * (rate or 0.0), ctx=ctx
+        est_gpu_hours=opts.est_gpu_hours,
+        est_usd=opts.est_gpu_hours * (rate or 0.0) * ctx.max_gpu_count,
+        ctx=ctx,
     )
     decision = campaign_decide(
         assessments,
@@ -900,7 +911,53 @@ def _build_driver(opts: CampaignOptions) -> AttemptDriver:
     raise ValueError(f"unknown campaign driver {opts.driver!r}")
 
 
+def _apply_profile_env(opts: CampaignOptions, *, env: MutableMapping[str, str] | None = None) -> int:
+    """Fill the CAMPAIGN process's own env from the run-spec profile.
+
+    The launched child already receives the profile via ``--run-spec``
+    (``attempt_driver``/``cli.py::_load_run_spec``), but the campaign-SIDE
+    readers -- DISTILL's ``lesson_distiller``/``ExperienceMemory``, any
+    ``OPENRESEARCH_*``-gated helper called directly in this process -- only
+    ever saw whatever an operator hand-exported. This applies the SAME keys
+    (via the canonical ``run_spec_contract.apply_run_spec``) into the
+    campaign process's environment so both sides agree without duplicate
+    operator setup.
+
+    Explicit operator env wins: a key already present in ``env`` is left
+    untouched -- this only fills gaps, never overrides (F15's INIT-time
+    ``validate_run_spec_keys``/driver-owned-key rejection is unaffected,
+    since it validates the PROFILE's own keys, not the process env).
+
+    Fail-soft: an unreadable/malformed profile is a no-op here -- the
+    user-facing error is raised by ``_validate_init_impl`` at the INIT
+    stage; this convenience helper must never crash campaign construction.
+
+    Returns the number of keys actually applied (observability/tests).
+    """
+    if env is None:
+        env = os.environ
+    try:
+        profile = json.loads(Path(opts.run_spec_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    if not isinstance(profile, dict):
+        return 0
+    staged: dict[str, str] = {}
+    try:
+        apply_run_spec(profile, staged)
+    except Exception:  # noqa: BLE001 -- never block campaign construction
+        return 0
+    applied = 0
+    for key, val in staged.items():
+        if key in env:
+            continue  # explicit operator env wins
+        env[key] = val
+        applied += 1
+    return applied
+
+
 def build_campaign(project_id: str, opts: CampaignOptions) -> ReproductionCampaign:
+    _apply_profile_env(opts)
     run_dir = opts.runs_root / project_id
     campaign_dir = run_dir / "campaign"
     driver: AttemptDriver = _build_driver(opts)

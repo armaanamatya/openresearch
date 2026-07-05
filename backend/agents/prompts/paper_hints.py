@@ -139,7 +139,22 @@ PAPER_HINTS: dict[str, PaperHint] = {
             "The FINAL flat metrics.json MUST carry NON-NULL top-level scalars the "
             "grader reads: reward, success_rate (and/or accuracy), loss, and for SDAR "
             "cells teacher_gap_mean + gate_activation_ratio — from real measured "
-            "values; omit a metric only for a cell that did not run."
+            "values; omit a metric only for a cell that did not run. "
+            "TURN HORIZON: ALFWorld episodes need max_turns>=30 and WebShop "
+            "max_turns>=15 — an ALFRED task needs 15-50 primitive commands, so "
+            "max_turns=6 guarantees won=False and reward=0. Set max_turns>=30 for "
+            "ALFWorld (the harness floors this automatically, but set it explicitly "
+            "in cells.json so your trainer loop matches). "
+            "GENERATION LENGTH: set generation max_new_tokens>=128 so the policy "
+            "can emit a full reasoning step plus a valid command/answer; 32-48 "
+            "tokens truncates the action and the environment rejects it. "
+            "REWARD WIRING: fold the per-turn reward returned by env.step() into "
+            "the GRPO training advantage (this is where OPENRESEARCH_ALFWORLD_SHAPING "
+            "sub-goal credit lives); env.episode_reward() is the TERMINAL-ONLY signal "
+            "for held-out eval — do not use it as the per-turn training reward. "
+            "Prefer the harness-provided agentic_rollout.rollout_episode, which "
+            "handles the multi-turn->sequence conversion and reward summation and "
+            "writes env_health.jsonl."
         ),
         default_scope=ScopeSpec(
             models=[

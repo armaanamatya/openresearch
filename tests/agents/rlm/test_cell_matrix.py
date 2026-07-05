@@ -760,6 +760,48 @@ class TestAuditAggregationCompleteness:
 
 
 # ---------------------------------------------------------------------------
+# normalize_cell_axes preserves execute-mode seam fields (command/metrics_source/
+# cell_env) it doesn't itself understand — it only patches model_key/env/baseline
+# and otherwise shallow-copies the cell dict, so any other agent-declared key
+# (including the new verl-execute seam fields) must survive untouched.
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeCellAxesPreservesSeamFields:
+    def test_preserves_command_metrics_source_and_cell_env_when_axes_explicit(self):
+        from backend.agents.rlm.cell_matrix import normalize_cell_axes
+
+        raw = [_acell(
+            "c1",
+            command="conda run -n sdar bash examples/sdar_trainer/run_search_3b.sh",
+            metrics_source={"kind": "verl", "log_glob": "$OUTPUT_DIR/*.log"},
+            cell_env={"WANDB_MODE": "disabled"},
+        )]
+        cells, _ = normalize_cell_axes(raw)
+        assert cells[0]["command"] == raw[0]["command"]
+        assert cells[0]["metrics_source"] == raw[0]["metrics_source"]
+        assert cells[0]["cell_env"] == raw[0]["cell_env"]
+
+    def test_preserves_seam_fields_even_when_axes_are_derived(self):
+        """Same invariant on the PATCHED-copy branch (missing axes → derived)."""
+        from backend.agents.rlm.cell_matrix import normalize_cell_axes
+
+        raw = [{
+            "id": "c1",
+            "model": "qwen3-1.7b",  # synonym, not explicit model_key → forces derive
+            "command": "bash run.sh",
+            "metrics_source": {"kind": "verl"},
+            "cell_env": {"FOO": "bar"},
+        }]
+        cells, notes = normalize_cell_axes(raw)
+        assert notes  # derivation happened → patched-copy branch exercised
+        assert cells[0]["command"] == "bash run.sh"
+        assert cells[0]["metrics_source"] == {"kind": "verl"}
+        assert cells[0]["cell_env"] == {"FOO": "bar"}
+        assert cells[0]["model_key"] == "qwen3-1.7b"
+
+
+# ---------------------------------------------------------------------------
 # Cross-seed aggregation — "best (mean ± std) over N runs" evidence shape
 # (2026-06-16: the ResNet ceiling — scope seeds set but every cell s42, the
 #  variance leaves stuck at 0.4 because nothing folded the replicas).

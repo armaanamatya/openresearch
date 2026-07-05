@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 
 import pytest
@@ -861,6 +862,169 @@ def test_build_campaign_constructs_unified_and_paired_without_raising(tmp_path):
     paired_campaign = build_campaign("prj_p", _opts(tmp_path, driver="paired"))
     assert isinstance(paired_campaign, ReproductionCampaign)
     assert paired_campaign.driver == "paired"
+
+
+# --------------------------------------------------------------------------- #
+# _apply_profile_env (2026-07-02): the profile's OPENRESEARCH_* keys land in  #
+# the CAMPAIGN process's own env, not just the launched child's --run-spec,  #
+# so campaign-side readers (DISTILL's lesson_distiller/ExperienceMemory,     #
+# any flag-gated helper called in-process) see the same flags.               #
+# --------------------------------------------------------------------------- #
+
+
+def test_apply_profile_env_fills_missing_key(tmp_path):
+    profile = _write_profile(tmp_path / "profile_env.json", extra={"OPENRESEARCH_DOOMED_KILL": "1"})
+    opts = _opts(tmp_path, run_spec_path=str(profile))
+    env: dict[str, str] = {}
+
+    applied = cc._apply_profile_env(opts, env=env)
+
+    assert applied >= 1
+    assert env["OPENRESEARCH_DOOMED_KILL"] == "1"
+    assert env["OPENRESEARCH_REUSE_RUBRIC"] == "1"  # from the default _write_profile keys
+
+
+def test_apply_profile_env_never_clobbers_existing_key(tmp_path):
+    profile = _write_profile(tmp_path / "profile_env.json", extra={"OPENRESEARCH_DOOMED_KILL": "1"})
+    opts = _opts(tmp_path, run_spec_path=str(profile))
+    env = {"OPENRESEARCH_DOOMED_KILL": "operator_value"}
+
+    applied = cc._apply_profile_env(opts, env=env)
+
+    assert env["OPENRESEARCH_DOOMED_KILL"] == "operator_value"  # explicit operator env wins
+    assert env["OPENRESEARCH_REUSE_RUBRIC"] == "1"  # unrelated key still fills in
+    assert applied == 2  # REUSE_RUBRIC + EXTERNAL_VALIDATOR; DOOMED_KILL skipped (pre-existing)
+
+
+def test_apply_profile_env_skips_only_the_preexisting_key(tmp_path):
+    """Precise accounting: with one key already set, every OTHER profile key
+    still applies -- the guard is per-key, not all-or-nothing."""
+    profile = _write_profile(tmp_path / "profile_env.json", extra={"OPENRESEARCH_DOOMED_KILL": "1"})
+    opts = _opts(tmp_path, run_spec_path=str(profile))
+    env = {"OPENRESEARCH_DOOMED_KILL": "operator_value"}
+
+    cc._apply_profile_env(opts, env=env)
+
+    assert env["OPENRESEARCH_DOOMED_KILL"] == "operator_value"
+    assert env["OPENRESEARCH_REUSE_RUBRIC"] == "1"
+    assert env["OPENRESEARCH_EXTERNAL_VALIDATOR"] == "1"
+
+
+def test_apply_profile_env_fail_soft_on_missing_profile(tmp_path):
+    opts = _opts(tmp_path, run_spec_path=str(tmp_path / "absent.json"))
+    env: dict[str, str] = {}
+    assert cc._apply_profile_env(opts, env=env) == 0
+    assert env == {}
+
+
+def test_apply_profile_env_fail_soft_on_bad_json(tmp_path):
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    opts = _opts(tmp_path, run_spec_path=str(bad))
+    env: dict[str, str] = {}
+    assert cc._apply_profile_env(opts, env=env) == 0
+
+
+def test_apply_profile_env_driver_owned_key_is_inits_job_not_this_helpers(tmp_path):
+    """A profile carrying a driver-owned key is invalid, but that's enforced
+    exclusively by _validate_init_impl (F15) -- _apply_profile_env has no
+    special-case for it and simply applies whatever apply_run_spec resolves.
+    No interaction between the two: build_campaign always calls this helper,
+    the invalid campaign is refused later when the INIT stage actually runs
+    (validate_init is a lazily-invoked stage callback, not called here)."""
+    profile = _write_profile(
+        tmp_path / "profile_env.json",
+        extra={"OPENRESEARCH_BASELINE_EXTRA_GUIDANCE": "should be caught by INIT, not here"},
+    )
+    opts = _opts(tmp_path, run_spec_path=str(profile))
+    env: dict[str, str] = {}
+
+    cc._apply_profile_env(opts, env=env)
+    assert env.get("OPENRESEARCH_BASELINE_EXTRA_GUIDANCE") == "should be caught by INIT, not here"
+
+    with pytest.raises(CampaignInitError, match="driver-owned"):
+        cc._validate_init_impl(opts)
+
+
+def test_build_campaign_applies_profile_env_to_real_os_environ(tmp_path, monkeypatch):
+    """Integration: build_campaign wires _apply_profile_env against the real
+    process os.environ (no explicit env= override)."""
+    monkeypatch.delenv("OPENRESEARCH_DOOMED_KILL", raising=False)
+    profile = _write_profile(tmp_path / "profile_env.json", extra={"OPENRESEARCH_DOOMED_KILL": "1"})
+    opts = _opts(tmp_path, run_spec_path=str(profile))
+
+    build_campaign("prj_env_fill", opts)
+
+    assert os.environ["OPENRESEARCH_DOOMED_KILL"] == "1"
+
+
+def test_build_campaign_does_not_clobber_operator_os_environ(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENRESEARCH_DOOMED_KILL", "operator_value")
+    profile = _write_profile(tmp_path / "profile_env.json", extra={"OPENRESEARCH_DOOMED_KILL": "1"})
+    opts = _opts(tmp_path, run_spec_path=str(profile))
+
+    build_campaign("prj_env_noclobber", opts)
+
+    assert os.environ["OPENRESEARCH_DOOMED_KILL"] == "operator_value"
+
+
+# --------------------------------------------------------------------------- #
+# _decide_impl budget-floor lookahead (2026-07-02)                            #
+# --------------------------------------------------------------------------- #
+
+
+def test_decide_impl_gpu_usd_estimate_scales_by_gpu_count(tmp_path, monkeypatch):
+    """``ctx.gpu_usd_per_hr`` (here from the operator's ``--gpu-usd-per-hr``
+    override) is the PER-GPU $/hr -- the SAME value ``check_enforceability``
+    already multiplies by ``ctx.max_gpu_count`` to get a total-$ bound
+    (campaign_policy.py:279). The next-attempt gpu_usd lookahead must use the
+    identical convention: a 4-GPU plan at $5.25/GPU/hr for a 2.0h estimate is
+    $42, not $10.50 (the pre-fix undercount)."""
+    run_dir = tmp_path / "runs" / "prj_t"
+    (run_dir / "rlm_state").mkdir(parents=True)
+    (run_dir / "rlm_state" / "gpu_plan.json").write_text(
+        json.dumps({"gpu_count": 4}), encoding="utf-8"
+    )
+    opts = _opts(tmp_path, est_gpu_hours=2.0, gpu_usd_per_hr=5.25)
+    state = _state()
+
+    real_attempt_estimate = cc.attempt_estimate
+    captured: dict = {}
+
+    def _spy(**kwargs):
+        captured.update(kwargs)
+        return real_attempt_estimate(**kwargs)
+
+    monkeypatch.setattr(cc, "attempt_estimate", _spy)
+
+    cc._decide_impl(run_dir, opts, state, rows=[])
+
+    assert captured["ctx"].max_gpu_count == 4
+    assert captured["est_usd"] == pytest.approx(2.0 * 5.25 * 4)
+
+
+def test_decide_impl_gpu_usd_estimate_single_gpu_unchanged(tmp_path, monkeypatch):
+    """A 1-GPU plan (the common case) is byte-identical to the pre-fix math."""
+    run_dir = tmp_path / "runs" / "prj_t"
+    (run_dir / "rlm_state").mkdir(parents=True)
+    (run_dir / "rlm_state" / "gpu_plan.json").write_text(
+        json.dumps({"gpu_count": 1}), encoding="utf-8"
+    )
+    opts = _opts(tmp_path, est_gpu_hours=2.0, gpu_usd_per_hr=0.5)
+    state = _state()
+
+    real_attempt_estimate = cc.attempt_estimate
+    captured: dict = {}
+
+    def _spy(**kwargs):
+        captured.update(kwargs)
+        return real_attempt_estimate(**kwargs)
+
+    monkeypatch.setattr(cc, "attempt_estimate", _spy)
+
+    cc._decide_impl(run_dir, opts, state, rows=[])
+
+    assert captured["est_usd"] == pytest.approx(2.0 * 0.5)
 
 
 # --------------------------------------------------------------------------- #
