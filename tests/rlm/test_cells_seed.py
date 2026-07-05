@@ -127,3 +127,30 @@ class TestImplementBaselineWiring:
         seed_call_idx = src.index("_seed_cells_manifest(code_dir)")
         retention_idx = src.index("_had_cells_manifest")
         assert repo_seed_idx < seed_call_idx < retention_idx
+
+
+def test_seed_force_reasserts_over_executor_written_manifest(tmp_path, monkeypatch):
+    """force=True makes the operator's manifest authoritative: it overwrites an
+    executor-authored cells.json (the 2026-07-05 live failure — a Search seed
+    clobbered by an ALFWorld cells.json), and is idempotent + byte-identical off."""
+    import json
+    from backend.agents.rlm.primitives import _seed_cells_manifest
+
+    seed = tmp_path / "seed.json"
+    seed.write_text(json.dumps({"cells": [{"id": "search", "command": "x"}]}))
+    code = tmp_path / "code"
+    code.mkdir()
+    (code / "cells.json").write_text(json.dumps({"cells": [{"id": "alfworld", "command": "y"}]}))
+
+    monkeypatch.setenv("OPENRESEARCH_CELLS_SEED_PATH", str(seed))
+    # First-seed mode leaves the executor's file alone.
+    assert _seed_cells_manifest(code, force=False) is False
+    assert json.loads((code / "cells.json").read_text())["cells"][0]["id"] == "alfworld"
+    # Authoritative re-assert overwrites it with the operator's grid.
+    assert _seed_cells_manifest(code, force=True) is True
+    assert json.loads((code / "cells.json").read_text())["cells"][0]["id"] == "search"
+    # Idempotent: no rewrite when it already matches.
+    assert _seed_cells_manifest(code, force=True) is False
+    # Byte-identical when unset.
+    monkeypatch.delenv("OPENRESEARCH_CELLS_SEED_PATH")
+    assert _seed_cells_manifest(code, force=True) is False

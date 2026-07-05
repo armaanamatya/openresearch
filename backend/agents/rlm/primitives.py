@@ -2130,21 +2130,27 @@ def _seed_code_from_repo(repo_dir: "Path", code_dir: "Path") -> int:
     return copied
 
 
-def _seed_cells_manifest(code_dir: "Path") -> bool:
-    """Operator pre-seed: copy OPENRESEARCH_CELLS_SEED_PATH to code/cells.json
-    when it is not already present (Task #7).
+def _seed_cells_manifest(code_dir: "Path", *, force: bool = False) -> bool:
+    """Operator pre-seed: copy OPENRESEARCH_CELLS_SEED_PATH to code/cells.json (Task #7).
 
     Rationale: the operator declares the training grid ONCE via a
-    pre-authored manifest; the harness then guarantees code/cells.json exists
-    regardless of the executor sub-agent's own code-generation quality (an
-    executor that never emits cells.json still gets the cells-route).
-    Default-OFF / byte-identical when OPENRESEARCH_CELLS_SEED_PATH is unset.
-    Only seeds on the FIRST implement_baseline call (code/cells.json absent)
-    — a repair pass with an existing manifest is never re-seeded (the
-    route-retention machinery already owns manifest preservation across
-    repairs).
+    pre-authored manifest; the harness then guarantees code/cells.json is
+    exactly that, regardless of the executor sub-agent's own code-generation
+    quality. Default-OFF / byte-identical when OPENRESEARCH_CELLS_SEED_PATH is
+    unset.
 
-    Returns True iff a file was copied. Fail-soft: any error is logged and
+    Two modes:
+      * ``force=False`` (the pre-executor first-seed in implement_baseline):
+        write ONLY when code/cells.json is absent, so the executor SEES the
+        seed and a repair pass with an existing manifest is left alone.
+      * ``force=True`` (the AUTHORITATIVE re-assert at run_experiment): (re-)copy
+        the operator's manifest over code/cells.json even if a file exists —
+        the executor sub-agent may have overwritten it with its OWN interpretation
+        (observed live 2026-07-05: a Search seed clobbered by an executor-authored
+        ALFWorld cells.json), and the operator's declared grid must be what
+        actually runs. Idempotent: skips the copy when the dest already matches.
+
+    Returns True iff a file was written. Fail-soft: any error is logged and
     swallowed, never propagated into the run.
     """
     import os as _os_repo
@@ -2156,15 +2162,26 @@ def _seed_cells_manifest(code_dir: "Path") -> bool:
         return False
     code_dir = _Path(code_dir)
     dest = code_dir / "cells.json"
-    if dest.exists():
+    if dest.exists() and not force:
         return False
     try:
         code_dir.mkdir(parents=True, exist_ok=True)
+        if force and dest.exists():
+            try:  # idempotent: don't rewrite (or warn) when it already matches
+                if dest.read_bytes() == _Path(_cells_seed).read_bytes():
+                    return False
+            except Exception:  # noqa: BLE001 — unreadable → fall through and overwrite
+                pass
         _shutil.copyfile(_cells_seed, dest)
+        if force:
+            logger.info(
+                "_seed_cells_manifest: re-asserted operator cells.json over %s (authoritative)",
+                dest,
+            )
         return True
     except Exception:  # noqa: BLE001 — fail-soft, never block the run
         logger.warning(
-            "_seed_cells_manifest: pre-seed from %s failed", _cells_seed, exc_info=True,
+            "_seed_cells_manifest: (re-)seed from %s failed", _cells_seed, exc_info=True,
         )
         return False
 
@@ -6808,6 +6825,14 @@ def run_experiment(
         )
         _progress_thread.start()
     try:
+        # Cells-manifest authority (Task #7): when the operator declared the grid
+        # via OPENRESEARCH_CELLS_SEED_PATH, re-assert it over code/cells.json HERE,
+        # at execution time — the executor sub-agent may have overwritten the
+        # pre-executor first-seed with its OWN interpretation (a Search seed was
+        # clobbered by an executor-authored ALFWorld cells.json, observed live
+        # 2026-07-05). The operator's declared grid is what actually runs.
+        # Idempotent + fail-soft; no-op (byte-identical) when the flag is unset.
+        _seed_cells_manifest(code_path, force=True)
         from backend.services.runtime.gpu_capacity import describe_capacity
         _caps = describe_capacity(ctx)
         # C6 (2026-06-16): the cell-matrix route gate historically allowed only
