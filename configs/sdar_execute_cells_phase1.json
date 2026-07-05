@@ -5,9 +5,17 @@
       "model_key": "Qwen2.5-3B-Instruct",
       "env": "search_qa",
       "baseline": "sdar",
-      "gpus": 4,
-      "command": "conda run -n sdar bash examples/sdar_trainer/run_search_3b.sh",
-      "cell_env": {"SDAR_MODEL": "Qwen2.5-3B-Instruct"},
+      "gpus": "auto",
+      "services": [
+        {
+          "name": "retrieval",
+          "gpus": 1,
+          "command": "/mnt/sdar-cache/miniconda/bin/conda run --no-capture-output -p /mnt/sdar-cache/conda/envs/retriever bash examples/search/retriever/retrieval_launch.sh",
+          "readiness": {"kind": "http", "url": "http://127.0.0.1:8000/retrieve", "method": "POST", "body": "{}", "timeout_s": 1800, "interval_s": 15}
+        }
+      ],
+      "command": "/mnt/sdar-cache/miniconda/bin/conda run --no-capture-output -p /mnt/sdar-cache/conda/envs/sdar bash examples/sdar_trainer/run_search_3b.sh",
+      "cell_env": {"SDAR_MODEL": "Qwen2.5-3B-Instruct", "WANDB_MODE": "offline"},
       "metrics_source": {"kind": "verl", "log_glob": "$OUTPUT_DIR/*.log", "success_rate_key": "val/success_rate"}
     }
   ]
