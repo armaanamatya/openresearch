@@ -579,6 +579,28 @@ def _poll_peak_vram_daemon(
         stop_flag.wait(timeout=interval_s)
 
 
+def _passthrough_env_names() -> list[str]:
+    """Parse OPENRESEARCH_CELL_ENV_PASSTHROUGH into a list of VAR NAMES.
+
+    Comma-separated allowlist an operator uses to forward specific
+    environment variables (e.g. a staged ``HF_HOME``) from the harness's own
+    environment into a cell's subprocess. Applied AFTER a cell's own
+    ``cell_env`` overrides, so operator-staged env always wins over a stale
+    per-cell value (see ``_run_cell_subprocess``).
+
+    ``backend/agents/rlm/primitives.py`` (the monolithic run_experiment path)
+    and ``backend/services/runtime/asset_provisioning.py`` (the HF_HOME
+    clobber guard) parse the SAME env var independently — a tiny duplicated
+    one-liner rather than an import from this sandbox-flat, zero-non-stdlib
+    module, to avoid a cross-module import.
+
+    Empty/unset → ``[]``. Whitespace around each name is stripped; blank
+    tokens are dropped.
+    """
+    raw = os.environ.get("OPENRESEARCH_CELL_ENV_PASSTHROUGH", "")
+    return [name.strip() for name in raw.split(",") if name.strip()]
+
+
 def _run_cell_subprocess(
     *,
     cell: dict[str, Any],
@@ -602,7 +624,8 @@ def _run_cell_subprocess(
         The child sees exactly one GPU ("cuda:0").  Physical cannot use others.
 
     ``PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True``
-        Reduces allocator fragmentation on long training loops.
+        Reduces allocator fragmentation on long training loops.  Set ONLY on
+        the default (non-command) path — see R1 below.
 
     ``OPENRESEARCH_CELL_BATCH_SCALE=<batch_scale>``
         Set on OOM retries so the cell script can reduce its batch size.
@@ -627,6 +650,45 @@ def _run_cell_subprocess(
     ``OPENRESEARCH_CELL_CHECKPOINT_INTERVAL_S=<seconds>``
         Advisory checkpoint interval in seconds.  Defaults to 600 (10 min).
         Override with the same env-var in the parent environment.
+
+    ``cell["cell_env"]`` (per-cell env overrides)
+        A dict of env-var overrides declared on the cell itself (e.g. by the
+        authors' own launcher config).  Applied AFTER all of the harness
+        advisory above, so a cell can override any of it — including
+        ``PYTORCH_CUDA_ALLOC_CONF`` (see R1 below).  Keys/values are coerced
+        to ``str``.  This is ``cell["cell_env"]``, NOT ``cell["env"]`` (the
+        environment/dataset AXIS, e.g. ``"alfworld"``) — the latter is never
+        read here.
+
+    ``OPENRESEARCH_CELL_ENV_PASSTHROUGH`` (operator staged-env allowlist)
+        Comma-separated VAR NAMES forwarded from the harness's own
+        environment into the child, applied AFTER ``cell_env`` — so an
+        operator-staged value (e.g. a persistent-disk ``HF_HOME``) always
+        wins over a stale per-cell value.  Empty/unset forwards nothing.
+
+    R1 — ``CUDA_VISIBLE_DEVICES`` (and, on the command branch below,
+    ``OUTPUT_DIR`` / ``OPENRESEARCH_CELL_ID``) are harness-protected:
+    re-asserted AFTER ``cell_env``/the passthrough allowlist so neither can
+    steal GPU placement.  Conversely, a COMMAND cell does NOT get the
+    harness's ``PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`` default —
+    the authors' own launcher owns its CUDA memory config (vLLM's
+    CuMemAllocator asserts when it's forced) — it is set ONLY on the default
+    (non-command) path, exactly as before this change; a command cell gets
+    it only if its own ``cell_env`` (or the passthrough allowlist) sets it.
+
+    Command/launcher seam (execute mode, 2026-07-05): when ``cell["command"]``
+    is a non-blank string, it is run VERBATIM via ``["bash", "-lc", command]``
+    (so shell builtins like ``conda run``/``&&``/env-var expansion work)
+    instead of the default ``[sys.executable, cell_script, --cell-id=...,
+    --output-dir=...]`` contract — this is how a cell runs the AUTHORS' own
+    launcher script (e.g. seeded verbatim into ``code/`` by execute mode)
+    rather than the harness's ``train_cell.py`` shape. The child's cwd is set
+    to ``cell_script``'s parent directory (``code/``) so the seeded repo's
+    relative paths (``examples/sdar_trainer/run_search_3b.sh``) resolve, and
+    two extra env vars are exported for the launcher's own convenience:
+    ``OUTPUT_DIR`` and ``OPENRESEARCH_CELL_ID``. A blank/absent ``command``
+    is byte-identical to before this change (no cwd override, no extra env
+    keys, same default argv).
     """
     child_env = {**os.environ}
     # Put the running interpreter's bin/ on PATH so console scripts a cell may shell
@@ -638,7 +700,14 @@ def _run_cell_subprocess(
     if _interp_bin:
         child_env["PATH"] = _interp_bin + os.pathsep + child_env.get("PATH", "")
     child_env["CUDA_VISIBLE_DEVICES"] = gpu_id
-    child_env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    # Command/launcher seam: resolve this FIRST — R1 needs it to gate the
+    # PYTORCH_CUDA_ALLOC_CONF default below (the authors' own launcher owns
+    # its CUDA memory config; vLLM's CuMemAllocator asserts when the harness
+    # forces expandable_segments). Empty/absent → the default train_cell.py
+    # contract, byte-for-byte identical to before this seam existed.
+    command = str(cell.get("command") or "").strip()
+    if not command:
+        child_env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     child_env["OPENRESEARCH_CELL_OUTPUT_DIR"] = str(output_dir)
     # Floor max_turns for long-horizon envs (ALFWorld/WebShop) before
     # serialising — an agent-generated trainer that leaves max_turns=6 can
@@ -670,13 +739,51 @@ def _run_cell_subprocess(
         child_env.pop("OPENRESEARCH_CELL_BATCH_SCALE", None)
         child_env.pop("OPENRESEARCH_CELL_GRAD_CHECKPOINT", None)
 
+    # cell_env: per-cell env overrides declared by the agent/authors' launcher
+    # config. Applied AFTER the harness advisory above so a cell can override
+    # e.g. PYTORCH_CUDA_ALLOC_CONF (the R1 command-cell case). This is
+    # cell["cell_env"], NOT cell["env"] (the environment/dataset AXIS) — never
+    # read "env" here. Keys/values are coerced to str.
+    _cell_env_overrides = cell.get("cell_env")
+    if isinstance(_cell_env_overrides, dict):
+        for _k, _v in _cell_env_overrides.items():
+            child_env[str(_k)] = str(_v)
+
+    # Operator staged-env passthrough allowlist: OPENRESEARCH_CELL_ENV_PASSTHROUGH
+    # is a comma-separated list of VAR NAMES forwarded from the harness's own
+    # environment — applied AFTER cell_env so operator-staged env (HF_HOME etc.)
+    # wins over a stale per-cell value. Empty/unset → forwards nothing.
+    for _name in _passthrough_env_names():
+        if _name in os.environ:
+            child_env[_name] = os.environ[_name]
+
+    # Harness-protected: re-assert LAST so neither cell_env nor the passthrough
+    # allowlist can steal GPU placement. (OUTPUT_DIR / OPENRESEARCH_CELL_ID are
+    # re-asserted the same way below, on the command branch.)
+    child_env["CUDA_VISIBLE_DEVICES"] = gpu_id
+
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
 
-    cmd = [sys.executable, str(cell_script)] + [
-        f"--cell-id={cell.get('id', '')}",
-        f"--output-dir={output_dir}",
-    ]
+    # Command/launcher seam: a cell may declare a raw shell ``command`` to run
+    # the authors' own launcher verbatim instead of the harness's default
+    # train_cell.py contract. Empty/absent → the original default launcher,
+    # byte-for-byte (no cwd override, no extra env keys added below).
+    _popen_kwargs: dict[str, Any] = {}
+    if command:
+        cmd = ["bash", "-lc", command]
+        # cwd = code/ (cell_script's parent) so the seeded repo's relative
+        # launcher paths (e.g. examples/sdar_trainer/run_search_3b.sh) resolve.
+        _popen_kwargs["cwd"] = str(Path(cell_script).parent)
+        # Harness-protected: re-asserted LAST (after cell_env/passthrough
+        # above) so neither can steal them.
+        child_env["OUTPUT_DIR"] = str(output_dir)
+        child_env["OPENRESEARCH_CELL_ID"] = str(cell.get("id", ""))
+    else:
+        cmd = [sys.executable, str(cell_script)] + [
+            f"--cell-id={cell.get('id', '')}",
+            f"--output-dir={output_dir}",
+        ]
 
     captured_chunks: list[str] = []
     _cell_proc_pid: int | None = None  # C2: process group, deregistered in finally
@@ -693,6 +800,7 @@ def _run_cell_subprocess(
                 errors="replace",
                 # New process group so we can kill the whole tree on timeout.
                 start_new_session=True,
+                **_popen_kwargs,
             )
             # C2: register this cell's process group so binding's per-primitive
             # timeout handler can SIGKILL it if the OUTER timeout abandons us before
@@ -1078,6 +1186,44 @@ def run_matrix(
 
             if returncode == 0:
                 metrics = _load_metrics(output_dir)
+
+                # Change #3 (verl-execute seam): a cell that ran the AUTHORS' own
+                # trainer via the command/launcher seam above may not have written
+                # the harness's metrics.json contract itself. When the cell
+                # declares metrics_source={"kind": "verl", ...} and no metrics.json
+                # landed, adapt the authors' own val logs/summary into the
+                # canonical shape (value-preserving — never scaled/recomputed).
+                # Lazily imported (only needed on this opt-in path) and fully
+                # fail-soft: an adapter error must never crash the grid.
+                _metrics_source = cell.get("metrics_source")
+                if (
+                    metrics is None
+                    and isinstance(_metrics_source, dict)
+                    and _metrics_source.get("kind") == "verl"
+                ):
+                    try:
+                        try:  # sandbox-flat: verl_metrics_adapter.py copied next to this file.
+                            from verl_metrics_adapter import write_cell_metrics_from_verl
+                        except ImportError:  # in-repo import path.
+                            from backend.agents.rlm.verl_metrics_adapter import (
+                                write_cell_metrics_from_verl,
+                            )
+                        write_cell_metrics_from_verl(
+                            output_dir,
+                            model_key=cell.get("model_key"),
+                            env=cell.get("env"),
+                            baseline=cell.get("baseline"),
+                            log_glob=_metrics_source.get("log_glob", "$OUTPUT_DIR/*.log"),
+                            success_rate_key=_metrics_source.get(
+                                "success_rate_key", "val/success_rate"
+                            ),
+                        )
+                        metrics = _load_metrics(output_dir)
+                    except Exception:  # noqa: BLE001 — adapter failure must never break the grid
+                        logger.warning(
+                            "gpu_cell_runner: cell=%s verl metrics adapter failed",
+                            cell_id, exc_info=True,
+                        )
 
                 # Post-cell checkpoint GC: delete large weight files now that
                 # metrics.json has been read into `metrics`.  Only fires when

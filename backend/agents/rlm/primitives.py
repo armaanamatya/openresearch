@@ -2102,6 +2102,45 @@ def _seed_code_from_repo(repo_dir: "Path", code_dir: "Path") -> int:
     return copied
 
 
+def _seed_cells_manifest(code_dir: "Path") -> bool:
+    """Operator pre-seed: copy OPENRESEARCH_CELLS_SEED_PATH to code/cells.json
+    when it is not already present (Task #7).
+
+    Rationale: the operator declares the training grid ONCE via a
+    pre-authored manifest; the harness then guarantees code/cells.json exists
+    regardless of the executor sub-agent's own code-generation quality (an
+    executor that never emits cells.json still gets the cells-route).
+    Default-OFF / byte-identical when OPENRESEARCH_CELLS_SEED_PATH is unset.
+    Only seeds on the FIRST implement_baseline call (code/cells.json absent)
+    — a repair pass with an existing manifest is never re-seeded (the
+    route-retention machinery already owns manifest preservation across
+    repairs).
+
+    Returns True iff a file was copied. Fail-soft: any error is logged and
+    swallowed, never propagated into the run.
+    """
+    import os as _os_repo
+    import shutil as _shutil
+    from pathlib import Path as _Path
+
+    _cells_seed = _os_repo.environ.get("OPENRESEARCH_CELLS_SEED_PATH", "").strip()
+    if not _cells_seed:
+        return False
+    code_dir = _Path(code_dir)
+    dest = code_dir / "cells.json"
+    if dest.exists():
+        return False
+    try:
+        code_dir.mkdir(parents=True, exist_ok=True)
+        _shutil.copyfile(_cells_seed, dest)
+        return True
+    except Exception:  # noqa: BLE001 — fail-soft, never block the run
+        logger.warning(
+            "_seed_cells_manifest: pre-seed from %s failed", _cells_seed, exc_info=True,
+        )
+        return False
+
+
 def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = False) -> dict:
     """Generate the baseline code from a reproduction plan; return a typed envelope.
 
@@ -2519,6 +2558,23 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
                 "code": "repo_code_seeded",
                 "message": f"{_rmode}-mode: seeded code/ from the authors' repo ({_n} files)",
             })
+
+    # Cells.json operator pre-seed (Task #7): the operator declares the
+    # training grid ONCE via a pre-authored manifest; the harness guarantees
+    # code/cells.json exists regardless of the executor's own code-generation
+    # quality. Default-OFF/byte-identical when OPENRESEARCH_CELLS_SEED_PATH is
+    # unset; only fires on the FIRST call (code/cells.json absent) — a repair
+    # pass with an existing manifest never re-seeds.
+    if _seed_cells_manifest(code_dir):
+        _cells_seed_src = _os_repo.environ.get("OPENRESEARCH_CELLS_SEED_PATH", "").strip()
+        logger.info(
+            "implement_baseline[%s]: seeded code/cells.json from operator path (%s)",
+            ctx.project_id, _cells_seed_src,
+        )
+        _emit_dashboard_event(ctx, event_type="run_warning", payload={
+            "code": "cells_seeded",
+            "message": f"seeded code/cells.json from operator path ({_cells_seed_src})",
+        })
 
     # Route-retention (2026-06-11): remember whether a cells manifest existed
     # before this (repair) implementation so its silent disappearance — the
@@ -3726,6 +3782,34 @@ def _resolve_distributed_launch(
     return out if changed else commands
 
 
+def _execute_owns_deps(code_path: "str") -> bool:
+    """True iff the authors' conda env (repo-first EXECUTE mode) owns
+    torch/vLLM/verl and the harness's local cu121 pip bootstrap must NOT
+    restack it (Change #5).
+
+    Explicit ``OPENRESEARCH_EXECUTE_OWNS_DEPS`` wins either direction
+    (hard opt-out/opt-in). Unset: default ON iff the run's persisted
+    ``rlm_state/repo_spec.json`` mode is ``"execute"`` — fail-soft False on
+    any read error / missing file / mode != execute, so an unset flag on a
+    non-execute (or non-repo) run is byte-identical to today.
+    """
+    import os as _os
+    from pathlib import Path as _Path
+
+    raw = _os.environ.get("OPENRESEARCH_EXECUTE_OWNS_DEPS", "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    try:
+        code_dir = _Path(code_path)
+        project_dir = code_dir.parent if code_dir.name == "code" else code_dir
+        spec = _load_repo_spec(project_dir)
+        return str(spec.get("mode") or "").strip().lower() == "execute"
+    except Exception:  # noqa: BLE001 — fail-soft, never block the bootstrap gate
+        return False
+
+
 async def _execute_in_sandbox(
     code_path: str,
     env_id: str,
@@ -3809,6 +3893,18 @@ async def _execute_in_sandbox(
     if _mode_str_local == "local" and _venv:
         _exp_env_extra["VIRTUAL_ENV"] = _venv
         _exp_env_extra["PATH"] = f"{_venv}/bin:" + _os.environ.get("PATH", "")
+
+    # Operator staged-env passthrough allowlist (Task #2b): forward the SAME
+    # OPENRESEARCH_CELL_ENV_PASSTHROUGH allowlist the per-cell subprocess runner
+    # honors (gpu_cell_runner._passthrough_env_names) into the monolithic
+    # run_experiment SandboxConfig.environment, so it crosses the docker/runpod
+    # boundary too. Never steps on the venv-PATH keys set just above. Unset →
+    # no-op (byte-identical).
+    for _pname in [
+        _n.strip() for _n in _os.environ.get("OPENRESEARCH_CELL_ENV_PASSTHROUGH", "").split(",") if _n.strip()
+    ]:
+        if _pname not in _exp_env_extra and _pname in _os.environ:
+            _exp_env_extra[_pname] = _os.environ[_pname]
 
     config = SandboxConfig(
         project_id=project_id,
@@ -3975,7 +4071,13 @@ async def _execute_in_sandbox(
         except Exception:  # noqa: BLE001 — synthesis must never block the run
             logger.exception("_execute_in_sandbox: local requirements.txt auto-derive failed")
 
-    if "local" in _mode_str and requirements_path.exists():
+    # Change #5: in repo-first EXECUTE mode the authors' conda env owns
+    # torch/vLLM/verl (the cell runs via `conda run -n <env>`) — the harness's
+    # cu121 pip bootstrap below would restack/conflict with it. Default-OFF /
+    # byte-identical: `_execute_owns_deps` returns False unless
+    # OPENRESEARCH_EXECUTE_OWNS_DEPS is explicitly set, or the run's persisted
+    # repo_spec.json mode is "execute" (default ON in that case).
+    if "local" in _mode_str and requirements_path.exists() and not _execute_owns_deps(code_path):
         bootstrap_commands.append(
             "python -m pip install --upgrade pip wheel setuptools || true"
         )

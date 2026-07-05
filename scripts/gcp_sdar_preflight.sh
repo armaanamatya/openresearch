@@ -617,6 +617,19 @@ launch_run() {
   _spec_add OPENRESEARCH_USE_AUTHOR_REPO          "${OPENRESEARCH_USE_AUTHOR_REPO:-1}"
   _spec_add OPENRESEARCH_REPRODUCTION_MODE        "${OPENRESEARCH_REPRODUCTION_MODE:-adapt}"
   _spec_add OPENRESEARCH_REPO_URL                 "${OPENRESEARCH_REPO_URL:-https://github.com/ZJU-REAL/SDAR}"
+  # Repo-first EXECUTE mode seams (2026-07-05): reuse the pre-staged clone + pin,
+  # let the authors' conda env own torch/vLLM/verl, forward the staged env into
+  # every cell, and (optionally) pre-seed the cells.json grid so the executor
+  # only verifies it. Each empty => not forwarded (byte-identical adapt run).
+  # Set OPENRESEARCH_REPRODUCTION_MODE=execute + these locally to drive execute mode.
+  _spec_add OPENRESEARCH_REPO_LOCAL_PATH          "${OPENRESEARCH_REPO_LOCAL_PATH:-}"
+  _spec_add OPENRESEARCH_REPO_COMMIT              "${OPENRESEARCH_REPO_COMMIT:-}"
+  _spec_add OPENRESEARCH_EXECUTE_OWNS_DEPS        "${OPENRESEARCH_EXECUTE_OWNS_DEPS:-}"
+  _spec_add OPENRESEARCH_CELL_ENV_PASSTHROUGH     "${OPENRESEARCH_CELL_ENV_PASSTHROUGH:-}"
+  _spec_add OPENRESEARCH_CELLS_SEED_PATH          "${OPENRESEARCH_CELLS_SEED_PATH:-}"
+  # Minimal Viable Reproduction (standalone; empty => off): narrow to the smallest
+  # central-claim cell + emit a directional-viability verdict.
+  _spec_add OPENRESEARCH_MINIMAL_VIABLE           "${OPENRESEARCH_MINIMAL_VIABLE:-}"
   _spec_add OPENRESEARCH_LIFECYCLE_DRIVE          "${OPENRESEARCH_LIFECYCLE_DRIVE:-1}"
   _spec_add OPENRESEARCH_ALFWORLD_SHAPING         "${OPENRESEARCH_ALFWORLD_SHAPING:-1}"
   _spec_add OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S "${OPENRESEARCH_RUN_EXPERIMENT_TIMEOUT_S:-64800}"
@@ -638,15 +651,22 @@ launch_run() {
   _spec_add OPENRESEARCH_FAILURE_CAPSULES         "${OPENRESEARCH_FAILURE_CAPSULES:-1}"
   _spec_add OPENRESEARCH_NEGATIVE_LESSONS         "${OPENRESEARCH_NEGATIVE_LESSONS:-1}"
   _spec_add OPENRESEARCH_POSITIVE_RECIPES         "${OPENRESEARCH_POSITIVE_RECIPES:-1}"
-  # EVAL_PROVENANCE_GUARD OFF for run 1 (false-veto risk until the smoke confirms record_eval).
+  # EVAL_PROVENANCE_GUARD default OFF for run 1 (false-veto risk until the smoke
+  # confirms record_eval). Execute-mode verl cells are now SAFE with it ON: the
+  # 2026-07-05 aggregate-provenance reconciliation makes the guard accept the verl
+  # adapter's records-less sidecar (verified value-preservingly), so the execute
+  # run-spec sets it to 1 explicitly.
   _spec_add OPENRESEARCH_EVAL_PROVENANCE_GUARD    "${OPENRESEARCH_EVAL_PROVENANCE_GUARD:-0}"
   _spec_add OPENRESEARCH_SDAR_CACHE_ROOT          "${OPENRESEARCH_SDAR_CACHE_ROOT:-/mnt/sdar-cache}"
   _spec_add WEBSHOP_DATA_DIR                      "${WEBSHOP_DATA_DIR:-}"
   _spec_add SEARCH_QA_INDEX_DIR                   "${SEARCH_QA_INDEX_DIR:-}"
   _spec_add OPENRESEARCH_WEBSHOP_PYTHON           "${OPENRESEARCH_WEBSHOP_PYTHON:-}"
   # Point HF + ALFWorld at the warm cache so the GPU run loads pre-staged weights /
-  # game data instead of re-downloading them on paid GPU time (empty => unset).
-  _spec_add HF_HOME                              "${HF_HOME:-}"
+  # game data instead of re-downloading them on paid GPU time. HF_HOME defaults to
+  # <cache_root>/hf (where the staged Qwen weights live) so the cell-env passthrough
+  # forwards it and asset_provisioning's clobber guard preserves it; override to
+  # relocate the HF cache.
+  _spec_add HF_HOME                              "${HF_HOME:-${OPENRESEARCH_SDAR_CACHE_ROOT:-/mnt/sdar-cache}/hf}"
   _spec_add ALFWORLD_DATA                        "${ALFWORLD_DATA:-}"
 
   # Multi-line scope guidance: fold from the staged text file (backward-compat)

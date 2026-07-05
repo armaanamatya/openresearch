@@ -1,0 +1,64 @@
+{
+  "cells": [
+    {
+      "id": "search_qa_3b",
+      "model_key": "Qwen2.5-3B-Instruct",
+      "env": "search_qa",
+      "baseline": "sdar",
+      "gpus": 4,
+      "command": "conda run -n sdar bash examples/sdar_trainer/run_search_3b.sh",
+      "cell_env": {"SDAR_MODEL": "Qwen2.5-3B-Instruct"},
+      "metrics_source": {"kind": "verl", "log_glob": "$OUTPUT_DIR/*.log", "success_rate_key": "val/success_rate"}
+    },
+    {
+      "id": "search_qa_1p7b",
+      "model_key": "Qwen3-1.7B",
+      "env": "search_qa",
+      "baseline": "sdar",
+      "gpus": 4,
+      "command": "conda run -n sdar bash examples/sdar_trainer/run_search_3b.sh",
+      "cell_env": {"SDAR_MODEL": "Qwen3-1.7B"},
+      "metrics_source": {"kind": "verl", "log_glob": "$OUTPUT_DIR/*.log", "success_rate_key": "val/success_rate"}
+    },
+    {
+      "id": "alfworld_3b",
+      "model_key": "Qwen2.5-3B-Instruct",
+      "env": "alfworld",
+      "baseline": "sdar",
+      "gpus": 4,
+      "command": "conda run -n sdar bash examples/sdar_trainer/run_alfworld_3b_4gpu.sh",
+      "cell_env": {"SDAR_MODEL": "Qwen2.5-3B-Instruct"},
+      "metrics_source": {"kind": "verl", "log_glob": "$OUTPUT_DIR/*.log", "success_rate_key": "episode/success_rate"}
+    },
+    {
+      "id": "alfworld_1p7b",
+      "model_key": "Qwen3-1.7B",
+      "env": "alfworld",
+      "baseline": "sdar",
+      "gpus": 4,
+      "command": "conda run -n sdar bash examples/sdar_trainer/run_alfworld_3b_4gpu.sh",
+      "cell_env": {"SDAR_MODEL": "Qwen3-1.7B"},
+      "metrics_source": {"kind": "verl", "log_glob": "$OUTPUT_DIR/*.log", "success_rate_key": "episode/success_rate"}
+    },
+    {
+      "id": "webshop_3b",
+      "model_key": "Qwen2.5-3B-Instruct",
+      "env": "webshop",
+      "baseline": "sdar",
+      "gpus": 4,
+      "command": "conda run -n verl-webshop bash examples/sdar_trainer/run_webshop_3b_patched.sh",
+      "cell_env": {"SDAR_MODEL": "Qwen2.5-3B-Instruct"},
+      "metrics_source": {"kind": "verl", "log_glob": "$OUTPUT_DIR/*.log", "success_rate_key": "val/success_rate"}
+    },
+    {
+      "id": "webshop_1p7b",
+      "model_key": "Qwen3-1.7B",
+      "env": "webshop",
+      "baseline": "sdar",
+      "gpus": 4,
+      "command": "conda run -n verl-webshop bash examples/sdar_trainer/run_webshop_3b_patched.sh",
+      "cell_env": {"SDAR_MODEL": "Qwen3-1.7B"},
+      "metrics_source": {"kind": "verl", "log_glob": "$OUTPUT_DIR/*.log", "success_rate_key": "val/success_rate"}
+    }
+  ]
+}

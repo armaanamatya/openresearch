@@ -9,6 +9,8 @@ def test_repo_flag_defaults():
     assert s.repo_clone_timeout_s == 300
     assert s.repo_clone_max_mb == 2048
     assert s.repo_clone_lfs is False
+    assert s.repo_local_path == ""
+    assert s.repo_commit == ""
 
 
 def test_repo_flags_read_openresearch_env(monkeypatch):
@@ -17,12 +19,16 @@ def test_repo_flags_read_openresearch_env(monkeypatch):
     monkeypatch.setenv("OPENRESEARCH_REPO_CLONE_TIMEOUT_S", "120")
     monkeypatch.setenv("OPENRESEARCH_REPO_CLONE_MAX_MB", "512")
     monkeypatch.setenv("OPENRESEARCH_REPO_CLONE_LFS", "1")
+    monkeypatch.setenv("OPENRESEARCH_REPO_LOCAL_PATH", "/mnt/sdar-cache/SDAR")
+    monkeypatch.setenv("OPENRESEARCH_REPO_COMMIT", "deadbeef")
     s = Settings()
     assert s.use_author_repo is True
     assert s.reproduction_mode == "reference"
     assert s.repo_clone_timeout_s == 120
     assert s.repo_clone_max_mb == 512
     assert s.repo_clone_lfs is True
+    assert s.repo_local_path == "/mnt/sdar-cache/SDAR"
+    assert s.repo_commit == "deadbeef"
 
 
 def test_repo_flags_legacy_reprolab_bridge(monkeypatch):

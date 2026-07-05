@@ -622,6 +622,29 @@ def _resolve_and_clone_repo(
                         ))
                     except Exception:  # noqa: BLE001
                         pass
+            elif mode_override == "execute":
+                # Execute mode has no from-scratch fallback path worth taking: the
+                # implementer contract is "run the authors' pipeline verbatim",
+                # which is meaningless with no usable repo. Silently downgrading to
+                # scratch would make the implementer quietly reimplement instead —
+                # keep mode="execute" so the caller/report can see the gap honestly.
+                from backend.services.ingestion.repo.resolver import RepoSpec
+                spec = RepoSpec(
+                    url=spec.url, source=spec.source, mode="execute",
+                    reason=f"clone failed for {spec.url}; execute mode has no usable repo",
+                )
+                if emit is not None:
+                    try:
+                        from backend.agents.rlm.sse_bridge import build_run_warning_event
+                        emit(build_run_warning_event(
+                            code="repo_execute_unavailable",
+                            message=(
+                                f"clone failed for {spec.url}; execute mode has no usable "
+                                "repo and will not silently reimplement from scratch"
+                            ),
+                        ))
+                    except Exception:  # noqa: BLE001
+                        pass
             else:
                 # Clone failed -> fall back to scratch, but record that we tried.
                 from backend.services.ingestion.repo.resolver import RepoSpec
@@ -1799,6 +1822,80 @@ def _run_finalize_validation_panel(
         logger.warning("finalize-validation: external validation panel failed (non-fatal)", exc_info=True)
 
 
+def _minimal_viable_scope_hook(arxiv_id: str | None, scope_spec: Any) -> tuple[Any, str | None]:
+    """MVR (OPENRESEARCH_MINIMAL_VIABLE, default-OFF) scope-hook decision.
+
+    Returns ``(scope_spec, None)`` UNCHANGED — the exact same object, no copy —
+    whenever the flag is off, no paper hint applies, or the operator already
+    narrowed the scope; :func:`minimal_viable.select_viability_scope` already
+    encodes all of that fail-soft logic, so this wrapper only adds the
+    flag gate + the guidance-text pairing. Returns ``(narrowed_scope,
+    viability_guidance())`` when MVR selects a smaller central-claim cell.
+    Pure — no env mutation, no emit; the caller applies both.
+    """
+    from backend.agents.rlm import minimal_viable as _mvr
+    if not _mvr.minimal_viable_enabled():
+        return scope_spec, None
+    try:
+        mvr_scope = _mvr.select_viability_scope(arxiv_id, scope_spec)
+    except Exception:  # noqa: BLE001 — fail-soft, mirrors select_viability_scope itself
+        mvr_scope = None
+    if mvr_scope is None:
+        return scope_spec, None
+    return mvr_scope, _mvr.viability_guidance()
+
+
+def _apply_minimal_viable_reproduction(project_dir: Path, ctx: Any) -> None:
+    """MVR (OPENRESEARCH_MINIMAL_VIABLE, default-OFF) finalize hook.
+
+    Computes the directional-viability verdict from the run's DETERMINISTIC
+    evidence layer only (never the LLM grade) and additively stamps it onto
+    the just-written ``final_report.json`` under the top-level
+    ``minimal_viable_reproduction`` key — never touching any existing score/
+    verdict/meets_target/replication_verdict field. Reads the report back off
+    disk (rather than the in-memory report object) so ``report_dict`` reflects
+    whatever splices (two-axis verdict, validation stamp, evidence-gate
+    outcome) ``write_final_report_rlm`` already applied for THIS finalize —
+    the same data every other honesty guard downstream would see.
+
+    Shared by every finalize path that writes a ``final_report.json``
+    (``_finalize``, ``_finalize_fatal_primitive_abort``,
+    ``_hard_stop_with_report`` — the last of which may pass ``ctx=None``).
+    Fail-soft: any error here must never break finalize. Unset flag ⇒ this
+    function is a complete no-op — byte-identical.
+    """
+    try:
+        from backend.agents.rlm import minimal_viable as _mvr
+        if not _mvr.minimal_viable_enabled():
+            return
+        json_path = project_dir / "final_report.json"
+        if not json_path.exists():
+            return
+        try:
+            report_dict = json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 — a corrupt report is left untouched
+            logger.debug("_apply_minimal_viable_reproduction: unreadable final_report.json", exc_info=True)
+            return
+        if not isinstance(report_dict, dict):
+            return
+        verdict = _mvr.compute_viability_verdict(
+            project_dir / "code",
+            arxiv_id=getattr(ctx, "arxiv_id", None),
+            scope=getattr(ctx, "scope_spec", None),
+            report_dict=report_dict,
+        )
+        report_dict["minimal_viable_reproduction"] = verdict
+        tmp = json_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(report_dict, indent=2), encoding="utf-8")
+        os.replace(tmp, json_path)
+        logger.info(
+            "minimal-viable-reproduction: verdict=%s",
+            verdict.get("verdict") if isinstance(verdict, dict) else None,
+        )
+    except Exception:  # noqa: BLE001 — MVR must never break finalize
+        logger.warning("_apply_minimal_viable_reproduction failed (non-fatal)", exc_info=True)
+
+
 def _finalize_fatal_primitive_abort(
     *,
     abort: _FatalPrimitiveAbort,
@@ -1862,6 +1959,7 @@ def _finalize_fatal_primitive_abort(
         run_experiment_ok_calls=run_experiment_success_count(ctx),
         run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx)
     )
+    _apply_minimal_viable_reproduction(project_dir, ctx)
     _notify_run_terminal(project_dir)
 
     # Positive recipe admission (OPENRESEARCH_POSITIVE_RECIPES, default-OFF).
@@ -2009,6 +2107,7 @@ def _hard_stop_with_report(
         )
     except Exception:  # noqa: BLE001
         logger.exception("run_pipeline_rlm: hard-stop could not write final report")
+    _apply_minimal_viable_reproduction(project_dir, ctx)
     _notify_run_terminal(project_dir)
     # Positive recipe admission (OPENRESEARCH_POSITIVE_RECIPES, default-OFF).
     # The ctx guard is load-bearing here: _hard_stop_with_report has ctx: Any = None.
@@ -2917,6 +3016,33 @@ async def run_pipeline_rlm(
     )
     if _arxiv_id:
         logger.info("run_pipeline_rlm[%s]: arxiv_id=%s", project_id, _arxiv_id)
+
+    # Minimal Viable Reproduction (MVR, OPENRESEARCH_MINIMAL_VIABLE, default-OFF):
+    # narrow to the smallest central-claim cell (1 model x 1 env/dataset x 1 seed)
+    # when a paper hint is available and the operator has not already scoped the
+    # run, and append a short-budget implementer directive. select_viability_scope
+    # respects an explicit operator scope (returns None, this is a no-op) and is
+    # itself fail-soft, so the flag being off — or on with no applicable hint —
+    # leaves _scope_spec and OPENRESEARCH_BASELINE_EXTRA_GUIDANCE byte-identical.
+    _scope_spec, _mvr_guidance = _minimal_viable_scope_hook(_arxiv_id, _scope_spec)
+    if _mvr_guidance:
+        _mvr_existing_guidance = os.environ.get("OPENRESEARCH_BASELINE_EXTRA_GUIDANCE", "").strip()
+        os.environ["OPENRESEARCH_BASELINE_EXTRA_GUIDANCE"] = (
+            f"{_mvr_existing_guidance}\n{_mvr_guidance}" if _mvr_existing_guidance else _mvr_guidance
+        )
+        emit(build_run_warning_event(
+            level="info",
+            code="minimal_viable",
+            message=(
+                "minimal-viable-reproduction: narrowed scope to "
+                f"model={getattr(_scope_spec, 'models', None)} "
+                f"dataset={[d.normalized_id() for d in (getattr(_scope_spec, 'datasets', None) or [])]} "
+                f"seed={getattr(_scope_spec, 'seeds', None)}"
+            ),
+        ))
+        logger.info(
+            "run_pipeline_rlm[%s]: minimal-viable-reproduction scope narrowed", project_id,
+        )
 
     ctx = RunContext(
         project_id=project_id,
@@ -4097,6 +4223,7 @@ def _finalize(
         run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx),
         no_learning_signal=_no_learning_signal,
     )
+    _apply_minimal_viable_reproduction(project_dir, ctx)
     _notify_run_terminal(project_dir)
 
     # Per-paper negative lessons (MUSE-lite, OPENRESEARCH_NEGATIVE_LESSONS): mine
