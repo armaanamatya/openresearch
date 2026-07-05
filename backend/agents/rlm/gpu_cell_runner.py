@@ -39,10 +39,13 @@ import logging
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Any
@@ -353,13 +356,91 @@ def _cell_gpu_count(cell: Any, default_per_cell: int, total_gpus: int) -> int:
     When ``cell`` is not a dict, or ``cell['gpus']`` is absent/non-numeric, falls
     back to ``default_per_cell``.  The result is clamped so a cell declaring more
     GPUs than exist still runs (degraded to all available cards) and never hangs.
+
+    ``cell["gpus"] == "auto"`` (case-insensitive, whitespace-tolerant) is a
+    sentinel meaning "lease every currently-available GPU" — returns
+    ``total_gpus`` directly (still floored at 1) instead of a hard-coded
+    number, so the harness's own live GPU count drives the cell's footprint.
     """
     raw = cell.get("gpus", default_per_cell) if isinstance(cell, dict) else default_per_cell
+    if isinstance(raw, str) and raw.strip().lower() == "auto":
+        return max(1, total_gpus)
     try:
         k = int(raw)
     except (TypeError, ValueError):
         k = default_per_cell
     return max(1, min(k, max(1, total_gpus)))
+
+
+# ---------------------------------------------------------------------------
+# Service orchestration — GPU partition
+#
+# Some environments need a GPU-consuming AUXILIARY SERVICE running alongside
+# training (e.g. a FAISS retrieval server holding a large index on its own
+# GPU). Presence-gated on cell["services"] — see run_matrix._worker, which is
+# the only caller; a cell without a non-empty services list never touches
+# either of these helpers.
+# ---------------------------------------------------------------------------
+
+def _services_gpu_total(services: list) -> int:
+    """Sum of ``service["gpus"]`` across dict entries only (non-dict entries,
+    and a non-numeric ``"gpus"`` value, contribute 0). Shared by
+    :func:`_partition_cell_gpus` and the ``_worker`` misconfiguration-warning
+    check so the two can never drift apart. Pure; never raises.
+    """
+    total = 0
+    for svc in services:
+        if not isinstance(svc, dict):
+            continue
+        try:
+            total += int(svc.get("gpus", 0))
+        except (TypeError, ValueError):
+            pass
+    return total
+
+
+def _partition_cell_gpus(
+    assigned: list[str], services: list
+) -> tuple[list[str], list[list[str]]]:
+    """Split a cell's leased GPU ids between AUXILIARY SERVICES and training.
+
+    ``svc_total`` (see :func:`_services_gpu_total`) is the number of GPUs the
+    cell's services collectively request. If ``svc_total >= len(assigned)``
+    the request is misconfigured — honouring it would leave training with 0
+    GPUs, which must never happen — so ALL of ``assigned`` goes to training
+    and an empty ``per_service_slices`` (``[]``, NOT one empty list per
+    service) is returned; the caller is expected to log a warning in this
+    case (this pure helper itself never logs).
+
+    Otherwise the FIRST ``svc_total`` ids go to services (contiguous
+    per-service slices, sized from each ``service["gpus"]`` in ``services``
+    order — a service with ``gpus: 0``, or a non-dict entry, gets an empty
+    slice i.e. CPU-only) and the remainder goes to training. On this branch
+    ``len(per_service_slices) == len(services)`` always, so the result stays
+    index-aligned with the caller's ``services`` list.
+
+    Pure: never mutates ``assigned`` or ``services``, never raises, never logs.
+    """
+    svc_total = _services_gpu_total(services)
+    if svc_total >= len(assigned):
+        return list(assigned), []
+
+    service_gpus = assigned[:svc_total]
+    train_gpus = assigned[svc_total:]
+
+    per_service_slices: list[list[str]] = []
+    idx = 0
+    for svc in services:
+        n = 0
+        if isinstance(svc, dict):
+            try:
+                n = max(0, int(svc.get("gpus", 0)))
+            except (TypeError, ValueError):
+                n = 0
+        per_service_slices.append(service_gpus[idx: idx + n])
+        idx += n
+
+    return train_gpus, per_service_slices
 
 
 def discover_visible_gpus() -> list[str]:
@@ -761,6 +842,17 @@ def _run_cell_subprocess(
     # allowlist can steal GPU placement. (OUTPUT_DIR / OPENRESEARCH_CELL_ID are
     # re-asserted the same way below, on the command branch.)
     child_env["CUDA_VISIBLE_DEVICES"] = gpu_id
+    # Service-orchestration seam: export how many GPUs THIS cell's training
+    # process actually sees (len(gpu_id.split(","))) so an authors' launcher can
+    # size n_gpus_per_node from it instead of hard-coding the count. When a
+    # service GPU partition reserved some cards, gpu_id is already the
+    # TRAINING-only remainder here. Gated to the command branch ONLY: the
+    # default train_cell.py path already learns its GPUs from CUDA_VISIBLE_DEVICES
+    # and must stay byte-identical (no new env key). `command` is resolved above.
+    if command:
+        child_env["OPENRESEARCH_CELL_TRAIN_GPUS"] = str(
+            len([g for g in gpu_id.split(",") if g.strip()])
+        )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
@@ -875,6 +967,303 @@ def _run_cell_subprocess(
         # since-recycled PID. Soft no-op when the guard never registered it.
         if _cell_proc_pid is not None:
             _orphan_deregister(_cell_proc_pid)
+
+
+# ---------------------------------------------------------------------------
+# Service orchestration — lifecycle (start / readiness wait / stop)
+#
+# An auxiliary service (e.g. a FAISS retrieval server holding a large index)
+# runs ALONGSIDE a cell's training subprocess for the cell's whole lifetime, on
+# the GPU slice ``_partition_cell_gpus`` reserved for it. Presence-gated on
+# cell["services"] — see run_matrix._worker, the only caller; a cell without a
+# non-empty services list never touches any of this.
+# ---------------------------------------------------------------------------
+
+def _coerce_float(value: Any, default: float) -> float:
+    """Best-effort float coercion; ``None``/unparsable falls back to ``default``."""
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _start_cell_services(
+    services: list,
+    per_service_slices: list[list[str]],
+    *,
+    code_root: Path,
+    output_dir: Path,
+    base_env: dict,
+) -> list[dict[str, Any]]:
+    """Start each auxiliary service declared on a cell; return one handle per service.
+
+    Each handle is ``{"name", "proc", "pgid", "log_path", "log_fh", "error",
+    "started_monotonic"}``. ``proc`` is ``None`` (with ``error`` set) when the
+    service failed to even launch (or its list entry wasn't a dict) — fail-soft
+    per service: one bad service never raises out of this function; the
+    CALLER (:func:`_wait_services_ready`) treats a ``proc is None`` handle as a
+    readiness failure.
+
+    Child env precedence (lowest to highest), mirroring ``_run_cell_subprocess``:
+    ``base_env`` → ``CUDA_VISIBLE_DEVICES`` set from this service's GPU slice
+    (empty string for a CPU-only / unassigned slice) → ``service["cell_env"]``
+    (str-coerced) → the ``OPENRESEARCH_CELL_ENV_PASSTHROUGH`` operator allowlist.
+
+    Launched via ``["bash", "-lc", service["command"]]`` with
+    ``cwd=str(code_root)`` (the same cwd the command/launcher seam uses) and
+    ``start_new_session=True`` so the whole process tree can be SIGKILLed as
+    one group on teardown (mirrors the C2 orphan-guard pattern used for the
+    cell's own training subprocess). stdout+stderr stream directly to
+    ``output_dir/service_<name>.log`` — NOT ``subprocess.PIPE`` (a service runs
+    for the whole cell; an undrained pipe would eventually block the service on
+    write() once its kernel buffer fills).
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    handles: list[dict[str, Any]] = []
+
+    for idx, service in enumerate(services):
+        is_dict = isinstance(service, dict)
+        name = str(service.get("name") or f"service_{idx}") if is_dict else f"service_{idx}"
+        log_path = output_dir / f"service_{name}.log"
+        gpu_slice = per_service_slices[idx] if idx < len(per_service_slices) else []
+
+        if not is_dict:
+            handles.append({
+                "name": name, "proc": None, "pgid": None, "log_path": log_path,
+                "log_fh": None, "error": "service entry is not a dict",
+                "started_monotonic": None,
+            })
+            continue
+
+        svc_env = {**base_env}
+        svc_env["CUDA_VISIBLE_DEVICES"] = ",".join(gpu_slice)
+        _cell_env_overrides = service.get("cell_env")
+        if isinstance(_cell_env_overrides, dict):
+            for _k, _v in _cell_env_overrides.items():
+                svc_env[str(_k)] = str(_v)
+        for _pname in _passthrough_env_names():
+            if _pname in os.environ:
+                svc_env[_pname] = os.environ[_pname]
+
+        command = str(service.get("command") or "").strip()
+        log_fh = None
+        try:
+            log_fh = log_path.open("w", encoding="utf-8", errors="replace")
+            proc = subprocess.Popen(
+                ["bash", "-lc", command],
+                cwd=str(code_root),
+                env=svc_env,
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            try:
+                pgid = os.getpgid(proc.pid)
+            except (ProcessLookupError, OSError):
+                pgid = proc.pid
+            _orphan_register(proc.pid)
+            handles.append({
+                "name": name, "proc": proc, "pgid": pgid, "log_path": log_path,
+                "log_fh": log_fh, "error": None,
+                "started_monotonic": time.monotonic(),
+            })
+            logger.info(
+                "gpu_cell_runner: service=%s started gpus=%s",
+                name, ",".join(gpu_slice) or "cpu-only",
+            )
+        except Exception as exc:  # noqa: BLE001 — fail-soft: one bad service never raises
+            if log_fh is not None:
+                try:
+                    log_fh.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            handles.append({
+                "name": name, "proc": None, "pgid": None, "log_path": log_path,
+                "log_fh": None, "error": str(exc), "started_monotonic": None,
+            })
+            logger.warning("gpu_cell_runner: service=%s failed to start: %s", name, exc)
+
+    return handles
+
+
+def _probe_http_ready(readiness: dict) -> tuple[bool, str | None]:
+    """READY iff the server responds AT ALL — any HTTP status (even 4xx/5xx)
+    means it is up; only a connection error/refused/timeout is not-ready."""
+    url = readiness.get("url")
+    if not url:
+        return False, "http readiness missing 'url'"
+    method = str(readiness.get("method", "GET")).upper()
+    body = readiness.get("body")
+    data = None
+    headers: dict[str, str] = {}
+    if body is not None:
+        data = str(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        urllib.request.urlopen(req, timeout=5)
+        return True, None
+    except urllib.error.HTTPError:
+        # The server responded (with a non-2xx status) — still "up".
+        return True, None
+    except Exception as exc:  # noqa: BLE001 — refused/timeout/DNS/etc — not ready
+        return False, str(exc)
+
+
+def _probe_port_ready(readiness: dict) -> tuple[bool, str | None]:
+    """READY iff a raw TCP connect to host:port succeeds."""
+    host = readiness.get("host", "127.0.0.1")
+    port = readiness.get("port")
+    if port is None:
+        return False, "port readiness missing 'port'"
+    try:
+        with socket.create_connection((host, int(port)), timeout=3):
+            return True, None
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)
+
+
+def _probe_log_ready(
+    readiness: dict, log_path: "Path | str | None"
+) -> tuple[bool, str | None]:
+    """READY iff ``readiness["pattern"]`` (a substring) appears in the service's log."""
+    pattern = readiness.get("pattern")
+    if not pattern:
+        return False, "log readiness missing 'pattern'"
+    if not log_path:
+        return False, "no log_path recorded for service"
+    try:
+        text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False, "log file not yet created"
+    if pattern in text:
+        return True, None
+    return False, f"pattern {pattern!r} not yet in log"
+
+
+def _probe_sleep_ready(readiness: dict, handle: dict) -> tuple[bool, str | None]:
+    """READY iff ``readiness["seconds"]`` have elapsed since the service started."""
+    seconds = _coerce_float(readiness.get("seconds"), 0.0)
+    started = handle.get("started_monotonic")
+    if started is None:
+        return True, None  # no start reference recorded — never block forever
+    elapsed = time.monotonic() - started
+    if elapsed >= seconds:
+        return True, None
+    return False, f"sleep readiness: {elapsed:.1f}s/{seconds:.1f}s elapsed"
+
+
+def _wait_one_service_ready(
+    service: Any, handle: dict[str, Any], *, deadline_monotonic: float | None
+) -> tuple[bool, str | None]:
+    """Poll a single service's readiness probe until ready or timed out.
+
+    A service's process having already exited non-zero is a failure
+    regardless of readiness kind or presence (checked every iteration, so a
+    fire-and-forget service — no ``readiness`` key — is ready as soon as its
+    process is confirmed alive, and a service that dies mid-poll is caught on
+    the next iteration).
+    """
+    readiness = service.get("readiness") if isinstance(service, dict) else None
+    has_readiness = isinstance(readiness, dict)
+    kind = str(readiness.get("kind", "")).strip().lower() if has_readiness else ""
+    timeout_s = _coerce_float(readiness.get("timeout_s") if has_readiness else None, 300.0)
+    interval_s = _coerce_float(readiness.get("interval_s") if has_readiness else None, 5.0)
+
+    svc_deadline = time.monotonic() + max(0.0, timeout_s)
+    if deadline_monotonic is not None:
+        svc_deadline = min(svc_deadline, deadline_monotonic)
+
+    while True:
+        proc = handle.get("proc")
+        if proc is None:
+            return False, handle.get("error") or "service process failed to start"
+        rc = proc.poll()
+        if rc is not None and rc != 0:
+            return False, f"process exited with code {rc}"
+
+        if not has_readiness:
+            return True, None  # fire-and-forget — alive is enough
+        if kind == "http":
+            ready, reason = _probe_http_ready(readiness)
+        elif kind == "port":
+            ready, reason = _probe_port_ready(readiness)
+        elif kind == "log":
+            ready, reason = _probe_log_ready(readiness, handle.get("log_path"))
+        elif kind == "sleep":
+            ready, reason = _probe_sleep_ready(readiness, handle)
+        else:
+            return False, f"unknown readiness kind: {kind!r}"
+
+        if ready:
+            return True, None
+
+        now = time.monotonic()
+        if now >= svc_deadline:
+            return False, reason
+        time.sleep(max(0.0, min(interval_s, svc_deadline - now)))
+
+
+def _wait_services_ready(
+    services: list,
+    handles: list[dict[str, Any]],
+    *,
+    deadline_monotonic: float | None,
+) -> tuple[bool, str | None]:
+    """Block until every service is ready, or report the first failure.
+
+    Polls each service's ``readiness`` probe in turn (http / port / log /
+    sleep — see the per-kind helpers above); a service with no ``readiness``
+    key is ready as soon as its process is confirmed alive (fire-and-forget).
+    A service whose process has already exited non-zero is a failure at any
+    point, regardless of readiness kind. Each service's own ``timeout_s``
+    (default 300s) is additionally capped by the overall ``deadline_monotonic``
+    (e.g. the matrix's wall-clock budget) when one is supplied.
+
+    Returns ``(True, None)`` once every service is ready, or
+    ``(False, "service <name> not ready: <reason>")`` on the first timeout or
+    death — never raises.
+    """
+    for service, handle in zip(services, handles):
+        name = handle.get("name", "<unknown>")
+        ok, reason = _wait_one_service_ready(
+            service, handle, deadline_monotonic=deadline_monotonic
+        )
+        if not ok:
+            return False, f"service {name} not ready: {reason}"
+    return True, None
+
+
+def _stop_cell_services(handles: list[dict[str, Any]]) -> None:
+    """SIGKILL every service's process group and close its log handle.
+
+    Fully fail-soft — never raises, regardless of prior state (never started,
+    already dead, already stopped). Idempotent: safe to call more than once on
+    the same handles. Mirrors the C2 orphan-guard teardown pattern used for
+    the cell's own training subprocess.
+    """
+    for handle in handles:
+        proc = handle.get("proc")
+        pgid = handle.get("pgid")
+        if proc is not None:
+            if pgid is not None:
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+            try:
+                proc.wait(timeout=5.0)
+            except Exception:  # noqa: BLE001 — best-effort reap
+                pass
+            _orphan_deregister(proc.pid)
+        log_fh = handle.get("log_fh")
+        if log_fh is not None:
+            try:
+                log_fh.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -1107,9 +1496,73 @@ def run_matrix(
             # Determine how many GPUs this cell needs (per-cell "gpus" field, or default).
             k = _cell_gpu_count(cell, n_per, total_gpus)
             assigned = _acquire_gpus(k)  # blocks until k cards are free
-            slot = ",".join(assigned)    # CUDA_VISIBLE_DEVICES value for this cell
+            slot = ",".join(assigned)    # CUDA_VISIBLE_DEVICES value for this cell — default
+
+            # Auxiliary GPU-consuming services (e.g. a FAISS retrieval server) —
+            # presence-gated on cell["services"]; only dict entries count. A cell
+            # WITHOUT a non-empty services list is BYTE-IDENTICAL to before this
+            # feature existed: `slot` stays every assigned id and none of the
+            # service code below ever runs.
+            _raw_services = cell.get("services")
+            services: list[dict[str, Any]] = (
+                [s for s in _raw_services if isinstance(s, dict)]
+                if isinstance(_raw_services, list) else []
+            )
+            _service_handles: list[dict[str, Any]] = []
 
             try:
+                if services:
+                    # Reserve a disjoint GPU slice for services; training gets
+                    # the remainder. Computed + started INSIDE this try so the
+                    # outer finally (services stopped + GPUs released) covers
+                    # this too — never just the training call below.
+                    train_gpus, per_service_slices = _partition_cell_gpus(assigned, services)
+                    svc_total = _services_gpu_total(services)
+                    if not train_gpus or (train_gpus == assigned and svc_total > 0):
+                        logger.warning(
+                            "gpu_cell_runner: cell=%s services request %d GPU(s) of "
+                            "the %d assigned — misconfigured (would leave 0 for "
+                            "training); giving ALL GPUs to training, no service "
+                            "GPUs reserved",
+                            cell_id, svc_total, len(assigned),
+                        )
+                    slot = ",".join(train_gpus)
+
+                    _service_handles = _start_cell_services(
+                        services, per_service_slices,
+                        code_root=Path(cell_script).parent,
+                        output_dir=output_dir,
+                        base_env=dict(os.environ),
+                    )
+                    _svc_ready, _svc_reason = _wait_services_ready(
+                        services, _service_handles, deadline_monotonic=overall_deadline,
+                    )
+                    if not _svc_ready:
+                        _svc_fail_metrics = _load_metrics(output_dir)
+                        with results_lock:
+                            results[cell_id] = CellResult(
+                                cell_id=cell_id,
+                                status="service_setup_failed",
+                                metrics=_svc_fail_metrics,
+                                gpu=slot,
+                                retries=retry_idx,
+                                error=_svc_reason,
+                            )
+                        write_cell_manifest(
+                            output_dir, caller="gpu_cell_runner", cell_id=cell_id,
+                            status="service_setup_failed",
+                            fingerprint=_fingerprints.get(cell_id), metrics=_svc_fail_metrics,
+                            retries=retry_idx, now_iso=now_iso,
+                        )
+                        logger.warning(
+                            "gpu_cell_runner: cell=%s SERVICE_SETUP_FAILED: %s",
+                            cell_id, _svc_reason,
+                        )
+                        # Skip training. The `finally` below still tears down
+                        # services and releases the GPUs before this `continue`
+                        # actually resumes the loop.
+                        continue
+
                 # Determine OOM-mitigation parameters for this attempt.
                 batch_scale: float | None = None
                 grad_checkpoint = False
@@ -1177,7 +1630,13 @@ def run_matrix(
                 else:
                     peak_vram_gb = None
             finally:
-                # ALWAYS release GPUs — even if _run_cell_subprocess raises.
+                # ALWAYS tear down services + release GPUs — success, training
+                # failure, service-setup failure (the `continue` above), a
+                # timeout, or an unexpected exception from any of the calls
+                # inside this try (services are stopped BEFORE the GPUs they
+                # were leased from are released back to the pool).
+                if services:
+                    _stop_cell_services(_service_handles)
                 _release_gpus(assigned)
 
             deadline_hit = (
