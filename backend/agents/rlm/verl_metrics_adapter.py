@@ -115,12 +115,22 @@ def _build_key_pattern(key: str) -> re.Pattern:
     from matching the aggregate key ``val/success_rate`` — the char right
     after the literal key text is ``/``, which the trailing negative
     lookahead rejects. Symmetrically, a preceding ``/`` or word char (e.g. an
-    outer-nested key ``outer/val/success_rate``) is also rejected, since that
-    means the true key is longer than the one requested.
+    outer-nested key ``outer/val/success_rate`` or the per-dataset
+    ``val/musique_success_rate``) is also rejected, since that means the true
+    key is longer than the one requested.
+
+    verl logs its val metrics as a Python dict repr on the console, e.g.
+    ``'val/success_rate': np.float64(0.4562844669117647)`` — so after the key
+    the pattern tolerates an optional closing quote, a ``:``/``=`` separator,
+    and a numpy/torch scalar wrapper (``np.float64(`` / ``tensor(`` …) before
+    the number. The bare JSON/plain forms (``"val/success_rate": 0.456``,
+    ``val/success_rate=0.456``) still match (the wrapper group is optional).
     """
     key_esc = re.escape(key)
     return re.compile(
-        rf"(?<![\w/]){key_esc}(?![\w/])[:=\s]+({_NUMBER_RE})"
+        rf"(?<![\w/]){key_esc}(?![\w/])['\"]?\s*[:=]\s*"
+        rf"(?:np\.float64\(|np\.float32\(|torch\.tensor\(|tensor\()?"
+        rf"({_NUMBER_RE})"
     )
 
 

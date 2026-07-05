@@ -148,3 +148,56 @@ class TestVerlMetricsAdapterJsonPreference:
         )
         result = write_cell_metrics_from_verl(tmp_path, model_key="m", env="e", baseline="b")
         assert result["success_rate"] == 0.654
+
+
+class TestVerlMetricsAdapterRealVerlDictRepr:
+    """verl logs val metrics as a Python dict repr on the console, e.g.
+    ``'val/success_rate': np.float64(0.4562844669117647)`` — confirmed against a
+    real /mnt/sdar-cache/logs/run_search_3b.log (Search-3B proof, 0.456). These
+    lock in that exact format so the adapter never silently misses the metric on
+    a live run."""
+
+    _REAL = (
+        "(SDARTaskRunner pid=101401) validation metrics: {\n"
+        "  \"'val/nq_success_rate': np.float64(0.512), \"\n"
+        "  \"'val/musique_success_rate': np.float64(0.14740774842642354), \"\n"
+        "  \"'val/2wikimultihopqa_success_rate': np.float64(0.399184718833248), \"\n"
+        "  \"'val/success_rate': np.float64(0.4562844669117647), \"\n"
+        "  \"'val/bamboogle_success_rate': np.float64(0.6693548387096774)}\"\n"
+    )
+
+    def test_real_np_float64_dict_repr_parses_aggregate_only(self, tmp_path):
+        _write_log(tmp_path / "cell_stdout.log", self._REAL)
+        result = write_cell_metrics_from_verl(
+            tmp_path, model_key="Qwen2.5-3B-Instruct", env="search_qa",
+            baseline="sdar", success_rate_key="val/success_rate",
+        )
+        # The aggregate, verbatim — never a per-dataset sub-key, never scaled.
+        assert result["success_rate"] == 0.4562844669117647
+        assert result["status"] == "success"
+
+    def test_np_float32_wrapper(self, tmp_path):
+        _write_log(tmp_path / "t.log", "'val/success_rate': np.float32(0.456)\n")
+        result = write_cell_metrics_from_verl(tmp_path, model_key="m", env="e", baseline="b")
+        assert result["success_rate"] == 0.456
+
+    def test_torch_tensor_wrapper(self, tmp_path):
+        _write_log(tmp_path / "t.log", "val/success_rate: tensor(0.456)\n")
+        result = write_cell_metrics_from_verl(tmp_path, model_key="m", env="e", baseline="b")
+        assert result["success_rate"] == 0.456
+
+    def test_double_quoted_json_ish_form(self, tmp_path):
+        _write_log(tmp_path / "t.log", '"val/success_rate": 0.456\n')
+        result = write_cell_metrics_from_verl(tmp_path, model_key="m", env="e", baseline="b")
+        assert result["success_rate"] == 0.456
+
+    def test_per_dataset_only_no_aggregate_fails_honest(self, tmp_path):
+        # Only per-dataset keys, no aggregate → honest failure, never a fabricated
+        # number or a mis-picked per-dataset value.
+        _write_log(tmp_path / "t.log", "'val/musique_success_rate': np.float64(0.147)\n")
+        result = write_cell_metrics_from_verl(
+            tmp_path, model_key="m", env="e", baseline="b",
+            success_rate_key="val/success_rate",
+        )
+        assert result == {"status": "failed"}
+        assert "success_rate" not in result

@@ -1201,6 +1201,23 @@ def run_matrix(
                     and isinstance(_metrics_source, dict)
                     and _metrics_source.get("kind") == "verl"
                 ):
+                    # The authors' launcher logs its val metrics to the console
+                    # (verl trainer.logger=['console', ...]); the harness captured
+                    # that stdout to log_path (output_root/<cell_id>.log, a SIBLING
+                    # of output_dir). Expose it INSIDE output_dir so the adapter's
+                    # $OUTPUT_DIR-relative log_glob (default $OUTPUT_DIR/*.log) can
+                    # find it. Symlink (cheap) with a copy fallback; fail-soft —
+                    # a missing/failed link must never break the grid.
+                    try:
+                        _cell_log = output_dir / "cell_stdout.log"
+                        if log_path.exists() and not _cell_log.exists():
+                            try:
+                                _cell_log.symlink_to(log_path)
+                            except OSError:
+                                import shutil as _shutil
+                                _shutil.copyfile(log_path, _cell_log)
+                    except Exception:  # noqa: BLE001 — best-effort log exposure
+                        pass
                     try:
                         try:  # sandbox-flat: verl_metrics_adapter.py copied next to this file.
                             from verl_metrics_adapter import write_cell_metrics_from_verl
