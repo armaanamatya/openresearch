@@ -397,6 +397,34 @@ def _cells_route_retention_enabled() -> bool:
     )
 
 
+def _cells_all_have_command(code_path: "str | Path") -> bool:
+    """True iff ``code/cells.json`` exists, is non-empty, and EVERY cell declares
+    a non-blank ``command`` — i.e. the cells run the authors' own launcher
+    verbatim (execute mode) and therefore need NO harness ``train_cell.py``.
+    Lets the one-GPU-per-cell route engage for command-cells without the
+    ``train_cell.py`` contract file (``_run_cell_subprocess`` uses only the
+    cell_script's PARENT dir for a command cell, never opens the file).
+    Fail-soft: any read/parse error → False (fall back to the train_cell.py gate).
+    """
+    import json
+    from pathlib import Path
+
+    try:
+        manifest = Path(code_path) / "cells.json"
+        if not manifest.is_file():
+            return False
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        cells = data.get("cells") if isinstance(data, dict) else data
+        if not isinstance(cells, list) or not cells:
+            return False
+        return all(
+            isinstance(c, dict) and str(c.get("command") or "").strip()
+            for c in cells
+        )
+    except Exception:  # noqa: BLE001 — fail-soft, never block the route decision
+        return False
+
+
 def _check_cells_manifest_retention(
     result: dict,
     *,
@@ -6805,7 +6833,10 @@ def run_experiment(
             _caps.backend_kind in _cell_route_kinds
             and not _caps.is_empty
             and (Path(code_path) / "cells.json").is_file()
-            and (Path(code_path) / "train_cell.py").is_file()
+            and (
+                (Path(code_path) / "train_cell.py").is_file()
+                or _cells_all_have_command(code_path)
+            )
         ):
             result = _execute_cell_matrix(ctx, code_path, _caps, timeout_s=timeout, run_id=run_id)
             _cell_route_taken = True
