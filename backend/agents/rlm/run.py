@@ -63,6 +63,10 @@ from backend.agents.rlm.sse_bridge import (
     OpenResearchRLMLogger,
     build_run_complete_event,
     build_run_warning_event,
+    build_spec_generated_event,
+    build_spec_generation_started_event,
+    build_spec_validated_event,
+    build_spec_validation_started_event,
     make_emit,
     make_on_subcall_complete,
     make_on_subcall_start,
@@ -2810,6 +2814,171 @@ def _validator_separation_tier(role_selection: Any) -> str:
         return "unavailable"
 
 
+def _spec_validator_separation_tier(role_selection: Any) -> str:
+    """Compute the model-lineage separation tier between the PLANNER (the
+    rubric author) and the spec validator (autonomous-upload-ui Task 8).
+
+    Mirrors ``_validator_separation_tier`` above with two differences:
+
+    (a) Reads ``OPENRESEARCH_SPEC_VALIDATOR_BACKEND``/``_MODEL``, falling back
+        to ``OPENRESEARCH_VALIDATOR_BACKEND``/``_MODEL`` when the SPEC-specific
+        vars are unset — mirrors ``build_spec_validator_client``'s own
+        fallback (the spec validator shares the external validator's transport
+        by default, or can be configured independently).
+    (b) Compares against ``role_selection.planner`` (NOT ``.executor``) — the
+        rubric is authored by ``llm_client`` = the planner, so independence
+        for THIS panel is planner x spec_validator, not executor x
+        spec_validator.
+
+    Returns one of: ``"independent"`` | ``"weak"`` | ``"degraded"`` | ``"unavailable"``.
+    """
+    backend = (
+        os.environ.get("OPENRESEARCH_SPEC_VALIDATOR_BACKEND", "").strip().lower()
+        or os.environ.get("OPENRESEARCH_VALIDATOR_BACKEND", "").strip().lower()
+    )
+    if not backend:
+        return "unavailable"
+    try:
+        from backend.agents.rlm.role_models import (  # noqa: PLC0415
+            RoleSpec,
+            _classify_model_family,
+            separation_strength,
+            PROVIDER_AZURE,
+            PROVIDER_ANTHROPIC_OAUTH,
+            PROVIDER_ANTHROPIC,
+            PROVIDER_OPENAI,
+            PROVIDER_AZURE_FOUNDRY,
+        )
+        import dataclasses  # noqa: PLC0415
+
+        _BACKEND_PROVIDER: dict[str, str] = {
+            "azure": PROVIDER_AZURE,
+            "oauth": PROVIDER_ANTHROPIC_OAUTH,
+            "claude-oauth": PROVIDER_ANTHROPIC_OAUTH,
+            "anthropic-oauth": PROVIDER_ANTHROPIC_OAUTH,
+            "anthropic": PROVIDER_ANTHROPIC,
+            "openai": PROVIDER_OPENAI,
+            "azure-foundry": PROVIDER_AZURE_FOUNDRY,
+            "foundry": PROVIDER_AZURE_FOUNDRY,
+            "grok": PROVIDER_AZURE_FOUNDRY,
+        }
+        sv_provider = _BACKEND_PROVIDER.get(backend, backend)
+        # The actual spec-validator model/deployment for the tier comparison.
+        # For the azure backend the OPENRESEARCH_SPEC_VALIDATOR_MODEL (or its
+        # VALIDATOR_MODEL fallback) override resolves to the deployment via the
+        # SINGLE shared resolver (mirrors _validator_separation_tier).
+        sv_model_override = (
+            os.environ.get("OPENRESEARCH_SPEC_VALIDATOR_MODEL", "").strip()
+            or os.environ.get("OPENRESEARCH_VALIDATOR_MODEL", "").strip()
+            or None
+        )
+        if sv_provider == PROVIDER_AZURE:
+            from backend.agents.rlm.grader_transport import (  # noqa: PLC0415
+                resolve_azure_deployment,
+            )
+
+            sv_model = resolve_azure_deployment(sv_model_override)
+        else:
+            sv_model = sv_model_override
+        sv_spec = RoleSpec(
+            role="spec_validator",
+            token=backend,
+            provider=sv_provider,
+            model=sv_model,
+            family=_classify_model_family(sv_provider, sv_model),
+        )
+        planner_spec = getattr(role_selection, "planner", None) if role_selection is not None else None
+        # For an Azure planner, substitute the ACTUAL deployment so that
+        # azure(deployA) x azure(deployB) reads as "weak", not "degraded".
+        if planner_spec is not None and planner_spec.provider == PROVIDER_AZURE:
+            planner_spec = dataclasses.replace(
+                planner_spec,
+                model=os.environ.get("AZURE_OPENAI_DEPLOYMENT", "").strip() or planner_spec.model,
+            )
+        return separation_strength(planner_spec, sv_spec)
+    except Exception:  # noqa: BLE001 — tier computation is advisory; never crashes a run
+        logger.debug("_spec_validator_separation_tier: failed, defaulting to unavailable", exc_info=True)
+        return "unavailable"
+
+
+def _run_spec_validator(
+    *,
+    ctx: Any,
+    rubric: dict | None,
+    paper_text: str | None,
+    project_dir: Path,
+    emit: Any,
+    spec_validator_client: Any,
+    separation: str,
+    validator_model: str,
+) -> dict | None:
+    """Rubric-vs-paper pre-loop spec-validation hook (autonomous-upload-ui
+    Task 8 — wires T4 ``RoleSelection.spec_validator`` / T5
+    ``build_spec_validator_client`` / T6 ``spec_validator.py`` / T7 SSE
+    builders into ``run_pipeline_rlm``).
+
+    Fires ONCE, between rubric resolution and the RLM loop construction — a
+    "before any GPU spend" gate. Emits ``spec_validation_started``/
+    ``spec_validated`` (the call site brackets these with
+    ``spec_generation_started``/``spec_generated`` around the rubric cascade
+    itself, since that event pair spans code this function has no reference
+    to). When ``OPENRESEARCH_SPEC_VALIDATOR_BLOCK`` is on, returns whatever
+    ``apply_block`` produces (the caller writes it back to
+    ``context_dict["rubric_spec"]`` — a harmless no-op when nothing was
+    confirmed, since ``apply_block`` returns the SAME rubric unchanged in
+    that case); returns ``None`` when BLOCK is off or there was nothing to
+    validate — this function never touches ``context_dict`` directly.
+
+    Fail-soft (mirrors ``_run_finalize_validation_panel``): the whole body is
+    wrapped so a spec-validator error NEVER crashes a run. Self-gates on
+    ``spec_validator_enabled()`` so it is safe to call unconditionally even
+    though the call site below also gates on it (defense in depth, consistent
+    with every other "run the panel" helper in this file).
+    """
+    try:
+        from backend.agents.rlm.spec_validator import (  # noqa: PLC0415
+            apply_block,
+            persist_spec_verdict,
+            run_spec_validation_panel,
+            spec_validator_block_enabled,
+            spec_validator_enabled,
+        )
+
+        if not spec_validator_enabled():
+            return None
+        if not rubric or not paper_text:
+            return None
+
+        emit(build_spec_validation_started_event(validator_model=validator_model))
+
+        if spec_validator_client is None:
+            # Unselected/unavailable: the deterministic machine-check needs an
+            # LLM nomination to run against, so no client -> no flags (safe;
+            # never vetoes anything without a panel to point at suspicions).
+            emit(build_spec_validated_event(verdict="unavailable", flagged_leaves=[]))
+            return None
+
+        panel_models = [validator_model]
+        verdict = run_spec_validation_panel(
+            spec_validator_client=spec_validator_client,
+            panel_models=panel_models,
+            rubric=rubric,
+            paper_text=paper_text,
+            separation=separation,
+        )
+        persist_spec_verdict(project_dir, verdict)
+
+        blocked_rubric: dict | None = None
+        if spec_validator_block_enabled():
+            blocked_rubric = apply_block(rubric, verdict)
+
+        emit(build_spec_validated_event(verdict=verdict.status, flagged_leaves=verdict.flagged_leaves))
+        return blocked_rubric
+    except Exception:  # noqa: BLE001 — spec validation must never crash a run
+        logger.warning("run_pipeline_rlm: spec validator hook failed (non-fatal)", exc_info=True)
+        return None
+
+
 def _subrole_backend(spec: Any) -> str:
     """Resolve the transport backend string for a sub-role ``RoleSpec``.
 
@@ -3213,6 +3382,68 @@ async def run_pipeline_rlm(
             ),
         ))
 
+    # spec_validator unified surface → feed OPENRESEARCH_SPEC_VALIDATOR_BACKEND/_MODEL
+    # that build_spec_validator_client + _spec_validator_separation_tier read (only
+    # when the operator did not set SPEC_VALIDATOR_BACKEND directly). Mirrors the
+    # validator bridge above — without this, `--models spec_validator=grok` resolves
+    # a RoleSelection.spec_validator but silently builds NO spec_validator client.
+    if (
+        role_selection.spec_validator is not None
+        and not os.environ.get("OPENRESEARCH_SPEC_VALIDATOR_BACKEND", "").strip()
+    ):
+        os.environ["OPENRESEARCH_SPEC_VALIDATOR_BACKEND"] = _subrole_backend(role_selection.spec_validator)
+        if role_selection.spec_validator.model:
+            os.environ.setdefault("OPENRESEARCH_SPEC_VALIDATOR_MODEL", role_selection.spec_validator.model)
+
+    # spec_validator transport (fail-closed, mirrors the validator block above):
+    # when OPENRESEARCH_SPEC_VALIDATOR_BACKEND (or its VALIDATOR_BACKEND fallback)
+    # is set, build an independent rubric-vs-paper panel client.
+    # build_spec_validator_client raises ValueError when the requested backend
+    # cannot be constructed (missing credential / unknown backend) — converted to
+    # RuntimeError (fail-closed). When unset, build_spec_validator_client returns
+    # the fallback unchanged and we leave spec_validator_client=None to signal
+    # "no independent spec validator" (the pre-loop panel is then "unavailable").
+    spec_validator_client = None
+    _spec_validator_label = provider_label
+    try:
+        from backend.agents.rlm.grader_transport import build_spec_validator_client
+        _svc, _svlabel = build_spec_validator_client(
+            fallback_client=llm_client,
+            fallback_label=provider_label,
+        )
+        if _svc is not llm_client:
+            spec_validator_client = _svc
+            _spec_validator_label = _svlabel
+            logger.info("run_pipeline_rlm: spec_validator transport=%s", _spec_validator_label)
+    except ValueError as _exc:
+        raise RuntimeError(f"spec validator setup failed (fail-closed): {_exc}") from _exc
+
+    # Separation tier (planner x spec_validator — the rubric is authored by the
+    # planner client, so independence for this pre-loop panel is planner x
+    # spec_validator, not executor x spec_validator; emitted as a run_warning
+    # when degraded/weak, mirroring the validator tier above).
+    _spec_validator_tier = _spec_validator_separation_tier(role_selection)
+    if _spec_validator_tier == "degraded":
+        emit(build_run_warning_event(
+            level="warn",
+            code="spec_validator_separation_degraded",
+            message=(
+                "Spec validator and planner share the same model/deployment — "
+                "the rubric-vs-paper panel is not independently grounded (separation=degraded). "
+                "The harness-side machine-check veto still stands."
+            ),
+        ))
+    elif _spec_validator_tier == "weak":
+        emit(build_run_warning_event(
+            level="info",
+            code="spec_validator_separation_weak",
+            message=(
+                "Spec validator and planner share the same model family but use "
+                "different deployments/models (separation=weak). "
+                "Same-provider weak separation is supported; the operator requested it explicitly."
+            ),
+        ))
+
     # Grader unified surface → feed the existing OPENRESEARCH_GRADER_* path that
     # leaf_scorer.build_grader_client reads (only when the operator did not set
     # GRADER_BACKEND directly — then resolve_role_models already derived from it).
@@ -3296,6 +3527,7 @@ async def run_pipeline_rlm(
         role_selection=role_selection,
         verifier_client=verifier_client,
         validator_client=validator_client,
+        spec_validator_client=spec_validator_client,
         workspace_service=workspace_service,
         workspace_id=workspace_id,
         sandbox_mode=sandbox_mode,
@@ -3527,6 +3759,15 @@ async def run_pipeline_rlm(
         emit=emit,
     )
 
+    # Rubric-vs-paper pre-loop spec validator (autonomous-upload-ui Task 8):
+    # spec_generation_started brackets the rubric cascade below — a "before any
+    # GPU spend" phase marker, gated purely on spec_validator_enabled() so an
+    # OFF run never emits it. Lazy import mirrors this file's external_validator
+    # convention (never imported at module top).
+    from backend.agents.rlm.spec_validator import spec_validator_enabled  # noqa: PLC0415
+    if spec_validator_enabled():
+        emit(build_spec_generation_started_event())
+
     # arXiv runs arrive with no rubric_spec — derive a PaperBench-shaped rubric
     # from the paper so the run is scorable (bundle runs already carry one).
     # Stub-primitive runs skip GENERATION only: rubric generation is a REAL paid
@@ -3561,6 +3802,29 @@ async def run_pipeline_rlm(
             logger.info("run_pipeline_rlm: using a self-generated rubric (persisted to generated_rubric.json)")
         else:
             logger.warning("run_pipeline_rlm: rubric generation failed — run proceeds rubric-less")
+
+    # Rubric-vs-paper pre-loop spec validator, continued: spec_generated closes
+    # the phase bracket opened above, then the hook runs the panel + persists a
+    # verdict + (if OPENRESEARCH_SPEC_VALIDATOR_BLOCK) drops confirmed-bad leaves
+    # BEFORE RLM(...) is constructed below — a true "before any GPU spend" gate.
+    # Fail-soft: _run_spec_validator never raises.
+    if spec_validator_enabled():
+        _spec_rubric = context_dict.get("rubric_spec") or {}
+        _spec_leaf_count = len(_spec_rubric.get("leaves") or []) if isinstance(_spec_rubric, dict) else 0
+        emit(build_spec_generated_event(leaf_count=_spec_leaf_count))
+        _spec_validation_model = _spec_validator_label if spec_validator_client is not None else "unavailable"
+        _blocked_rubric = _run_spec_validator(
+            ctx=ctx,
+            rubric=context_dict.get("rubric_spec"),
+            paper_text=context_dict.get("paper_text"),
+            project_dir=project_dir,
+            emit=emit,
+            spec_validator_client=spec_validator_client,
+            separation=_spec_validator_tier,
+            validator_model=_spec_validation_model,
+        )
+        if _blocked_rubric is not None:
+            context_dict["rubric_spec"] = _blocked_rubric
 
     # Hybrid Phase 2: seed context with Phase 1 code path + weak cluster list
     # so the root model repairs rather than reproduces from scratch.

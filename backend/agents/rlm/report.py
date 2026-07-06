@@ -205,6 +205,22 @@ class RLMFinalReport(BaseModel):
             "Empty when the validator is disabled or the verdict is stale."
         ),
     )
+    # Rubric-vs-paper pre-loop spec-validation panel stamp (autonomous-upload-ui
+    # Task 8 — a sibling of `validation` above, keyed by the RUBRIC's own
+    # fingerprint rather than the shipped-evidence fingerprint, since this panel
+    # fires ONCE before the RLM loop against the resolved rubric). Populated
+    # only when the persisted verdict's fingerprint matches the rubric actually
+    # used. Empty dict (= never validated) when spec_validator was not enabled,
+    # the panel was not built, or the verdict fingerprint is stale.
+    spec_validation: dict = Field(
+        default_factory=dict,
+        description=(
+            "Rubric-vs-paper pre-loop spec-validation panel result. "
+            "Fields: status (clean|flagged|unavailable), flagged_leaves, "
+            "panel_models, separation, rubric_fingerprint. "
+            "Empty when spec_validator is disabled or the verdict is stale."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2004,6 +2020,39 @@ def write_final_report_rlm(
             }
     except Exception:  # noqa: BLE001 — stamp is best-effort, never crashes the write
         logger.debug("report: validation stamp skipped", exc_info=True)
+
+    # --- spec_validation stamp (autonomous-upload-ui Task 8) -----------------
+    # Rubric-vs-paper pre-loop spec validator (spec_validator.py). Reads the
+    # persisted verdict keyed by the RUBRIC's own fingerprint (not the shipped-
+    # evidence fingerprint the external validator above uses) — this panel
+    # fires ONCE before the loop against the resolved rubric, never against
+    # shipped metrics. A stale verdict (rubric changed since the panel ran) is
+    # ignored — load_spec_verdict returns None and spec_validation stays at its
+    # default {}. Fail-soft; when no verdict exists the field is left at its
+    # default (byte-identical to spec_validator being disabled).
+    try:
+        from backend.agents.rlm.spec_validator import (  # noqa: PLC0415
+            load_spec_verdict,
+            rubric_fingerprint,
+        )
+        _rubric_for_fp: dict = {}
+        _rubric_path = project_dir / "generated_rubric.json"
+        if _rubric_path.exists():
+            try:
+                _rubric_for_fp = json.loads(_rubric_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, ValueError):
+                _rubric_for_fp = {}
+        _sv = load_spec_verdict(project_dir, expect_fingerprint=rubric_fingerprint(_rubric_for_fp))
+        if _sv is not None:
+            report.spec_validation = {
+                "status": _sv.status,
+                "flagged_leaves": _sv.flagged_leaves,
+                "panel_models": _sv.panel_models,
+                "separation": _sv.separation,
+                "rubric_fingerprint": _sv.rubric_fingerprint,
+            }
+    except Exception:  # noqa: BLE001 — stamp is best-effort, never crashes the write
+        logger.debug("report: spec_validation stamp skipped", exc_info=True)
 
     # --- Best-of-run floor at the write chokepoint (2026-06-13 OmniZip) -----
     # build_final_report applies _apply_best_of_run_floor, but the root-assembled
