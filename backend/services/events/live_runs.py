@@ -485,6 +485,39 @@ def apply_provider_override(request: StartRunRequest, force_provider: str) -> St
     return request.model_copy(update={"provider": force_provider})
 
 
+# Canonical run-spec profile for the opt-in "autonomous" upload profile (see
+# apply_autonomous_profile_override below).
+_AUTONOMOUS_RUN_SPEC = "configs/autonomous_reproduction_run_spec.json"
+
+
+def apply_autonomous_profile_override(request: StartRunRequest) -> StartRunRequest:
+    """Opt-in autonomous profile: force GKE dispatch + Opus-4.8-Foundry root +
+    the canonical run-spec, when ``request.autonomous`` is True.
+
+    ``sandbox="gcp"`` (deliberately NOT the literal ``"gke"``) is the
+    canonical in-Literal GKE selector: ``StartRunRequest.sandbox`` is typed
+    ``Literal["auto","docker","local","runpod","azure","gcp"]`` — "gke" is
+    not a member of that Literal (the gke->gcp alias lives only in the
+    unrelated ``backend.agents.execution.SandboxMode`` enum, whose
+    ``_missing_`` hook remaps it). "gcp" is already in the Literal and
+    already selects ``GkeJobBackend`` byte-for-byte, so this sets the
+    in-Literal value directly instead of relying on a downstream remap of a
+    value pydantic would otherwise reject on re-validation.
+
+    A caller-supplied ``run_spec`` is preserved (the profile only fills the
+    gap when unset) — the profile forces sandbox/model but never clobbers an
+    explicit run-spec choice. OFF (``autonomous`` falsy) is the identity
+    function, mirroring ``apply_sandbox_override``/``apply_provider_override``.
+    """
+    if not getattr(request, "autonomous", False):
+        return request
+    return request.model_copy(update={
+        "sandbox": "gcp",
+        "model": "opus-foundry",
+        "run_spec": request.run_spec or _AUTONOMOUS_RUN_SPEC,
+    })
+
+
 class FileLiveRunService:
     """Runs pipelines in subprocesses and exposes their file-backed state."""
 
@@ -806,6 +839,10 @@ class FileLiveRunService:
         _s = get_settings()
         request = apply_sandbox_override(request, _s.force_sandbox)
         request = apply_provider_override(request, _s.force_llm_provider)
+        # Autonomous wins over the two overrides above: the profile is an
+        # explicit per-request opt-in to force the backend, not a deployment
+        # default, so it applies last.
+        request = apply_autonomous_profile_override(request)
         existing = await self.get_run(project_id)
         if existing and existing.status in {"queued", "running"} and _pid_exists(existing.pid):
             return existing
