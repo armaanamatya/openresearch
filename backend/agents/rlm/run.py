@@ -459,6 +459,13 @@ def _resolve_agent_runtime(
             _foundry_runtime.subprocess_env = {
                 "ANTHROPIC_BASE_URL": _foundry_base_url,
                 "ANTHROPIC_API_KEY": _foundry_api_key,
+                # Foundry's /anthropic endpoint 400s on Claude Code's experimental
+                # anthropic-beta headers (e.g. advisor-tool-2026-03-01), so the
+                # claude-agent-sdk executor must not send them — without this every
+                # implement_baseline sub-call returns success-with-no-text against
+                # Foundry (the endpoint rejects the unknown anthropic-beta value).
+                "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+                "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1",
             }
             return (
                 _foundry_runtime,

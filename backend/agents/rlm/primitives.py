@@ -1247,6 +1247,41 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
                 logger.debug("detect_environment: skill_match.json write failed")
         except Exception:  # noqa: BLE001 — the skill matcher must never block detection
             logger.debug("detect_environment: skill-matcher hook skipped", exc_info=True)
+    # Relevance-gated selection (OPENRESEARCH_SKILL_SELECT): on top of the
+    # deterministic match above, prune to a per-run ACTIVE skill set (bounded LLM
+    # pick, fail-soft) and persist it to rlm_state/active_skills.json for the
+    # root's consult_skill index + the verifier's grader context. This is the ONE
+    # trigger — detect_environment runs in both the lifecycle-primary and normal
+    # root-loop paths, for every entry point (upload / CLI / GCP), so no separate
+    # driver hook or new primitive is needed. Idempotent: skipped when
+    # active_skills.json already exists (resume / re-drive) so the bounded LLM call
+    # runs at most once per run. Off (SKILL_SELECT unset) -> not computed.
+    if _skills_on:
+        try:
+            from backend.agents.rlm import skill_selection as _skill_sel
+            if (
+                _skill_sel.select_enabled()
+                and _skill_sel.load_active_skills(ctx.project_dir) is None
+            ):
+                from backend.agents.rlm.skill_catalog import load_catalog as _load_skill_catalog_sel
+                _active = _skill_sel.select_active_skills(
+                    method_spec,
+                    spec_dict,
+                    _load_skill_catalog_sel(),
+                    llm_client=getattr(ctx, "llm_client", None),
+                )
+                _skill_sel.write_active_skills(ctx.project_dir, _active)
+                _emit_dashboard_event(
+                    ctx,
+                    event_type="skills_selected",
+                    payload={
+                        "count": len(_active.get("selected") or []),
+                        "selected": _active.get("selected") or [],
+                        "selector": _active.get("selector"),
+                    },
+                )
+        except Exception:  # noqa: BLE001 — selection is advisory; never block detection
+            logger.debug("detect_environment: skill-selection hook skipped", exc_info=True)
     result = _with_outcome(spec_dict, PrimitiveOutcome.ok)
     _cache.put(ctx.project_dir, "detect_environment", payload=_payload, result=result)
     return result
@@ -8095,6 +8130,24 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
     if _cached is not None:
         return _with_outcome(_cached, PrimitiveOutcome.ok)
 
+    # Relevance-gated verifier skill context (OPENRESEARCH_SKILL_SELECT, closes
+    # Gap 2): when a per-run active skill set exists, build a bounded
+    # domain-playbook block for the grader prompt so it judges fidelity against
+    # the skills relevant to THIS paper. Advisory only — never a fitness signal.
+    # Off / no active set -> None -> grader prompt byte-identical to today.
+    _skill_context: str | None = None
+    try:
+        from backend.agents.rlm import skill_selection as _skill_sel
+        if _skill_sel.select_enabled():
+            _active = _skill_sel.load_active_skills(ctx.project_dir)
+            if _active is not None:
+                from backend.agents.rlm.skill_catalog import load_catalog as _load_skill_catalog_v
+                _skill_context = _skill_sel.build_verifier_skill_context(
+                    _active, _load_skill_catalog_v()
+                )
+    except Exception:  # noqa: BLE001 — verifier skill context is advisory
+        _skill_context = None
+
     try:
         from backend.evals.paperbench.leaf_scorer import score_reproduction
 
@@ -8159,6 +8212,9 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
                 for d in (getattr(getattr(ctx, "scope_spec", None), "datasets", None) or [])
                 if d
             ],
+            # Relevance-gated verifier skill context (OPENRESEARCH_SKILL_SELECT):
+            # advisory domain-playbook block; None when off -> byte-identical.
+            skill_context=_skill_context,
         )
         # Phase 0B: persist the rubric tree so the deterministic finalize re-roll-up
         # (report → leaf_scorer.finalize_rescore) can recompute the score under a
@@ -9053,7 +9109,26 @@ def consult_skill(
             {"name": cat, "count": len(metas)}
             for cat, metas in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
         ]
-        return {"status": "ok", "kind": "index", "categories": categories}
+        result = {"status": "ok", "kind": "index", "categories": categories}
+        # Relevance-gated focus (OPENRESEARCH_SKILL_SELECT): when a per-run active
+        # skill set has been selected in the understand phase, surface it first so
+        # the root consults the skills relevant to THIS paper before browsing the
+        # full catalog. Off / not-yet-selected -> byte-identical index above.
+        try:
+            from backend.agents.rlm import skill_selection as _skill_sel
+            if _skill_sel.select_enabled():
+                _active = _skill_sel.load_active_skills(ctx.project_dir)
+                if _active is not None:
+                    _entries = _skill_sel.active_skill_entries(_active, catalog)
+                    if _entries:
+                        result["active"] = _entries
+                        result["active_note"] = (
+                            "Skills relevant to THIS paper (selected in the "
+                            "understand phase) — consult these first."
+                        )
+        except Exception:  # noqa: BLE001 — focus is advisory; never break consult_skill
+            pass
+        return result
     except Exception as exc:  # noqa: BLE001 — a consult tool must never break the run
         return {"status": "error", "error": str(exc)[:300]}
 

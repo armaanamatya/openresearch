@@ -1679,6 +1679,7 @@ def score_reproduction(
     operator_skip_models: list[str] | None = None,
     operator_skip_environments: list[str] | None = None,
     operator_dataset_inclusion: list[str] | None = None,
+    skill_context: str | None = None,
 ) -> dict[str, Any]:
     """Grade a reproduction run against a PaperBench rubric tree.
 
@@ -1743,6 +1744,14 @@ def score_reproduction(
     explicitly de-scoped are excluded.  Omitting this parameter (or passing
     ``None``) preserves the old behaviour — all models in the failure signals
     are excluded — so callers that don't have the operator skip list are unaffected.
+
+    ``skill_context`` (OPENRESEARCH_SKILL_SELECT, 2026-07-06): an optional,
+    pre-built "skill playbooks relevant to this paper" block prepended to each
+    grader batch prompt so the judge can assess fidelity against the domain
+    playbook, not just the paper text. ADVISORY ONLY — it sharpens the LLM grade
+    but is NOT a fitness signal; the deterministic evidence layer stays
+    authoritative. ``None`` (default) → the grader prompt is byte-identical to
+    today.
     """
     leaves = flatten_leaves(rubric_tree)
     evidence = _gather_evidence(run_dir)
@@ -1911,6 +1920,11 @@ def score_reproduction(
             tasks_json=json.dumps(tasks_payload, indent=2),
             batch_num=batch_num,
         )
+        # Relevance-gated skill context (OPENRESEARCH_SKILL_SELECT): advisory
+        # domain-playbook reference prepended to the grader prompt. None -> the
+        # prompt is byte-identical to today.
+        if skill_context:
+            user_msg = f"{skill_context}\n\n{user_msg}"
         try:
             from backend.agents.rlm.grader_transport import sample_completions
             raws = sample_completions(
