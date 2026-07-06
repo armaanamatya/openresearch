@@ -300,7 +300,8 @@ def test_grader_verifier_unchanged_when_no_validator():
 
 def test_back_compat_stamp_shape_now_carries_validator_key():
     # The legacy 4-key stamp gains a 5th "validator" key (None when unselected);
-    # the four existing keys are byte-identical to before.
+    # the four existing keys are byte-identical to before. It has since gained a
+    # 6th "spec_validator" key (Task 4, autonomous-upload-ui) the same way.
     sel = resolve_role_models(planner_token="claude-oauth")
     assert sel.stamp() == {
         "planner": "anthropic-oauth:claude-sonnet-4-6",
@@ -308,6 +309,7 @@ def test_back_compat_stamp_shape_now_carries_validator_key():
         "verifier": None,
         "grader": None,
         "validator": None,
+        "spec_validator": None,
     }
 
 

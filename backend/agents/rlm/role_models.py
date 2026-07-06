@@ -96,12 +96,22 @@ _VALIDATED_SUBROLE_PROVIDERS: frozenset[str] = frozenset(
     {PROVIDER_ANTHROPIC_OAUTH, PROVIDER_ANTHROPIC, PROVIDER_ANTHROPIC_FOUNDRY}
 )
 
-ROLES: tuple[str, ...] = ("planner", "executor", "verifier", "grader", "validator")
+ROLES: tuple[str, ...] = (
+    "planner",
+    "executor",
+    "verifier",
+    "grader",
+    "validator",
+    "spec_validator",
+)
 # The sub-roles a fidelity warning applies to (planner has its own
 # paper_validated signal via the root registry). The ``validator`` (the external
 # adversarial panel, spec 2026-06-20 §7.4) is a sub-role too: it resolves from
-# the unified surface and stamps like the others.
-_SUBROLES: frozenset[str] = frozenset({"executor", "verifier", "grader", "validator"})
+# the unified surface and stamps like the others. ``spec_validator`` (a later
+# rubric-vs-paper pre-loop validator) mirrors it exactly.
+_SUBROLES: frozenset[str] = frozenset(
+    {"executor", "verifier", "grader", "validator", "spec_validator"}
+)
 
 # token -> (provider, concrete_model_or_None). ``None`` model = provider default
 # (Azure: the deployment from AZURE_OPENAI_DEPLOYMENT). Tokens are lower-cased
@@ -253,11 +263,19 @@ class RoleSpec:
         would stamp the global ``AZURE_FOUNDRY_DEPLOYMENT`` (the executor's model)
         rather than the operator-selected validator model. Cosmetic: the transport
         already targets ``OPENRESEARCH_VALIDATOR_MODEL`` (``build_validator_client``).
+
+        The ``spec_validator`` role (a later rubric-vs-paper pre-loop validator)
+        mirrors this exactly via ``OPENRESEARCH_SPEC_VALIDATOR_MODEL`` — its own
+        transport target, independent of the ``validator`` env var above.
         """
         if self.role == "validator":
             _vm = os.environ.get("OPENRESEARCH_VALIDATOR_MODEL", "").strip()
             if _vm:
                 return f"{self.provider}:{_vm}"
+        if self.role == "spec_validator":
+            _svm = os.environ.get("OPENRESEARCH_SPEC_VALIDATOR_MODEL", "").strip()
+            if _svm:
+                return f"{self.provider}:{_svm}"
         model = self.model
         if model is None and self.provider == PROVIDER_AZURE_FOUNDRY:
             try:
@@ -289,6 +307,11 @@ class RoleSelection:
     # the operator did not select it; the panel then resolves ``unavailable`` and
     # the Tier-1 deterministic floor is the backstop.
     validator: RoleSpec | None = None
+    # A later rubric-vs-paper pre-loop validator (autonomous-upload-ui, Task 4) —
+    # a sub-role mirroring ``validator`` exactly. ``None`` when the operator did
+    # not select it (the module built on top of this resolver degrades
+    # accordingly).
+    spec_validator: RoleSpec | None = None
 
     def get(self, role: str) -> RoleSpec | None:
         return getattr(self, role, None)
@@ -298,7 +321,7 @@ class RoleSelection:
         """The sub-roles the operator actually overrode (non-inherit)."""
         return {
             role: spec
-            for role in ("executor", "verifier", "grader", "validator")
+            for role in ("executor", "verifier", "grader", "validator", "spec_validator")
             if (spec := self.get(role)) is not None
         }
 
@@ -307,8 +330,9 @@ class RoleSelection:
 
         Sub-roles left to inherit stamp ``None``; ``run.py`` backfills those
         with the effective inherited model (planner's / the legacy grader's).
-        The validator's ``OPENRESEARCH_VALIDATOR_MODEL`` preference lives in
-        ``RoleSpec.stamp`` (§4.7), so each role here simply delegates to it.
+        The validator's ``OPENRESEARCH_VALIDATOR_MODEL`` preference (and
+        spec_validator's parallel ``OPENRESEARCH_SPEC_VALIDATOR_MODEL``) lives
+        in ``RoleSpec.stamp`` (§4.7), so each role here simply delegates to it.
         """
         return {
             "planner": self.planner.stamp,
@@ -316,6 +340,7 @@ class RoleSelection:
             "verifier": self.verifier.stamp if self.verifier else None,
             "grader": self.grader.stamp if self.grader else None,
             "validator": self.validator.stamp if self.validator else None,
+            "spec_validator": self.spec_validator.stamp if self.spec_validator else None,
         }
 
     def fidelity_warnings(self, *, fidelity_critical: bool) -> list[str]:
@@ -494,6 +519,7 @@ def resolve_role_models(
     grader_model_env: str | None = None,
     verifier_model_setting: str | None = None,
     validator_model_setting: str | None = None,
+    spec_validator_model_setting: str | None = None,
 ) -> RoleSelection:
     """Resolve all four roles from the unified surface + legacy feeders.
 
@@ -562,10 +588,21 @@ def resolve_role_models(
         "validator", (validator_model_setting or "").strip() or None
     )
 
+    # spec_validator legacy feeder: an explicit spec-validator-model setting /
+    # env (OPENRESEARCH_SPEC_VALIDATOR_MODEL, threaded by run.py — a later
+    # task). The unified surface (``--models spec_validator=...``) still wins
+    # via _resolve_subrole. ``None`` ⇒ spec_validator unselected → the module
+    # built on top of this resolver degrades accordingly. Mirrors the
+    # ``validator`` feeder above exactly.
+    spec_validator = _resolve_subrole(
+        "spec_validator", (spec_validator_model_setting or "").strip() or None
+    )
+
     return RoleSelection(
         planner=planner,
         executor=executor,
         verifier=verifier,
         grader=grader,
         validator=validator,
+        spec_validator=spec_validator,
     )
