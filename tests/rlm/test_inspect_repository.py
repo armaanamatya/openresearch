@@ -48,4 +48,4 @@ def test_path_escape_rejected(tmp_path, make_context, monkeypatch):
 def test_registry_includes_inspect_repository():
     assert "inspect_repository" in PRIMITIVE_REGISTRY
     assert "inspect_repository" in PRIMITIVE_DESCRIPTIONS
-    assert len(PRIMITIVE_REGISTRY) == 18
+    assert len(PRIMITIVE_REGISTRY) == 19

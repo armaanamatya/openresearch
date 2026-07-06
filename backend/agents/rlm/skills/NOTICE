@@ -1,0 +1,11 @@
+Skill playbooks under this directory are vendored (copied verbatim, with light,
+documented cleanup of scraper artifacts) from:
+
+  Synthetic Sciences / OpenScience
+  https://github.com/synthetic-sciences/openscience
+  Licensed under the Apache License, Version 2.0
+  (https://www.apache.org/licenses/LICENSE-2.0).
+
+The `license:` field in each SKILL.md frontmatter documents the license of the
+TOOL the skill describes, not a grant over the playbook prose. The playbook prose
+is vendored under Apache-2.0 as above.

@@ -3547,10 +3547,15 @@ async def run_pipeline_rlm(
     if not _stub_mode and not context_dict.get("rubric_spec") and context_dict.get("paper_text"):
         from backend.agents.rlm.rubric_gen import generate_rubric_tree
 
+        def _lit_emit(code: str, message: str) -> None:
+            emit(build_run_warning_event(level="warn", code=code, message=message))
+
         generated = generate_rubric_tree(
             context_dict["paper_text"],
             llm_client,
             paper_title=context_dict.get("paper_metadata", {}).get("title", ""),
+            project_dir=project_dir,
+            emit_warning=_lit_emit if callable(emit) else None,
         )
         if generated is not None:
             context_dict["rubric_spec"] = generated

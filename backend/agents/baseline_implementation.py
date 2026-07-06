@@ -1979,6 +1979,52 @@ def _load_paper_override(arxiv_id: str | None) -> str:
     )
 
 
+# Skill library (OPENRESEARCH_SKILLS, Release-1 5.C): matched-shortlist guidance
+# block, same append pattern as _load_paper_override above (look up something
+# keyed to this paper, format as markdown, append). Reads rlm_state/skill_match.json,
+# written by the detect_environment matcher hook (primitives.py::detect_environment).
+def _skill_shortlist_block(project_dir: Path | str) -> str:
+    """Implementer-guidance block naming the skills matched to this paper.
+
+    Returns ``""`` when the flag is off, the state file is absent/unreadable, or
+    no skills matched — navigation aid only, never fatal.
+    """
+    if os.environ.get("OPENRESEARCH_SKILLS", "").strip().lower() not in (
+        "1", "true", "yes",
+    ):
+        return ""
+    try:
+        state_path = Path(project_dir) / "rlm_state" / "skill_match.json"
+        if not state_path.is_file():
+            return ""
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+        skill_names = data.get("skill_names") or []
+        if not skill_names:
+            return ""
+
+        from backend.agents.rlm.skill_catalog import load_catalog
+        catalog = load_catalog()
+
+        lines = [
+            "\n\nMATCHED SKILL PLAYBOOKS (skill library, OPENRESEARCH_SKILLS):",
+            "These vendored playbooks look relevant to this paper's method/environment:",
+        ]
+        for skill_name in skill_names:
+            meta = catalog.get(skill_name)
+            desc = (meta.description if meta is not None else "").strip()
+            if len(desc) > 160:
+                desc = desc[:157] + "..."
+            lines.append(f"  - {skill_name}: {desc}")
+        lines.append(
+            "Call consult_skill(name=<skill>) for the full playbook (setup steps, "
+            "code patterns, common pitfalls) before implementing that part of the "
+            "pipeline.\n"
+        )
+        return "\n".join(lines)
+    except Exception:  # noqa: BLE001 — advisory shortlist must never break the prompt
+        return ""
+
+
 def _extract_arxiv_id(project_id: str) -> str | None:
     """Extract a bare arXiv ID (e.g. '2605.15155') from a project_id string.
 
@@ -2545,6 +2591,18 @@ def _compute_constraint_guidance(
     override = _load_paper_override(arxiv_id)
     if override:
         guidance += override
+
+    # 6.2. Matched-skill shortlist (OPENRESEARCH_SKILLS, Release-1 5.C) — the
+    # skill-catalog matches persisted by detect_environment's matcher hook
+    # (rlm_state/skill_match.json). Advisory only; fail-soft; "" when off / no
+    # match / file absent, so guidance stays byte-identical when the flag is off.
+    if project_dir is not None:
+        try:
+            shortlist = _skill_shortlist_block(project_dir)
+            if shortlist:
+                guidance += shortlist
+        except Exception:  # noqa: BLE001 — advisory, never fatal
+            logger.debug("skill shortlist block skipped", exc_info=True)
 
     # 6.5 Prior-attempt measured evidence (2026-06-10, flag-gated). Past
     # attempts' per-cell results ride into the prompt so the implementer keeps
