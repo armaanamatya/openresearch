@@ -64,6 +64,12 @@ PROVIDER_AZURE = "azure"
 # OAuth) — so a fully OAuth-free run is possible. Distinct from PROVIDER_AZURE
 # (classic Azure OpenAI /openai/deployments path).
 PROVIDER_AZURE_FOUNDRY = "azure-foundry"
+# Anthropic-on-Foundry: Claude models (Opus/Sonnet) served via the Azure AI
+# Foundry Anthropic-compatible endpoint (``.../anthropic/v1/messages``). This
+# is a REAL Claude provider (same weights as PROVIDER_ANTHROPIC/_OAUTH) — a
+# distinct transport, not a distinct family — so it belongs in the validated
+# sub-role set (no fidelity warning) and classifies as "claude".
+PROVIDER_ANTHROPIC_FOUNDRY = "anthropic-foundry"
 # Passthrough stamp for a planner token that is a root-only registry key
 # (qwen3-coder, kimi-k2.5, qwen3-coder-featherless, azure-foundry, …):
 # resolve_root_model already validated it, so we stamp it as-is rather than
@@ -80,13 +86,14 @@ SUBROLE_PROVIDERS: frozenset[str] = frozenset(
         PROVIDER_OPENAI,
         PROVIDER_AZURE,
         PROVIDER_AZURE_FOUNDRY,
+        PROVIDER_ANTHROPIC_FOUNDRY,
     }
 )
 
 # Claude family is the validated baseline for every role; anything else on a
 # sub-role is experimental (fidelity warning).
 _VALIDATED_SUBROLE_PROVIDERS: frozenset[str] = frozenset(
-    {PROVIDER_ANTHROPIC_OAUTH, PROVIDER_ANTHROPIC}
+    {PROVIDER_ANTHROPIC_OAUTH, PROVIDER_ANTHROPIC, PROVIDER_ANTHROPIC_FOUNDRY}
 )
 
 ROLES: tuple[str, ...] = ("planner", "executor", "verifier", "grader", "validator")
@@ -139,6 +146,11 @@ _ROLE_VOCAB: dict[str, tuple[str, str | None]] = {
     "kimi": (PROVIDER_AZURE_FOUNDRY, None),
     "kimi-k2.6": (PROVIDER_AZURE_FOUNDRY, None),
     "kimi-k2-6": (PROVIDER_AZURE_FOUNDRY, None),
+    # --- Anthropic-on-Foundry (Claude via the Azure AI Foundry Anthropic-
+    # compatible endpoint, .../anthropic/v1/messages) — a real Claude provider,
+    # concrete model set (unlike the AZURE_FOUNDRY_DEPLOYMENT-driven None above).
+    "sonnet-foundry": (PROVIDER_ANTHROPIC_FOUNDRY, "claude-sonnet-5"),
+    "opus-foundry": (PROVIDER_ANTHROPIC_FOUNDRY, "claude-opus-4-8"),
 }
 
 
@@ -170,7 +182,7 @@ def _classify_model_family(provider: str, model: str | None) -> str | None:
     """
     prov = (provider or "").strip().lower()
     mdl = (model or "").strip().lower()
-    if prov in (PROVIDER_ANTHROPIC_OAUTH, PROVIDER_ANTHROPIC):
+    if prov in (PROVIDER_ANTHROPIC_OAUTH, PROVIDER_ANTHROPIC, PROVIDER_ANTHROPIC_FOUNDRY):
         return "claude"
     if prov in (PROVIDER_OPENAI, PROVIDER_AZURE):
         return "gpt"

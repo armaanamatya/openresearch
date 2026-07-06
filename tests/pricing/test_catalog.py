@@ -35,6 +35,11 @@ _ROOT_MODEL_TO_PRICING_KEY: dict[str, str] = {
     # azure-foundry is env-driven (any model on a custom endpoint), so it has no
     # dedicated pricing row — estimate it via the azure gpt-4o reference rate.
     "azure-foundry": "azure.gpt-4o",
+    # opus-foundry / sonnet-foundry serve real Claude Opus 4.8 / Sonnet 5 over
+    # the Foundry Anthropic endpoint; no dedicated 4-8/5 pricing row exists yet,
+    # so estimate via the nearest existing Anthropic reference rate.
+    "opus-foundry": "anthropic.claude-opus-4-7",
+    "sonnet-foundry": "anthropic.claude-sonnet-4-6",
 }
 
 
