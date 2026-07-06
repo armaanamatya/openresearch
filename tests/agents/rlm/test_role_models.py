@@ -42,14 +42,16 @@ def test_back_compat_inherit_planner_only():
 
 def test_back_compat_stamp_shape():
     sel = resolve_role_models(planner_token="claude-oauth")
-    # The stamp gained a 5th "validator" key (P2.1, spec 2026-06-20 §7.4); the
-    # four pre-existing keys are byte-identical, and validator inherits None.
+    # The stamp gained a 5th "validator" key (P2.1, spec 2026-06-20 §7.4) and a
+    # 6th "spec_validator" key (Task 4, autonomous-upload-ui); the four
+    # original keys are byte-identical, and both new keys inherit None.
     assert sel.stamp() == {
         "planner": "anthropic-oauth:claude-sonnet-4-6",
         "executor": None,
         "verifier": None,
         "grader": None,
         "validator": None,
+        "spec_validator": None,
     }
 
 

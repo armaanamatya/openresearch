@@ -570,6 +570,35 @@ def build_repo_cloned_event(
     }
 
 
+def build_spec_generation_started_event() -> dict:
+    """Build a ``spec_generation_started`` control event (corpus-free)."""
+    return {"event": "spec_generation_started", "timestamp": _now_iso()}
+
+
+def build_spec_generated_event(*, leaf_count: int) -> dict:
+    """Build a ``spec_generated`` control event (corpus-free)."""
+    return {"event": "spec_generated", "timestamp": _now_iso(), "leaf_count": leaf_count}
+
+
+def build_spec_validation_started_event(*, validator_model: str) -> dict:
+    """Build a ``spec_validation_started`` control event (corpus-free)."""
+    return {
+        "event": "spec_validation_started",
+        "timestamp": _now_iso(),
+        "validator_model": validator_model,
+    }
+
+
+def build_spec_validated_event(*, verdict: str, flagged_leaves: list[str]) -> dict:
+    """Build a ``spec_validated`` control event (corpus-free)."""
+    return {
+        "event": "spec_validated",
+        "timestamp": _now_iso(),
+        "verdict": verdict,
+        "flagged_leaves": list(flagged_leaves or []),
+    }
+
+
 # ---------------------------------------------------------------------------
 # on_subcall_* callback builders
 # ---------------------------------------------------------------------------
@@ -966,6 +995,10 @@ __all__ = [
     "build_rubric_score_event",
     "build_run_complete_event",
     "build_run_warning_event",
+    "build_spec_generated_event",
+    "build_spec_generation_started_event",
+    "build_spec_validated_event",
+    "build_spec_validation_started_event",
     "build_sub_rlm_complete_event",
     "build_sub_rlm_spawned_event",
     "make_emit",

@@ -1,0 +1,62 @@
+/* ReasoningChip — flat tool-call row (alphaXiv screen `_5`). Requires an
+ * ancestor `.autoresearch` wrapper for its --or-* tokens (see
+ * src/styles/autoresearch-tokens.css). Deliberately flat: no border/shadow
+ * — it's a quiet log row, not a surface competing with Card/PrimaryButton.
+ */
+
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 14px;
+  background: var(--or-chip-bg);
+  border-radius: 6px;
+  font-size: 14px;
+  color: var(--or-ink);
+}
+
+.dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--or-muted);
+}
+
+.label {
+  overflow-wrap: anywhere;
+}
+
+/* --- pending: dimmed, static --- */
+.pending .dot {
+  opacity: 0.5;
+}
+
+/* --- active: maroon, pulsing --- */
+.active .dot {
+  background: var(--or-maroon);
+  animation: chipLivePulse 1.6s ease-in-out infinite;
+}
+
+@keyframes chipLivePulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .active .dot {
+    animation: none;
+  }
+}
+
+/* --- done: settled, static muted dot (the common/default look) --- */
+.done .dot {
+  background: var(--or-muted);
+}

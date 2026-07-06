@@ -462,6 +462,23 @@
   border-color: var(--accent);
 }
 
+.upload-advanced-text {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 3px 6px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-xs);
+  background: var(--panel);
+  color: var(--ink);
+  outline: none;
+}
+
+.upload-advanced-text:focus {
+  border-color: var(--accent);
+}
+
 @media (max-width: 900px) {
   .upload-shell {
     margin: 12px auto 0;

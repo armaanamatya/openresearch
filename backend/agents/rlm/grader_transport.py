@@ -420,10 +420,72 @@ def build_validator_client(
     return client, label
 
 
+def build_spec_validator_client(
+    *, fallback_client: Any, fallback_label: str = ""
+) -> tuple[Any, str]:
+    """Resolve the SPEC validator's transport — **FAIL-CLOSED** (mirror ``build_validator_client``).
+
+    The rubric-vs-paper pre-loop spec validator (a sibling of the Tier-2
+    external validator) reads ``OPENRESEARCH_SPEC_VALIDATOR_BACKEND`` /
+    ``OPENRESEARCH_SPEC_VALIDATOR_MODEL``, falling back to
+    ``OPENRESEARCH_VALIDATOR_BACKEND`` / ``OPENRESEARCH_VALIDATOR_MODEL`` when the
+    SPEC-specific vars are unset — so the spec validator shares the external
+    validator's transport by default, or can be configured independently.
+
+    FAIL-CLOSED exactly like ``build_validator_client``: an explicitly-requested
+    spec validator (SPEC or VALIDATOR backend set) that cannot construct an
+    independent transport RAISES ``ValueError`` rather than silently falling
+    back to the caller's client — a spec validator that quietly rides the
+    planner/executor client would be judging the rubric with the same lineage
+    that wrote it, which is zero independent grounding.
+
+    Returns ``(client, label)``.
+    """
+    backend = _flag_value("OPENRESEARCH_SPEC_VALIDATOR_BACKEND") or _flag_value(
+        "OPENRESEARCH_VALIDATOR_BACKEND"
+    )
+    model = (
+        os.environ.get("OPENRESEARCH_SPEC_VALIDATOR_MODEL", "").strip()
+        or os.environ.get("OPENRESEARCH_VALIDATOR_MODEL", "").strip()
+        or None
+    )
+
+    # Neither the SPEC nor the VALIDATOR backend was set → the spec-validator
+    # role was not overridden. Return the caller's client unchanged.
+    if not backend:
+        return fallback_client, fallback_label
+
+    client, label = build_transport_client(
+        backend=backend,
+        model=model,
+        fallback_client=fallback_client,
+        fallback_label=fallback_label,
+        role_label="spec_validator",
+    )
+    # FAIL-CLOSED: build_transport_client returns the *exact* fallback object on
+    # a missing credential / unknown backend / construction error. Identity on
+    # the client is the unambiguous signal that no independent transport was
+    # built — an explicitly-requested spec validator that could not be
+    # constructed is an error, never a silent degrade to the fallback client.
+    if client is fallback_client:
+        raise ValueError(
+            "OPENRESEARCH_SPEC_VALIDATOR_BACKEND/OPENRESEARCH_VALIDATOR_BACKEND="
+            f"{backend!r} could not construct an independent spec-validator "
+            "transport (missing credential, unknown backend, or construction "
+            "error). The spec validator is FAIL-CLOSED: it must not silently "
+            "fall back to the executor-family client. Provide the backend's "
+            "credentials (e.g. AZURE_OPENAI_* for backend=azure) or unset "
+            "OPENRESEARCH_SPEC_VALIDATOR_BACKEND / OPENRESEARCH_VALIDATOR_BACKEND "
+            "to disable the spec validator."
+        )
+    return client, label
+
+
 __all__ = [
     "sample_completions",
     "build_grader_client",
     "build_validator_client",
+    "build_spec_validator_client",
     "build_transport_client",
     "resolve_anthropic_subrole_backend",
 ]

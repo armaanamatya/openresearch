@@ -168,6 +168,11 @@ export function LabShell({
   const [minimizeCompute, setMinimizeCompute] = useState<boolean>(() => readProviderPrefs().minimize_compute ?? false);
   const [gpuParallelism, setGpuParallelism] = useState<DemoGpuParallelism>(() => readProviderPrefs().gpu_parallelism ?? "auto");
   const [accelerator, setAccelerator] = useState<DemoAccelerator>(() => readProviderPrefs().accelerator ?? "off");
+  // T10 — opt-in fully-autonomous profile. Persisted like the other
+  // provider prefs above (mirrors minimizeCompute exactly).
+  const [autonomous, setAutonomous] = useState<boolean>(() => readProviderPrefs().autonomous ?? false);
+  // repoUrl is per-paper, not a global preference — state only, no persist.
+  const [repoUrl, setRepoUrl] = useState<string>("");
   // Bring-your-own API keys. Kept in-memory only — never persisted to
   // localStorage by default, so a page reload requires the user to retype.
   // This is the safest default for credentials a user typed into a browser.
@@ -215,6 +220,8 @@ export function LabShell({
     recipeMode: selectedRecipe,
     gpuParallelism: gpuParallelism || undefined,
     accelerator: accelerator || undefined,
+    autonomous: autonomous || undefined,
+    repoUrl: repoUrl || undefined,
   });
 
   const palette = useCommandPalette();
@@ -307,6 +314,8 @@ export function LabShell({
               maxGpuUsdPerHour={maxGpuUsdPerHour}
               vramGb={vramGb}
               minimizeCompute={minimizeCompute}
+              autonomous={autonomous}
+              repoUrl={repoUrl}
               sandbox={sandbox}
               onSandboxChange={(value) => {
                 setSandbox(value);
@@ -350,6 +359,11 @@ export function LabShell({
                 setMinimizeCompute(value);
                 writeProviderPrefs({ ...readProviderPrefs(), minimize_compute: value });
               }}
+              onAutonomousChange={(value) => {
+                setAutonomous(value);
+                writeProviderPrefs({ ...readProviderPrefs(), autonomous: value });
+              }}
+              onRepoUrlChange={setRepoUrl}
               providerCredentials={providerCredentials}
               onProviderCredentialsChange={setProviderCredentials}
             />

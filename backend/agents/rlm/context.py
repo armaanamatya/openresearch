@@ -56,6 +56,12 @@ class RunContext:
     # deterministic floor is the sole backstop (NEVER a silent fall-through to
     # the executor-family client). Typed Any to avoid an import cycle.
     validator_client: Any = None    # LlmClient | None — None = validator unselected
+    # Rubric-vs-paper pre-loop spec validator (autonomous-upload-ui Task 8), a
+    # sibling of validator_client: built FAIL-CLOSED by
+    # grader_transport.build_spec_validator_client and threaded by run.py when
+    # the spec_validator role was overridden. ``None`` = spec_validator
+    # unselected → the pre-loop panel is ``unavailable`` (advisory; never blocks).
+    spec_validator_client: Any = None  # LlmClient | None — None = spec_validator unselected
     workspace_service: Any = None
     workspace_id: str | None = None
     deadline_utc: datetime | None = field(default=None)  # M-DEADLINE — set by run.py

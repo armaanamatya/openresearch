@@ -69,6 +69,8 @@ const DEFAULT_PROPS = {
   maxGpuUsdPerHour: 0,
   vramGb: 0,
   minimizeCompute: false,
+  autonomous: false,
+  repoUrl: "",
   sandbox: "docker" as const,
   onRootProviderChange: NOP,
   onSubagentAuthChange: NOP,
@@ -81,6 +83,8 @@ const DEFAULT_PROPS = {
   onMaxGpuUsdPerHourChange: NOP,
   onVramGbChange: NOP,
   onMinimizeComputeChange: NOP,
+  onAutonomousChange: NOP,
+  onRepoUrlChange: NOP,
   onSandboxChange: NOP,
   providerCredentials: {},
   onProviderCredentialsChange: NOP,
@@ -227,6 +231,49 @@ describe("UploadView advanced options", () => {
 });
 
 // ---------------------------------------------------------------------------
+// T10 — autonomous toggle (top-level, mirrors Minimize compute) + repoUrl
+// (Advanced section)
+// ---------------------------------------------------------------------------
+
+describe("UploadView autonomous toggle", () => {
+  it("renders the autonomous toggle, off by default", () => {
+    render(<UploadView {...DEFAULT_PROPS} />);
+    expect(screen.getByLabelText(/autonomous/i)).not.toBeChecked();
+  });
+
+  it("reflects autonomous=true prop as checked", () => {
+    render(<UploadView {...DEFAULT_PROPS} autonomous={true} />);
+    expect(screen.getByLabelText(/autonomous/i)).toBeChecked();
+  });
+
+  it("calls onAutonomousChange when toggled", () => {
+    const onChange = vi.fn();
+    render(<UploadView {...DEFAULT_PROPS} onAutonomousChange={onChange} />);
+    fireEvent.click(screen.getByLabelText(/autonomous/i));
+    expect(onChange).toHaveBeenCalledWith(true);
+  });
+});
+
+describe("UploadView repoUrl field (Advanced)", () => {
+  it("renders a repo URL input", () => {
+    render(<UploadView {...DEFAULT_PROPS} />);
+    expect(screen.getByLabelText(/repo/i)).toBeInTheDocument();
+  });
+
+  it("reflects the repoUrl prop value", () => {
+    render(<UploadView {...DEFAULT_PROPS} repoUrl="https://github.com/foo/bar" />);
+    expect(screen.getByLabelText(/repo/i)).toHaveValue("https://github.com/foo/bar");
+  });
+
+  it("calls onRepoUrlChange when edited", () => {
+    const onChange = vi.fn();
+    render(<UploadView {...DEFAULT_PROPS} onRepoUrlChange={onChange} />);
+    fireEvent.change(screen.getByLabelText(/repo/i), { target: { value: "https://github.com/foo/bar" } });
+    expect(onChange).toHaveBeenCalledWith("https://github.com/foo/bar");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // localStorage persistence (D3)
 // ---------------------------------------------------------------------------
 
@@ -248,5 +295,10 @@ describe("localStorage persistence via providerPrefs", () => {
     const prefs = readProviderPrefs();
     expect(prefs.root_provider).toBe("openai_api");
     expect(prefs.dynamic_gpu).toBe(true);
+  });
+
+  it("writeProviderPrefs + readProviderPrefs round-trips autonomous (T10)", () => {
+    writeProviderPrefs({ autonomous: true });
+    expect(readProviderPrefs().autonomous).toBe(true);
   });
 });

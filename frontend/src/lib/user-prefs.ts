@@ -26,6 +26,10 @@ export interface ProviderPrefs {
   minimize_compute?: boolean;
   gpu_parallelism?: DemoGpuParallelism;
   accelerator?: DemoAccelerator;
+  // T10 — opt-in fully-autonomous profile toggle (persisted like the other
+  // provider prefs above). `repoUrl` is deliberately NOT here: it's
+  // per-paper, not a global setting.
+  autonomous?: boolean;
 }
 
 export function readProviderPrefs(): ProviderPrefs {

@@ -216,6 +216,17 @@ class StartRunRequest(BaseModel):
     # Threaded into the run context; resolved/cloned only when
     # OPENRESEARCH_USE_AUTHOR_REPO is on. None => existing behavior.
     repo_url: str | None = None
+    # Opt-in "autonomous" profile (autonomous-upload UI). Unlike the advanced
+    # GPU knobs above (tri-state: None = inherit settings default), this is a
+    # concrete on/off toggle — there is no "unspecified" meaning, so it is a
+    # plain `bool` default rather than `bool | None`. Consumed by T3's
+    # apply_autonomous_profile_override in _start_python_run; Task 2 only
+    # threads the field through the request chain.
+    autonomous: bool = False
+    # Config-file run spec (mirrors cli.py's --run-spec). Server-fixed by the
+    # autonomous profile override when autonomous=True and unset; not a
+    # client-supplied field on StartArxivRunRequest or the upload form.
+    run_spec: str | None = None
 
 
 class TelemetryRecordPublic(BaseModel):
@@ -474,6 +485,39 @@ def apply_provider_override(request: StartRunRequest, force_provider: str) -> St
     return request.model_copy(update={"provider": force_provider})
 
 
+# Canonical run-spec profile for the opt-in "autonomous" upload profile (see
+# apply_autonomous_profile_override below).
+_AUTONOMOUS_RUN_SPEC = "configs/autonomous_reproduction_run_spec.json"
+
+
+def apply_autonomous_profile_override(request: StartRunRequest) -> StartRunRequest:
+    """Opt-in autonomous profile: force GKE dispatch + Opus-4.8-Foundry root +
+    the canonical run-spec, when ``request.autonomous`` is True.
+
+    ``sandbox="gcp"`` (deliberately NOT the literal ``"gke"``) is the
+    canonical in-Literal GKE selector: ``StartRunRequest.sandbox`` is typed
+    ``Literal["auto","docker","local","runpod","azure","gcp"]`` — "gke" is
+    not a member of that Literal (the gke->gcp alias lives only in the
+    unrelated ``backend.agents.execution.SandboxMode`` enum, whose
+    ``_missing_`` hook remaps it). "gcp" is already in the Literal and
+    already selects ``GkeJobBackend`` byte-for-byte, so this sets the
+    in-Literal value directly instead of relying on a downstream remap of a
+    value pydantic would otherwise reject on re-validation.
+
+    A caller-supplied ``run_spec`` is preserved (the profile only fills the
+    gap when unset) — the profile forces sandbox/model but never clobbers an
+    explicit run-spec choice. OFF (``autonomous`` falsy) is the identity
+    function, mirroring ``apply_sandbox_override``/``apply_provider_override``.
+    """
+    if not getattr(request, "autonomous", False):
+        return request
+    return request.model_copy(update={
+        "sandbox": "gcp",
+        "model": "opus-foundry",
+        "run_spec": request.run_spec or _AUTONOMOUS_RUN_SPEC,
+    })
+
+
 class FileLiveRunService:
     """Runs pipelines in subprocesses and exposes their file-backed state."""
 
@@ -535,6 +579,17 @@ class FileLiveRunService:
             env["OPENRESEARCH_GPU_PARALLELISM"] = request.gpu_parallelism
         if request.accelerator:
             env["OPENRESEARCH_ACCELERATOR"] = request.accelerator
+        # Advanced GPU-budget knobs from the "Advanced options" panel (D2). These
+        # were declared on StartRunRequest but silently dropped here; forward them
+        # so the upload/arxiv Advanced fields actually reach the run subprocess.
+        if request.dynamic_gpu is not None:
+            env["OPENRESEARCH_DYNAMIC_GPU"] = "true" if request.dynamic_gpu else "false"
+        if request.force_single_gpu is not None:
+            env["OPENRESEARCH_FORCE_SINGLE_GPU"] = "true" if request.force_single_gpu else "false"
+        if request.max_gpu_usd_per_hour is not None:
+            env["OPENRESEARCH_MAX_GPU_USD_PER_HOUR"] = str(request.max_gpu_usd_per_hour)
+        if request.vram_gb is not None:
+            env["OPENRESEARCH_VRAM_OVERRIDE_GB"] = str(request.vram_gb)
         env["OPENRESEARCH_LLM_PROVIDER"] = request.provider
         if request.verificationProvider:
             env["OPENRESEARCH_VERIFICATION_PROVIDER"] = request.verificationProvider
@@ -784,6 +839,10 @@ class FileLiveRunService:
         _s = get_settings()
         request = apply_sandbox_override(request, _s.force_sandbox)
         request = apply_provider_override(request, _s.force_llm_provider)
+        # Autonomous wins over the two overrides above: the profile is an
+        # explicit per-request opt-in to force the backend, not a deployment
+        # default, so it applies last.
+        request = apply_autonomous_profile_override(request)
         existing = await self.get_run(project_id)
         if existing and existing.status in {"queued", "running"} and _pid_exists(existing.pid):
             return existing
@@ -1774,6 +1833,9 @@ def _python_script(
         "minimize_compute": bool(request.minimize_compute),
         # #62: official code repository URL → consumed by run_pipeline_rlm.
         "repo_url": request.repo_url,
+        # Config-file run spec — threaded to the uploaded-paper Namespace below
+        # so cmd_reproduce's getattr(args, "run_spec", None) picks it up.
+        "run_spec": request.run_spec,
     }
     return f"""
 import asyncio
@@ -1977,6 +2039,7 @@ try:
             "max_pod_seconds": config["max_pod_seconds"],
             "max_invocations": config["max_invocations"],
             "minimize_compute": config["minimize_compute"],
+            "run_spec": config["run_spec"],
         }}))
         if exit_code != 0:
             raise RuntimeError(f"Pipeline exited with status {{exit_code}}")

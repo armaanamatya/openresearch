@@ -1,0 +1,11 @@
+.page {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--or-paper);
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+}
