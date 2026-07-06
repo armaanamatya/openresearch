@@ -52,3 +52,31 @@ export function foldSpecPhase(state: SpecPhaseState, event: RlmDashboardEvent): 
       return state;
   }
 }
+
+/**
+ * Should the `/sessions/<runId>` route show the spec-validation stepper
+ * (alphaXiv screen D) instead of the live reasoning log?
+ *
+ * True only while the spec phase is genuinely IN PROGRESS and the root loop
+ * has not started — i.e. a spec-phase event has fired (`stage !== "idle"`),
+ * it has not yet completed (`stage !== "validated"`), AND no reasoning
+ * iteration has arrived (`iterationsLen === 0`). Once validation completes
+ * OR the first `repl_iteration` lands, the route swaps to the reasoning view.
+ *
+ * Fail-soft for the non-autonomous / existing path: a run with NO spec
+ * events keeps `stage === "idle"`, so this returns false and the route goes
+ * straight to the reasoning/"Waiting…" state — nothing regresses.
+ *
+ * Pure — no React, no side effects; the single source of truth for the
+ * route's stepper-vs-view decision so `page.tsx` stays a thin wire.
+ */
+export function shouldShowSpecStepper(
+  specPhase: SpecPhaseState,
+  iterationsLen: number
+): boolean {
+  return (
+    specPhase.stage !== "idle" &&
+    specPhase.stage !== "validated" &&
+    iterationsLen === 0
+  );
+}

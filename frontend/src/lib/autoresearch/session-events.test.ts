@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { foldSpecPhase, INITIAL_SPEC_PHASE_STATE, type SpecPhaseState } from "./session-events";
+import {
+  foldSpecPhase,
+  INITIAL_SPEC_PHASE_STATE,
+  shouldShowSpecStepper,
+  type SpecPhaseState,
+} from "./session-events";
 import type {
   SpecGenerationStartedEvent,
   SpecGeneratedEvent,
@@ -116,5 +121,36 @@ describe("foldSpecPhase", () => {
     const state = foldSpecPhase(INITIAL_SPEC_PHASE_STATE, event);
     flaggedLeaves.push("L99");
     expect(state.flaggedLeaves).toEqual(["L2", "L7"]);
+  });
+});
+
+describe("shouldShowSpecStepper", () => {
+  it("is false at idle (a non-autonomous run with no spec events) — no regression", () => {
+    expect(shouldShowSpecStepper({ stage: "idle" }, 0)).toBe(false);
+  });
+
+  it("is true while generating with no iterations yet", () => {
+    expect(shouldShowSpecStepper({ stage: "generating" }, 0)).toBe(true);
+  });
+
+  it("is true while generated with no iterations yet", () => {
+    expect(shouldShowSpecStepper({ stage: "generated", leafCount: 9 }, 0)).toBe(true);
+  });
+
+  it("is true while validating with no iterations yet", () => {
+    expect(shouldShowSpecStepper({ stage: "validating", validatorModel: "grok-4.3" }, 0)).toBe(
+      true
+    );
+  });
+
+  it("is false once validation completes (swap to the reasoning view)", () => {
+    expect(shouldShowSpecStepper({ stage: "validated", verdict: "verified" }, 0)).toBe(false);
+  });
+
+  it("is false the moment the first reasoning iteration arrives, even mid-spec-phase", () => {
+    // A repl_iteration landing before spec_validated (e.g. the lifecycle
+    // driver starting work) must still swap to the reasoning log.
+    expect(shouldShowSpecStepper({ stage: "generating" }, 1)).toBe(false);
+    expect(shouldShowSpecStepper({ stage: "validating" }, 3)).toBe(false);
   });
 });
