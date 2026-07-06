@@ -152,6 +152,14 @@ export interface ProviderRunOptions {
   // Lane Q — "reproduce the CLAIM, not the recipe" mode. Pipes to the
   // baseline-implementation prompt's _MINIMIZE_COMPUTE_BLOCK.
   minimizeCompute?: boolean;
+  // T10 — opt-in fully-autonomous profile (forces GCP + Opus-Foundry on the
+  // backend, see StartRunRequest.autonomous). Concrete backend consumers
+  // already exist (T2/T3): _optional_form_bool(form, "autonomous") on the
+  // multipart upload path, StartArxivRunRequest.autonomous on the arXiv path.
+  autonomous?: boolean;
+  // Optional official-code-repository URL a user confirmed for this paper
+  // (#62 repo-first reproduction). Per-paper, not a persisted preference.
+  repoUrl?: string;
   // Bring-your-own LLM credentials — never persisted, scoped to this
   // run's subprocess via the backend's _subprocess_env merge.
   providerCredentials?: ProviderCredentialsInput;
@@ -478,6 +486,8 @@ export function useRun(
       if (opts.minimizeCompute != null) params.set("minimizeCompute", String(opts.minimizeCompute));
       if (opts.gpuParallelism) params.set("gpuParallelism", opts.gpuParallelism);
       if (opts.accelerator) params.set("accelerator", opts.accelerator);
+      if (opts.autonomous != null) params.set("autonomous", String(opts.autonomous));
+      if (opts.repoUrl) params.set("repoUrl", opts.repoUrl);
       const response = await postRunRequest(
         `/api/demo?${params.toString()}`,
         { method: "POST" }
@@ -517,6 +527,11 @@ export function useRun(
       if (opts.minimizeCompute != null) formData.set("minimizeCompute", String(opts.minimizeCompute));
       if (opts.gpuParallelism) formData.set("gpuParallelism", opts.gpuParallelism);
       if (opts.accelerator) formData.set("accelerator", opts.accelerator);
+      // T10 — the backend reads these as literal lowercase/camelCase form
+      // keys: _optional_form_bool(form, "autonomous") + _optional_form_value
+      // (form, "repoUrl").
+      if (opts.autonomous != null) formData.set("autonomous", String(opts.autonomous));
+      if (opts.repoUrl) formData.set("repoUrl", opts.repoUrl);
       const creds = compactProviderCredentials(opts.providerCredentials);
       if (creds) formData.set("providerCredentials", JSON.stringify(creds));
       if (opts.estimateId) formData.set("estimateId", opts.estimateId);
@@ -574,6 +589,9 @@ export function useRun(
           ...(opts.minimizeCompute != null ? { minimize_compute: opts.minimizeCompute } : {}),
           ...(opts.gpuParallelism ? { gpu_parallelism: opts.gpuParallelism } : {}),
           ...(opts.accelerator ? { accelerator: opts.accelerator } : {}),
+          // T10 — StartArxivRunRequest.autonomous / .repo_url (snake_case).
+          ...(opts.autonomous != null ? { autonomous: opts.autonomous } : {}),
+          ...(opts.repoUrl ? { repo_url: opts.repoUrl } : {}),
           ...(compactProviderCredentials(opts.providerCredentials)
             ? { provider_credentials: compactProviderCredentials(opts.providerCredentials) }
             : {}),

@@ -75,6 +75,8 @@ export function UploadView({
   maxGpuUsdPerHour,
   vramGb,
   minimizeCompute,
+  autonomous,
+  repoUrl,
   sandbox,
   providerCredentials,
   onRootProviderChange,
@@ -88,6 +90,8 @@ export function UploadView({
   onMaxGpuUsdPerHourChange,
   onVramGbChange,
   onMinimizeComputeChange,
+  onAutonomousChange,
+  onRepoUrlChange,
   onSandboxChange,
   onProviderCredentialsChange,
   budgetEstimate,
@@ -123,6 +127,8 @@ export function UploadView({
   maxGpuUsdPerHour: number;
   vramGb: number;
   minimizeCompute: boolean;
+  autonomous: boolean;
+  repoUrl: string;
   sandbox: DemoSandboxMode;
   providerCredentials: ProviderCredentialsInput;
   onRootProviderChange: (value: RootProvider) => void;
@@ -136,6 +142,8 @@ export function UploadView({
   onMaxGpuUsdPerHourChange: (value: number) => void;
   onVramGbChange: (value: number) => void;
   onMinimizeComputeChange: (value: boolean) => void;
+  onAutonomousChange: (value: boolean) => void;
+  onRepoUrlChange: (value: string) => void;
   onSandboxChange: (value: DemoSandboxMode) => void;
   onProviderCredentialsChange: (value: ProviderCredentialsInput) => void;
   budgetEstimate: PaperBudgetEstimate | null;
@@ -582,6 +590,27 @@ export function UploadView({
         </label>
       </fieldset>
 
+      {/* ── Autonomous mode (top-level, opt-in — experimental) ──── */}
+      <fieldset className="upload-provider-fieldset" disabled={busy}>
+        <legend className="upload-config-label">Autonomous mode</legend>
+        <label
+          className={`upload-provider-option${autonomous ? " selected" : ""}`}
+          title="Experimental, opt-in. Forces the fully-autonomous GCP + Opus-Foundry reproduction profile for this run instead of the standard interactive path. Off by default."
+        >
+          <input
+            id="autonomous-checkbox"
+            type="checkbox"
+            checked={autonomous}
+            disabled={busy}
+            onChange={(e) => onAutonomousChange(e.target.checked)}
+          />
+          <span className="upload-provider-name">Autonomous</span>
+          <span className="upload-provider-badge">
+            {autonomous ? "on" : "off"}
+          </span>
+        </label>
+      </fieldset>
+
       {/* ── Advanced options (collapsible) ──────────────────────── */}
       <details
         className="upload-advanced"
@@ -592,6 +621,21 @@ export function UploadView({
           Advanced options
         </summary>
         <div className="upload-advanced-body">
+          <div className="upload-advanced-row">
+            <label className="upload-advanced-label" htmlFor="repo-url-input">
+              Repository URL
+            </label>
+            <input
+              id="repo-url-input"
+              type="text"
+              className="upload-advanced-text"
+              placeholder="github.com/org/repo (optional)"
+              value={repoUrl}
+              disabled={busy}
+              onChange={(e) => onRepoUrlChange(e.target.value)}
+            />
+            <span className="upload-advanced-hint">Official code repo — cloned + adapted instead of implemented from scratch</span>
+          </div>
           <div className="upload-advanced-row">
             <label className="upload-advanced-label" htmlFor="dynamic-gpu-toggle">
               Dynamic GPU
