@@ -152,16 +152,15 @@ def rubric_fingerprint(rubric: dict) -> str:
 # "near"), which are not stopwords but also carry no paper-specific citation
 # signal. A grounded leaf like "Report ALFWorld success rate near 84.4" would
 # score ~0.33 overlap under that helper and get wrongly flagged. This module
-# therefore defines its OWN helper, scoped to "distinctive cited
-# terms/numbers" (numbers with TOLERANCE matching, plus CamelCase/acronym and
-# non-stopword lowercase/hyphenated entity names) rather than every
-# non-stopword content word. Do not conflate the two.
+# therefore defines its OWN, PRECISION-FIRST helper, scoped to "distinctive
+# cited terms/numbers" — ONLY CamelCase/acronym entity names and (tolerance-
+# matched) numbers — rather than every non-stopword content word. Do not
+# conflate the two.
 
 _NUMBER_TOKEN_RE = re.compile(r"\d+(?:\.\d+)?")
 _WORD_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*")
 
 _HALLUCINATION_OVERLAP_FLOOR = 0.5
-_MIN_ENTITY_TOKEN_LEN = 4
 
 # Shared with the wrong_target predicate below (hoisted here so the numeric
 # distinctive-token matcher can reuse the SAME tolerance — see _numeric_present):
@@ -171,45 +170,6 @@ _MIN_ENTITY_TOKEN_LEN = 4
 # predicates internally consistent — a "84.4" vs "84.40" precision/format drift
 # that wrong_target clears is never flagged as a hallucination.
 _WRONG_TARGET_REL_TOL = 0.05
-
-# Generic English function words + research-rubric/ML metric vocabulary that
-# describe HOW a leaf is phrased, never WHICH paper-specific dataset/method/
-# number it cites. These must never count as distinctive grounding tokens,
-# else ordinary rubric prose ("Report ... success rate near ...") would swamp
-# the overlap ratio and a grounded leaf would be wrongly flagged. Scoped to the
-# high-frequency rubric/metric words a leaf sentence actually contains — not a
-# full NLP stoplist. (Tokens shorter than _MIN_ENTITY_TOKEN_LEN are already
-# excluded by length, so this set only needs the >= 4-char offenders.)
-_STOPWORDS: frozenset[str] = frozenset({
-    # generic English (>= 4-char function/filler words)
-    "been", "being", "were", "have", "having", "this", "that", "with",
-    "from", "into", "them", "they", "than", "then", "such", "also", "both",
-    "each", "which", "used", "using", "over", "under", "more", "most",
-    "some", "when", "what", "where", "your", "will", "would", "should",
-    "could", "must", "does", "done", "these", "those", "only", "same",
-    "other", "between", "within", "without", "about", "above", "below",
-    "after", "before", "during", "them", "here", "there", "their",
-    # research-rubric / ML metric vocabulary
-    "paper", "report", "reports", "reported", "reporting", "verify",
-    "verifies", "verified", "ensure", "ensures", "check", "checks",
-    "checking", "correct", "correctly", "near", "around", "roughly",
-    "approximately", "value", "values", "result", "results", "success",
-    "rate", "rates", "accuracy", "reward", "rewards", "score", "scores",
-    "return", "returns", "metric", "metrics", "achieve", "achieves",
-    "achieved", "achieving", "match", "matches", "matching", "matched",
-    "target", "targets", "baseline", "baselines", "model", "models",
-    "dataset", "datasets", "data", "method", "methods", "train", "training",
-    "trained", "test", "tests", "testing", "eval", "evals", "evaluate",
-    "evaluation", "experiment", "experiments", "implement", "implements",
-    "implemented", "implementation", "describe", "described", "section",
-    "sections", "table", "tables", "figure", "figures", "performance",
-    "task", "tasks", "environment", "environments", "benchmark",
-    "benchmarks", "reproduce", "reproduction", "setup", "config",
-    "configuration", "hyperparameter", "hyperparameters", "parameter",
-    "parameters", "epoch", "epochs", "batch", "step", "steps", "learning",
-    "loss", "gradient", "network", "layer", "layers", "output", "outputs",
-    "input", "inputs", "sets", "uses", "described", "correctly",
-})
 
 
 def _normalize(text: str) -> str:
@@ -239,22 +199,27 @@ def _has_internal_capital(word: str) -> bool:
 
 def _distinctive_tokens(text: str) -> tuple[list[str], list[float]]:
     """Extract ``(entity_tokens, numeric_values)`` — the 'distinctive cited
-    terms/numbers' of a leaf requirement.
+    terms/numbers' of a leaf requirement, PRECISION-FIRST.
 
-    Entity tokens (candidate dataset/method/env names): an alphabetic token is
-    distinctive iff it is CamelCase/acronym (has an internal capital letter —
-    ALFWorld, WebShop, GRPO, SDAR) OR a plain/lowercase/hyphenated token of
-    length >= ``_MIN_ENTITY_TOKEN_LEN`` that is NOT a generic stopword
-    (mujoco, halfcheetah, webshop, search). Generic rubric/English words
-    ("Report", "success", "rate", "near") are excluded via ``_STOPWORDS`` so
-    they never swamp the overlap ratio.
+    Entity tokens (candidate dataset/method/env names): ONLY alphabetic tokens
+    with an internal capital letter — CamelCase/acronym names (ALFWorld,
+    WebShop, ImageNet, GRPO, SDAR). Lowercase words are DELIBERATELY excluded:
+    a stoplist cannot separate a lowercase paper-entity ("mujoco") from
+    lowercase descriptive vocabulary ("normalization", "regularizer",
+    "distributions") — English morphology is unbounded — so treating length>=4
+    lowercase tokens as entities false-positived ordinary procedural leaves as
+    hallucinated (the destructive direction: under BLOCK it drops a GROUNDED
+    leaf, the exact "false-positive worse than missed contamination" the brief
+    prioritizes against). A hallucination cited ONLY via lowercase prose is an
+    ACCEPTED false-negative here (the LLM nomination + min-aggregation still
+    surface it advisorily; only the machine-VETO is conservative).
 
     Numeric values: every int/float literal, float-parsed (for tolerance
-    matching downstream).
+    matching downstream — the presence check that grounds precision drift).
 
-    Returns ``([], [])`` when the leaf cites nothing distinctive (an abstract/
-    procedural requirement) — the caller treats this as unverifiable
-    (grounded), never hallucinated.
+    Returns ``([], [])`` when the leaf cites no CamelCase/acronym entity and no
+    number (a purely procedural requirement) — the caller treats this as
+    unverifiable (grounded), never hallucinated.
     """
     if not isinstance(text, str) or not text:
         return [], []
@@ -264,13 +229,9 @@ def _distinctive_tokens(text: str) -> tuple[list[str], list[float]]:
             numeric_values.append(float(m.group(0)))
         except ValueError:
             pass
-    entity_tokens: list[str] = []
-    for m in _WORD_TOKEN_RE.finditer(text):
-        word = m.group(0)
-        if _has_internal_capital(word):
-            entity_tokens.append(word)
-        elif len(word) >= _MIN_ENTITY_TOKEN_LEN and word.lower() not in _STOPWORDS:
-            entity_tokens.append(word)
+    entity_tokens: list[str] = [
+        m.group(0) for m in _WORD_TOKEN_RE.finditer(text) if _has_internal_capital(m.group(0))
+    ]
     return entity_tokens, numeric_values
 
 
@@ -343,6 +304,15 @@ def check_hallucinated_leaf(leaf_text: str, paper_text: str) -> bool:
     """True iff the leaf's distinctive cited terms/numbers are adequately
     grounded in paper_text (token-overlap >= 0.5). Fail-soft: any error
     returns True (healthy, no veto on uncertainty).
+
+    PRECISION-FIRST (the machine-VETO must never drop a grounded leaf): only
+    CamelCase/acronym entity names and (tolerance-matched) numbers are
+    grounding-checked. A procedural leaf with no such anchor
+    ("Verify correct normalization of inputs") has an empty distinctive set →
+    overlap 1.0 → never flagged. A hallucination cited ONLY via lowercase
+    prose entities is an ACCEPTED false-negative — the LLM nomination +
+    min-aggregation still surface it advisorily, and a false-positive that
+    drops a grounded leaf is worse (see ``_distinctive_tokens``).
 
     Note: returns True == HEALTHY (grounded). The violated field is set to
     ``not check_hallucinated_leaf(...)``.

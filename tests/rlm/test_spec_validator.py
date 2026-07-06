@@ -638,34 +638,56 @@ def test_number_only_absent_value_still_flagged():
 
 
 # ---------------------------------------------------------------------------
-# hallucinated_leaf hardening — lowercase / hyphenated entities (false-negative)
+# hallucinated_leaf — PRECISION-FIRST: only CamelCase/acronym + numbers veto
 # ---------------------------------------------------------------------------
 
 
-def test_lowercase_absent_entity_flagged():
-    """A hallucinated lowercase entity with no number is no longer silently
-    grounded: 'mujoco'/'halfcheetah' are absent from _PAPER -> flagged.
-    ('report'/'reward' are generic stopwords and don't count.)"""
-    assert sv.check_hallucinated_leaf("Report mujoco halfcheetah reward", _PAPER) is False
+def test_procedural_leaves_never_flagged():
+    """REGRESSION GUARD (the reviewer's approval condition): ordinary
+    procedural leaves with NO CamelCase/acronym entity and NO number must
+    never be machine-flagged as hallucinated — their distinctive set is empty
+    → overlap 1.0 → grounded. Before the precision-first fix, the lowercase
+    length>=4 branch flagged these ("normalization"/"regularizer"/
+    "distributions" absent from the paper), which under BLOCK would drop a
+    GROUNDED leaf — the destructive direction the brief prioritizes against."""
+    for leaf in (
+        "Verify correct normalization of inputs",
+        "Model generalizes to unseen distributions",
+        "Ablation removes the auxiliary regularizer",
+    ):
+        assert sv.check_hallucinated_leaf(leaf, _PAPER) is True, leaf
+
+
+def test_lowercase_only_entity_is_accepted_false_negative():
+    """A hallucination cited ONLY via lowercase prose entities (no CamelCase/
+    acronym, no number) is NOT machine-flagged — an ACCEPTED, brief-sanctioned
+    false-negative under precision-first (the LLM nomination + min-aggregation
+    still surface it advisorily; a false-positive that drops a grounded leaf is
+    worse). 'mujoco'/'halfcheetah' absent from _PAPER, but no strong anchor →
+    grounded."""
+    assert sv.check_hallucinated_leaf("Report mujoco halfcheetah reward", _PAPER) is True
 
 
 def test_lowercase_grounded_entity_not_flagged():
-    """A leaf citing entities that appear in the paper prose in lowercase
-    (WebShop -> 'webshop', Search-QA -> 'search') is NOT flagged."""
+    """Consistent with the above: a lowercase-only leaf whose entities DO
+    appear in the paper is likewise not flagged (no CamelCase/acronym/number
+    anchor to check → grounded)."""
     assert sv.check_hallucinated_leaf("Report webshop and search results", _PAPER) is True
 
 
 def test_camelcase_entity_still_dominates_generic_prose():
-    """Regression guard: a grounded CamelCase+numeric leaf (ALFWorld/84.4) stays
-    grounded even surrounded by generic rubric prose (the generic words are
-    stopworded, so they never drag the ratio below the floor)."""
+    """A grounded CamelCase+numeric leaf (ALFWorld/84.4) stays grounded even
+    surrounded by generic prose — only the strong anchors are checked, both
+    present."""
     assert sv.check_hallucinated_leaf(
         "Verify that the reported ALFWorld success rate is approximately 84.4", _PAPER
     ) is True
 
 
-def test_lowercase_absent_entity_flagged_via_panel(monkeypatch):
-    """End-to-end: a panel pointing at a lowercase-absent leaf yields a flag."""
+def test_lowercase_only_entity_not_flagged_via_panel(monkeypatch):
+    """End-to-end: even when a panel POINTS at a lowercase-only leaf, the
+    machine-check clears it (precision-first) → status clean, no veto. The
+    LLM's nomination is never dispositive."""
     rubric = {"leaves": [{"id": "E1", "requirement": "Report mujoco halfcheetah return"}]}
     monkeypatch.setattr(sv, "sample_completions",
         lambda *a, **k: ['[{"predicate":"hallucinated_leaf","leaf_id":"E1"}]'])
@@ -676,8 +698,8 @@ def test_lowercase_absent_entity_flagged_via_panel(monkeypatch):
         paper_text=_PAPER,
         separation="independent",
     )
-    assert v.status == "flagged"
-    assert "E1" in v.flagged_leaves
+    assert v.status == "clean"
+    assert "E1" not in v.flagged_leaves
 
 
 # ---------------------------------------------------------------------------
