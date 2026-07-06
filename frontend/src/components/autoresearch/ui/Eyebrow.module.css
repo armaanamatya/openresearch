@@ -1,0 +1,14 @@
+/* Eyebrow — small tracked uppercase label. Requires an ancestor
+ * `.autoresearch` wrapper for --or-muted / --or-eyebrow-ls (see
+ * src/styles/autoresearch-tokens.css).
+ */
+
+.eyebrow {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-transform: uppercase;
+  letter-spacing: var(--or-eyebrow-ls);
+  color: var(--or-muted);
+}

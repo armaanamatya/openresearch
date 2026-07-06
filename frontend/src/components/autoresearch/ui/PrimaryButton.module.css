@@ -1,0 +1,48 @@
+/* PrimaryButton — the maroon CTA for the autoresearch flow. Requires an
+ * ancestor `.autoresearch` wrapper for its --or-* tokens (see
+ * src/styles/autoresearch-tokens.css).
+ *
+ * Signature interaction: the button reads as a physical sticker sitting
+ * on top of the page — it lifts slightly on hover and is pressed flat
+ * (shadow collapses, button translates into its own shadow) on
+ * press/active, mirroring the hard-offset-shadow language of Card.
+ */
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 24px;
+  background: var(--or-maroon);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.2;
+  border: var(--or-border);
+  border-radius: var(--or-radius);
+  box-shadow: var(--or-shadow);
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, background-color 0.12s ease;
+}
+
+.button:hover:not(:disabled) {
+  transform: translate(-2px, -2px);
+  box-shadow: 8px 8px 0 var(--or-ink);
+}
+
+.button:active:not(:disabled) {
+  transform: translate(3px, 3px);
+  box-shadow: 3px 3px 0 var(--or-ink);
+  background: var(--or-maroon-press);
+}
+
+.button:focus-visible {
+  outline: 2px solid var(--or-ink);
+  outline-offset: 3px;
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

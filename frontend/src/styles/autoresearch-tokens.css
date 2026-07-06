@@ -1,0 +1,34 @@
+/* Scoped design tokens for the "autonomous reproduction" flow.
+ *
+ * Applied via a `.autoresearch` wrapper class so this palette never leaks
+ * into the existing dark lab (src/styles/tokens.css stays untouched — that
+ * file remains the single source of truth for the lab's own dark/amber
+ * theme). Any element outside a `.autoresearch`-wrapped subtree simply
+ * never sees these custom properties.
+ *
+ * Visual direction: light-maroon neo-brutalist — hard, un-blurred offset
+ * shadows, solid ink borders, uppercase tracked eyebrows (alphaXiv
+ * reference: alphaxiv_3.png / alphaxiv_4.png).
+ *
+ * Consumed today by src/components/autoresearch/ui/{Card,PrimaryButton,
+ * Eyebrow}. Later flow components (T9b/T11+) should extend this same
+ * scope rather than introducing a second token set.
+ */
+
+.autoresearch {
+  /* === Core palette === */
+  --or-maroon: #8b1e2d;
+  --or-maroon-press: #6f1723;
+  --or-maroon-tint: #f7ebed;
+  --or-ink: #141414;
+  --or-paper: #fdfcfb;
+  --or-muted: #6b6b6b;
+
+  /* === Structure === */
+  --or-border: 1.5px solid var(--or-ink);
+  --or-shadow: 6px 6px 0 var(--or-ink); /* hard, un-blurred offset */
+  --or-radius: 2px;
+
+  /* === Type === */
+  --or-eyebrow-ls: 0.14em;
+}

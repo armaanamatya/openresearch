@@ -1,0 +1,27 @@
+/* Card — the base neo-brutalist surface for the autoresearch flow.
+ * Requires an ancestor `.autoresearch` wrapper for its --or-* tokens
+ * (see src/styles/autoresearch-tokens.css); it is intentionally scoped
+ * to that surface, not a general-purpose standalone component.
+ */
+
+.card {
+  background: var(--or-paper);
+  border-radius: var(--or-radius);
+  box-sizing: border-box;
+}
+
+/* Primary surface: bold ink border + full hard-offset shadow. */
+.default {
+  padding: 28px;
+  border: var(--or-border);
+  box-shadow: var(--or-shadow);
+}
+
+/* Secondary/panel surface: softer — a thin muted border and a shallow
+ * 2px offset shadow, so secondary content visibly recedes behind a
+ * primary Card on the same page. */
+.panel {
+  padding: 20px;
+  border: 1px solid var(--or-muted);
+  box-shadow: 2px 2px 0 var(--or-ink);
+}
