@@ -5825,6 +5825,31 @@ def _seed_replication_enabled() -> bool:
         "1", "true", "on", "yes")
 
 
+def _cell_resume_auto_enabled() -> bool:
+    """OPENRESEARCH_CELL_RESUME_AUTO — auto-stabilize run_id + arm cell resume (default OFF).
+
+    Closes two independent gaps that otherwise defeat cell-level checkpoint/resume
+    WITHIN one live session even though the resume machinery itself
+    (``gpu_cell_runner.should_skip_cell`` / ``write_cell_manifest`` /
+    ``cell_fingerprint.compute_fingerprint``) is already correct: (1)
+    ``run_experiment`` mints a fresh uuid-suffixed ``run_id`` on EVERY call, so a
+    root re-call after a partial/OOM result writes to a NEW
+    ``code/outputs/<run_id>/`` and ``should_skip_cell`` never finds the prior
+    attempt's ``cell_manifest.json``; (2) ``OPENRESEARCH_RESUME_CELLS`` is never
+    armed mid-session. When this flag is on, the ``run_id`` block below reuses a
+    STABLE run_id (``ctx.project_id`` — the same value
+    ``OPENRESEARCH_STABLE_RUN_ID`` already produces) and arms
+    ``OPENRESEARCH_RESUME_CELLS`` via ``setdefault`` (an operator's explicit "0"
+    still wins). Because ``should_skip_cell`` only skips a cell whose prior
+    manifest is ``status="ok"`` AND fingerprint-matched, a cell that OOM'd/errored
+    is never skipped — "resume only the failed/missing cells" falls out of the
+    existing machinery for free. Default OFF ⇒ byte-identical to today (fresh
+    uuid suffix every call, no auto-arm).
+    """
+    return os.environ.get("OPENRESEARCH_CELL_RESUME_AUTO", "").strip().lower() in (
+        "1", "true", "on", "yes")
+
+
 def _read_prior_weak_leaves(project_dir) -> list[dict]:
     """The last verify's weak leaves (for the reactive multi-seed trigger). Fail-soft."""
     try:
@@ -6803,11 +6828,17 @@ def run_experiment(
     # in-cluster orchestrator sets it so a rescheduled pod re-attaches to the SAME blob
     # prefix and the K8s runner's Blob-resume skips already-completed cells), pin the
     # run_id to the deterministic project_id (already paper+arm-derived). Unset → today's
-    # behavior, byte-identical.
-    if os.environ.get("OPENRESEARCH_STABLE_RUN_ID", "").strip():
+    # behavior, byte-identical. OPENRESEARCH_CELL_RESUME_AUTO (default OFF) is the
+    # SAME-SESSION sibling: it stabilizes run_id identically AND arms
+    # OPENRESEARCH_RESUME_CELLS via setdefault (an explicit operator "0" still wins) so
+    # a root re-calling run_experiment after a partial/OOM result resumes only the
+    # cells that never finished ok, instead of re-running the whole grid.
+    if os.environ.get("OPENRESEARCH_STABLE_RUN_ID", "").strip() or _cell_resume_auto_enabled():
         run_id = ctx.project_id
     else:
         run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
+    if _cell_resume_auto_enabled():
+        os.environ.setdefault("OPENRESEARCH_RESUME_CELLS", "1")
     _cell_route_taken = False
     _hybrid_grid_result: dict | None = None  # set when the hybrid route stashes a grid result
     # Progress→SSE tailer (local only): emit a sanitized experiment_progress event from the

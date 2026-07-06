@@ -87,6 +87,7 @@ class AnthropicMessagesClient:
         model: str = DEFAULT_GRADER_MODEL,
         *,
         api_key: str | None = None,
+        base_url: str | None = None,
         max_tokens: int = 4096,
         timeout: float = 300.0,
     ) -> None:
@@ -96,10 +97,13 @@ class AnthropicMessagesClient:
         # backoff and honours Retry-After; with_429_backoff below is the
         # belt-and-suspenders layer the sibling clients also carry.
         # A None api_key lets the SDK resolve ANTHROPIC_API_KEY from the env
-        # (matching how grader_transport constructs it).
-        self._client = anthropic.Anthropic(
-            api_key=api_key, timeout=timeout, max_retries=6
-        )
+        # (matching how grader_transport constructs it). base_url is omitted
+        # unless truthy so the SDK resolves its own default (byte-identical
+        # when unset — e.g. Foundry's Anthropic-compatible endpoint scoping).
+        _client_kwargs: dict = {"api_key": api_key, "timeout": timeout, "max_retries": 6}
+        if base_url:
+            _client_kwargs["base_url"] = base_url
+        self._client = anthropic.Anthropic(**_client_kwargs)
         self._model = model
         self._max_tokens = max_tokens
         # Mirror the sibling clients: callers (binding._ledger) read

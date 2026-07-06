@@ -79,6 +79,12 @@ from backend.agents.rlm._oauth_backend_patch import (
     apply_oauth_backend_patch,
     apply_anthropic_caching_patch,
 )
+# Register the anthropic-foundry backend with rlm.clients.get_client — must run
+# before RLM(backend="anthropic-foundry", ...) is constructed below (opus-foundry /
+# sonnet-foundry root models). Mirror of apply_oauth_backend_patch above.
+from backend.agents.rlm._anthropic_foundry_patch import (
+    apply_anthropic_foundry_backend_patch,
+)
 from backend.agents.rlm.forced_iteration import (
     _TERMINAL_FAILURE_CLASSES,
     _WALL_CLOCK_FLOOR_S,
@@ -122,6 +128,7 @@ import sys as _sys_for_recursion
 _sys_for_recursion.setrecursionlimit(10000)
 apply_oauth_backend_patch()
 apply_anthropic_caching_patch()
+apply_anthropic_foundry_backend_patch()
 # Lane H — install the FINAL_VAR interceptor once. Per-run policies are
 # pushed via the forced_iteration_policy context manager around rlm.completion.
 apply_forced_iteration_patch()
@@ -429,10 +436,43 @@ def _resolve_agent_runtime(
     _exec_spec = getattr(role_selection, "executor", None) if role_selection is not None else None
     if _exec_spec is not None:
         from backend.agents.runtime.factory import make_runtime as _make_runtime
+        if _exec_spec.provider == "anthropic-foundry":
+            # Anthropic-on-Foundry executor: the SAME claude-agent-sdk runtime as
+            # plain anthropic, pointed at the Foundry endpoint via a PER-SUBPROCESS
+            # env override — never process-global os.environ (that would hijack a
+            # co-resident claude-oauth path; see assert_no_foundry_oauth_coresidency).
+            from backend.agents.runtime.base import ProviderConfigurationError
+            from backend.agents.runtime.foundry_anthropic import (
+                resolve_foundry_anthropic_credentials,
+            )
+
+            _foundry_base_url, _foundry_api_key, _ = resolve_foundry_anthropic_credentials()
+            if not (_foundry_base_url and _foundry_api_key):
+                raise ProviderConfigurationError(
+                    provider="anthropic-foundry",
+                    reason=(
+                        "Azure Foundry credentials missing; set AZURE_FOUNDRY_ENDPOINT "
+                        "(or AZURE_FOUNDRY_ANTHROPIC_ENDPOINT) and AZURE_FOUNDRY_API_KEY."
+                    ),
+                )
+            _foundry_runtime = _make_runtime("anthropic")
+            _foundry_runtime.subprocess_env = {
+                "ANTHROPIC_BASE_URL": _foundry_base_url,
+                "ANTHROPIC_API_KEY": _foundry_api_key,
+            }
+            _foundry_runtime.agent_model = _exec_spec.model
+            return (
+                _foundry_runtime,
+                _exec_spec.model,
+                f"role:executor:{_exec_spec.stamp}",
+            )
         _exec_provider = {
             "anthropic-oauth": "anthropic", "anthropic": "anthropic",
             "openai": "openai", "azure": "azure",
             "azure-foundry": "azure-foundry",
+            # Never actually dispatched through this dict (special-cased above);
+            # present so an unexpected code path fails soft instead of KeyError.
+            "anthropic-foundry": "anthropic",
         }[_exec_spec.provider]
         return (
             _make_runtime(_exec_provider, require_api_key=True),
@@ -679,6 +719,38 @@ def _resolve_and_clone_repo(
         return None, None
 
 
+def assert_execute_mode_stamped(repro_mode_env: str, repo_spec: "dict[str, Any] | None") -> None:
+    """Fail-loud if execute mode was requested but not stamped (B2 backstop).
+
+    ``OPENRESEARCH_REPRODUCTION_MODE=execute`` asks the implementer to run the
+    authors' pipeline verbatim — meaningless without a usable cloned repo. If
+    the resolver/clone downgraded the stamped mode (e.g. ``RepoResolver``
+    found nothing usable and fell back to ``"scratch"``, or repo
+    resolution raised entirely), silently proceeding would make the
+    implementer quietly reimplement from scratch while the operator believes
+    execute mode ran. Raise instead of degrading in silence.
+
+    No-op (returns ``None``) whenever execute mode was not requested, or
+    when it was requested and genuinely honored (``repo_spec["mode"] ==
+    "execute"``).
+
+    Deliberately called from the OUTER caller (``_build_context``, right
+    after ``_resolve_and_clone_repo`` returns) rather than from inside
+    ``_resolve_and_clone_repo`` itself: that function's body is wrapped in a
+    blanket ``except Exception`` (repo resolution must never break a run by
+    itself), which would silently swallow this assertion's ``RuntimeError``
+    and defeat the entire point of failing loud.
+    """
+    if (repro_mode_env or "").strip().lower() != "execute":
+        return
+    stamped = (repo_spec or {}).get("mode")
+    if stamped != "execute":
+        raise RuntimeError(
+            f"REPRODUCTION_MODE=execute was requested but repo_spec stamped mode={stamped!r} "
+            "— the repo did not clone/seed in execute mode; refusing to run in adapt disguise."
+        )
+
+
 def _load_discovered_artifacts(workspace_service: "Any", workspace_id: "str | None") -> "list[Any]":
     """Best-effort fetch of the materialized discovered_artifacts for RepoResolver.
 
@@ -757,10 +829,20 @@ def _build_context(
     # leaves repo_files None and writes no repo_spec.json — byte-identical to today.
     _repo_files: "dict[str, Any] | None" = None
     if project_dir is not None:
-        _repo_files, _ = _resolve_and_clone_repo(
+        _repo_files, _repo_spec = _resolve_and_clone_repo(
             project_dir, repo_url, blacklist or set(), discovered or [],
             emit=emit,
         )
+        # B2 backstop (Task 11): guarded by the same OPENRESEARCH_USE_AUTHOR_REPO
+        # truthy check _resolve_and_clone_repo itself gates on, so this is a
+        # no-op call when the repo-first feature is off.
+        if os.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() in (
+            "1", "true", "yes", "on"
+        ):
+            assert_execute_mode_stamped(
+                os.environ.get("OPENRESEARCH_REPRODUCTION_MODE", "adapt"),
+                {"mode": _repo_spec.mode} if _repo_spec is not None else None,
+            )
 
     return {
         "paper_text": "\n\n".join(sections),
@@ -1069,11 +1151,55 @@ def _drive_max_improve() -> int:
     return int(raw) if raw.isdigit() else 2
 
 
+def _primary_inputs_ready(
+    tools: dict, paper_text: str, rubric_spec: dict | None
+) -> tuple[bool, str | None]:
+    """Gate for the ``OPENRESEARCH_LIFECYCLE_PRIMARY`` branch: are the inputs
+    ``run_lifecycle_primary`` needs actually populated?
+
+    Returns ``(True, None)`` when ``tools`` is non-empty AND ``paper_text`` is
+    non-empty/truthy AND ``rubric_spec`` is truthy; else ``(False, <reason>)``
+    naming what is missing, so the caller can emit a loud warning and fall
+    back to the normal ``rlm.completion`` loop instead of silently no-oping.
+    """
+    missing: list[str] = []
+    if not tools:
+        missing.append("tools")
+    if not paper_text:
+        missing.append("paper_text")
+    if not rubric_spec:
+        missing.append("rubric_spec")
+    if missing:
+        return False, f"lifecycle-primary inputs not ready: missing/empty {', '.join(missing)}"
+    return True, None
+
+
 def _synth_result_from_summary(summary: dict, ctx: Any) -> Any:
     """Build a minimal RLMChatCompletion from a primary-mode driver summary.
 
-    Returns None when no rubric score is available — _finalize will ship the
-    'failed' shell and attempt a regrade-from-disk.
+    Projects an honest report from whatever evidence the summary carries:
+
+      * ``rubric_score`` present (or, absent that, ``verify_result.overall_score``)
+        -> the scored path, ``reproduced``/``partial`` by score-vs-target
+        (unchanged from before).
+      * no score but evidence exists (a ``verify_result`` dict, ``driven``
+        containing ``run_experiment``, or an explicit truthy ``has_evidence``)
+        -> an honest ``partial`` report. A run that drove real work has done
+        strictly more than a scoreless failure and must not be shipped as one.
+      * no score AND none of the evidence-bearing keys (``verify_result`` /
+        ``driven`` / ``has_evidence``) are present in ``summary`` at all (the
+        pre-evidence-tracking legacy shape) -> ``None``, preserving the
+        original contract so ``_finalize`` ships the disk-regrade / 'failed'
+        shell.
+      * no score AND the evidence-bearing keys ARE present but all say "no
+        evidence" -> an honest ``failed`` report (a real, parseable object,
+        not ``None`` — the run genuinely produced nothing).
+
+    ``target`` prefers ``verify_result["target_score"]`` (the driven verify's
+    own target) and falls back to ``getattr(ctx, "latest_rubric_target",
+    None)`` — the ``getattr`` (rather than direct attribute access) is
+    required because a lifecycle-driver summary is self-contained and the
+    caller's ``ctx`` is not guaranteed to carry ``latest_rubric_target``.
 
     The response JSON is deliberately minimal: build_final_report's metric-
     projection (OPENRESEARCH_METRIC_PROVENANCE) fills baseline_metrics from
@@ -1086,17 +1212,49 @@ def _synth_result_from_summary(summary: dict, ctx: Any) -> Any:
     except Exception:  # noqa: BLE001 — rlms not importable in test isolation
         return None
 
+    verify_result = summary.get("verify_result")
+    verify_result = verify_result if isinstance(verify_result, dict) else None
+
     score = summary.get("rubric_score")
-    if score is None:
+    if score is None and verify_result is not None:
+        score = verify_result.get("overall_score")
+
+    target = verify_result.get("target_score") if verify_result is not None else None
+    if target is None:
+        target = getattr(ctx, "latest_rubric_target", None)
+
+    driven = summary.get("driven") or []
+    has_evidence = bool(
+        summary.get("has_evidence")
+        or verify_result is not None
+        or "run_experiment" in driven
+    )
+    # A summary carrying NONE of the evidence-bearing keys at all is the
+    # legacy pre-evidence-tracking shape (a hand-built {"rubric_score": ...,
+    # "improved": ...} summary, as in the pre-T8 unit tests) — preserve the
+    # original None-return contract for it. A real run_lifecycle_primary
+    # summary always carries "verify_result"/"driven" (even when None/[]), so
+    # this branch never fires in production.
+    has_any_evidence_key = (
+        "verify_result" in summary or "driven" in summary or "has_evidence" in summary
+    )
+    if score is None and not has_evidence and not has_any_evidence_key:
         return None
 
     improved = summary.get("improved", 0)
-    target = ctx.latest_rubric_target
-    verdict = "reproduced" if (target is not None and score >= target) else "partial"
-
-    desc = "Harness-driven lifecycle (primary mode): drove understand→implement→run→verify"
-    if improved:
-        desc += f", climbed {improved} improvement(s)"
+    if score is not None:
+        verdict = "reproduced" if (target is not None and score >= target) else "partial"
+        desc = "Harness-driven lifecycle (primary mode): drove understand→implement→run→verify"
+        if improved:
+            desc += f", climbed {improved} improvement(s)"
+    elif has_evidence:
+        # Ran (implement_baseline/run_experiment/verify) but no numeric score
+        # landed yet — honest partial, never a scoreless failure.
+        verdict = "partial"
+        desc = "Harness-driven lifecycle (primary mode): ran but produced no rubric score yet"
+    else:
+        verdict = "failed"
+        desc = "Harness-driven lifecycle (primary mode): no experiment evidence was produced"
 
     report_dict = {
         "verdict": verdict,
@@ -1105,7 +1263,7 @@ def _synth_result_from_summary(summary: dict, ctx: Any) -> Any:
         "rubric": {
             "overall_score": score,
             "target_score": target,
-            "meets_target": bool(target is not None and score >= target),
+            "meets_target": bool(target is not None and score is not None and score >= target),
         },
     }
 
@@ -2512,6 +2670,17 @@ def _maybe_auto_arm_cell_resume(project_dir: Path) -> bool:
     An explicit ``OPENRESEARCH_RESUME_CELLS`` (set to ANY value, incl. "0")
     always wins — operator intent is never overridden. Returns True iff it
     armed (set the env var to "1") this call.
+
+    Gap 2 sibling (2026-07-05, ``OPENRESEARCH_CELL_RESUME_AUTO``): arming
+    ``OPENRESEARCH_RESUME_CELLS`` alone is not sufficient for a genuine
+    process-restart resume — ``run_experiment`` still mints a fresh
+    uuid-suffixed ``run_id`` on every call unless ``OPENRESEARCH_STABLE_RUN_ID``
+    is also set, so the resumed attempt would write to a brand-new
+    ``code/outputs/<run_id>/`` and find no prior manifest to skip. Under the
+    SAME new-flag gate (``_cell_resume_auto_enabled``, the same-session sibling
+    fix in ``primitives.py``), this also arms ``OPENRESEARCH_STABLE_RUN_ID`` via
+    ``setdefault`` — an operator's explicit override (including "0") still wins.
+    Default OFF ⇒ byte-identical to today.
     """
     if os.environ.get("OPENRESEARCH_RESUME_CELLS") is not None:
         return False  # explicit operator setting wins (including "0")
@@ -2524,6 +2693,13 @@ def _maybe_auto_arm_cell_resume(project_dir: Path) -> bool:
     if not prior_attempt:
         return False  # first attempt — no completed cells to skip
     os.environ["OPENRESEARCH_RESUME_CELLS"] = "1"
+    try:
+        from backend.agents.rlm.primitives import _cell_resume_auto_enabled  # noqa: PLC0415
+
+        if _cell_resume_auto_enabled():
+            os.environ.setdefault("OPENRESEARCH_STABLE_RUN_ID", "1")
+    except Exception:  # noqa: BLE001 — the auto-arm must never fail on this lazy import
+        logger.debug("_maybe_auto_arm_cell_resume: stable-run-id co-arm check failed", exc_info=True)
     return True
 
 
@@ -2632,6 +2808,68 @@ def _validator_separation_tier(role_selection: Any) -> str:
     except Exception:  # noqa: BLE001 — tier computation is advisory; never crashes a run
         logger.debug("_validator_separation_tier: failed, defaulting to unavailable", exc_info=True)
         return "unavailable"
+
+
+def _subrole_backend(spec: Any) -> str:
+    """Resolve the transport backend string for a sub-role ``RoleSpec``.
+
+    Claude tokens (opus/sonnet/haiku) resolve to whichever Anthropic auth is
+    actually present (honours ``llm_auth_strategy``); openai/azure are
+    key-only and pass through unchanged.
+
+    Anthropic-on-Foundry is special-cased FIRST: ``PROVIDER_ANTHROPIC_FOUNDRY``
+    classifies as ``is_claude`` (same Claude weights — the validated sub-role
+    baseline) but is a DISTINCT transport from oauth/API-key anthropic.
+    Without this special case the generic Claude branch below would call
+    ``resolve_anthropic_subrole_backend()`` and silently remap a Foundry pick
+    to oauth/anthropic, discarding the operator's Foundry choice entirely —
+    never do that.
+    """
+    if getattr(spec, "provider", None) == "anthropic-foundry":
+        return "anthropic-foundry"
+    from backend.agents.rlm.grader_transport import (  # noqa: PLC0415
+        resolve_anthropic_subrole_backend,
+    )
+
+    return resolve_anthropic_subrole_backend() if spec.is_claude else spec.provider
+
+
+def assert_no_foundry_oauth_coresidency(root_key: str, role_selection: Any) -> None:
+    """A run must not mix ``anthropic-foundry`` and ``claude-oauth``.
+
+    Anthropic-on-Foundry routes the SDK through a per-subprocess
+    ``ANTHROPIC_BASE_URL``/``ANTHROPIC_API_KEY`` override (see
+    ``_resolve_agent_runtime`` / ``claude_runtime.ClaudeAgentRuntime``); if
+    the SAME run also has a ``claude-oauth`` root or sub-role (no base_url
+    override — it talks to the real Anthropic API via the ``claude`` CLI
+    subscription), a global override would silently hijack the OAuth path.
+    Raise if both families appear across the root model + any sub-role pick.
+    """
+    providers: set[str] = set()
+    rk = (root_key or "").lower()
+    if "foundry" in rk and ("opus" in rk or "sonnet" in rk):
+        providers.add("anthropic-foundry")
+    if rk in ("claude-oauth", "opus", "sonnet"):
+        providers.add("anthropic-oauth")
+    if hasattr(role_selection, "specs"):
+        specs = role_selection.specs()
+    elif hasattr(role_selection, "explicit_subroles"):
+        # The real RoleSelection (backend.agents.rlm.role_models) exposes
+        # explicit_subroles rather than a .specs() method — fall back to it so
+        # this guard is wired against real per-role picks, not only the
+        # root-key heuristic above.
+        specs = list(role_selection.explicit_subroles.values())
+    else:
+        specs = []
+    for sp in specs:
+        p = getattr(sp, "provider", None)
+        if p in ("anthropic-foundry", "anthropic-oauth"):
+            providers.add(p)
+    if "anthropic-foundry" in providers and "anthropic-oauth" in providers:
+        raise ValueError(
+            "anthropic-foundry and claude-oauth cannot be co-resident in one run "
+            "(a global ANTHROPIC_BASE_URL would hijack the OAuth path)."
+        )
 
 
 async def run_pipeline_rlm(
@@ -2896,19 +3134,18 @@ async def run_pipeline_rlm(
     except RoleModelError as _exc:
         raise RuntimeError(f"invalid per-role model selection: {_exc}") from _exc
 
+    # A run must never mix anthropic-foundry with claude-oauth (a global
+    # ANTHROPIC_BASE_URL override would hijack the OAuth path) — check before
+    # any transport client is built.
+    assert_no_foundry_oauth_coresidency(root_model.key, role_selection)
+
     # Verifier transport: an overridden verifier role gets a dedicated
     # sampler-capable client (reusing the grader transport); else None → the
     # rubric judge inherits the planner client (today's behaviour). A Claude pick
     # auto-resolves OAuth-vs-API-key by availability (api key ⇄ OAuth seamlessly).
-    from backend.agents.rlm.grader_transport import (
-        build_transport_client,
-        resolve_anthropic_subrole_backend,
-    )
-
-    def _subrole_backend(spec: Any) -> str:
-        # Claude tokens (opus/sonnet/haiku) → whichever Anthropic auth is present
-        # (honours llm_auth_strategy); openai/azure are key-only, pass through.
-        return resolve_anthropic_subrole_backend() if spec.is_claude else spec.provider
+    # _subrole_backend (module-level, above) special-cases anthropic-foundry so
+    # a foundry sub-role is never silently remapped to oauth/anthropic.
+    from backend.agents.rlm.grader_transport import build_transport_client
 
     verifier_client = None
     if role_selection.verifier is not None:
@@ -3859,7 +4096,31 @@ async def run_pipeline_rlm(
             with forced_iteration_policy(iteration_policy):
                 return rlm.completion(context_dict, active_prompt)
 
+        _primary_active = False
         if _lifecycle_primary_enabled():
+            _primary_paper_text = context_dict.get("paper_text", "")
+            _primary_rubric_spec = context_dict.get("rubric_spec", {})
+            _primary_ready, _primary_reason = _primary_inputs_ready(
+                tools=custom_tools,
+                paper_text=_primary_paper_text,
+                rubric_spec=_primary_rubric_spec,
+            )
+            if _primary_ready:
+                _primary_active = True
+            else:
+                try:
+                    emit(build_run_warning_event(
+                        level="warn",
+                        code="lifecycle_primary_skipped",
+                        message=_primary_reason or "lifecycle-primary inputs not ready",
+                    ))
+                except Exception:  # noqa: BLE001 — narration must never block the run
+                    logger.warning(
+                        "run_pipeline_rlm: lifecycle_primary_skipped warning emit failed",
+                        exc_info=True,
+                    )
+
+        if _primary_active:
             from backend.agents.rlm.lifecycle_driver import run_lifecycle_primary
             summary = await asyncio.to_thread(
                 run_lifecycle_primary,
@@ -3879,7 +4140,11 @@ async def run_pipeline_rlm(
                     result=_fatal,
                 )
             result_obj = _synth_result_from_summary(summary, ctx)
-            run_failed = summary.get("rubric_score") is None
+            # F6/T9: after T8, an evidenced-but-unscored run projects a real
+            # (partial/failed) report rather than None, so "did this run fail"
+            # is now "did we get an honest report at all" — result_obj is None
+            # only for the legacy no-signal shape (see _synth_result_from_summary).
+            run_failed = result_obj is None
         else:
             result_obj = await asyncio.to_thread(_run_completion_on_worker)
 

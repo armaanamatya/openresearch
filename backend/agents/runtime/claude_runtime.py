@@ -85,6 +85,15 @@ class ClaudeAgentRuntime:
 
         options = ClaudeAgentOptions(
             agents=sub_agents,
+            # Anthropic-on-Foundry (_resolve_agent_runtime in run.py) attaches a
+            # per-subprocess env override (ANTHROPIC_BASE_URL/ANTHROPIC_API_KEY)
+            # so the `claude` CLI subprocess authenticates against the Foundry
+            # endpoint WITHOUT ever touching process-global os.environ (which
+            # would hijack a co-resident claude-oauth path). Absent (the
+            # default/plain-anthropic runtime) this is {} — byte-identical to
+            # not passing env at all, since the SDK merges it onto the
+            # inherited environment rather than replacing it.
+            env=dict(getattr(self, "subprocess_env", None) or {}),
             **_agent_options_kwargs(agent, mcp_servers, mcp_tool_extensions),
         )
 
