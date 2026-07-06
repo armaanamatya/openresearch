@@ -109,6 +109,10 @@ def test_resolve_agent_runtime_foundry_executor_carries_subprocess_env(monkeypat
     assert runtime.subprocess_env == {
         "ANTHROPIC_BASE_URL": "https://r.services.ai.azure.com/anthropic",
         "ANTHROPIC_API_KEY": "k-test",
+        # Foundry's /anthropic endpoint 400s on Claude Code's experimental
+        # anthropic-beta headers, so the executor subprocess must suppress them.
+        "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+        "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1",
     }
     assert agent_model == "claude-sonnet-5"
     assert "role:executor" in label

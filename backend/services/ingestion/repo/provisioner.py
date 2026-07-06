@@ -24,6 +24,12 @@ def _dir_size_mb(path: Path) -> float:
     total = 0
     for p in path.rglob("*"):
         try:
+            if p.is_symlink():
+                # Never follow a symlink into out-of-copy data (a repo may symlink
+                # a multi-GB dataset from a cache dir; following it wrongly balloons
+                # the measured size and trips the oversize cap). copytree preserves
+                # the link (symlinks=True), so it costs ~0 bytes in the copy.
+                continue
             if p.is_file():
                 total += p.stat().st_size
         except OSError:
@@ -128,7 +134,13 @@ class RepoProvisioner:
             if dest.exists():
                 shutil.rmtree(dest, ignore_errors=True)
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(local_dir, dest, dirs_exist_ok=True)
+            # symlinks=True PRESERVES symlinks instead of following them — a staged
+            # repo may symlink a multi-GB dataset from the cache dir (e.g. SDAR's
+            # webshop/data/items_shuffle.json -> /mnt/.../webshop/data, 5.2 GB);
+            # following it balloons the copy past the oversize cap and forces a
+            # from-scratch fallback. The absolute links still resolve on the host;
+            # the execute-mode code/ seed excludes symlinks anyway.
+            shutil.copytree(local_dir, dest, dirs_exist_ok=True, symlinks=True)
 
             env = dict(os.environ)
             if pin_commit:
