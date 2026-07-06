@@ -1134,6 +1134,13 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
     _sandbox_mode_val = getattr(ctx, "sandbox_mode", None)
     _sandbox_key = getattr(_sandbox_mode_val, "value", str(_sandbox_mode_val) if _sandbox_mode_val is not None else None)
     _repo_on = os.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() in ("1", "true", "yes", "on")
+    # Skill-library matcher hook (OPENRESEARCH_SKILLS, Release-1 5.B/5.C): the flag
+    # changes this primitive's returned spec_dict (adds extra.skill_match) below, so
+    # it must be part of the cache key too — otherwise an on-run could silently
+    # return an off-run's cached spec (no skill_match) and vice versa. Off -> the
+    # payload dict carries no "skills" key at all, so the cache key stays
+    # byte-identical to today.
+    _skills_on = os.environ.get("OPENRESEARCH_SKILLS", "").strip().lower() in ("1", "true", "yes")
     _payload = {
         "method_spec": method_spec,
         # gpu_mode + sandbox_mode both affect Dockerfile shape, so both are cache keys.
@@ -1142,6 +1149,8 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
         "repo_first": _repo_on,
         "repo_commit": (_load_repo_spec(ctx.project_dir).get("commit_sha") if _repo_on else None),
     }
+    if _skills_on:
+        _payload["skills"] = True
     _cached = _cache.maybe_get(ctx.project_dir, "detect_environment", payload=_payload)
     if _cached is not None:
         return _with_outcome(_cached, PrimitiveOutcome.ok)
@@ -1209,6 +1218,35 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
                 logger.debug("detect_environment: environment_spec.json rewrite failed")
     except Exception:  # noqa: BLE001 — capacity annotation must never block detection
         logger.debug("detect_environment: runtime-capacity annotation skipped", exc_info=True)
+    # Skill-library matcher hook (OPENRESEARCH_SKILLS, Release-1 5.B/5.C): stash a
+    # deterministic paper -> skill-catalog match on the returned EnvironmentSpec dict
+    # (extra.skill_match) and persist it to rlm_state/skill_match.json for the
+    # implementer-guidance shortlist block (baseline_implementation._skill_shortlist_block).
+    # Off -> not computed, spec_dict byte-identical to today. Fail-soft: a matcher
+    # error must never block environment detection.
+    if _skills_on:
+        try:
+            from backend.agents.rlm.skill_catalog import load_catalog as _load_skill_catalog
+            from backend.agents.rlm.skill_matcher import match_skills as _match_skills
+
+            _sm = _match_skills(method_spec, spec_dict, _load_skill_catalog())
+            _skill_match_payload = {
+                "domain": _sm.domain,
+                "skill_names": list(_sm.skill_names),
+                "reasons": list(_sm.reasons),
+            }
+            spec_dict.setdefault("extra", {})["skill_match"] = _skill_match_payload
+            try:
+                import json as _json_skills
+                _skill_match_path = ctx.project_dir / "rlm_state" / "skill_match.json"
+                _skill_match_path.parent.mkdir(parents=True, exist_ok=True)
+                _skill_match_path.write_text(
+                    _json_skills.dumps(_skill_match_payload, indent=2), encoding="utf-8"
+                )
+            except OSError:
+                logger.debug("detect_environment: skill_match.json write failed")
+        except Exception:  # noqa: BLE001 — the skill matcher must never block detection
+            logger.debug("detect_environment: skill-matcher hook skipped", exc_info=True)
     result = _with_outcome(spec_dict, PrimitiveOutcome.ok)
     _cache.put(ctx.project_dir, "detect_environment", payload=_payload, result=result)
     return result
@@ -5825,6 +5863,31 @@ def _seed_replication_enabled() -> bool:
         "1", "true", "on", "yes")
 
 
+def _cell_resume_auto_enabled() -> bool:
+    """OPENRESEARCH_CELL_RESUME_AUTO — auto-stabilize run_id + arm cell resume (default OFF).
+
+    Closes two independent gaps that otherwise defeat cell-level checkpoint/resume
+    WITHIN one live session even though the resume machinery itself
+    (``gpu_cell_runner.should_skip_cell`` / ``write_cell_manifest`` /
+    ``cell_fingerprint.compute_fingerprint``) is already correct: (1)
+    ``run_experiment`` mints a fresh uuid-suffixed ``run_id`` on EVERY call, so a
+    root re-call after a partial/OOM result writes to a NEW
+    ``code/outputs/<run_id>/`` and ``should_skip_cell`` never finds the prior
+    attempt's ``cell_manifest.json``; (2) ``OPENRESEARCH_RESUME_CELLS`` is never
+    armed mid-session. When this flag is on, the ``run_id`` block below reuses a
+    STABLE run_id (``ctx.project_id`` — the same value
+    ``OPENRESEARCH_STABLE_RUN_ID`` already produces) and arms
+    ``OPENRESEARCH_RESUME_CELLS`` via ``setdefault`` (an operator's explicit "0"
+    still wins). Because ``should_skip_cell`` only skips a cell whose prior
+    manifest is ``status="ok"`` AND fingerprint-matched, a cell that OOM'd/errored
+    is never skipped — "resume only the failed/missing cells" falls out of the
+    existing machinery for free. Default OFF ⇒ byte-identical to today (fresh
+    uuid suffix every call, no auto-arm).
+    """
+    return os.environ.get("OPENRESEARCH_CELL_RESUME_AUTO", "").strip().lower() in (
+        "1", "true", "on", "yes")
+
+
 def _read_prior_weak_leaves(project_dir) -> list[dict]:
     """The last verify's weak leaves (for the reactive multi-seed trigger). Fail-soft."""
     try:
@@ -6803,11 +6866,17 @@ def run_experiment(
     # in-cluster orchestrator sets it so a rescheduled pod re-attaches to the SAME blob
     # prefix and the K8s runner's Blob-resume skips already-completed cells), pin the
     # run_id to the deterministic project_id (already paper+arm-derived). Unset → today's
-    # behavior, byte-identical.
-    if os.environ.get("OPENRESEARCH_STABLE_RUN_ID", "").strip():
+    # behavior, byte-identical. OPENRESEARCH_CELL_RESUME_AUTO (default OFF) is the
+    # SAME-SESSION sibling: it stabilizes run_id identically AND arms
+    # OPENRESEARCH_RESUME_CELLS via setdefault (an explicit operator "0" still wins) so
+    # a root re-calling run_experiment after a partial/OOM result resumes only the
+    # cells that never finished ok, instead of re-running the whole grid.
+    if os.environ.get("OPENRESEARCH_STABLE_RUN_ID", "").strip() or _cell_resume_auto_enabled():
         run_id = ctx.project_id
     else:
         run_id = f"{ctx.project_id}-{uuid.uuid4().hex[:8]}"
+    if _cell_resume_auto_enabled():
+        os.environ.setdefault("OPENRESEARCH_RESUME_CELLS", "1")
     _cell_route_taken = False
     _hybrid_grid_result: dict | None = None  # set when the hybrid route stashes a grid result
     # Progress→SSE tailer (local only): emit a sanitized experiment_progress event from the
@@ -8874,6 +8943,121 @@ def inspect_repository(
         return {"status": "error", "error": str(exc)[:300]}
 
 
+def consult_skill(
+    name: str = "",
+    category: str = "",
+    *,
+    ctx: "RunContext",
+) -> dict:
+    """On-demand deep-dive into the vendored skill-playbook library (the 19th primitive).
+
+    Off-state (OPENRESEARCH_SKILLS unset) -> ``{"status": "disabled"}`` — mirrors
+    inspect_repository's disabled sentinel so the registry count stays stable and the
+    off-state is inert. On-state, progressive disclosure (ported from openscience's
+    tool/skill.ts): ``name`` found -> the full SKILL.md body plus its references/
+    scripts listing; ``name`` not found -> a fuzzy did-you-mean; ``category`` (no
+    name) -> browse the skills in that category; neither -> an index of categories
+    with counts. A found skill's ``scripts/`` directory (when present) is copied
+    into ``code/skill_scripts/<name>/`` when ``code/`` already exists — the same
+    "land a helper file verbatim in code/" pattern as
+    ``baseline_implementation._copy_harness_helpers_to_code_root``, but performed
+    dynamically for whichever skill was just consulted rather than a fixed list.
+    Never raises (fail-soft): an error returns ``{"status": "error", "error": ...}``.
+    """
+    import os as _os
+    if _os.environ.get("OPENRESEARCH_SKILLS", "").strip().lower() not in (
+        "1", "true", "yes",
+    ):
+        return {"status": "disabled"}
+    try:
+        from backend.agents.rlm.skill_catalog import (
+            fuzzy_did_you_mean,
+            get_skill_body,
+            group_by_category,
+            load_catalog,
+        )
+
+        catalog = load_catalog()
+        name = (name or "").strip()
+        category = (category or "").strip()
+
+        if name:
+            meta = catalog.get(name)
+            if meta is None:
+                return {
+                    "status": "not_found",
+                    "did_you_mean": fuzzy_did_you_mean(name, catalog.keys()),
+                }
+
+            skill_dir = meta.path.parent
+
+            # Tier-2 references: named, not copied — the agent's own tools can
+            # open them from the vendored skills/ tree on demand.
+            references: list[str] = []
+            references_dir = skill_dir / "references"
+            if references_dir.is_dir():
+                references = sorted(
+                    str(p.relative_to(skill_dir)).replace("\\", "/")
+                    for p in references_dir.iterdir()
+                    if p.is_file()
+                )
+
+            # Tier-2 scripts: copied verbatim into code/skill_scripts/<name>/ so the
+            # implementer's generated code can import/run them like any other
+            # harness helper. Skip silently if code/ doesn't exist yet; a failed
+            # single-file copy must not drop the rest.
+            scripts: list[str] = []
+            scripts_dir = skill_dir / "scripts"
+            code_dir = ctx.project_dir / "code"
+            if scripts_dir.is_dir() and code_dir.is_dir():
+                import shutil as _shutil
+                dest_dir = code_dir / "skill_scripts" / name
+                for src in sorted(scripts_dir.iterdir()):
+                    if not src.is_file():
+                        continue
+                    try:
+                        dest_dir.mkdir(parents=True, exist_ok=True)
+                        dest = dest_dir / src.name
+                        _shutil.copy2(src, dest)
+                        scripts.append(str(dest.relative_to(code_dir)).replace("\\", "/"))
+                    except OSError:
+                        continue  # fail-soft per file
+
+            return {
+                "status": "ok",
+                "name": meta.name,
+                "category": meta.category,
+                "tags": list(meta.tags),
+                "body": get_skill_body(name),
+                "references": references,
+                "scripts": scripts,
+            }
+
+        if category:
+            lowered_groups = {
+                cat.lower(): metas for cat, metas in group_by_category(catalog).items()
+            }
+            matched = lowered_groups.get(category.lower(), [])
+            return {
+                "status": "ok",
+                "kind": "category",
+                "category": category,
+                "skills": [
+                    {"name": m.name, "description": m.description}
+                    for m in sorted(matched, key=lambda m: m.name)
+                ],
+            }
+
+        groups = group_by_category(catalog)
+        categories = [
+            {"name": cat, "count": len(metas)}
+            for cat, metas in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+        ]
+        return {"status": "ok", "kind": "index", "categories": categories}
+    except Exception as exc:  # noqa: BLE001 — a consult tool must never break the run
+        return {"status": "error", "error": str(exc)[:300]}
+
+
 PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "understand_section": understand_section,
     "extract_hyperparameters": extract_hyperparameters,
@@ -8893,6 +9077,7 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "codex_repair": codex_repair,
     "read_context_map": read_context_map,  # PEEK-lite, OPENRESEARCH_CONTEXT_MAP
     "inspect_repository": inspect_repository,  # #62, OPENRESEARCH_USE_AUTHOR_REPO
+    "consult_skill": consult_skill,  # skill-library playbooks, OPENRESEARCH_SKILLS
 }
 
 PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
@@ -8996,4 +9181,13 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "file (grep='def main'), or re-point to a different repo (reclone_url=...). "
         "Returns {status:'disabled'} when the flag is off. NAVIGATION/ADAPTATION "
         "aid — code/ is what runs; the report's evidence gate remains the backstop.",
+    "consult_skill": "consult_skill(name='', category='') -> dict — on-demand "
+        "deep-dive into the vendored skill-playbook library (enabled by "
+        "OPENRESEARCH_SKILLS). name=<skill> -> {status:'ok', name, category, tags, "
+        "body, references, scripts}: body is the full SKILL.md playbook; scripts "
+        "are copied into code/skill_scripts/<name>/ when code/ already exists; "
+        "references names background material read via your own tools. An unknown "
+        "name -> {status:'not_found', did_you_mean:[...]}. category=<cat> (no "
+        "name) browses that category's skills. Neither arg -> an index of "
+        "categories with counts. Returns {status:'disabled'} when the flag is off.",
 }

@@ -575,6 +575,104 @@ excerpts + commit SHA). PREFER the authors' code over a from-scratch rewrite:
 """
 
 
+_SONNET_RELIABILITY_TAIL = """\
+═══════════════════════════════════════════════════════════════
+  MODEL-SPECIFIC RELIABILITY (Sonnet/Claude root)
+═══════════════════════════════════════════════════════════════
+
+Your known failure mode on this harness is STOPPING TOO EARLY — calling FINAL_VAR
+(or repeatedly refusing to continue) BEFORE any real experiment has run. Guard against it:
+
+1. You MUST call implement_baseline AND run_experiment and obtain a real, non-empty
+   metrics result BEFORE any FINAL_VAR. A report without a successful run_experiment
+   scores 0 — a hypothetical, described, or summarized result is worthless here.
+2. Do not narrate a plan and stop. Each iteration must ADVANCE a concrete stage
+   (understand_section → detect_environment → implement_baseline → run_experiment →
+   verify_against_rubric). If you are about to summarize instead of act, call the next
+   primitive instead.
+3. FINAL_VAR is only legitimate AFTER verify_against_rubric has scored a real run (or the
+   wall-clock is nearly exhausted). Until then, keep working — repair and re-run.
+"""
+
+_REASONING_CHAT_RELIABILITY_TAIL = """\
+═══════════════════════════════════════════════════════════════
+  MODEL-SPECIFIC RELIABILITY (reasoning-chat root, e.g. grok/foundry)
+═══════════════════════════════════════════════════════════════
+
+Your known failure mode on this harness is CHURN — re-planning, re-reading, or
+re-summarizing the same state across iterations without producing runnable code, and
+emitting placeholder/stub metrics instead of a real measurement. Guard against it:
+
+1. Write REAL code that trains/evaluates on the ACTUAL data and produces real metric keys
+   — never placeholder metrics (e.g. total_length / chunk_count) and never a stub that
+   reports success without running.
+2. Every iteration must call a STATE-CHANGING primitive (implement_baseline / run_experiment
+   / verify_against_rubric). Do not spend an iteration only re-reading the paper or
+   re-emitting a plan you already have.
+3. When a stage is done, MOVE ON. Reproduce the FULL paper (every required model / dataset /
+   baseline in scope), then call FINAL_VAR once — do not loop.
+"""
+
+# Per-provider reliability tail (OPENRESEARCH_PROVIDER_PROMPTS): pure key→tail
+# mapping, no flag check here (the flag gate lives in build_system_prompt).
+_SONNET_FAMILY_KEYS = frozenset({"claude-oauth", "claude", "sonnet-foundry"})
+_REASONING_CHAT_FAMILY_KEYS = frozenset({"azure-foundry"})
+
+
+def _provider_prompt_tail(root_model: RootModel) -> str:
+    """Return the per-provider reliability tail for *root_model*, or "" if none.
+
+    Keyed off ``root_model.key``: Sonnet-family roots get the "stopping too
+    early" guard, reasoning-chat-family roots (e.g. grok/foundry) get the
+    "churn" guard, and every other key (gpt-5, opus-foundry, azure-gpt-4o,
+    qwen3-coder[-featherless], kimi-k2.5) gets no tail.
+    """
+    if root_model.key in _SONNET_FAMILY_KEYS:
+        return _SONNET_RELIABILITY_TAIL
+    if root_model.key in _REASONING_CHAT_FAMILY_KEYS:
+        return _REASONING_CHAT_RELIABILITY_TAIL
+    return ""
+
+
+# Skill library (OPENRESEARCH_SKILLS, Release-1 5.C): appended only when the flag
+# is on. Built fresh per call from the on-disk catalog (memoized inside
+# skill_catalog.load_catalog) rather than a hardcoded list here, so it always
+# reflects whatever is vendored under backend/agents/rlm/skills/.
+def _skill_catalog_section() -> str:
+    """Build a compact skill-catalog overview + the consult_skill contract.
+
+    Categories are sorted by skill count (descending, ties broken by name) with
+    up to three example skill names each — a Tier-0 index only; full playbook
+    bodies are fetched on demand via ``consult_skill``, never inlined here.
+    """
+    from backend.agents.rlm.skill_catalog import group_by_category, load_catalog
+
+    catalog = load_catalog()
+    groups = group_by_category(catalog)
+
+    lines = [
+        "═══════════════════════════════════════════════════════════════",
+        "  SKILL LIBRARY (consult_skill)",
+        "═══════════════════════════════════════════════════════════════",
+        "",
+        "A vendored library of framework/technique playbooks is available on",
+        "demand — setup steps, code patterns, and common pitfalls for specific",
+        "tools and methods. Categories (skill count: example names):",
+        "",
+    ]
+    for cat, metas in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        examples = ", ".join(m.name for m in sorted(metas, key=lambda m: m.name)[:3])
+        lines.append(f"  - {cat} ({len(metas)}): {examples}")
+    lines.append("")
+    lines.append(
+        "Call consult_skill(name=<skill>) for the full playbook before implementing "
+        "that part of the pipeline. consult_skill(category=<category>) browses a "
+        "domain; consult_skill() with neither argument lists these categories. An "
+        "unknown name returns a fuzzy did_you_mean suggestion instead of failing."
+    )
+    return "\n".join(lines)
+
+
 def build_system_prompt(
     *,
     context_metadata: dict,
@@ -628,6 +726,18 @@ def build_system_prompt(
     ):
         parts.append(_CONTEXT_MAP_SECTION)
 
+    # Skill library (OPENRESEARCH_SKILLS): only when enabled, give the root a
+    # compact catalog overview + the consult_skill contract. Wrapped in
+    # try/except (mirrors the context_map flag probe below) so a catalog build
+    # error can never break prompt assembly — the section is simply omitted.
+    try:
+        if _os.environ.get("OPENRESEARCH_SKILLS", "").strip().lower() in (
+            "1", "true", "yes",
+        ):
+            parts.append(_skill_catalog_section())
+    except Exception:  # noqa: BLE001 — prompt assembly must never fail on the catalog build
+        pass
+
     if include_hints:
         parts.append(_OPTIONAL_HINTS_SECTION)
 
@@ -648,6 +758,15 @@ def build_system_prompt(
             + root_model.prompt_addendum
             + "\n"
         )
+
+    # Per-provider reliability tail (OPENRESEARCH_PROVIDER_PROMPTS): additive on
+    # top of prompt_addendum, keyed off root_model.key. Off ⇒ byte-identical.
+    if _os.environ.get("OPENRESEARCH_PROVIDER_PROMPTS", "").strip().lower() in (
+        "1", "true", "yes",
+    ):
+        _tail = _provider_prompt_tail(root_model)
+        if _tail:
+            parts.append(_tail)
 
     # #62: repo-aware guidance only when OPENRESEARCH_USE_AUTHOR_REPO is on.
     if _os.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() in (

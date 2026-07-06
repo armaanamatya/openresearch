@@ -29,6 +29,9 @@ import os
 from typing import Any
 
 from backend.agents.runtime.foundry_endpoint import FOUNDRY_MODE_ALIASES
+from backend.services.context.workspace.tools.anthropic_messages_client import (
+    AnthropicMessagesClient,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -193,15 +196,44 @@ def build_transport_client(
             return client, f"{role_label}:oauth:{model_override or 'claude-oauth'}"
 
         if backend == "anthropic":
-            from backend.services.context.workspace.tools.anthropic_messages_client import (
-                DEFAULT_GRADER_MODEL,
-                AnthropicMessagesClient,
+            # Imported as a submodule (not `from ... import AnthropicMessagesClient`)
+            # so a test's `monkeypatch.setattr(anthropic_messages_client, ...)` is
+            # honoured via live dotted-attribute lookup at call time — required
+            # because the module-level `AnthropicMessagesClient` import above (for
+            # the `anthropic-foundry` branch's patchability) would otherwise shadow
+            # the same name as a function-local for this whole function and stop
+            # re-reading the source module.
+            from backend.services.context.workspace.tools import (
+                anthropic_messages_client as _anthropic_messages_client_module,
             )
 
-            model = model_override or DEFAULT_GRADER_MODEL
+            model = model_override or _anthropic_messages_client_module.DEFAULT_GRADER_MODEL
             # api_key=None → SDK resolves ANTHROPIC_API_KEY from the env.
-            client = AnthropicMessagesClient(model=model)
+            client = _anthropic_messages_client_module.AnthropicMessagesClient(model=model)
             return client, f"{role_label}:anthropic:{model}"
+
+        if backend == "anthropic-foundry":
+            from backend.agents.runtime.foundry_anthropic import (
+                resolve_foundry_anthropic_credentials,
+            )
+
+            base_url, api_key, models = resolve_foundry_anthropic_credentials()
+            if not (base_url and api_key):
+                raise ValueError(
+                    "transport backend=anthropic-foundry requires "
+                    "AZURE_FOUNDRY_ENDPOINT (or AZURE_FOUNDRY_ANTHROPIC_ENDPOINT) "
+                    "+ AZURE_FOUNDRY_API_KEY"
+                )
+            resolved_model = model_override or models["sonnet"]
+            logger.info(
+                "grader_transport[%s]: anthropic-foundry model=%s",
+                role_label,
+                resolved_model,
+            )
+            client = AnthropicMessagesClient(
+                model=resolved_model, api_key=api_key, base_url=base_url
+            )
+            return client, f"{role_label}:anthropic-foundry:{resolved_model}"
 
         if backend == "openai":
             from backend.services.context.workspace.tools.openai_client import (
@@ -272,7 +304,8 @@ def build_transport_client(
 
         logger.warning(
             "grader_transport: unknown %s backend=%r — falling back to the "
-            "caller's client. Supported: anthropic, openai, azure, azure-foundry.",
+            "caller's client. Supported: anthropic, anthropic-foundry, openai, "
+            "azure, azure-foundry.",
             role_label,
             backend,
         )

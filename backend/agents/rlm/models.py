@@ -101,10 +101,13 @@ class RootModel:
 
         Mapping rules:
         - ``azure-foundry`` → ``"azure-foundry"`` (AZURE_FOUNDRY_API_KEY)
+        - ``opus-foundry`` / ``sonnet-foundry`` → ``"azure-foundry"`` (same
+          Foundry resource + key as the OpenAI-compatible endpoint, just the
+          Anthropic Messages-API surface)
         - ``qwen3-coder-featherless`` → ``"featherless"`` (FEATHERLESS_API_KEY)
         - Everything else → ``self.rlm_backend``
         """
-        if self.key == "azure-foundry":
+        if self.key in ("azure-foundry", "opus-foundry", "sonnet-foundry"):
             return "azure-foundry"
         if self.key == "qwen3-coder-featherless":
             return "featherless"
@@ -235,6 +238,26 @@ def _build_registry() -> dict[str, RootModel]:
             paper_validated=False,
             api_key_env=None,  # OAuth — no env-var key required
         ),
+        "opus-foundry": RootModel(
+            key="opus-foundry",
+            rlm_backend="anthropic-foundry",
+            backend_kwargs={"model_name": "claude-opus-4-8"},
+            sub_backend="anthropic-foundry",
+            sub_backend_kwargs={"model_name": "claude-sonnet-5"},
+            prompt_addendum="",
+            paper_validated=True,
+            api_key_env="AZURE_FOUNDRY_API_KEY",
+        ),
+        "sonnet-foundry": RootModel(
+            key="sonnet-foundry",
+            rlm_backend="anthropic-foundry",
+            backend_kwargs={"model_name": "claude-sonnet-5"},
+            sub_backend="anthropic-foundry",
+            sub_backend_kwargs={"model_name": "claude-sonnet-5"},
+            prompt_addendum="",
+            paper_validated=True,
+            api_key_env="AZURE_FOUNDRY_API_KEY",
+        ),
         "qwen3-coder-featherless": RootModel(
             key="qwen3-coder-featherless",
             rlm_backend="openai",
@@ -341,6 +364,7 @@ _VALID_RLM_BACKENDS = frozenset(
         "litellm",
         "anthropic",
         "anthropic-oauth",
+        "anthropic-foundry",
         "azure_openai",
         "gemini",
     }
@@ -358,6 +382,7 @@ _BACKEND_ENV_KEY: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
     "azure_openai": "AZURE_OPENAI_API_KEY",
+    "anthropic-foundry": "AZURE_FOUNDRY_API_KEY",
 }
 
 _MODEL_LABELS: dict[str, str] = {
@@ -640,6 +665,14 @@ _MODEL_ALIASES: dict[str, str] = {
     "kimi": "azure-foundry",
     "kimi-k2.6": "azure-foundry",
     "kimi-k2-6": "azure-foundry",
+    # Azure AI Foundry — Anthropic Messages-API surface (…/anthropic/v1),
+    # serving real Opus 4.8 / Sonnet 5 via the AZURE_FOUNDRY_* resource.
+    # Kept DISTINCT from `opus`/`sonnet` above, which map to `claude-oauth`.
+    "opus-foundry": "opus-foundry",
+    "opus-4-8": "opus-foundry",
+    "claude-opus-4-8": "opus-foundry",
+    "sonnet-foundry": "sonnet-foundry",
+    "claude-sonnet-5": "sonnet-foundry",
 }
 
 

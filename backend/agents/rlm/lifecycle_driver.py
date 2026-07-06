@@ -20,6 +20,8 @@ from __future__ import annotations
 
 __all__ = ["drive_lifecycle_chain", "run_lifecycle_primary"]
 
+import json
+from pathlib import Path
 from typing import Any
 
 
@@ -127,6 +129,42 @@ def _is_explicit_failure(result: dict) -> bool:
     return not result["ok"]
 
 
+def _evidence_fingerprint(result: dict, ctx: Any) -> str:
+    """Fingerprint the CURRENT result's evidence for repair-progress tracking.
+
+    The primary signal is ``result.get("metrics")`` — the in-memory evidence
+    THIS attempt actually produced — hashed via the same canonical
+    ``external_validator.evidence_fingerprint`` helper the validator panel and
+    ``report.py``'s finalize chokepoint already use, so a genuine metric
+    change between repair attempts ALWAYS changes the fingerprint.
+
+    Deliberately does NOT consult ``evidence_bundle.resolve_bundle``: that
+    receipt is read from a PERSISTED on-disk file
+    (``rlm_state/evidence_bundle.json``) which can be STALE — left behind by
+    an earlier finalize in a resumed ``project_dir`` — so it stays constant
+    across repairs even while the current attempt's metrics genuinely
+    improve, which previously made two repairs with different metrics
+    fingerprint IDENTICALLY and falsely tripped the "no progress" stagnation
+    stop. ``ctx`` is accepted for call-site stability but is intentionally
+    unused now that disk state plays no part in this fingerprint.
+
+    Fail-soft by construction: this must never raise.
+    """
+    metrics = result.get("metrics") if isinstance(result, dict) else None
+    try:
+        from backend.agents.rlm.external_validator import evidence_fingerprint  # noqa: PLC0415 — optional, avoids import at module load
+
+        return evidence_fingerprint(metrics)
+    except Exception:  # noqa: BLE001 — fingerprinting must never break the driver
+        pass
+    if not isinstance(metrics, dict):
+        metrics = {}
+    try:
+        return str(sorted(metrics.items()))
+    except Exception:  # noqa: BLE001 — unorderable metric keys (rare) still fingerprint
+        return str(metrics)
+
+
 # ---------------------------------------------------------------------------
 # Stage constants (mirrors root_progress.REQUIRED_STAGES)
 # ---------------------------------------------------------------------------
@@ -202,6 +240,7 @@ def drive_lifecycle_chain(
         "verify_result": None,
         "repaired": 0,
         "last_run_ok": None,
+        "plan_result": None,
     }
 
     # "can_finalize" or any unknown stage → nothing to drive.
@@ -240,7 +279,10 @@ def drive_lifecycle_chain(
     env_spec: dict = {}
     contract: dict = {}
     plan: dict = {}
-    code_path: str = str(ctx.project_dir / "code")
+    try:
+        code_path: str = str(ctx.project_dir / "code")
+    except Exception:  # noqa: BLE001 — ctx may be a bare stub (tests) or None
+        code_path = "code"
     verify_result: dict | None = None
     last_result: dict | None = None
 
@@ -313,9 +355,14 @@ def drive_lifecycle_chain(
         contract, stop = _step("plan_reproduction", pcm, env_spec)
         if stop:
             return summary
+        summary["plan_result"] = contract
 
     # ------------------------------------------------------------------
-    # Step 4: implement_baseline  (need_baseline only)
+    # Step 4: implement_baseline  (need_baseline only), with a bounded
+    # re-drive when the initial attempt itself returns a repairable result
+    # (distinct from the run_experiment repair loop below — this covers a
+    # repairable implement_baseline outcome, e.g. a contract-guard rejection,
+    # BEFORE any run_experiment call is attempted).
     # ------------------------------------------------------------------
     if run_implement:
         plan = {
@@ -324,8 +371,30 @@ def drive_lifecycle_chain(
             "reproduction_contract": contract,
         }
         impl_result, stop = _step("implement_baseline", plan)
-        if stop:
+        if stop and not _is_repairable(impl_result):
             return summary
+
+        impl_repair_count = 0
+        while _is_repairable(impl_result) and impl_repair_count < max_repair_iterations:
+            impl_repair_count += 1
+            plan["repair_context"] = impl_result
+            impl_result, stop = _step("implement_baseline", plan)
+            if stop and not _is_repairable(impl_result):
+                return summary
+
+        if _is_repairable(impl_result):
+            # Repair budget exhausted and still repairable — stop honestly
+            # rather than proceeding to run_experiment with no valid code_path.
+            summary["stopped_at"] = "implement_baseline"
+            summary["stopped_reason"] = "repair_exhausted"
+            return summary
+
+        # A repaired (or first-try) success clears any transient stop markers
+        # _step set while the result still looked like an explicit failure.
+        summary["stopped_at"] = None
+        summary["stopped_reason"] = None
+        summary["repaired"] += impl_repair_count
+
         # Extract code_path from impl result; fall back to default.
         if isinstance(impl_result.get("code_path"), str):
             code_path = impl_result["code_path"]
@@ -360,6 +429,7 @@ def drive_lifecycle_chain(
                         pass
             return summary
         repair_count = 0
+        prior_repair_fingerprint: str | None = None
         while _is_repairable(last_result) and repair_count < max_repair_iterations:
             repair_count += 1
             # Re-implement with the failed run as repair_context (the exact shape
@@ -394,7 +464,18 @@ def drive_lifecycle_chain(
                         except Exception:  # noqa: BLE001
                             pass
                 return summary
-        summary["repaired"] = repair_count
+            current_fingerprint = _evidence_fingerprint(last_result, ctx)
+            if (
+                prior_repair_fingerprint is not None
+                and current_fingerprint == prior_repair_fingerprint
+            ):
+                # Two consecutive repairs produced identical evidence — another
+                # repair is unlikely to help. Stop honestly instead of silently
+                # grinding out the rest of the iteration cap.
+                summary["stopped_reason"] = "repair_exhausted"
+                break
+            prior_repair_fingerprint = current_fingerprint
+        summary["repaired"] += repair_count
         summary["last_run_ok"] = not _is_repairable(last_result)
 
     # ------------------------------------------------------------------
@@ -445,6 +526,7 @@ def run_lifecycle_primary(
         "stopped_reason": None,
         "fatal_result": None,
         "stopped_at": None,
+        "reproduction_plan": None,
     }
 
     # ------------------------------------------------------------------
@@ -467,6 +549,24 @@ def run_lifecycle_primary(
     summary["stopped_reason"] = base.get("stopped_reason")
     summary["fatal_result"] = base.get("fatal_result")
     summary["stopped_at"] = base.get("stopped_at")
+
+    # E2: pre-commit the ordered plan_reproduction steps to disk (fail-soft) and
+    # read them back — a durable, re-readable record of the dispatch order this
+    # run committed to, independent of the in-memory value. No-op when the
+    # backbone produced no plan/steps or ctx has no usable project_dir.
+    plan_result = base.get("plan_result")
+    steps = plan_result.get("steps") if isinstance(plan_result, dict) else None
+    if steps is not None:
+        try:
+            plan_path = Path(ctx.project_dir) / "rlm_state" / "reproduction_plan.json"
+            plan_path.parent.mkdir(parents=True, exist_ok=True)
+            plan_path.write_text(
+                json.dumps({"steps": steps}, indent=2, sort_keys=True), encoding="utf-8"
+            )
+            persisted = json.loads(plan_path.read_text(encoding="utf-8"))
+            summary["reproduction_plan"] = persisted.get("steps")
+        except Exception:  # noqa: BLE001 — persistence is advisory, never fatal
+            pass
 
     # If the backbone never reached a score there is nothing to climb.
     if base.get("verify_result") is None:

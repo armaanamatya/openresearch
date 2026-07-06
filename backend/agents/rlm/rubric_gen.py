@@ -13,7 +13,8 @@ import re
 import time
 import uuid
 from collections.abc import Mapping
-from typing import Protocol
+from pathlib import Path
+from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -128,12 +129,19 @@ def generate_rubric_tree(
     paper_title: str = "",
     max_attempts: int = 3,
     max_paper_chars: int = 48000,
+    project_dir: Path | None = None,
+    emit_warning: Any | None = None,
 ) -> dict | None:
     """Derive a PaperBench-shaped rubric tree from a paper's full text.
 
     Returns a rubric dict compatible with ``flatten_leaves`` / ``roll_up``, or
     ``None`` if the paper is too short to derive a rubric from, or if all LLM
     attempts fail (honest degradation — the run proceeds rubric-less).
+
+    ``project_dir``/``emit_warning`` are optional and ONLY feed the advisory,
+    flag-gated literature claim-grounding hook (``OPENRESEARCH_LITERATURE_CLAIM_GATE``,
+    see :mod:`backend.agents.rlm.literature_claim_gate`) run just before
+    returning a successfully-built tree — they never affect the tree itself.
     """
     if len(paper_text.strip()) < 500:
         logger.warning(
@@ -178,6 +186,7 @@ def generate_rubric_tree(
         )
         if _rubric_canary_enabled():
             append_canary_leaf(tree)
+        _apply_literature_claim_gate(paper_text, project_dir, emit_warning)
         return tree
 
     logger.warning(
@@ -186,6 +195,27 @@ def generate_rubric_tree(
         last_error,
     )
     return None
+
+
+def _apply_literature_claim_gate(
+    paper_text: str,
+    project_dir: Path | None,
+    emit_warning: Any | None,
+) -> None:
+    """Advisory-only rubric-INPUT grounding hook (``OPENRESEARCH_LITERATURE_CLAIM_GATE``).
+
+    Fail-soft: any import/network/logic failure is swallowed here (on top of
+    ``run_literature_claim_gate``'s own internal fail-soft handling) — this
+    NEVER changes the rubric tree, only (optionally) emits a ``run_warning``
+    through the caller-supplied ``emit_warning`` callable. Byte-identical to
+    a no-op call when the flag is unset (the callee returns immediately).
+    """
+    try:
+        from backend.agents.rlm.literature_claim_gate import run_literature_claim_gate
+
+        run_literature_claim_gate(paper_text, project_dir=project_dir, emit_warning=emit_warning)
+    except Exception:  # noqa: BLE001 — fail-soft, never break rubric generation
+        logger.debug("generate_rubric_tree: literature claim gate skipped due to exception", exc_info=True)
 
 
 def _rubric_canary_enabled() -> bool:

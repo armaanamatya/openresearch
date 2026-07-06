@@ -210,7 +210,7 @@ class TestResolveCustomTools:
         monkeypatch.delenv("OPENRESEARCH_RLM_STUB_PRIMITIVES", raising=False)
         ctx = make_context(tmp_path)
         tools, label = _resolve_custom_tools(ctx)
-        assert len(tools) == 18  # RLM primitives + codex_repair + read_context_map + inspect_repository (#62)
+        assert len(tools) == 19  # RLM primitives + codex_repair + read_context_map + inspect_repository (#62) + consult_skill
         assert label == "real (binding)"
         for entry in tools.values():
             assert callable(entry["tool"])
@@ -691,7 +691,7 @@ def test_arxiv_run_generates_and_persists_rubric(monkeypatch, tmp_path):
     canned = {"name": "Canned Rubric", "children": [{"name": "leaf", "weight": 1.0}]}
     calls: list[dict] = []
 
-    def _fake_generate(paper_text, llm_client, *, paper_title=""):
+    def _fake_generate(paper_text, llm_client, *, paper_title="", project_dir=None, emit_warning=None, **_kwargs):
         calls.append({"paper_text": paper_text, "llm_client": llm_client, "title": paper_title})
         return canned
 

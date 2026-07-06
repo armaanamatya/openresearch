@@ -8,7 +8,27 @@ from pathlib import Path
 import pytest
 
 _REPO = Path(__file__).resolve().parents[1]
-_CLAUDE = (_REPO / "CLAUDE.md").read_text()
+
+
+def _read_claude_docs() -> str:
+    """Root CLAUDE.md + every nested CLAUDE.md — the doc system is split across subtrees.
+
+    Since 2026-07-05 the day-to-day reference is a lean root plus per-subtree nested
+    ``<dir>/CLAUDE.md`` files (loaded on-demand). A documented env var / primitive count /
+    doc citation may live in the root OR in the nested file that owns it, so the fidelity
+    guard validates the whole set, not just the root.
+    """
+    _SKIP = {"runs", "node_modules", ".venv", ".git", "openscience-ref", "site-packages"}
+    texts = [(_REPO / "CLAUDE.md").read_text()]
+    for path in sorted(_REPO.glob("**/CLAUDE.md")):
+        rel = path.relative_to(_REPO)
+        if str(rel) == "CLAUDE.md" or any(part in _SKIP for part in rel.parts):
+            continue
+        texts.append(path.read_text())
+    return "\n".join(texts)
+
+
+_CLAUDE = _read_claude_docs()
 
 
 def _grep_backend(token: str) -> bool:
@@ -41,8 +61,8 @@ def test_custom_tools_count_matches_doc():
     from backend.agents.rlm.primitives import PRIMITIVE_REGISTRY
 
     n = len(PRIMITIVE_REGISTRY)
-    assert n == 18, f"PRIMITIVE_REGISTRY has {n} entries; update the doc + this test together"
-    assert "18" in _CLAUDE, "CLAUDE.md should state the bound custom_tools count (18)"
+    assert n == 19, f"PRIMITIVE_REGISTRY has {n} entries; update the doc + this test together"
+    assert "19" in _CLAUDE, "CLAUDE.md should state the bound custom_tools count (19)"
 
 
 def test_runpod_cloud_type_default_matches_config():
@@ -50,9 +70,11 @@ def test_runpod_cloud_type_default_matches_config():
 
     default = Settings.model_fields["runpod_cloud_type"].default
     assert default == "SECURE"
-    # the doc must name SECURE as the default (SBX-2)
-    m = re.search(r"OPENRESEARCH_RUNPOD_CLOUD_TYPE.*", _CLAUDE)
-    assert m and "SECURE" in m.group(0) and "default" in m.group(0).lower()
+    # some CLAUDE.md doc line (root or nested) must name SECURE as the default (SBX-2)
+    matches = re.findall(r"OPENRESEARCH_RUNPOD_CLOUD_TYPE.*", _CLAUDE)
+    assert any("SECURE" in m and "default" in m.lower() for m in matches), (
+        "no CLAUDE.md line names SECURE as the OPENRESEARCH_RUNPOD_CLOUD_TYPE default"
+    )
 
 
 def test_all_doc_citations_resolve():
