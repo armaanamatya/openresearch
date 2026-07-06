@@ -403,6 +403,13 @@ def test_check_placeholder_leaf_direct():
 
 
 def test_missing_key_claim_flagged_but_advisory(monkeypatch):
+    """The predicate is always machine-"confirmed" (violated=True,
+    recorded in `predicates` for operator review), but its leaf_id is a
+    model-authored free-text label -- not a real rubric leaf id -- so it is
+    excluded from `flagged_leaves`/`status` (which only ever reflect
+    genuine rubric leaves; see
+    test_missing_key_claim_paper_phrase_label_excluded_from_flagged_leaves
+    below for the dedicated corpus-safety regression test)."""
     monkeypatch.setattr(sv, "sample_completions",
         lambda *a, **k: ['[{"predicate":"missing_key_claim","leaf_id":"MISSING:webshop_result"}]'])
     v = sv.run_spec_validation_panel(
@@ -412,10 +419,50 @@ def test_missing_key_claim_flagged_but_advisory(monkeypatch):
         paper_text=_PAPER,
         separation="independent",
     )
-    assert v.status == "flagged"
-    assert "MISSING:webshop_result" in v.flagged_leaves
+    assert v.status == "clean"  # no REAL leaf was confirmed flagged
+    assert "MISSING:webshop_result" not in v.flagged_leaves
     pv = [p for p in v.predicates if p.predicate == "missing_key_claim"][0]
     assert pv.violated is True
+    assert pv.leaf_id == "MISSING:webshop_result"
+
+
+def test_missing_key_claim_paper_phrase_label_excluded_from_flagged_leaves(monkeypatch):
+    """FIX (corpus-safety): missing_key_claim's leaf_id is a model-authored
+    free-text label (the panel prompt asks for "a short label for the
+    missing claim" -- a paraphrase of an uncovered paper claim), NOT a real
+    rubric leaf id. Since the machine-check for missing_key_claim always
+    confirms (violated=True unconditionally -- it's an advisory open-world
+    predicate), that label would otherwise ride flagged_leaves straight onto
+    the corpus-free spec_validated SSE event (build_spec_validated_event,
+    emitted with NO redact_corpus pass) and the report.spec_validation
+    stamp -- a paper-text leak. flagged_leaves must contain ONLY ids that
+    are genuine rubric leaves. A REAL hallucinated_leaf id must still be
+    flagged (no regression to the real-veto path)."""
+    phrase = "the paper's ImageNet ablation on distribution shift"
+    monkeypatch.setattr(
+        sv, "sample_completions",
+        lambda *a, **k: [json.dumps([
+            {"predicate": "missing_key_claim", "leaf_id": phrase},
+            {"predicate": "hallucinated_leaf", "leaf_id": "L2"},
+        ])],
+    )
+    v = sv.run_spec_validation_panel(
+        spec_validator_client=_FakeClient(None),
+        panel_models=["m"],
+        rubric=_RUBRIC,
+        paper_text=_PAPER,
+        separation="independent",
+    )
+    assert phrase not in v.flagged_leaves
+    assert "L2" in v.flagged_leaves
+    assert v.status == "flagged"  # the real L2 hallucinated_leaf still flags
+    # The panel's missing_key_claim suspicion is still recorded in
+    # `predicates` (server-side persisted verdict only -- never on the SSE
+    # wire or the report stamp, which read flagged_leaves exclusively).
+    assert any(
+        p.predicate == "missing_key_claim" and p.leaf_id == phrase
+        for p in v.predicates
+    )
 
 
 def test_missing_key_claim_never_dropped_by_apply_block():

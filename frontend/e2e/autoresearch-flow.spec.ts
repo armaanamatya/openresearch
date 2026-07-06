@@ -84,7 +84,7 @@ const SSE_STAGES: Array<Record<string, unknown>> = [
   {
     event: "spec_validated",
     timestamp: "2026-07-06T00:00:03Z",
-    verdict: "verified",
+    verdict: "clean",
     flagged_leaves: [],
   },
   {

@@ -166,6 +166,59 @@ def test_hook_on_flags_hallucinated_leaf_and_persists_verdict(monkeypatch, tmp_p
     assert persisted["panel_models"] == ["grok"]
 
 
+def test_hook_missing_key_claim_paper_phrase_excluded_from_event_and_report_stamp(monkeypatch, tmp_path):
+    """FIX regression test (whole-branch review Finding #1): a
+    missing_key_claim suspicion whose leaf_id is a model-authored
+    paper-phrase label (not a real rubric leaf id) must not leak into
+    flagged_leaves anywhere downstream of the hook -- not the persisted
+    verdict, not the spec_validated SSE event (corpus-free, no
+    redact_corpus pass), and not the report.spec_validation stamp. A REAL
+    hallucinated_leaf id must still ride all three (no regression)."""
+    monkeypatch.setenv("OPENRESEARCH_SPEC_VALIDATOR", "1")
+    phrase = "the paper's ImageNet ablation on distribution shift"
+    monkeypatch.setattr(
+        sv, "sample_completions",
+        lambda *a, **k: [json.dumps([
+            {"predicate": "missing_key_claim", "leaf_id": phrase},
+            {"predicate": "hallucinated_leaf", "leaf_id": "L2"},
+        ])],
+    )
+    emit, events = _emit_recorder()
+
+    _run_spec_validator(
+        rubric=_RUBRIC, paper_text=_PAPER, project_dir=tmp_path,
+        emit=emit, spec_validator_client=_FakeClient(), separation="independent",
+        validator_model="grok",
+    )
+
+    # 1. The spec_validated SSE event.
+    validated_event = next(e for e in events if e["event"] == "spec_validated")
+    assert phrase not in validated_event["flagged_leaves"]
+    assert "L2" in validated_event["flagged_leaves"]
+
+    # 2. The persisted verdict store (rlm_state/spec_validation_verdict.json).
+    verdict_path = tmp_path / "rlm_state" / "spec_validation_verdict.json"
+    persisted = json.loads(verdict_path.read_text())
+    assert phrase not in persisted["flagged_leaves"]
+    assert "L2" in persisted["flagged_leaves"]
+    # The predicate itself is still server-side recorded for operator review
+    # (never on the SSE wire or the report stamp, which read flagged_leaves
+    # exclusively -- see report.py's spec_validation stamp block).
+    assert any(
+        p["predicate"] == "missing_key_claim" and p["leaf_id"] == phrase
+        for p in persisted["predicates"]
+    )
+
+    # 3. The report.spec_validation stamp.
+    (tmp_path / "generated_rubric.json").write_text(json.dumps(_RUBRIC))
+    report = RLMFinalReport()
+    write_final_report_rlm(report, tmp_path)
+    result = json.loads((tmp_path / "final_report.json").read_text())
+    stamp = result.get("spec_validation", {})
+    assert phrase not in stamp.get("flagged_leaves", [])
+    assert "L2" in stamp.get("flagged_leaves", [])
+
+
 def test_hook_block_enabled_drops_confirmed_leaf(monkeypatch, tmp_path):
     """BLOCK ON: the confirmed hallucinated leaf is dropped from the
     RETURNED rubric -- AND the call-site write-back reassigns

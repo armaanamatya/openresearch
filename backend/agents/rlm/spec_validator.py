@@ -659,7 +659,19 @@ def run_spec_validation_panel(
             # (only the panel PROMPT above is length-capped for context economy).
             verdict = _machine_check(pred, lid, leaf_lookup, paper_text)
             all_predicate_verdicts.append(verdict)
-            if verdict.violated:
+            # flagged_leaves rides the corpus-free spec_validated SSE event
+            # (build_spec_validated_event) and the report.spec_validation
+            # stamp with NO redact_corpus pass, so it must contain ONLY ids
+            # that are genuine rubric leaves. hallucinated_leaf/wrong_target/
+            # placeholder_leaf already imply `lid in leaf_lookup` whenever
+            # violated=True (see _machine_check's leaf-not-found early
+            # return), so this guard is a no-op for them; it is load-bearing
+            # only for missing_key_claim, whose leaf_id may be a
+            # model-authored free-text paraphrase of an uncovered paper
+            # claim (violated=True unconditionally, by design) rather than a
+            # real leaf id -- that label stays in `predicates` (the
+            # server-side-only persisted verdict) but must never leak here.
+            if verdict.violated and lid in leaf_lookup:
                 flagged_ids.add(lid)
 
     flagged_leaves = sorted(flagged_ids)

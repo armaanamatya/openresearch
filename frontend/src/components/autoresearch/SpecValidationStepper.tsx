@@ -89,7 +89,7 @@ export function SpecValidationStepper({ events, runId, className }: SpecValidati
       <Stepper steps={steps} />
       {showFlaggedNote && (
         <p className={styles.flaggedNote}>
-          {flaggedCount} leaf{flaggedCount === 1 ? "" : "es"} flagged for review
+          {flaggedCount} {flaggedCount === 1 ? "leaf" : "leaves"} flagged for review
         </p>
       )}
     </div>

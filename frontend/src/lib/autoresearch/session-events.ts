@@ -20,7 +20,7 @@ export interface SpecPhaseState {
   leafCount?: number;
   /** From spec_validation_started — the external validator's model label. */
   validatorModel?: string;
-  /** From spec_validated — free-form verdict string (e.g. "verified"/"flagged"). */
+  /** From spec_validated — the backend's verdict enum ("clean" | "flagged" | "unavailable"). */
   verdict?: string;
   /** From spec_validated — rubric leaf ids the validator flagged (advisory only). */
   flaggedLeaves?: string[];

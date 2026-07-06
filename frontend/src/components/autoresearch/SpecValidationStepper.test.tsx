@@ -131,7 +131,9 @@ describe("SpecValidationStepper", () => {
         runId="prj_test2"
       />
     );
-    expect(screen.getByText(/2.*flagged/i)).toBeInTheDocument();
+    // Exact-string assertion (not just /\d.*flagged/i) so a "leafes"-style
+    // pluralization typo can never regress silently.
+    expect(screen.getByText(/2 leaves flagged/i)).toBeInTheDocument();
     expect(pushMock).toHaveBeenCalledWith("/sessions/prj_test2");
   });
 
