@@ -654,6 +654,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             accelerator=request.accelerator,
             max_gpu_usd_per_hour=request.max_gpu_usd_per_hour,
             vram_gb=request.vram_gb,
+            autonomous=request.autonomous,
         )
         return await service.start_uploaded_run(
             run_request,
@@ -705,6 +706,12 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             vram_gb=_optional_form_int(form, "vramGb"),
             root_provider=_optional_form_value(form, "rootProvider"),
             subagent_auth=_optional_form_value(form, "subagentAuth"),
+            # autonomous is a concrete bool (not Optional) on StartRunRequest,
+            # but _optional_form_bool returns bool | None (None when the form
+            # omits the field) — bool(...) coerces the missing/omitted case to
+            # False so an existing caller that doesn't send "autonomous" never
+            # 422s (None is not a valid `bool` for a strict pydantic field).
+            autonomous=bool(_optional_form_bool(form, "autonomous")),
         )
         return await service.start_uploaded_run(
             run_request,
@@ -1186,6 +1193,10 @@ class StartArxivRunRequest(BaseModel):
     accelerator: str | None = None
     max_gpu_usd_per_hour: float | None = None
     vram_gb: int | None = None
+    # Opt-in "autonomous" profile (autonomous-upload UI, T2/T3). Concrete
+    # bool default False — mirrors StartRunRequest.autonomous (no tri-state
+    # "unspecified" meaning, unlike the advanced GPU knobs above).
+    autonomous: bool = False
 
 
 class ApprovalEvaluateRequest(BaseModel):

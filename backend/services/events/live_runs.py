@@ -216,6 +216,17 @@ class StartRunRequest(BaseModel):
     # Threaded into the run context; resolved/cloned only when
     # OPENRESEARCH_USE_AUTHOR_REPO is on. None => existing behavior.
     repo_url: str | None = None
+    # Opt-in "autonomous" profile (autonomous-upload UI). Unlike the advanced
+    # GPU knobs above (tri-state: None = inherit settings default), this is a
+    # concrete on/off toggle — there is no "unspecified" meaning, so it is a
+    # plain `bool` default rather than `bool | None`. Consumed by T3's
+    # apply_autonomous_profile_override in _start_python_run; Task 2 only
+    # threads the field through the request chain.
+    autonomous: bool = False
+    # Config-file run spec (mirrors cli.py's --run-spec). Server-fixed by the
+    # autonomous profile override when autonomous=True and unset; not a
+    # client-supplied field on StartArxivRunRequest or the upload form.
+    run_spec: str | None = None
 
 
 class TelemetryRecordPublic(BaseModel):
@@ -1785,6 +1796,9 @@ def _python_script(
         "minimize_compute": bool(request.minimize_compute),
         # #62: official code repository URL → consumed by run_pipeline_rlm.
         "repo_url": request.repo_url,
+        # Config-file run spec — threaded to the uploaded-paper Namespace below
+        # so cmd_reproduce's getattr(args, "run_spec", None) picks it up.
+        "run_spec": request.run_spec,
     }
     return f"""
 import asyncio
@@ -1988,6 +2002,7 @@ try:
             "max_pod_seconds": config["max_pod_seconds"],
             "max_invocations": config["max_invocations"],
             "minimize_compute": config["minimize_compute"],
+            "run_spec": config["run_spec"],
         }}))
         if exit_code != 0:
             raise RuntimeError(f"Pipeline exited with status {{exit_code}}")
