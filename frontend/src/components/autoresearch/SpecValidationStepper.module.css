@@ -1,0 +1,17 @@
+/* SpecValidationStepper — the pre-loop spec-generation + external-validation
+ * phase (alphaXiv screen D). Requires an ancestor `.autoresearch` wrapper for
+ * its --or-* tokens (see src/styles/autoresearch-tokens.css). Composes the
+ * T9b Stepper — no new visual language introduced here.
+ */
+
+.wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.flaggedNote {
+  margin: 0;
+  font-size: 13px;
+  color: var(--or-muted);
+}

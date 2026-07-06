@@ -1156,6 +1156,15 @@ export function fold(state: RlmRunState, event: RlmDashboardEvent): RlmRunState 
       return foldExperimentCompleted(seeded, event);
     case "gpu_resolved":
       return foldGpuResolved(seeded, event);
+    case "spec_generation_started":
+    case "spec_generated":
+    case "spec_validation_started":
+    case "spec_validated":
+      // Folded by the dedicated foldSpecPhase reducer
+      // (lib/autoresearch/session-events.ts) that SpecValidationStepper
+      // consumes directly from the event stream; the tree reducer here is
+      // a no-op (mirrors the user_message/user_message_response cases above).
+      return seeded;
     default:
       // Exhaustiveness guard; unknown events return state unchanged.
       return seeded;

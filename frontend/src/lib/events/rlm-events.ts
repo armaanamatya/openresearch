@@ -357,6 +357,39 @@ export interface CampaignUserMessageEvent {
   content?: string;
 }
 
+// ─── Spec-phase events (2026-07-05, pre-loop spec-generation + external
+// validation — T7/T8) ───────────────────────────────────────────────────────
+// Emitted around the spec-validator hook in run_pipeline_rlm, strictly
+// before RLM(...) construction (before any GPU spend). Vocabulary
+// registration + a dedicated reducer, same shape as the campaign events
+// above: folded by `foldSpecPhase` (lib/autoresearch/session-events.ts),
+// consumed by `SpecValidationStepper` — NOT by use-rlm-run.ts's tree-based
+// `fold()`, which treats all four as a documented no-op passthrough.
+
+export interface SpecGenerationStartedEvent {
+  event: "spec_generation_started";
+  timestamp: string;
+}
+
+export interface SpecGeneratedEvent {
+  event: "spec_generated";
+  timestamp: string;
+  leaf_count: number;
+}
+
+export interface SpecValidationStartedEvent {
+  event: "spec_validation_started";
+  timestamp: string;
+  validator_model: string;
+}
+
+export interface SpecValidatedEvent {
+  event: "spec_validated";
+  timestamp: string;
+  verdict: string;
+  flagged_leaves: string[];
+}
+
 export const RLM_EVENT_TYPES = [
   "repl_iteration",
   "primitive_call",
@@ -386,6 +419,10 @@ export const RLM_EVENT_TYPES = [
   "campaign_awaiting_operator",
   "campaign_terminal",
   "campaign_user_message",
+  "spec_generation_started",
+  "spec_generated",
+  "spec_validation_started",
+  "spec_validated",
 ] as const;
 
 export type RlmDashboardEvent =
@@ -416,7 +453,11 @@ export type RlmDashboardEvent =
   | CampaignDecisionEvent
   | CampaignAwaitingOperatorEvent
   | CampaignTerminalEvent
-  | CampaignUserMessageEvent;
+  | CampaignUserMessageEvent
+  | SpecGenerationStartedEvent
+  | SpecGeneratedEvent
+  | SpecValidationStartedEvent
+  | SpecValidatedEvent;
 
 export function isRlmEvent(value: unknown): value is RlmDashboardEvent {
   if (typeof value !== "object" || value === null) return false;
