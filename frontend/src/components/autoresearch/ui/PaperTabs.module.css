@@ -1,0 +1,41 @@
+/* PaperTabs — Paper/Blog/Autoresearch/Audio tab bar (alphaXiv screen
+ * `_autoresearc`). Requires an ancestor `.autoresearch` wrapper for its
+ * --or-* tokens (see src/styles/autoresearch-tokens.css).
+ */
+
+.tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  border-bottom: 1px solid var(--or-hairline);
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: -1px;
+  padding: 12px 14px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--or-muted);
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--or-ink);
+}
+
+.tab:focus-visible {
+  outline: 2px solid var(--or-maroon);
+  outline-offset: -2px;
+}
+
+.tab.active {
+  color: var(--or-maroon);
+  border-bottom-color: var(--or-maroon);
+}

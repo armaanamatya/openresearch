@@ -1,0 +1,109 @@
+/* Stepper — ordered step list (alphaXiv screen D). Requires an ancestor
+ * `.autoresearch` wrapper for its --or-* tokens (see
+ * src/styles/autoresearch-tokens.css).
+ */
+
+.stepper {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.step {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+/* Connecting line between markers — encodes "these are steps in sequence",
+ * not decoration. */
+.step:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: 28px;
+  bottom: -20px;
+  left: 13px;
+  width: 1.5px;
+  background: var(--or-hairline);
+}
+
+.marker {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--or-paper);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.label {
+  padding-top: 4px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* --- pending: hollow, muted --- */
+.pending .marker {
+  border: 1.5px solid var(--or-muted);
+  color: var(--or-muted);
+}
+.pending .label {
+  color: var(--or-muted);
+}
+
+/* --- active: maroon ring + live dot --- */
+.active .marker {
+  border: 1.5px solid var(--or-maroon);
+  color: var(--or-maroon);
+}
+.active .label {
+  color: var(--or-ink);
+}
+
+/* --- done: filled maroon, checkmark --- */
+.done .marker {
+  border: 1.5px solid var(--or-maroon);
+  background: var(--or-maroon);
+  color: #fff;
+}
+.done .label {
+  color: var(--or-ink);
+}
+
+.liveDot {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid var(--or-paper);
+  border-radius: 50%;
+  background: var(--or-maroon);
+  animation: stepperLivePulse 1.8s ease-in-out infinite;
+}
+
+@keyframes stepperLivePulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .liveDot {
+    animation: none;
+  }
+}

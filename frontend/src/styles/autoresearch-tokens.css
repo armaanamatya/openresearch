@@ -29,6 +29,14 @@
   --or-shadow: 6px 6px 0 var(--or-ink); /* hard, un-blurred offset */
   --or-radius: 2px;
 
+  /* T9b addition: the flow components (ReasoningChip/SessionRail/Stepper/
+   * PaperTabs) introduce a second, quieter surface language alongside the
+   * hard-shadow Card/PrimaryButton one — flat soft-filled rows (tool-call
+   * chips, session rows) and thin hairline dividers (tab underline track,
+   * rail separators), never a heavy ink border. Two tokens cover both: */
+  --or-chip-bg: #f2efe9; /* soft warm-neutral fill for chips/hover rows */
+  --or-hairline: #e7e2da; /* thin warm-neutral divider, lighter than --or-ink */
+
   /* === Type === */
   --or-eyebrow-ls: 0.14em;
 }

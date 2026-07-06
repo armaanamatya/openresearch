@@ -1,0 +1,60 @@
+/* RepoField — labelled repo-confirm input (alphaXiv screen `_4`). Requires
+ * an ancestor `.autoresearch` wrapper for its --or-* tokens (see
+ * src/styles/autoresearch-tokens.css).
+ */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--or-ink);
+}
+
+.input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 12px 14px;
+  font-family: inherit;
+  font-size: 15px;
+  color: var(--or-ink);
+  background: var(--or-paper);
+  border: var(--or-border);
+  border-radius: var(--or-radius);
+}
+
+.input::placeholder {
+  color: var(--or-muted);
+}
+
+.input:focus-visible {
+  outline: 2px solid var(--or-maroon);
+  outline-offset: 2px;
+}
+
+/* GitHub-link affordance: a quiet row under the input, not a second CTA —
+ * it recedes (muted, no border/shadow) until hovered/focused. */
+.repoLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  font-size: 13px;
+  color: var(--or-muted);
+  text-decoration: none;
+}
+
+.repoLink:hover {
+  color: var(--or-ink);
+  text-decoration: underline;
+}
+
+.repoLink:focus-visible {
+  outline: 2px solid var(--or-maroon);
+  outline-offset: 3px;
+  border-radius: var(--or-radius);
+}

@@ -1,0 +1,129 @@
+/* SessionRail — left session rail (alphaXiv screen `_5`). Requires an
+ * ancestor `.autoresearch` wrapper for its --or-* tokens (see
+ * src/styles/autoresearch-tokens.css).
+ */
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: 240px;
+  height: 100%;
+  background: var(--or-paper);
+  border-right: 1px solid var(--or-hairline);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  border-bottom: 1px solid var(--or-hairline);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--or-ink);
+}
+
+.backGlyph {
+  color: var(--or-muted);
+}
+
+.newAgent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 14px 16px;
+  border: none;
+  border-bottom: 1px solid var(--or-hairline);
+  background: transparent;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--or-ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.newAgent:hover {
+  background: var(--or-chip-bg);
+}
+
+.newAgent:focus-visible {
+  outline: 2px solid var(--or-maroon);
+  outline-offset: -2px;
+}
+
+.sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 8px;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.session {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: none;
+  border-radius: var(--or-radius);
+  background: transparent;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--or-ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.session:hover {
+  background: var(--or-chip-bg);
+}
+
+.session:focus-visible {
+  outline: 2px solid var(--or-maroon);
+  outline-offset: -2px;
+}
+
+.session.active {
+  color: var(--or-maroon);
+  font-weight: 700;
+}
+
+.sessionTitle {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.liveDot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--or-maroon);
+  animation: sessionLivePulse 1.8s ease-in-out infinite;
+}
+
+@keyframes sessionLivePulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .liveDot {
+    animation: none;
+  }
+}
