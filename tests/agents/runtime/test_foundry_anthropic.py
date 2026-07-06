@@ -56,3 +56,60 @@ def test_unset_is_empty_and_absent(monkeypatch):
     base_url, api_key, _ = fa.resolve_foundry_anthropic_credentials()
     assert base_url == "" and api_key == ""
     assert fa.has_foundry_anthropic_credentials() is False
+
+
+# ---------------------------------------------------------------------------
+# normalize_anthropic_base_url robustness gaps: scheme-less hosts, case-
+# insensitive suffix matching (casing preserved in the output), and
+# query/fragment stripping.
+# ---------------------------------------------------------------------------
+
+def test_scheme_less_bare_host_gets_https_and_anthropic_appended():
+    assert (fa.normalize_anthropic_base_url("res-x.services.ai.azure.com")
+            == "https://res-x.services.ai.azure.com/anthropic")
+
+
+def test_uppercase_anthropic_suffix_recognized_and_casing_preserved():
+    assert (fa.normalize_anthropic_base_url("https://X/Anthropic")
+            == "https://X/Anthropic")
+
+
+def test_uppercase_anthropic_v1_suffix_stripped_case_insensitively():
+    assert (fa.normalize_anthropic_base_url("https://X/ANTHROPIC/V1")
+            == "https://X/ANTHROPIC")
+
+
+def test_query_string_is_stripped():
+    assert (fa.normalize_anthropic_base_url("https://X/anthropic?api-version=2024")
+            == "https://X/anthropic")
+
+
+def test_fragment_is_stripped():
+    assert (fa.normalize_anthropic_base_url("https://X/anthropic#x")
+            == "https://X/anthropic")
+
+
+def test_regression_bare_host_with_scheme():
+    assert (fa.normalize_anthropic_base_url("https://res-x.services.ai.azure.com")
+            == "https://res-x.services.ai.azure.com/anthropic")
+
+
+def test_regression_anthropic_suffix_returned_as_is():
+    assert (fa.normalize_anthropic_base_url("https://res-x.services.ai.azure.com/anthropic")
+            == "https://res-x.services.ai.azure.com/anthropic")
+
+
+def test_regression_anthropic_v1_suffix_stripped():
+    assert (fa.normalize_anthropic_base_url("https://res-x.services.ai.azure.com/anthropic/v1")
+            == "https://res-x.services.ai.azure.com/anthropic")
+
+
+def test_regression_anthropic_v1_messages_suffix_stripped():
+    assert (fa.normalize_anthropic_base_url(
+                "https://res-x.services.ai.azure.com/anthropic/v1/messages")
+            == "https://res-x.services.ai.azure.com/anthropic")
+
+
+def test_regression_genuine_custom_path_returned_unchanged():
+    assert (fa.normalize_anthropic_base_url("https://X/custom/route")
+            == "https://X/custom/route")

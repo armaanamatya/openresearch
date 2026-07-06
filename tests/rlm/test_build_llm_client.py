@@ -334,3 +334,76 @@ class TestPrimitiveLlmModelPin:
         client, label = _build_llm_client(None, root)
         assert isinstance(client, OpenAILlmClient)
         assert label == "gpt-4o-mini"
+
+
+# ---------------------------------------------------------------------------
+# Branch 1b: anthropic-foundry → AnthropicMessagesClient pinned to Foundry
+# ---------------------------------------------------------------------------
+
+class TestAnthropicFoundry:
+    """opus-foundry / sonnet-foundry root → the shared primitive client is an
+    AnthropicMessagesClient pinned PER-CLIENT to the Foundry `…/anthropic`
+    endpoint (base_url + x-api-key), never a process-global ANTHROPIC_BASE_URL.
+    Closes the gap where a Foundry-only root's primitive/rubric-gen calls fell
+    through to a plain (non-Foundry) ClaudeLlmClient.
+    """
+
+    def test_opus_foundry_routes_to_messages_client(self, monkeypatch):
+        from backend.services.context.workspace.tools.anthropic_messages_client import (
+            AnthropicMessagesClient,
+        )
+
+        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", "https://r.services.ai.azure.com/openai/v1")
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "k-7")
+        root = _make_root_model(
+            "anthropic-foundry",
+            backend_kwargs={"model_name": "claude-opus-4-8"},
+            key="opus-foundry",
+        )
+        client, label = _build_llm_client(None, root)
+
+        assert isinstance(client, AnthropicMessagesClient)
+        assert label == "claude-opus-4-8"
+        base = str(client._client.base_url)
+        assert "r.services.ai.azure.com" in base
+        # canonical Foundry base ends at …/anthropic (SDK appends /v1/messages)
+        assert base.rstrip("/").endswith("/anthropic")
+
+    def test_sonnet_foundry_uses_sonnet_model(self, monkeypatch):
+        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", "https://r.services.ai.azure.com/openai/v1")
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "k-7")
+        root = _make_root_model(
+            "anthropic-foundry",
+            backend_kwargs={"model_name": "claude-sonnet-5"},
+            key="sonnet-foundry",
+        )
+        _, label = _build_llm_client(None, root)
+        assert label == "claude-sonnet-5"
+
+    def test_primitive_llm_model_pin_overrides_foundry_model(self, monkeypatch):
+        monkeypatch.setenv("AZURE_FOUNDRY_ENDPOINT", "https://r.services.ai.azure.com/openai/v1")
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "k-7")
+        monkeypatch.setenv("OPENRESEARCH_PRIMITIVE_LLM_MODEL", "claude-opus-4-8")
+        root = _make_root_model(
+            "anthropic-foundry",
+            backend_kwargs={"model_name": "claude-sonnet-5"},
+            key="sonnet-foundry",
+        )
+        _, label = _build_llm_client(None, root)
+        assert label == "claude-opus-4-8"  # pin wins over backend_kwargs model_name
+
+    def test_fails_closed_on_missing_creds(self, monkeypatch):
+        import backend.agents.runtime.foundry_anthropic as fa
+
+        for v in ("AZURE_FOUNDRY_ENDPOINT", "AZURE_FOUNDRY_ANTHROPIC_ENDPOINT",
+                  "AZURE_FOUNDRY_API_KEY"):
+            monkeypatch.delenv(v, raising=False)
+        # neutralize the .env-backed Settings fallback (this checkout carries live creds)
+        monkeypatch.setattr(fa, "_env_or_settings", lambda *a, **k: "")
+        root = _make_root_model(
+            "anthropic-foundry",
+            backend_kwargs={"model_name": "claude-opus-4-8"},
+            key="opus-foundry",
+        )
+        with pytest.raises(ValueError, match="AZURE_FOUNDRY"):
+            _build_llm_client(None, root)

@@ -263,6 +263,9 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
 
       1. ``root_model.rlm_backend == "anthropic-oauth"``  → ``ClaudeLlmClient``
          (OAuth-capable; no API key required — auth resolved by ``claude-agent-sdk``).
+      1b. ``root_model.rlm_backend == "anthropic-foundry"`` (opus-foundry/sonnet-foundry)
+         → ``AnthropicMessagesClient`` pinned to the Foundry ``…/anthropic`` endpoint
+         (per-client ``base_url`` + ``x-api-key``; never a process-global ANTHROPIC_BASE_URL).
       2. ``root_model.rlm_backend == "openai"`` AND a custom ``base_url`` is set
          (e.g. Featherless) → ``OpenAILlmClient(model, api_key, base_url)`` mirroring
          the root endpoint.
@@ -306,6 +309,32 @@ def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any,
     if backend == "anthropic-oauth":
         from backend.services.context.workspace.tools.rlm_query import ClaudeLlmClient
         return ClaudeLlmClient(model=_pinned_model), (_pinned_model or "claude-oauth")
+
+    # 1b. Anthropic-on-Foundry (opus-foundry / sonnet-foundry) — real Claude weights via
+    #     the Azure Foundry `…/anthropic` Messages endpoint. The shared primitive client
+    #     must be pinned PER-CLIENT (base_url + x-api-key), NEVER via a process-global
+    #     ANTHROPIC_BASE_URL (which would hijack a co-resident claude-oauth sub-role).
+    #     Mirrors grader_transport's anthropic-foundry branch + build_anthropic_foundry_client
+    #     so primitive + rubric-gen calls route to Foundry like the root loop / executor /
+    #     grader / verifier / validator already do. Without this branch a Foundry-only root
+    #     falls through to a plain (non-Foundry) ClaudeLlmClient.
+    if backend == "anthropic-foundry":
+        from backend.agents.runtime.foundry_anthropic import (
+            resolve_foundry_anthropic_credentials,
+        )
+        from backend.services.context.workspace.tools.anthropic_messages_client import (
+            AnthropicMessagesClient,
+        )
+        base_url, api_key, models = resolve_foundry_anthropic_credentials()
+        if not (base_url and api_key):
+            raise ValueError(
+                f"Root model {root_model.key!r} uses backend 'anthropic-foundry' but "
+                "AZURE_FOUNDRY_ENDPOINT (or AZURE_FOUNDRY_ANTHROPIC_ENDPOINT) + "
+                "AZURE_FOUNDRY_API_KEY were not resolved — _build_llm_client requires a "
+                "RootModel from resolve_root_model() with Foundry credentials."
+            )
+        model = _pinned_model or bk.get("model_name") or models["opus"]
+        return AnthropicMessagesClient(model=model, api_key=api_key, base_url=base_url), model
 
     # 2. OpenAI-compatible custom endpoint (Featherless, vLLM-via-OpenAI, etc.)
     if backend == "openai" and bk.get("base_url"):

@@ -29,17 +29,28 @@ def normalize_anthropic_base_url(raw: str) -> str:
     (or ``/v1/messages``) is stripped (else the SDK POSTs to
     ``…/anthropic/v1/v1/messages`` → 404). A bare host (no path — e.g. an
     explicit ``AZURE_FOUNDRY_ANTHROPIC_ENDPOINT`` pasted as just the resource
-    URL) is completed to ``…/anthropic``. A genuine custom base (a non-
-    ``/anthropic`` path already present) is trusted as-is.
+    URL, with or without a scheme) is completed to ``…/anthropic``. A genuine
+    custom base (a non-``/anthropic`` path already present) is trusted as-is.
+    Suffix matching (``/messages``, ``/anthropic/v1``, ``/anthropic``) is
+    case-insensitive, but the original casing of the input is preserved in
+    the returned string. Any query string or URL fragment is stripped since
+    the canonical base carries neither.
     """
-    url = (raw or "").strip().rstrip("/")
+    url = (raw or "").strip()
     if not url:
         return ""
-    if url.endswith("/messages"):
+    # The canonical base carries neither a fragment nor a query string.
+    url = url.split("#", 1)[0].split("?", 1)[0]
+    if "://" not in url:
+        url = f"https://{url}"
+    url = url.rstrip("/")
+    lower = url.lower()
+    if lower.endswith("/messages"):
         url = url[: -len("/messages")].rstrip("/")
-    if url.endswith("/anthropic/v1"):
+        lower = url.lower()
+    if lower.endswith("/anthropic/v1"):
         return url[: -len("/v1")].rstrip("/")
-    if url.endswith("/anthropic"):
+    if lower.endswith("/anthropic"):
         return url
     parsed = urlparse(url)
     if not parsed.path or parsed.path == "/":
@@ -60,6 +71,8 @@ def _derive_base_url() -> str:
     oai = _settings_endpoint()
     if not oai:
         return ""
+    if "://" not in oai:
+        oai = f"https://{oai}"
     parsed = urlparse(oai)
     if not parsed.scheme or not parsed.netloc:
         return ""
