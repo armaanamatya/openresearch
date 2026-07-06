@@ -535,6 +535,17 @@ class FileLiveRunService:
             env["OPENRESEARCH_GPU_PARALLELISM"] = request.gpu_parallelism
         if request.accelerator:
             env["OPENRESEARCH_ACCELERATOR"] = request.accelerator
+        # Advanced GPU-budget knobs from the "Advanced options" panel (D2). These
+        # were declared on StartRunRequest but silently dropped here; forward them
+        # so the upload/arxiv Advanced fields actually reach the run subprocess.
+        if request.dynamic_gpu is not None:
+            env["OPENRESEARCH_DYNAMIC_GPU"] = "true" if request.dynamic_gpu else "false"
+        if request.force_single_gpu is not None:
+            env["OPENRESEARCH_FORCE_SINGLE_GPU"] = "true" if request.force_single_gpu else "false"
+        if request.max_gpu_usd_per_hour is not None:
+            env["OPENRESEARCH_MAX_GPU_USD_PER_HOUR"] = str(request.max_gpu_usd_per_hour)
+        if request.vram_gb is not None:
+            env["OPENRESEARCH_VRAM_OVERRIDE_GB"] = str(request.vram_gb)
         env["OPENRESEARCH_LLM_PROVIDER"] = request.provider
         if request.verificationProvider:
             env["OPENRESEARCH_VERIFICATION_PROVIDER"] = request.verificationProvider

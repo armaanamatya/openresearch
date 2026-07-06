@@ -646,6 +646,14 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             provider_credentials=request.provider_credentials,
             estimate_id=request.estimate_id,
             repo_url=request.repo_url,
+            root_provider=request.root_provider,
+            subagent_auth=request.subagent_auth,
+            dynamic_gpu=request.dynamic_gpu,
+            force_single_gpu=request.force_single_gpu,
+            gpu_parallelism=request.gpu_parallelism,
+            accelerator=request.accelerator,
+            max_gpu_usd_per_hour=request.max_gpu_usd_per_hour,
+            vram_gb=request.vram_gb,
         )
         return await service.start_uploaded_run(
             run_request,
@@ -687,6 +695,16 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             provider_credentials=_optional_form_provider_credentials(form),
             estimate_id=_optional_form_value(form, "estimateId"),
             repo_url=_optional_form_value(form, "repoUrl"),
+            # Advanced options (D2/D5) — the form sends camelCase keys; forward
+            # each so the Advanced panel actually reaches the run subprocess.
+            dynamic_gpu=_optional_form_bool(form, "dynamicGpu"),
+            force_single_gpu=_optional_form_bool(form, "forceSingleGpu"),
+            gpu_parallelism=_optional_form_value(form, "gpuParallelism"),
+            accelerator=_optional_form_value(form, "accelerator"),
+            max_gpu_usd_per_hour=_optional_form_float(form, "maxGpuUsdPerHour"),
+            vram_gb=_optional_form_int(form, "vramGb"),
+            root_provider=_optional_form_value(form, "rootProvider"),
+            subagent_auth=_optional_form_value(form, "subagentAuth"),
         )
         return await service.start_uploaded_run(
             run_request,
@@ -1156,6 +1174,18 @@ class StartArxivRunRequest(BaseModel):
     estimate_id: str | None = None
     # #62: optional official-code-repository URL (github: shorthand or full URL).
     repo_url: str | None = None
+    # Advanced options (D2/D5) — mirror StartRunRequest so the arxiv JSON path
+    # forwards the same advanced GPU/provider knobs as the multipart upload
+    # path. All optional; JSON → pydantic coerces natively. root_provider /
+    # subagent_auth have no backend consumer yet (forwarded for parity, inert).
+    root_provider: str | None = None
+    subagent_auth: str | None = None
+    dynamic_gpu: bool | None = None
+    force_single_gpu: bool | None = None
+    gpu_parallelism: str | None = None
+    accelerator: str | None = None
+    max_gpu_usd_per_hour: float | None = None
+    vram_gb: int | None = None
 
 
 class ApprovalEvaluateRequest(BaseModel):
@@ -1221,6 +1251,28 @@ def _optional_form_value(form: Any, key: str) -> str | None:
     if value in (None, "", "same"):
         return None
     return str(value)
+
+
+def _optional_form_float(form: Any, key: str) -> float | None:
+    """Parse a multipart form field as an optional float (missing/empty/bad → None)."""
+    value = form.get(key)
+    if value in (None, ""):
+        return None
+    try:
+        return float(str(value))
+    except ValueError:
+        return None
+
+
+def _optional_form_int(form: Any, key: str) -> int | None:
+    """Parse a multipart form field as an optional int (missing/empty/bad → None)."""
+    value = form.get(key)
+    if value in (None, ""):
+        return None
+    try:
+        return int(str(value))
+    except ValueError:
+        return None
 
 
 def _optional_form_bool(form: Any, key: str) -> bool | None:
