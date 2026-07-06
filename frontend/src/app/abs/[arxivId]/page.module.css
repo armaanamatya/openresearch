@@ -1,0 +1,8 @@
+.page {
+  min-height: 100vh;
+  background: #ffffff;
+  display: flex;
+  justify-content: center;
+  padding: 14vh 24px 48px;
+  box-sizing: border-box;
+}

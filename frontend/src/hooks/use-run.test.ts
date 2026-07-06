@@ -96,6 +96,33 @@ describe("useRun launchers — autonomous + repoUrl threading", () => {
       const formData = call![1].body as FormData;
       expect(formData.get("repoUrl")).toBe("https://github.com/foo/bar");
     });
+
+    it("resolves with the launched run's projectId on success", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(okRunStateResponse("prj_upload_ok")));
+      const { result } = renderRun({});
+
+      let resolved: string | undefined;
+      await act(async () => {
+        resolved = await result.current.startUploadedRun(new File(["dummy"], "paper.pdf"), "sonnet");
+      });
+
+      expect(resolved).toBe("prj_upload_ok");
+    });
+
+    it("resolves with undefined when the request fails", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({ ok: false, status: 500, json: async () => ({ error: "boom" }) })
+      );
+      const { result } = renderRun({});
+
+      let resolved: string | undefined;
+      await act(async () => {
+        resolved = await result.current.startUploadedRun(new File(["dummy"], "paper.pdf"), "sonnet");
+      });
+
+      expect(resolved).toBeUndefined();
+    });
   });
 
   describe("startArxivRun", () => {
@@ -128,6 +155,37 @@ describe("useRun launchers — autonomous + repoUrl threading", () => {
       const body = JSON.parse(call![1].body as string);
       expect("autonomous" in body).toBe(false);
       expect("repo_url" in body).toBe(false);
+    });
+
+    it("resolves with the launched run's projectId on success", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(okRunStateResponse("prj_arxiv_ok")));
+      const { result } = renderRun({});
+
+      let resolved: string | undefined;
+      await act(async () => {
+        resolved = await result.current.startArxivRun("arxiv.org/abs/1234.56789", "sonnet");
+      });
+
+      expect(resolved).toBe("prj_arxiv_ok");
+    });
+
+    it("resolves with undefined when the request fails", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({
+          ok: false,
+          status: 500,
+          text: async () => JSON.stringify({ error: "boom" }),
+        })
+      );
+      const { result } = renderRun({});
+
+      let resolved: string | undefined;
+      await act(async () => {
+        resolved = await result.current.startArxivRun("arxiv.org/abs/1234.56789", "sonnet");
+      });
+
+      expect(resolved).toBeUndefined();
     });
   });
 

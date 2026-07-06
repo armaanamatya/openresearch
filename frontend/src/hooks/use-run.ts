@@ -181,8 +181,12 @@ export interface UseRunResult {
   runMode: DemoRunMode;
   setRunMode: (mode: DemoRunMode) => void;
   startFixtureRun: (model: DemoModelChoice) => Promise<void>;
-  startUploadedRun: (file: File, model: DemoModelChoice) => Promise<void>;
-  startArxivRun: (url: string, model: DemoModelChoice) => Promise<void>;
+  // startUploadedRun/startArxivRun resolve with the launched run's projectId
+  // on success (undefined on failure) — T11's repo-confirm cost-guard needs
+  // this to route to /sessions/<runId> right after a successful launch,
+  // without waiting on a state-update round-trip.
+  startUploadedRun: (file: File, model: DemoModelChoice) => Promise<string | undefined>;
+  startArxivRun: (url: string, model: DemoModelChoice) => Promise<string | undefined>;
   resumeRun: (projectId: string, overrides?: Record<string, string>) => Promise<void>;
   clearRun: () => Promise<void>;
   resetToUpload: () => void;
@@ -552,9 +556,11 @@ export function useRun(
       setRun(next);
       setRunUrl(next.projectId);
       writeLastRun(next.projectId);
+      return next.projectId;
     } catch (startError) {
       setError(describeStartError(startError, "Unable to start uploaded run"));
       setBusy(false);
+      return undefined;
     }
   }, [setRunUrl, runMode]);
 
@@ -616,9 +622,11 @@ export function useRun(
       setRun(next);
       setRunUrl(next.projectId);
       writeLastRun(next.projectId);
+      return next.projectId;
     } catch (startError) {
       setError(describeStartError(startError, "Unable to start arXiv run"));
       setBusy(false);
+      return undefined;
     }
   }, [setRunUrl, runMode]);
 

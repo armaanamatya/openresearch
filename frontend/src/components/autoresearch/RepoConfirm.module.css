@@ -1,0 +1,120 @@
+/* RepoConfirm — the repo-confirm screen (alphaXiv `_4`) + its launch
+ * cost-guard dialog. Requires an ancestor `.autoresearch` wrapper for its
+ * --or-* tokens (see src/styles/autoresearch-tokens.css).
+ */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  max-width: 560px;
+}
+
+.title {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--or-ink);
+}
+
+.lead {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--or-muted);
+}
+
+.field {
+  margin: 4px 0;
+}
+
+.cta {
+  width: 100%;
+  margin-top: 4px;
+}
+
+/* Cost-guard dialog — full-viewport overlay (position: fixed escapes the
+ * Card's layout regardless of DOM nesting), mirroring the shortcut-overlay /
+ * node-detail-popup dialog pattern used elsewhere in the lab. */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 20, 20, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 50;
+}
+
+.dialog {
+  background: var(--or-paper);
+  border: var(--or-border);
+  border-radius: var(--or-radius);
+  box-shadow: var(--or-shadow);
+  width: 100%;
+  max-width: 420px;
+  padding: 24px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dialogTitle {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--or-ink);
+}
+
+.dialogBody {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--or-ink);
+}
+
+.dialogWarning {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--or-maroon);
+}
+
+.dialogError {
+  margin: 0;
+  font-size: 13px;
+  color: var(--or-maroon);
+}
+
+.dialogActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  margin-top: 8px;
+}
+
+.cancelBtn {
+  background: transparent;
+  border: none;
+  color: var(--or-muted);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 10px 14px;
+  border-radius: var(--or-radius);
+}
+
+.cancelBtn:hover {
+  color: var(--or-ink);
+  text-decoration: underline;
+}
+
+.cancelBtn:focus-visible {
+  outline: 2px solid var(--or-maroon);
+  outline-offset: 2px;
+}
