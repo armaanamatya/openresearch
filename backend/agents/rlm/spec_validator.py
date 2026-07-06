@@ -152,14 +152,64 @@ def rubric_fingerprint(rubric: dict) -> str:
 # "near"), which are not stopwords but also carry no paper-specific citation
 # signal. A grounded leaf like "Report ALFWorld success rate near 84.4" would
 # score ~0.33 overlap under that helper and get wrongly flagged. This module
-# therefore defines its OWN small helper, scoped to "distinctive cited
-# terms/numbers" (numbers, and CamelCase/acronym-style names) rather than
-# every non-stopword content word. Do not conflate the two.
+# therefore defines its OWN helper, scoped to "distinctive cited
+# terms/numbers" (numbers with TOLERANCE matching, plus CamelCase/acronym and
+# non-stopword lowercase/hyphenated entity names) rather than every
+# non-stopword content word. Do not conflate the two.
 
 _NUMBER_TOKEN_RE = re.compile(r"\d+(?:\.\d+)?")
 _WORD_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*")
 
 _HALLUCINATION_OVERLAP_FLOOR = 0.5
+_MIN_ENTITY_TOKEN_LEN = 4
+
+# Shared with the wrong_target predicate below (hoisted here so the numeric
+# distinctive-token matcher can reuse the SAME tolerance — see _numeric_present):
+# a leaf number counts as "present in the paper" when it lands within this
+# relative tolerance of some paper number, exactly the band within which
+# _wrong_target_violated treats two numbers as AGREEING. This keeps the two
+# predicates internally consistent — a "84.4" vs "84.40" precision/format drift
+# that wrong_target clears is never flagged as a hallucination.
+_WRONG_TARGET_REL_TOL = 0.05
+
+# Generic English function words + research-rubric/ML metric vocabulary that
+# describe HOW a leaf is phrased, never WHICH paper-specific dataset/method/
+# number it cites. These must never count as distinctive grounding tokens,
+# else ordinary rubric prose ("Report ... success rate near ...") would swamp
+# the overlap ratio and a grounded leaf would be wrongly flagged. Scoped to the
+# high-frequency rubric/metric words a leaf sentence actually contains — not a
+# full NLP stoplist. (Tokens shorter than _MIN_ENTITY_TOKEN_LEN are already
+# excluded by length, so this set only needs the >= 4-char offenders.)
+_STOPWORDS: frozenset[str] = frozenset({
+    # generic English (>= 4-char function/filler words)
+    "been", "being", "were", "have", "having", "this", "that", "with",
+    "from", "into", "them", "they", "than", "then", "such", "also", "both",
+    "each", "which", "used", "using", "over", "under", "more", "most",
+    "some", "when", "what", "where", "your", "will", "would", "should",
+    "could", "must", "does", "done", "these", "those", "only", "same",
+    "other", "between", "within", "without", "about", "above", "below",
+    "after", "before", "during", "them", "here", "there", "their",
+    # research-rubric / ML metric vocabulary
+    "paper", "report", "reports", "reported", "reporting", "verify",
+    "verifies", "verified", "ensure", "ensures", "check", "checks",
+    "checking", "correct", "correctly", "near", "around", "roughly",
+    "approximately", "value", "values", "result", "results", "success",
+    "rate", "rates", "accuracy", "reward", "rewards", "score", "scores",
+    "return", "returns", "metric", "metrics", "achieve", "achieves",
+    "achieved", "achieving", "match", "matches", "matching", "matched",
+    "target", "targets", "baseline", "baselines", "model", "models",
+    "dataset", "datasets", "data", "method", "methods", "train", "training",
+    "trained", "test", "tests", "testing", "eval", "evals", "evaluate",
+    "evaluation", "experiment", "experiments", "implement", "implements",
+    "implemented", "implementation", "describe", "described", "section",
+    "sections", "table", "tables", "figure", "figures", "performance",
+    "task", "tasks", "environment", "environments", "benchmark",
+    "benchmarks", "reproduce", "reproduction", "setup", "config",
+    "configuration", "hyperparameter", "hyperparameters", "parameter",
+    "parameters", "epoch", "epochs", "batch", "step", "steps", "learning",
+    "loss", "gradient", "network", "layer", "layers", "output", "outputs",
+    "input", "inputs", "sets", "uses", "described", "correctly",
+})
 
 
 def _normalize(text: str) -> str:
@@ -187,33 +237,48 @@ def _has_internal_capital(word: str) -> bool:
     return any(ch.isupper() for ch in word[1:])
 
 
-def _distinctive_tokens(text: str) -> list[str]:
-    """Extract the 'distinctive cited terms/numbers' from a leaf requirement.
+def _distinctive_tokens(text: str) -> tuple[list[str], list[float]]:
+    """Extract ``(entity_tokens, numeric_values)`` — the 'distinctive cited
+    terms/numbers' of a leaf requirement.
 
-    A token is distinctive iff it is numeric (a candidate result/target
-    value) or an alphabetic token with an internal capital letter (a
-    candidate dataset/method name written in CamelCase or as an acronym).
-    Ordinary English words are excluded, since they carry no paper-specific
-    citation signal and would otherwise swamp the overlap ratio with generic
-    rubric phrasing ("Report", "verify", "correctly").
+    Entity tokens (candidate dataset/method/env names): an alphabetic token is
+    distinctive iff it is CamelCase/acronym (has an internal capital letter —
+    ALFWorld, WebShop, GRPO, SDAR) OR a plain/lowercase/hyphenated token of
+    length >= ``_MIN_ENTITY_TOKEN_LEN`` that is NOT a generic stopword
+    (mujoco, halfcheetah, webshop, search). Generic rubric/English words
+    ("Report", "success", "rate", "near") are excluded via ``_STOPWORDS`` so
+    they never swamp the overlap ratio.
 
-    Returns [] when the leaf cites nothing distinctive (an abstract/
-    procedural requirement with no dataset/method/number) — the caller
-    treats this as unverifiable, not hallucinated.
+    Numeric values: every int/float literal, float-parsed (for tolerance
+    matching downstream).
+
+    Returns ``([], [])`` when the leaf cites nothing distinctive (an abstract/
+    procedural requirement) — the caller treats this as unverifiable
+    (grounded), never hallucinated.
     """
     if not isinstance(text, str) or not text:
-        return []
-    tokens: list[str] = [m.group(0) for m in _NUMBER_TOKEN_RE.finditer(text)]
-    tokens.extend(m.group(0) for m in _WORD_TOKEN_RE.finditer(text) if _has_internal_capital(m.group(0)))
-    return tokens
+        return [], []
+    numeric_values: list[float] = []
+    for m in _NUMBER_TOKEN_RE.finditer(text):
+        try:
+            numeric_values.append(float(m.group(0)))
+        except ValueError:
+            pass
+    entity_tokens: list[str] = []
+    for m in _WORD_TOKEN_RE.finditer(text):
+        word = m.group(0)
+        if _has_internal_capital(word):
+            entity_tokens.append(word)
+        elif len(word) >= _MIN_ENTITY_TOKEN_LEN and word.lower() not in _STOPWORDS:
+            entity_tokens.append(word)
+    return entity_tokens, numeric_values
 
 
 def _contains_token(token: str, normalized_haystack: str) -> bool:
     """Word-boundary-anchored containment check of `token` in a haystack that
     has already been run through :func:`_normalize`. Using ``\\b`` (rather
-    than plain substring ``in``) stops a short numeric token like "1" from
-    matching inside an unrelated longer number ("212"); adjacent digits
-    never form a word-boundary so the anchors correctly reject that case.
+    than plain substring ``in``) stops a short token from matching inside an
+    unrelated longer word/number.
     """
     try:
         return re.search(r"\b" + re.escape(_normalize(token)) + r"\b", normalized_haystack) is not None
@@ -221,18 +286,52 @@ def _contains_token(token: str, normalized_haystack: str) -> bool:
         return _normalize(token) in normalized_haystack
 
 
+def _paper_numeric_values(paper_text: str) -> list[float]:
+    """Every int/float literal in the paper text, float-parsed (fail-soft)."""
+    values: list[float] = []
+    if not isinstance(paper_text, str):
+        return values
+    for m in _NUMBER_TOKEN_RE.finditer(paper_text):
+        try:
+            values.append(float(m.group(0)))
+        except ValueError:
+            pass
+    return values
+
+
+def _numeric_present(value: float, paper_numbers: list[float]) -> bool:
+    """True iff `value` is present in the paper within ``_WRONG_TARGET_REL_TOL``.
+
+    TOLERANCE-based (not exact-string) so a grounded number-only leaf is never
+    flagged on precision/format drift — "84.4" (leaf) vs "84.40" (paper) both
+    parse to 84.4 and match. Both sides are extracted the SAME way
+    (``_NUMBER_TOKEN_RE`` + float-parse), and the tolerance is the SAME band
+    ``_wrong_target_violated`` uses to judge agreement, so the two predicates
+    can never disagree on a drift pair. This is a PRESENCE check ("is this
+    number in the paper at all") — genuine numeric CONTRADICTION for a shared
+    metric term remains ``wrong_target``'s responsibility, not this check's.
+    """
+    return any(_within_tol(value, pv, _WRONG_TARGET_REL_TOL) for pv in paper_numbers)
+
+
 def _token_overlap(leaf_text: str, paper_text: str) -> float:
-    """Fraction of leaf_text's distinctive tokens present in paper_text.
+    """Fraction of leaf_text's distinctive tokens (entities + numbers) present
+    in paper_text.
 
     Returns 1.0 (grounded, fail-soft) when the leaf cites nothing distinctive
     to check — an abstract requirement is not a hallucination candidate.
+    Entity tokens use ``\\b``-anchored containment; numeric tokens use
+    tolerance matching (:func:`_numeric_present`).
     """
-    tokens = _distinctive_tokens(leaf_text)
-    if not tokens:
+    entity_tokens, numeric_values = _distinctive_tokens(leaf_text)
+    total = len(entity_tokens) + len(numeric_values)
+    if total == 0:
         return 1.0
     norm_paper = _normalize(paper_text)
-    matched = sum(1 for t in tokens if _contains_token(t, norm_paper))
-    return matched / len(tokens)
+    paper_numbers = _paper_numeric_values(paper_text)
+    matched = sum(1 for t in entity_tokens if _contains_token(t, norm_paper))
+    matched += sum(1 for v in numeric_values if _numeric_present(v, paper_numbers))
+    return matched / total
 
 
 # ---------------------------------------------------------------------------
@@ -252,9 +351,6 @@ def check_hallucinated_leaf(leaf_text: str, paper_text: str) -> bool:
         return _token_overlap(leaf_text, paper_text) >= _HALLUCINATION_OVERLAP_FLOOR
     except Exception:  # noqa: BLE001
         return True
-
-
-_WRONG_TARGET_REL_TOL = 0.05
 
 
 def _wrong_target_violated(leaf_text: str, paper_text: str) -> bool:
@@ -335,6 +431,13 @@ _MAX_PAPER_CHARS_FOR_PROMPT = 48000
 _MAX_LEAVES_FOR_PROMPT = 300
 _MAX_LEAF_TEXT_FOR_PROMPT = 300
 
+# Structural cap on the LLM-echoed leaf_id (corpus isolation: a real rubric
+# leaf id is a short slug / uuid hex, and the missing_key_claim label is meant
+# to be a short tag — this cap makes isolation structural, not reliant on the
+# model emitting a short string). Applied at ingest in _parse_suspicions so
+# every downstream verdict/persisted field inherits it.
+_MAX_LEAF_ID_LEN = 64
+
 _ADVERSARIAL_SYSTEM = """You are an adversarial rubric auditor for a research-reproduction harness.
 Your job is to FIND rubric leaves that misrepresent the paper: leaves that cite a
 dataset/method/number absent from the paper (hallucinated), leaves whose numeric
@@ -410,7 +513,11 @@ def _parse_suspicions(text: str) -> list[dict[str, str]]:
                             for item in parsed:
                                 if isinstance(item, dict):
                                     pred = str(item.get("predicate", "")).strip()
-                                    lid = str(item.get("leaf_id", "")).strip()
+                                    # Structurally cap the LLM-echoed leaf_id
+                                    # (corpus isolation, _MAX_LEAF_ID_LEN) at
+                                    # ingest so no downstream/persisted field
+                                    # can carry an over-long model-emitted span.
+                                    lid = str(item.get("leaf_id", "")).strip()[:_MAX_LEAF_ID_LEN]
                                     if pred and lid and pred in _VALID_PREDICATES:
                                         result.append({"predicate": pred, "leaf_id": lid})
                             return result

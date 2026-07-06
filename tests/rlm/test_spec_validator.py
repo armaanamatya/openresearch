@@ -582,8 +582,11 @@ def test_persisted_verdict_never_contains_paper_text(tmp_path, monkeypatch):
     sv.persist_spec_verdict(tmp_path, verdict)
     target = tmp_path / "rlm_state" / "spec_validation_verdict.json"
     raw = target.read_text()
+    # The planted marker and a distinctive paper-prose fragment must both be
+    # absent — the persisted verdict carries only leaf ids / enums / details.
     assert marker not in raw
-    assert "ALFWorld" not in raw or "leaf_id" in raw  # only leaf ids, never prose spans
+    assert "improves over GRPO" not in raw
+    assert "extra prose here" not in raw
 
 
 # ---------------------------------------------------------------------------
@@ -599,6 +602,107 @@ def test_check_hallucinated_leaf_direct():
 def test_check_hallucinated_leaf_empty_requirement_is_healthy():
     """Nothing distinctive to check -> conservatively healthy (fail-soft)."""
     assert sv.check_hallucinated_leaf("", _PAPER) is True
+
+
+# ---------------------------------------------------------------------------
+# hallucinated_leaf hardening — numeric precision drift (must-fix boundary)
+# ---------------------------------------------------------------------------
+
+# A grounded number-only leaf: same value, different textual precision/format
+# ("84.4" in the leaf vs "84.40" in the paper). Must NOT be flagged.
+_LEAF_NUM_ONLY = "Report success rate of 84.4"
+_PAPER_NUM_DRIFT = "SDAR reaches a success rate of 84.40 on the held-out benchmark."
+
+
+def test_number_only_grounded_leaf_precision_drift_not_flagged():
+    """84.4 vs 84.40 (precision/format drift) must NOT flag a number-only leaf.
+
+    Before the fix this was a DESTRUCTIVE false-positive: exact \\b84\\.4\\b
+    does not match inside '84.40', overlap 0.0 -> flagged -> droppable.
+    """
+    assert sv.check_hallucinated_leaf(_LEAF_NUM_ONLY, _PAPER_NUM_DRIFT) is True
+
+
+def test_hallucinated_and_wrong_target_agree_on_precision_drift():
+    """Internal consistency: the SAME 84.4-vs-84.40 pair that
+    _wrong_target_violated CLEARS must not be flagged by check_hallucinated_leaf
+    (both now share _WRONG_TARGET_REL_TOL)."""
+    assert sv._wrong_target_violated(_LEAF_NUM_ONLY, _PAPER_NUM_DRIFT) is False
+    assert sv.check_hallucinated_leaf(_LEAF_NUM_ONLY, _PAPER_NUM_DRIFT) is True
+
+
+def test_number_only_absent_value_still_flagged():
+    """A number-only leaf whose value is NOT in the paper (beyond tolerance) is
+    still flagged — the tolerance grounds drift, not a genuinely absent number."""
+    assert sv.check_hallucinated_leaf("Report success rate of 12.0", _PAPER_NUM_DRIFT) is False
+
+
+# ---------------------------------------------------------------------------
+# hallucinated_leaf hardening — lowercase / hyphenated entities (false-negative)
+# ---------------------------------------------------------------------------
+
+
+def test_lowercase_absent_entity_flagged():
+    """A hallucinated lowercase entity with no number is no longer silently
+    grounded: 'mujoco'/'halfcheetah' are absent from _PAPER -> flagged.
+    ('report'/'reward' are generic stopwords and don't count.)"""
+    assert sv.check_hallucinated_leaf("Report mujoco halfcheetah reward", _PAPER) is False
+
+
+def test_lowercase_grounded_entity_not_flagged():
+    """A leaf citing entities that appear in the paper prose in lowercase
+    (WebShop -> 'webshop', Search-QA -> 'search') is NOT flagged."""
+    assert sv.check_hallucinated_leaf("Report webshop and search results", _PAPER) is True
+
+
+def test_camelcase_entity_still_dominates_generic_prose():
+    """Regression guard: a grounded CamelCase+numeric leaf (ALFWorld/84.4) stays
+    grounded even surrounded by generic rubric prose (the generic words are
+    stopworded, so they never drag the ratio below the floor)."""
+    assert sv.check_hallucinated_leaf(
+        "Verify that the reported ALFWorld success rate is approximately 84.4", _PAPER
+    ) is True
+
+
+def test_lowercase_absent_entity_flagged_via_panel(monkeypatch):
+    """End-to-end: a panel pointing at a lowercase-absent leaf yields a flag."""
+    rubric = {"leaves": [{"id": "E1", "requirement": "Report mujoco halfcheetah return"}]}
+    monkeypatch.setattr(sv, "sample_completions",
+        lambda *a, **k: ['[{"predicate":"hallucinated_leaf","leaf_id":"E1"}]'])
+    v = sv.run_spec_validation_panel(
+        spec_validator_client=_FakeClient(None),
+        panel_models=["m"],
+        rubric=rubric,
+        paper_text=_PAPER,
+        separation="independent",
+    )
+    assert v.status == "flagged"
+    assert "E1" in v.flagged_leaves
+
+
+# ---------------------------------------------------------------------------
+# Minor 2 — structural leaf_id cap (corpus isolation hardening)
+# ---------------------------------------------------------------------------
+
+
+def test_leaf_id_capped_in_verdict_and_persisted(tmp_path, monkeypatch):
+    """An over-long LLM-echoed leaf_id is truncated to <= 64 chars at ingest,
+    so no verdict/persisted field can carry a long model-emitted span."""
+    long_id = "MISSING:" + "z" * 200
+    monkeypatch.setattr(sv, "sample_completions",
+        lambda *a, **k: [json.dumps([{"predicate": "missing_key_claim", "leaf_id": long_id}])])
+    v = sv.run_spec_validation_panel(
+        spec_validator_client=_FakeClient(None),
+        panel_models=["m"],
+        rubric=_RUBRIC,
+        paper_text=_PAPER,
+        separation="independent",
+    )
+    assert all(len(x) <= 64 for x in v.flagged_leaves)
+    assert all(len(p.leaf_id) <= 64 for p in v.predicates)
+    sv.persist_spec_verdict(tmp_path, v)
+    raw = (tmp_path / "rlm_state" / "spec_validation_verdict.json").read_text()
+    assert long_id not in raw  # the uncapped original never reaches disk
 
 
 def test_check_missing_key_claim_always_false_stub():
