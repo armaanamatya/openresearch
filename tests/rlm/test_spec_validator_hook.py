@@ -19,11 +19,15 @@ paper ingestion / the RLM engine / a subprocess.
 from __future__ import annotations
 
 import json
+import os
+
+import pytest
 
 from backend.agents.rlm import spec_validator as sv
 from backend.agents.rlm.report import RLMFinalReport, write_final_report_rlm
 from backend.agents.rlm.role_models import RoleSelection, RoleSpec
 from backend.agents.rlm.run import (
+    _resolve_spec_validator_transport,
     _run_spec_validator,
     _spec_validator_separation_tier,
     assert_no_foundry_oauth_coresidency,
@@ -72,7 +76,7 @@ def test_hook_off_by_default_self_gates(monkeypatch, tmp_path):
     emit, events = _emit_recorder()
 
     result = _run_spec_validator(
-        ctx=None, rubric=_RUBRIC, paper_text=_PAPER, project_dir=tmp_path,
+        rubric=_RUBRIC, paper_text=_PAPER, project_dir=tmp_path,
         emit=emit, spec_validator_client=_FakeClient(), separation="independent",
         validator_model="test-model",
     )
@@ -87,7 +91,7 @@ def test_hook_missing_rubric_is_noop(monkeypatch, tmp_path):
     emit, events = _emit_recorder()
 
     result = _run_spec_validator(
-        ctx=None, rubric=None, paper_text=_PAPER, project_dir=tmp_path,
+        rubric=None, paper_text=_PAPER, project_dir=tmp_path,
         emit=emit, spec_validator_client=_FakeClient(), separation="independent",
         validator_model="test-model",
     )
@@ -101,7 +105,7 @@ def test_hook_missing_paper_text_is_noop(monkeypatch, tmp_path):
     emit, events = _emit_recorder()
 
     result = _run_spec_validator(
-        ctx=None, rubric=_RUBRIC, paper_text="", project_dir=tmp_path,
+        rubric=_RUBRIC, paper_text="", project_dir=tmp_path,
         emit=emit, spec_validator_client=_FakeClient(), separation="independent",
         validator_model="test-model",
     )
@@ -118,7 +122,7 @@ def test_hook_client_none_emits_unavailable(monkeypatch, tmp_path):
     emit, events = _emit_recorder()
 
     result = _run_spec_validator(
-        ctx=None, rubric=_RUBRIC, paper_text=_PAPER, project_dir=tmp_path,
+        rubric=_RUBRIC, paper_text=_PAPER, project_dir=tmp_path,
         emit=emit, spec_validator_client=None, separation="unavailable",
         validator_model="unavailable",
     )
@@ -143,7 +147,7 @@ def test_hook_on_flags_hallucinated_leaf_and_persists_verdict(monkeypatch, tmp_p
     emit, events = _emit_recorder()
 
     result = _run_spec_validator(
-        ctx=None, rubric=_RUBRIC, paper_text=_PAPER, project_dir=tmp_path,
+        rubric=_RUBRIC, paper_text=_PAPER, project_dir=tmp_path,
         emit=emit, spec_validator_client=_FakeClient(), separation="independent",
         validator_model="grok",
     )
@@ -164,8 +168,11 @@ def test_hook_on_flags_hallucinated_leaf_and_persists_verdict(monkeypatch, tmp_p
 
 def test_hook_block_enabled_drops_confirmed_leaf(monkeypatch, tmp_path):
     """BLOCK ON: the confirmed hallucinated leaf is dropped from the
-    RETURNED rubric -- the call site writes this back to
-    context_dict['rubric_spec'] so the RLM loop uses the cleaned rubric."""
+    RETURNED rubric -- AND the call-site write-back reassigns
+    context_dict['rubric_spec'] to the cleaned rubric, so the RLM loop that
+    reads context_dict['rubric_spec'] uses the dropped-leaf rubric before
+    RLM(...) is constructed. The write-back leg is the one that actually
+    protects the loop -- assert it, not just the hook's return value."""
     monkeypatch.setenv("OPENRESEARCH_SPEC_VALIDATOR", "1")
     monkeypatch.setenv("OPENRESEARCH_SPEC_VALIDATOR_BLOCK", "1")
     monkeypatch.setattr(
@@ -174,14 +181,25 @@ def test_hook_block_enabled_drops_confirmed_leaf(monkeypatch, tmp_path):
     )
     emit, events = _emit_recorder()
 
+    # Mirror the run.py call site exactly: the loop consumes
+    # context_dict["rubric_spec"], and the hook's return value is written back
+    # into it when non-None.
+    context_dict = {"rubric_spec": _RUBRIC, "paper_text": _PAPER}
     result = _run_spec_validator(
-        ctx=None, rubric=_RUBRIC, paper_text=_PAPER, project_dir=tmp_path,
+        rubric=context_dict["rubric_spec"],
+        paper_text=context_dict["paper_text"],
+        project_dir=tmp_path,
         emit=emit, spec_validator_client=_FakeClient(), separation="independent",
         validator_model="grok",
     )
+    if result is not None:
+        context_dict["rubric_spec"] = result
 
     assert result is not None
     assert [leaf["id"] for leaf in result["leaves"]] == ["L1"]
+    # The rubric the RLM loop actually consumes now has the confirmed leaf gone.
+    assert [leaf["id"] for leaf in context_dict["rubric_spec"]["leaves"]] == ["L1"]
+    assert context_dict["rubric_spec"] is result
     assert events[-1]["verdict"] == "flagged"
 
 
@@ -198,7 +216,7 @@ def test_hook_block_enabled_but_clean_verdict_is_unchanged_noop(monkeypatch, tmp
     emit, events = _emit_recorder()
 
     result = _run_spec_validator(
-        ctx=None, rubric=_RUBRIC, paper_text=_PAPER, project_dir=tmp_path,
+        rubric=_RUBRIC, paper_text=_PAPER, project_dir=tmp_path,
         emit=emit, spec_validator_client=_FakeClient(), separation="independent",
         validator_model="grok",
     )
@@ -223,7 +241,7 @@ def test_hook_swallows_internal_errors(monkeypatch, tmp_path):
     emit, events = _emit_recorder()
 
     result = _run_spec_validator(
-        ctx=None, rubric=_RUBRIC, paper_text=_PAPER, project_dir=tmp_path,
+        rubric=_RUBRIC, paper_text=_PAPER, project_dir=tmp_path,
         emit=emit, spec_validator_client=_FakeClient(), separation="independent",
         validator_model="grok",
     )
@@ -256,7 +274,7 @@ def test_full_call_site_sequence_all_four_events_and_report_stamp(monkeypatch, t
     # Call-site step 2 (after the cascade).
     emit(build_spec_generated_event(leaf_count=len(_RUBRIC["leaves"])))
     blocked = _run_spec_validator(
-        ctx=None, rubric=_RUBRIC, paper_text=_PAPER, project_dir=tmp_path,
+        rubric=_RUBRIC, paper_text=_PAPER, project_dir=tmp_path,
         emit=emit, spec_validator_client=_FakeClient(), separation="independent",
         validator_model="grok",
     )
@@ -411,6 +429,105 @@ def test_spec_tier_degraded_same_planner_family_and_model(monkeypatch):
     planner = RoleSpec(role="planner", token="azure", provider="azure", model="gpt-4o-shared", family="gpt")
     sel = RoleSelection(planner=planner, executor=None, verifier=None, grader=None)
     assert _spec_validator_separation_tier(sel) == "degraded"
+
+
+# ---------------------------------------------------------------------------
+# _resolve_spec_validator_transport — the SETUP block, internally flag-gated.
+# The OFF test is the lock for the reviewer's Important finding: with the
+# spec-validator flag OFF but the EXTERNAL validator ON (VALIDATOR_BACKEND set)
+# and even a spec_validator role selected, the setup block must mutate no env,
+# build/log no client, emit no separation warning, and NEVER raise. Without the
+# gate this exact input crashes (the bridge sets SPEC_VALIDATOR_BACKEND from the
+# grok role -> the fail-closed build hits missing foundry creds -> RuntimeError)
+# and/or leaks a spec_validator_separation_* run_warning off the VALIDATOR_*
+# fallback -- so this test would FAIL on the pre-fix code.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_setup_off_is_inert_even_with_validator_backend_and_role(monkeypatch):
+    """OFF ⇒ byte-identical: no env mutation, no emit, no raise, default return."""
+    monkeypatch.delenv("OPENRESEARCH_SPEC_VALIDATOR", raising=False)
+    # External validator ON (the setup block's client build + tier both fall
+    # back to these) + no spec-validator vars pre-set.
+    monkeypatch.setenv("OPENRESEARCH_VALIDATOR_BACKEND", "azure")
+    monkeypatch.setenv("OPENRESEARCH_VALIDATOR_MODEL", "gpt-4o-valB")
+    monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-planner")
+    monkeypatch.delenv("OPENRESEARCH_SPEC_VALIDATOR_BACKEND", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_SPEC_VALIDATOR_MODEL", raising=False)
+    # No azure creds -> a build would fail-closed (crash) WITHOUT the gate.
+    monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+
+    # A selected spec_validator role (grok) — the bridge would mutate env +
+    # trigger the fail-closed foundry build without the flag gate.
+    planner = RoleSpec(role="planner", token="azure", provider="azure",
+                       model="gpt-4o-planner", family="gpt")
+    spec_validator = RoleSpec(role="spec_validator", token="grok",
+                              provider="azure-foundry", model=None, family="grok")
+    sel = RoleSelection(planner=planner, executor=None, verifier=None, grader=None,
+                        spec_validator=spec_validator)
+
+    emit, events = _emit_recorder()
+    client, label, tier = _resolve_spec_validator_transport(
+        role_selection=sel, llm_client=object(), provider_label="anthropic", emit=emit,
+    )
+
+    assert client is None
+    assert label == "anthropic"        # the hoisted provider_label default
+    assert tier == "unavailable"       # the hoisted default (no tier computed)
+    assert events == []                # OFF ⇒ NO SSE event (the reviewer's Scenario A)
+    # OFF ⇒ NO env mutation (the reviewer's Scenario B — the bridge is skipped).
+    assert not os.environ.get("OPENRESEARCH_SPEC_VALIDATOR_BACKEND", "").strip()
+
+
+def test_resolve_setup_on_fail_closed_raises_on_missing_creds(monkeypatch):
+    """ON + explicitly-selected backend with missing creds ⇒ RuntimeError
+    (fail-closed preserved by the extraction — a misconfigured spec validator
+    crashes an ON run rather than silently riding the planner client)."""
+    monkeypatch.setenv("OPENRESEARCH_SPEC_VALIDATOR", "1")
+    monkeypatch.setenv("OPENRESEARCH_SPEC_VALIDATOR_BACKEND", "azure")
+    monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+
+    sel = RoleSelection(planner=_planner_spec(), executor=None, verifier=None, grader=None)
+    emit, _events = _emit_recorder()
+    with pytest.raises(RuntimeError, match="spec validator setup failed"):
+        _resolve_spec_validator_transport(
+            role_selection=sel, llm_client=object(), provider_label="anthropic", emit=emit,
+        )
+
+
+def test_resolve_setup_on_builds_client_and_emits_weak(monkeypatch):
+    """ON path intact after extraction: a successfully-built client + a
+    planner×spec_validator "weak" tier emits the spec_validator_separation_weak
+    advisory. build_spec_validator_client is monkeypatched to a sentinel so the
+    test needs no real creds."""
+    monkeypatch.setenv("OPENRESEARCH_SPEC_VALIDATOR", "1")
+    monkeypatch.setenv("OPENRESEARCH_SPEC_VALIDATOR_BACKEND", "azure")
+    monkeypatch.setenv("OPENRESEARCH_SPEC_VALIDATOR_MODEL", "gpt-4o-svB")
+    monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-plannerA")
+
+    sentinel = object()
+    from backend.agents.rlm import grader_transport as _gt
+    monkeypatch.setattr(
+        _gt, "build_spec_validator_client",
+        lambda *, fallback_client, fallback_label="": (sentinel, "spec_validator:azure:gpt-4o-svB"),
+    )
+
+    planner = RoleSpec(role="planner", token="azure", provider="azure",
+                       model="gpt-4o-plannerA", family="gpt")
+    sel = RoleSelection(planner=planner, executor=None, verifier=None, grader=None)
+
+    emit, events = _emit_recorder()
+    client, label, tier = _resolve_spec_validator_transport(
+        role_selection=sel, llm_client=object(), provider_label="anthropic", emit=emit,
+    )
+
+    assert client is sentinel
+    assert label == "spec_validator:azure:gpt-4o-svB"
+    assert tier == "weak"  # azure planner(deployA) x azure spec_validator(deployB)
+    assert [e["event"] for e in events] == ["run_warning"]
+    assert events[0]["code"] == "spec_validator_separation_weak"
 
 
 # ---------------------------------------------------------------------------
