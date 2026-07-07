@@ -298,9 +298,10 @@ export type RootProvider =
   | "anthropic_oauth"
   | "openai_api"
   | "azure_openai"
-  | "featherless";
+  | "featherless"
+  | "foundry";
 
-export type SubagentAuth = "anthropic_api" | "anthropic_oauth";
+export type SubagentAuth = "anthropic_api" | "anthropic_oauth" | "foundry";
 
 export interface ProviderStatus {
   available: boolean;

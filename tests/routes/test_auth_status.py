@@ -26,6 +26,23 @@ def _isolate_settings_cache():
         _reset_settings_cache()
 
 
+@pytest.fixture(autouse=True)
+def _foundry_unavailable_by_default():
+    """Force Foundry credentials off unless a test opts in.
+
+    ``has_foundry_credentials()`` resolves ``AZURE_FOUNDRY_API_KEY`` from .env
+    via Settings (foundry_endpoint._env_or_settings), so ``monkeypatch.delenv``
+    can't hide it. Foundry is the top-priority default; without this every
+    non-Foundry default-priority assertion below would see it and flip. Tests
+    that exercise the Foundry path re-patch this ``True`` in their own block.
+    """
+    with patch(
+        "backend.agents.runtime.factory.has_foundry_credentials",
+        return_value=False,
+    ):
+        yield
+
+
 def _fresh_app(monkeypatch, *, runs_root_tmp):
     monkeypatch.setenv("OPENRESEARCH_RUNS_ROOT", str(runs_root_tmp))
     monkeypatch.delenv("OPENRESEARCH_DEMO_SECRET", raising=False)
@@ -60,7 +77,7 @@ def test_auth_status_returns_documented_shape(tmp_path, monkeypatch):
     assert "defaults" in body
 
     providers = body["providers"]
-    for key in ("anthropic_api", "anthropic_oauth", "openai_api", "azure_openai", "featherless"):
+    for key in ("anthropic_api", "anthropic_oauth", "openai_api", "azure_openai", "featherless", "foundry"):
         assert key in providers, f"missing provider key: {key}"
         assert "available" in providers[key]
         assert "detail" in providers[key]
@@ -68,6 +85,7 @@ def test_auth_status_returns_documented_shape(tmp_path, monkeypatch):
     subagent = body["subagent_auth"]
     assert "anthropic_api" in subagent
     assert "anthropic_oauth" in subagent
+    assert "foundry" in subagent
 
     defaults = body["defaults"]
     assert "root_provider" in defaults
@@ -104,9 +122,11 @@ def test_all_providers_unavailable(tmp_path, monkeypatch):
     assert providers["openai_api"]["available"] is False
     assert providers["azure_openai"]["available"] is False
     assert providers["featherless"]["available"] is False
+    assert providers["foundry"]["available"] is False
 
     assert body["subagent_auth"]["anthropic_api"] is False
     assert body["subagent_auth"]["anthropic_oauth"] is False
+    assert body["subagent_auth"]["foundry"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +247,56 @@ def test_featherless_available(tmp_path, monkeypatch):
     assert body["providers"]["featherless"]["available"] is True
     assert "FEATHERLESS_API_KEY" in body["providers"]["featherless"]["detail"]
     assert body["defaults"]["root_provider"] == "featherless"
+
+
+# ---------------------------------------------------------------------------
+# foundry available — surfaced as a provider + sub-agent auth, and (per the
+# user-confirmed default) pre-selected as the root + sub-agent default.
+# ---------------------------------------------------------------------------
+
+def test_foundry_available_is_surfaced_and_default(tmp_path, monkeypatch):
+    client = _fresh_app(monkeypatch, runs_root_tmp=tmp_path)
+
+    with (
+        patch("backend.agents.runtime.factory._has_claude_subscription_oauth", return_value=False),
+        patch("backend.agents.runtime.factory._has_azure_openai_credentials", return_value=False),
+        patch("backend.agents.runtime.factory._has_anthropic_api_credentials", return_value=False),
+        patch("backend.agents.runtime.factory._has_openai_credentials", return_value=False),
+        patch("backend.agents.runtime.factory._has_featherless_credentials", return_value=False),
+        patch("backend.agents.runtime.factory.has_foundry_credentials", return_value=True),
+    ):
+        response = client.get("/auth-status")
+
+    body = response.json()
+    assert body["providers"]["foundry"]["available"] is True
+    assert "AZURE_FOUNDRY_API_KEY" in body["providers"]["foundry"]["detail"]
+    assert body["subagent_auth"]["foundry"] is True
+    # User-confirmed: Foundry is the pre-selected root + sub-agent default when
+    # its creds resolve.
+    assert body["defaults"]["root_provider"] == "foundry"
+    assert body["defaults"]["subagent_auth"] == "foundry"
+    # root_model stays the tier default; Foundry root resolves to sonnet-foundry
+    # (or opus-foundry when the opus tier is picked) at request time.
+    assert body["defaults"]["root_model"] == "sonnet"
+
+
+def test_foundry_default_wins_over_oauth(tmp_path, monkeypatch):
+    """Foundry leads the default priority chain — it beats an available OAuth."""
+    client = _fresh_app(monkeypatch, runs_root_tmp=tmp_path)
+
+    with (
+        patch("backend.agents.runtime.factory._has_claude_subscription_oauth", return_value=True),
+        patch("backend.agents.runtime.factory._has_azure_openai_credentials", return_value=False),
+        patch("backend.agents.runtime.factory.has_foundry_credentials", return_value=True),
+    ):
+        response = client.get("/auth-status")
+
+    body = response.json()
+    # Both available, but Foundry is the deliberate deployment default.
+    assert body["providers"]["foundry"]["available"] is True
+    assert body["providers"]["anthropic_oauth"]["available"] is True
+    assert body["defaults"]["root_provider"] == "foundry"
+    assert body["defaults"]["subagent_auth"] == "foundry"
 
 
 # ---------------------------------------------------------------------------

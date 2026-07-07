@@ -8,13 +8,16 @@ import type { ProviderCredentialsInput } from "@/hooks/use-run";
 import { BudgetPanel, type PaperBudgetEstimate, type RecipeMode } from "./budget/budget-panel";
 
 // ---------------------------------------------------------------------------
-// Sandbox options — surface the two end-user-relevant choices.
-// "auto"/"local" exist in the type but the lab path defaults docker on local
-// hardware and runpod on a GPU cloud; they're not meaningful picks for users.
+// Sandbox options — where the reproduction runs its code. "auto"/"local" exist
+// in the type but the lab path defaults docker on local hardware; they're not
+// meaningful picks for users, so the surfaced set is Local + the three GPU
+// clouds (RunPod, GCP/GKE, Azure/AKS).
 // ---------------------------------------------------------------------------
 const SANDBOX_OPTIONS: { value: DemoSandboxMode; label: string; hint: string }[] = [
-  { value: "docker", label: "Local (Docker)", hint: "CPU-only on your machine. Fast iteration, no compute cost." },
-  { value: "runpod", label: "RunPod GPU",     hint: "GPU pod on RunPod. Requires funded RunPod account (≈$0.34/hr RTX 4090 COMMUNITY)." },
+  { value: "docker", label: "Local (Docker)", hint: "Runs on this machine, CPU-only. Fast to start, no cloud cost." },
+  { value: "runpod", label: "RunPod GPU",     hint: "A rented GPU pod on RunPod. Needs a funded RunPod account (≈$0.34/hr RTX 4090)." },
+  { value: "gcp",    label: "GPU on GCP",     hint: "Scale-to-zero A100 pool on Google Kubernetes Engine — $0 when idle." },
+  { value: "azure",  label: "GPU on Azure",   hint: "A100 pool on Azure Kubernetes Service. Needs AKS infrastructure." },
 ];
 import { PRESET_PAPERS } from "@/lib/demo/preset-papers";
 import type { ModelChoice } from "@/lib/models/server-fetch";
@@ -27,6 +30,7 @@ import "./upload-view.css";
 // ---------------------------------------------------------------------------
 
 const PROVIDER_LABELS: Record<RootProvider, string> = {
+  foundry: "Foundry (Opus / Sonnet)",
   anthropic_api: "Anthropic API",
   anthropic_oauth: "Anthropic OAuth",
   openai_api: "OpenAI",
@@ -34,7 +38,20 @@ const PROVIDER_LABELS: Record<RootProvider, string> = {
   featherless: "Featherless",
 };
 
+// Plain-language "what this is" copy, shown for the *selected* provider when it
+// is available. Written for a mixed audience — names the model + how it's
+// billed, not the wire protocol.
+const PROVIDER_DESCRIPTIONS: Record<RootProvider, string> = {
+  foundry: "Funded Claude models — Opus 4.8 and Sonnet 5 — via the Azure Foundry endpoint.",
+  anthropic_api: "Claude via your ANTHROPIC_API_KEY (pay-as-you-go).",
+  anthropic_oauth: "Claude via your claude.ai subscription login.",
+  openai_api: "GPT-5 via your OPENAI_API_KEY.",
+  azure_openai: "GPT-4o via your Azure OpenAI resource.",
+  featherless: "Qwen3-Coder (open weights) via Featherless.",
+};
+
 const PROVIDER_ENV_HINTS: Record<RootProvider, string> = {
+  foundry: "Set AZURE_FOUNDRY_API_KEY + AZURE_FOUNDRY_ENDPOINT and reload",
   anthropic_api: "Set ANTHROPIC_API_KEY and reload",
   anthropic_oauth: "Run `claude login` and reload",
   openai_api: "Set OPENAI_API_KEY and reload",
@@ -43,8 +60,21 @@ const PROVIDER_ENV_HINTS: Record<RootProvider, string> = {
 };
 
 const SUBAGENT_LABELS: Record<SubagentAuth, string> = {
+  foundry: "Foundry (Sonnet)",
   anthropic_api: "Anthropic API (key)",
   anthropic_oauth: "Anthropic OAuth (subscription)",
+};
+
+const SUBAGENT_DESCRIPTIONS: Record<SubagentAuth, string> = {
+  foundry: "Code-writing sub-agents run on Sonnet 5 via Azure Foundry.",
+  anthropic_api: "Sub-agents authenticate with your ANTHROPIC_API_KEY.",
+  anthropic_oauth: "Sub-agents use your claude.ai subscription.",
+};
+
+const SUBAGENT_ENV_HINTS: Record<SubagentAuth, string> = {
+  foundry: "Set AZURE_FOUNDRY_API_KEY and reload",
+  anthropic_api: "Set ANTHROPIC_API_KEY and reload",
+  anthropic_oauth: "Run `claude login` and reload",
 };
 
 // ---------------------------------------------------------------------------
@@ -186,7 +216,10 @@ export function UploadView({
   const showAzureFields = rootProvider === "azure_openai";
   const showCredentialsBlock = showAnthropicKey || showOpenAIKey || showAzureFields;
 
+  // Foundry leads both lists — it's the funded, pre-selected default when its
+  // creds resolve (backend aggregate_auth_status), so it should read first.
   const providers: RootProvider[] = [
+    "foundry",
     "anthropic_api",
     "anthropic_oauth",
     "openai_api",
@@ -194,7 +227,7 @@ export function UploadView({
     "featherless",
   ];
 
-  const subagentOptions: SubagentAuth[] = ["anthropic_api", "anthropic_oauth"];
+  const subagentOptions: SubagentAuth[] = ["foundry", "anthropic_api", "anthropic_oauth"];
 
   // F3: widen the model picker when the persisted model isn't in the
   // backend-supplied list (e.g. a registry alias resolved server-side, or
@@ -382,6 +415,7 @@ export function UploadView({
       {/* ── Sandbox radio group ──────────────────────────────────── */}
       <fieldset className="upload-provider-fieldset" disabled={busy}>
         <legend className="upload-config-label">Sandbox</legend>
+        <p className="upload-provider-caption">Where the reproduction runs its code.</p>
         <div className="upload-provider-options">
           {SANDBOX_OPTIONS.map((opt) => (
             <label
@@ -400,18 +434,21 @@ export function UploadView({
             </label>
           ))}
         </div>
+        {(() => {
+          const selected = SANDBOX_OPTIONS.find((o) => o.value === sandbox);
+          return selected ? <p className="upload-provider-detail">{selected.hint}</p> : null;
+        })()}
       </fieldset>
 
       {/* ── LLM provider radio group ─────────────────────────────── */}
       <fieldset className="upload-provider-fieldset" disabled={busy}>
         <legend className="upload-config-label">LLM provider</legend>
+        <p className="upload-provider-caption">The model that reads the paper and drives the reproduction.</p>
         <div className="upload-provider-options">
           {providers.map((p) => {
             const status = authStatus?.providers[p];
             const available = status ? status.available : true; // optimistic until loaded
-            const hint = available
-              ? (status?.detail ?? "")
-              : PROVIDER_ENV_HINTS[p];
+            const hint = available ? PROVIDER_DESCRIPTIONS[p] : PROVIDER_ENV_HINTS[p];
             return (
               <label
                 key={p}
@@ -428,6 +465,9 @@ export function UploadView({
                   onChange={() => onRootProviderChange(p)}
                 />
                 <span className="upload-provider-name">{PROVIDER_LABELS[p]}</span>
+                {p === "foundry" && available ? (
+                  <span className="upload-provider-recommended">Recommended</span>
+                ) : null}
                 {status ? (
                   <span className={`upload-provider-badge${available ? " ok" : " err"}`}>
                     {available ? "✓" : "✗"}
@@ -437,27 +477,35 @@ export function UploadView({
             );
           })}
         </div>
+        {(() => {
+          const status = authStatus?.providers[rootProvider];
+          const available = status ? status.available : true;
+          const detail = available ? PROVIDER_DESCRIPTIONS[rootProvider] : PROVIDER_ENV_HINTS[rootProvider];
+          return <p className="upload-provider-detail">{detail}</p>;
+        })()}
       </fieldset>
 
       {/* ── Sub-agent auth radio group ───────────────────────────── */}
       {(() => {
         const noneAvailable = authStatus
-          ? !authStatus.subagent_auth.anthropic_api && !authStatus.subagent_auth.anthropic_oauth
+          ? !authStatus.subagent_auth.anthropic_api
+            && !authStatus.subagent_auth.anthropic_oauth
+            && !authStatus.subagent_auth.foundry
           : false;
+        const selectedAvailable = authStatus ? authStatus.subagent_auth[subagentAuth] : true;
         return (
           <fieldset className="upload-provider-fieldset" disabled={busy}>
             <legend className="upload-config-label">Sub-agent auth</legend>
+            <p className="upload-provider-caption">How the code-writing sub-agents authenticate.</p>
             {noneAvailable && (
               <p className="upload-subagent-warn">
-                No sub-agent auth available — set <code>ANTHROPIC_API_KEY</code> to enable Sonnet implementation calls.
+                No sub-agent auth available — set <code>AZURE_FOUNDRY_API_KEY</code> or <code>ANTHROPIC_API_KEY</code> to enable the code-writing sub-agents.
               </p>
             )}
             <div className="upload-provider-options">
               {subagentOptions.map((s) => {
                 const available = authStatus ? authStatus.subagent_auth[s] : true;
-                const hint = available
-                  ? SUBAGENT_LABELS[s]
-                  : (s === "anthropic_api" ? "Set ANTHROPIC_API_KEY and reload" : "Run `claude login` and reload");
+                const hint = available ? SUBAGENT_DESCRIPTIONS[s] : SUBAGENT_ENV_HINTS[s];
                 return (
                   <label
                     key={s}
@@ -474,6 +522,9 @@ export function UploadView({
                       onChange={() => onSubagentAuthChange(s)}
                     />
                     <span className="upload-provider-name">{SUBAGENT_LABELS[s]}</span>
+                    {s === "foundry" && available ? (
+                      <span className="upload-provider-recommended">Recommended</span>
+                    ) : null}
                     {authStatus ? (
                       <span className={`upload-provider-badge${available ? " ok" : " err"}`}>
                         {available ? "✓" : "✗"}
@@ -483,6 +534,11 @@ export function UploadView({
                 );
               })}
             </div>
+            {!noneAvailable && (
+              <p className="upload-provider-detail">
+                {selectedAvailable ? SUBAGENT_DESCRIPTIONS[subagentAuth] : SUBAGENT_ENV_HINTS[subagentAuth]}
+              </p>
+            )}
           </fieldset>
         );
       })()}
