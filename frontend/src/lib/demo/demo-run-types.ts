@@ -46,11 +46,15 @@ export interface DemoPaperbenchBaseline {
 }
 
 export interface DemoBenchmarkSummary {
-  benchmarkName: string;
-  paperbenchTaskId: string;
+  // benchmarkName/paperbenchTaskId/targetMetric/targetValue assert a specific
+  // benchmark identity (e.g. the canned CartPole demo task) and are only
+  // ever non-null for the built-in ReproLab demo — a real paper run gets
+  // `null` here until the pipeline actually measures a result.
+  benchmarkName: string | null;
+  paperbenchTaskId: string | null;
   overallScore: number;
-  targetMetric: string;
-  targetValue: number;
+  targetMetric: string | null;
+  targetValue: number | null;
   reproducedValue: number;
   deltaValue: number;
   verdict: string;

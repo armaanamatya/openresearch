@@ -1633,8 +1633,18 @@ def run_matrix(
     results: dict[str, CellResult] = {}
     results_lock = threading.Lock()
 
+    # ContextVars do NOT propagate into worker threads. Capture the active cloud
+    # settings prefix HERE — in the main thread, inside the caller's
+    # `_bind_settings_prefix(...)` — and re-pin it at the top of `_process_cell`
+    # so each per-cell manifest resolves the right cloud. Without this, a gcp
+    # run's cell threads fall back to the ContextVar default ("azure") →
+    # `reprolab/sku=azure_a100_80` nodeSelector + the `reprolab-cache` Azure-Files
+    # PVC → the pod is unschedulable and sits Pending forever (prj_618, 2026-07-07).
+    _active_prefix = _get_settings_prefix()
+
     def _process_cell(cell: dict[str, Any]) -> None:
         nonlocal reserved_gpu_seconds, reserved_gpu_usd
+        _SETTINGS_PREFIX_CTX.set(_active_prefix)
 
         # P0-fix-4: per-cell copy so escalation can update the rate for THIS cell
         # without affecting other concurrent cells (shared outer var would be a race

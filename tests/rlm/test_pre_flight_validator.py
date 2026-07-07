@@ -682,9 +682,8 @@ def test_lr_too_small_is_blocked(tmp_path: Path) -> None:
 
 
 def test_lr_aliases_caught(tmp_path: Path) -> None:
-    """The check covers common LR aliases (alpha, base_lr, max_lr, etc.)."""
+    """The check covers common unambiguous LR aliases (base_lr, max_lr, etc.)."""
     body = """\
-alpha = 2.5
 base_lr = 5.0
 max_lr = 3.0
 init_lr = 8.0
@@ -693,9 +692,25 @@ initial_lr = 6.0
     _write(tmp_path / "train.py", body)
     out = validate_code_pre_flight(tmp_path, {})
     hard = _hard(out)
-    aliases = ("alpha", "base_lr", "max_lr", "init_lr", "initial_lr")
+    aliases = ("base_lr", "max_lr", "init_lr", "initial_lr")
     for a in aliases:
         assert any(f"{a}=" in v.detail for v in hard), f"missed alias: {a}"
+
+
+def test_alpha_is_not_treated_as_learning_rate(tmp_path: Path) -> None:
+    """`alpha` is an ambiguous coefficient (UCPO sharpening / label smoothing /
+    EMA / focal-loss α), not a learning rate — an `alpha=0.0` ablation and an
+    `alpha=2.5` coefficient must NOT be hard-blocked. Regression for the UCPO
+    `alpha=0.0` sharpening-ablation false block (prj_618, 2026-07-07)."""
+    body = """\
+alpha = 0.0
+sharpen_alpha = 2.5
+adv = compute_dgrpo_advantage(x, alpha=0.0)
+CFG = {"alpha": 2.5}
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    assert not any("alpha=" in v.detail for v in _hard(out))
 
 
 def test_lr_negative_literal_caught(tmp_path: Path) -> None:

@@ -299,10 +299,15 @@ def _coerce_to_float_or_none(v: Any) -> Any:
 
 
 class BenchmarkSummary(BaseModel):
-    benchmarkName: str
-    paperbenchTaskId: str
+    # benchmarkName/paperbenchTaskId/targetMetric are Optional: they carry a
+    # specific benchmark identity (e.g. the canned "reprolab-demo/ppo-cartpole-v1"
+    # demo task) that must not be asserted for a real paper run whose actual
+    # target the pipeline hasn't measured yet — None means "no fixed demo
+    # claim", never a fabricated default (evidence integrity).
+    benchmarkName: str | None = None
+    paperbenchTaskId: str | None = None
     overallScore: float
-    targetMetric: str
+    targetMetric: str | None = None
     targetValue: float | None = None
     reproducedValue: float | None = None
     deltaValue: float | None = None
@@ -1250,12 +1255,18 @@ class FileLiveRunService:
         manifest_path = code_dir / "reprolab_manifest.json"
         readme_path = code_dir / "README.md"
 
+        # The hardcoded PPO/CartPole/mean_reward literals below describe the
+        # built-in ReproLab canned demo only. `uploaded` is True for every
+        # real paper run (uploaded PDF), so those fields must not assert a
+        # benchmark/task identity the run never targeted — evidence
+        # integrity requires absent/null over a fabricated default here.
+        # See docs/runbooks — P2 data-integrity fix, false CartPole claim.
         benchmark = {
-            "benchmarkName": "PaperBench-style final benchmark",
-            "paperbenchTaskId": "reprolab-demo/ppo-cartpole-v1",
+            "benchmarkName": "PaperBench-style final benchmark" if not uploaded else None,
+            "paperbenchTaskId": "reprolab-demo/ppo-cartpole-v1" if not uploaded else None,
             "overallScore": 91.4 if not uploaded else 0.0,
-            "targetMetric": "mean_reward",
-            "targetValue": 475.0,
+            "targetMetric": "mean_reward" if not uploaded else None,
+            "targetValue": 475.0 if not uploaded else None,
             "reproducedValue": 492.3 if not uploaded else 0.0,
             "deltaValue": 17.3 if not uploaded else 0.0,
             "verdict": "reproduced_with_caveats" if not uploaded else "pending_pipeline_result",
@@ -1271,14 +1282,26 @@ class FileLiveRunService:
             "run_mode": request.mode,
             "execution_profile": request.executionMode,
             "source": source_pdf,
-            "claim": {
-                "metric": "mean_reward",
-                "target": 475.0,
-                "environment": "CartPole-v1",
-                "evaluation_protocol": "100 deterministic evaluation episodes after PPO training",
-            },
+            "claim": (
+                {
+                    "metric": "mean_reward",
+                    "target": 475.0,
+                    "environment": "CartPole-v1",
+                    "evaluation_protocol": "100 deterministic evaluation episodes after PPO training",
+                }
+                if not uploaded
+                else {
+                    "metric": None,
+                    "target": None,
+                    "environment": None,
+                    "evaluation_protocol": (
+                        "pending — this run's claim is determined by the pipeline's "
+                        "measured artifacts, not a fixed demo target"
+                    ),
+                }
+            ),
             "result": {
-                "metric": "mean_reward",
+                "metric": benchmark["targetMetric"],
                 "value": benchmark["reproducedValue"],
                 "delta_vs_target": benchmark["deltaValue"],
                 "status": benchmark["verdict"],
@@ -1625,6 +1648,21 @@ def _write_minimal_pdf(path: Path, *, title: str) -> None:
     path.write_bytes(bytes(body))
 
 
+def _report_value(value: Any, *, numeric: bool = False) -> str:
+    """Render a benchmark field for the human-readable report/log artifacts.
+
+    `None` means "no fixed demo claim for this run" (a real paper whose
+    target isn't the canned CartPole/mean_reward demo) — render it as an
+    honest "pending" placeholder instead of crashing on `None:.1f` or
+    printing the Python literal "None".
+    """
+    if value is None:
+        return "pending"
+    if numeric:
+        return f"{value:.1f}"
+    return str(value)
+
+
 def _benchmark_report_markdown(
     project_id: str,
     benchmark: dict[str, Any],
@@ -1643,8 +1681,8 @@ def _benchmark_report_markdown(
     return f"""# Final Benchmark Report
 
 **Project:** `{project_id}`  
-**Benchmark:** {benchmark["benchmarkName"]}  
-**Task:** `{benchmark["paperbenchTaskId"]}`  
+**Benchmark:** {_report_value(benchmark["benchmarkName"])}  
+**Task:** `{_report_value(benchmark["paperbenchTaskId"])}`  
 **Verdict:** `{benchmark["verdict"]}`
 
 {status_note}
@@ -1663,7 +1701,7 @@ def _benchmark_report_markdown(
 
 | Metric | Paper target | Reproduced value | Delta |
 | --- | ---: | ---: | ---: |
-| {benchmark["targetMetric"]} | {benchmark["targetValue"]:.1f} | {benchmark["reproducedValue"]:.1f} | {delta_text} |
+| {_report_value(benchmark["targetMetric"])} | {_report_value(benchmark["targetValue"], numeric=True)} | {benchmark["reproducedValue"]:.1f} | {delta_text} |
 
 ## PaperBench-Style Rubric
 
@@ -1697,14 +1735,21 @@ code/
 def _paperbench_log(project_id: str, benchmark: dict[str, Any], uploaded: bool) -> str:
     if uploaded:
         result_line = "pending measured result; waiting for pipeline artifacts"
+        task_line = (
+            "2026-05-10T09:30:12Z paperbench-eval INFO no fixed benchmark task for this "
+            "run — pending the pipeline's measured result"
+        )
     else:
         result_line = (
             f"mean_reward={benchmark['reproducedValue']:.1f}, "
             f"target={benchmark['targetValue']:.1f}, delta={benchmark['deltaValue']:+.1f}"
         )
+        task_line = (
+            f"2026-05-10T09:30:12Z paperbench-eval INFO loaded task {benchmark['paperbenchTaskId']}"
+        )
     return "\n".join(
         [
-            "2026-05-10T09:30:12Z paperbench-eval INFO loaded task reprolab-demo/ppo-cartpole-v1",
+            task_line,
             f"2026-05-10T09:30:13Z paperbench-eval INFO project={project_id}",
             "2026-05-10T09:30:14Z paperbench-eval INFO validating source artifact code/paper.pdf",
             "2026-05-10T09:30:15Z paperbench-eval INFO checking generated code root manifest",

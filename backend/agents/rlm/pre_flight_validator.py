@@ -717,8 +717,14 @@ def _check_absurd_learning_rate(
     keyword args + simple assignments. False positives on non-LR variables
     named ``lr_something`` are avoided by checking the exact key.
     """
+    # "alpha" is deliberately EXCLUDED: it is far more often a coefficient
+    # (UCPO sharpening strength, label smoothing, EMA decay, focal-loss α,
+    # RMSprop smoothing) than a learning rate, where 0.0 (ablation) and >1.0
+    # are legitimate values. Treating it as an LR hard-blocked UCPO's faithful
+    # `alpha=0.0` sharpening ablation (prj_618, 2026-07-07). The 2026-05-25
+    # Dropout incident this check guards came through `lr`, not `alpha`.
     LR_NAMES = {
-        "lr", "learning_rate", "alpha", "base_lr", "max_lr",
+        "lr", "learning_rate", "base_lr", "max_lr",
         "init_lr", "initial_lr",
     }
     LOWER_BOUND = 1e-7

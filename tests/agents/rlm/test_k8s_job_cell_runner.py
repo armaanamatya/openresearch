@@ -1098,6 +1098,124 @@ class TestBindRunContext:
 
 
 # ---------------------------------------------------------------------------
+# 12b. Settings-prefix ContextVar across worker threads (prj_618 GKE fix,
+# 2026-07-07)
+#
+# ContextVars do NOT propagate into new threads. run_matrix submits each cell
+# on a worker thread (_process_cell), so a bare `_bind_settings_prefix("gcp")`
+# bound in the MAIN thread was invisible there — the worker fell back to the
+# ContextVar default ("azure"), resolving `reprolab/sku=azure_a100_80` +
+# the "reprolab-cache" Azure-Files PVC for a GCP run, and the GKE pod sat
+# unschedulable (Pending forever). The fix: run_matrix captures
+# `_get_settings_prefix()` in the main thread (right after `results_lock =
+# threading.Lock()`) and `_process_cell` re-pins it via
+# `_SETTINGS_PREFIX_CTX.set(...)` as its first statement.
+# ---------------------------------------------------------------------------
+
+class TestSettingsPrefixThreadRepin:
+    def test_settings_prefix_is_lost_in_worker_thread_without_repin(self):
+        """Documents the bug: a plain worker thread does NOT inherit the bound prefix."""
+        seen: dict[str, str] = {}
+
+        def _worker() -> None:
+            seen["prefix"] = kjcr._get_settings_prefix()
+
+        with kjcr._bind_settings_prefix("gcp"):
+            assert kjcr._get_settings_prefix() == "gcp"  # main thread sees the binding
+            t = threading.Thread(target=_worker)
+            t.start()
+            t.join(timeout=5)
+
+        # ContextVar default ("azure"), NOT "gcp" — the bug, absent the re-pin.
+        assert seen["prefix"] == "azure"
+
+    def test_repin_propagates_gcp_prefix_into_worker_thread(self):
+        """The fix pattern: capture the prefix in the main thread, re-pin it in the worker."""
+        seen: dict[str, Any] = {}
+
+        with kjcr._bind_settings_prefix("gcp"):
+            captured_prefix = kjcr._get_settings_prefix()  # main-thread capture, like run_matrix
+            assert captured_prefix == "gcp"
+
+            def _worker() -> None:
+                kjcr._SETTINGS_PREFIX_CTX.set(captured_prefix)
+                seen["prefix"] = kjcr._get_settings_prefix()
+                seen["files_share"] = kjcr._cloud_setting("files_share", None)
+
+            t = threading.Thread(target=_worker)
+            t.start()
+            t.join(timeout=5)
+
+        assert seen["prefix"] == "gcp"
+        # emptyDir path, not the "reprolab-cache" Azure Files PVC default.
+        assert seen["files_share"] is None
+
+
+class TestRunMatrixGcpPrefixWiring:
+    """End-to-end: run_matrix under the gcp prefix must submit a Job manifest
+    whose nodeSelector targets a gcp_* SKU — proving _process_cell's re-pin is
+    actually wired into the submitted manifest, not just the ContextVar
+    primitives in isolation above. Reuses the existing _make_k8s/_patch_blob
+    hermetic seam (no new k8s mocking)."""
+
+    # kjcr._setting is monkeypatched directly (like test_job_submitted_to_namespace
+    # and TestGcpFilesCacheDefaultEmptyDir above) rather than via
+    # OPENRESEARCH_GCP_GPU_SKUS: this directory's conftest.py autouse fixture
+    # already patches kjcr._setting to azure-only defaults, so an env var would
+    # never reach it — a test-local monkeypatch.setattr is the seam that wins.
+    _GCP_SETTINGS: dict[str, Any] = {
+        "gcp_namespace": "reprolab",
+        "gcp_service_account": "reprolab-sa",
+        "gcp_node_pool_name": "gpua100",
+        "gcp_base_image": "us-docker.pkg.dev/proj/repo/reprolab:v1",
+        "gcp_max_nodes": 4,
+        "gcp_gpu_usd_per_hour": 3.67,
+        "gcp_pending_timeout_seconds": 900,
+        "gcp_gpu_skus": ["gcp_a100_80x8"],
+        "gcp_ttl_seconds_after_finished": 3600,
+        "gcp_job_backoff_limit": 0,
+        "gcp_cache_mount_path": "/mnt/reprolab-cache",
+        "gcp_watch_poll_interval_s": 0.001,
+        "gcp_cell_oom_batch_scale_step1": 0.5,
+        "gcp_cell_oom_batch_scale_floor": 0.25,
+        "gcp_bootstrap_pip_timeout_s": 600,
+        "gcp_cell_preempt_grace_s": 20,
+        "gcp_files_cache_enabled": False,
+        "gcp_use_spot": False,
+        "gcp_spot_backoff_limit": 3,
+        "dynamic_gpu_max_escalations": 2,
+    }
+
+    def test_run_matrix_gcp_prefix_submits_gcp_nodeselector(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(
+            kjcr, "_setting",
+            lambda name, default=None: self._GCP_SETTINGS.get(name, default),
+        )
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.42})
+
+        with kjcr._bind_settings_prefix("gcp"):
+            results = run_matrix(
+                [{"id": "gcp0"}],
+                tmp_path / "train_cell.py",
+                output_root=tmp_path / "out",
+            )
+
+        assert results["gcp0"]["status"] == "ok"
+        assert len(k8s.batch.created_jobs) == 1
+        node_selector = k8s.batch.created_jobs[0]["spec"]["template"]["spec"]["nodeSelector"]
+        sku = node_selector["reprolab/sku"]
+        assert sku.startswith("gcp_"), (
+            f"expected a gcp_* nodeSelector (settings prefix re-pinned inside the "
+            f"worker thread), got {sku!r} — without the re-pin this regresses to "
+            f"azure_a100_80 (the prj_618 unschedulable-pod bug)"
+        )
+
+
+# ---------------------------------------------------------------------------
 # 13. Job name sanity
 # ---------------------------------------------------------------------------
 
