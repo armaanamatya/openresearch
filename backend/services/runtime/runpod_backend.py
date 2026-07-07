@@ -437,7 +437,12 @@ class RunpodBackend(RuntimeBackend):
 
         try:
             conn = await self._ssh(sandbox.sandbox_id)
-            script = _remote_command(sandbox.config, command)
+            _conn_meta = self._connections.get(sandbox.sandbox_id)
+            script = _remote_command(
+                sandbox.config,
+                command,
+                remote_workdir=_conn_meta.remote_workdir if _conn_meta else None,
+            )
             remote_cmd = f"/bin/bash -lc {_shell_quote(script)}"
             # Streaming path requires the asyncssh create_process API. A test
             # double exposing only conn.run (legacy/fake) falls back to the
@@ -858,7 +863,7 @@ class RunpodBackend(RuntimeBackend):
             await self._upload_directory(sftp, config.project_root, connection.remote_workdir)
         if self.bootstrap_command:
             bootstrap = await conn.run(
-                f"/bin/bash -lc {_shell_quote(_remote_command(config, self.bootstrap_command))}",
+                f"/bin/bash -lc {_shell_quote(_remote_command(config, self.bootstrap_command, remote_workdir=connection.remote_workdir))}",
                 check=False,
             )
             if bootstrap.returncode != 0:
@@ -1469,14 +1474,24 @@ def _runpod_start_command() -> str:
     )
 
 
-def _remote_command(config: SandboxConfig, command: str) -> str:
+def _remote_command(
+    config: SandboxConfig, command: str, *, remote_workdir: str | None = None
+) -> str:
     exports = "; ".join(
         f"export {key}={_shell_quote(value)}"
         for key, value in sorted(config.environment.items())
         if key.replace("_", "").isalnum()
     )
     prefix = f"{exports}; " if exports else ""
-    return f"{prefix}cd {_shell_quote(config.workdir)} && {command}"
+    # cd to the REMOTE upload dir where the code physically lives. config.workdir
+    # is the ORCHESTRATOR-HOST path (e.g. /Volumes/.../code) that only resolves on
+    # the pod via a symlink created in _prepare_workspace — a fragile dependency
+    # that broke in practice (`sh: cd: can't cd to /Volumes/.../code`, starving
+    # every run_experiment). remote_workdir (…/work under the /workspace mount) is
+    # the guaranteed target; fall back to config.workdir only when a caller can't
+    # supply it (e.g. legacy test doubles), preserving prior behavior there.
+    workdir = remote_workdir or config.workdir
+    return f"{prefix}cd {_shell_quote(workdir)} && {command}"
 
 
 def _replace_path_with_symlink(path: str, target: str) -> str:
