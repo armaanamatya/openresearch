@@ -1104,7 +1104,8 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
     from backend.agents.rlm import primitive_cache as _cache
     _sandbox_mode_val = getattr(ctx, "sandbox_mode", None)
     _sandbox_key = getattr(_sandbox_mode_val, "value", str(_sandbox_mode_val) if _sandbox_mode_val is not None else None)
-    _repo_on = os.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() in ("1", "true", "yes", "on")
+    from backend.agents.rlm.feature_flags import use_author_repo as _use_author_repo
+    _repo_on = _use_author_repo()
     _payload = {
         "method_spec": method_spec,
         # gpu_mode + sandbox_mode both affect Dockerfile shape, so both are cache keys.
@@ -1132,10 +1133,8 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
     spec_dict = spec.model_dump()
     # #62: when a repo was cloned (flag on), merge its declared deps — ground
     # truth over prose-inferred deps. Byte-identical when no repo/ exists.
-    import os as _os_repo
-    if _os_repo.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() in (
-        "1", "true", "yes", "on",
-    ):
+    from backend.agents.rlm.feature_flags import use_author_repo as _use_author_repo
+    if _use_author_repo():
         _repo_dir = ctx.project_dir / "repo"
         if _repo_dir.is_dir():
             spec_dict = _merge_repo_deps_into_spec(spec_dict, _repo_dir)
@@ -2022,10 +2021,11 @@ def _repo_artifact_index(project_dir: "Path", plan_artifact_index: "dict | None"
     run setup is authoritative. Returns the plan's dict unchanged when no repo was used
     or when the master flag is off.
     """
-    import os as _os
     from pathlib import Path as _Path
+
+    from backend.agents.rlm.feature_flags import use_author_repo as _use_author_repo
     base = dict(plan_artifact_index or {})
-    if _os.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() not in ("1", "true", "yes", "on"):
+    if not _use_author_repo():
         return base
     spec = _load_repo_spec(project_dir)
     if spec.get("url") and spec.get("clone_succeeded"):
@@ -2320,7 +2320,8 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
     _sandbox_key = getattr(ctx.sandbox_mode, "value", str(ctx.sandbox_mode) if ctx.sandbox_mode is not None else None)
     _gpu_key = getattr(getattr(ctx, "gpu_mode", None), "value", str(getattr(ctx, "gpu_mode", None)) if getattr(ctx, "gpu_mode", None) is not None else None)
     from backend.agents.baseline_knowledge import KNOWLEDGE_CHANNEL_VERSION as _KC_VER
-    _repo_on = os.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() in ("1", "true", "yes", "on")
+    from backend.agents.rlm.feature_flags import use_author_repo as _use_author_repo
+    _repo_on = _use_author_repo()
     _payload = {
         "plan": plan,
         "repair_context": repair_context,
@@ -2484,10 +2485,8 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
     # #62: ADAPT mode, first call only (code/ empty) — seed the authors' code into
     # code/ so the sub-agent ADAPTS rather than rewrites. Re-entrant repair calls
     # never re-seed (code/ already non-empty). Flag-gated; byte-identical off.
-    import os as _os_repo
-    if _os_repo.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() in (
-        "1", "true", "yes", "on",
-    ):
+    from backend.agents.rlm.feature_flags import use_author_repo as _use_author_repo
+    if _use_author_repo():
         _rspec = _load_repo_spec(ctx.project_dir)
         _repo_dir = ctx.project_dir / "repo"
         if _should_seed_code_from_repo(_rspec.get("mode", "adapt"), _repo_dir, code_dir):
@@ -8374,10 +8373,8 @@ def inspect_repository(
     Never raises (fail-soft): an error returns ``{"status": "error", "error": ...}``.
     Path traversal outside repo/ is refused.
     """
-    import os as _os
-    if _os.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() not in (
-        "1", "true", "yes", "on",
-    ):
+    from backend.agents.rlm.feature_flags import use_author_repo as _use_author_repo
+    if not _use_author_repo():
         return {"status": "disabled"}
     try:
         repo_dir = (ctx.project_dir / "repo").resolve()

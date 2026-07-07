@@ -13,7 +13,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 ## Config fields bypassed by ad-hoc reads
 
-16 flags are typed in `config.py` **and** still read directly via `os.environ`, so the typed default is dead at those call sites. Review before consolidating — some are call-time reads on purpose (test monkeypatch / per-run toggle).
+15 flags are typed in `config.py` **and** still read directly via `os.environ`, so the typed default is dead at those call sites. Review before consolidating — some are call-time reads on purpose (test monkeypatch / per-run toggle).
 
 | Flag | cfg default | ad-hoc reads |
 |---|---|:--:|
@@ -32,7 +32,6 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | `OPENRESEARCH_RUNPOD_IMAGE` | `"runpod/pytorch:2.1.0-py3.10-cuda11.8.0-` | 1 |
 | `OPENRESEARCH_RUNPOD_VOLUME_GB` | `20` | 1 |
 | `OPENRESEARCH_RUNPOD_VOLUME_MOUNT_PATH` | `"/workspace"` | 5 |
-| `OPENRESEARCH_USE_AUTHOR_REPO` | `False` | 7 |
 
 ### `OPENRESEARCH_AB_*`
 
@@ -1017,7 +1016,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_USE_AUTHOR_REPO` | ✅ | ✅ | 7 | `False` |
+| `OPENRESEARCH_USE_AUTHOR_REPO` | ✅ | ✅ |  | `False` |
 
 ### `OPENRESEARCH_VALIDATOR_*`
 

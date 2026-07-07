@@ -645,9 +645,8 @@ def build_system_prompt(
         )
 
     # #62: repo-aware guidance only when OPENRESEARCH_USE_AUTHOR_REPO is on.
-    if _os.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() in (
-        "1", "true", "yes", "on",
-    ):
+    from backend.agents.rlm.feature_flags import use_author_repo as _use_author_repo
+    if _use_author_repo():
         parts.append(_REPO_AWARE_SECTION)
 
     body = "\n".join(parts)

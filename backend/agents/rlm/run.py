@@ -587,9 +587,9 @@ def _resolve_and_clone_repo(
     """
     import json as _json
 
-    if os.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() not in (
-        "1", "true", "yes", "on"
-    ):
+    from backend.agents.rlm.feature_flags import use_author_repo
+
+    if not use_author_repo():
         return None, None
     try:
         from backend.services.ingestion.repo.provisioner import RepoProvisioner
