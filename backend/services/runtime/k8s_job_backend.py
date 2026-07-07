@@ -591,6 +591,31 @@ class _KubernetesJobBackend(RuntimeBackend):
         except Exception:
             return None
 
+    def _default_gpu_sku(self) -> str | None:
+        """Return the first entry of the cloud's configured ``<prefix>_gpu_skus`` setting.
+
+        Fallback node-pool target for ``exec()`` when a GPU Job needs to be submitted
+        but no ``GpuPlan`` was resolved (``_gpu_plan_short_name()`` is None) — mirrors
+        the cell-matrix runner's P0-fix-3 default (``k8s_job_cell_runner._build_job_manifest``).
+        This cluster's GPU node pools are scale-to-zero and labeled
+        ``reprolab/sku=<short_name>``; a Job submitted with no nodeSelector at all can
+        land on no particular pool, so the autoscaler can never satisfy it (scales a
+        GPU node up, the pod never binds, the node scales back down — a thrash loop
+        that bills the cloud while the run shows $0). Returns None (never invents a
+        label) when the setting is unset/empty, preserving the cluster-default
+        no-nodeSelector behavior.
+        """
+        skus = _settings_get(
+            self._get_settings(), f"{self._cloud.settings_prefix}_gpu_skus", None
+        )
+        if not skus:
+            return None
+        try:
+            first = skus[0]
+        except (IndexError, TypeError, KeyError):
+            return None
+        return str(first) if first else None
+
     def _gpu_plan_gpu_count(self) -> int:
         """Return gpu_count from the stored gpu_plan (GpuPlan or dict), defaulting to 1."""
         plan = self._gpu_plan
@@ -730,6 +755,19 @@ class _KubernetesJobBackend(RuntimeBackend):
         env_vars["OPENRESEARCH_EXEC_COMMAND"] = command
         env_vars["OPENRESEARCH_EXEC_MODE"] = "1"
 
+        gpu_count = self._gpu_plan_gpu_count()
+        gpu_sku = self._gpu_plan_short_name()
+        if gpu_sku is None and gpu_count >= 1:
+            # P0-fix-3 parity (k8s_job_cell_runner._build_job_manifest): without this,
+            # a GPU Job with no resolved GpuPlan gets NO nodeSelector at all, so on a
+            # scale-to-zero cluster the autoscaler cannot bind it to the pool it just
+            # scaled up (FailedScheduling/untolerated-taint) — thrashing the node up
+            # then back down while billing the cloud. Fall back to the first
+            # configured/provisioned SKU so the pod always targets a real pool; an
+            # empty gpu_skus setting keeps today's no-nodeSelector/cluster-default
+            # behavior (never invent a label).
+            gpu_sku = self._default_gpu_sku()
+
         job_manifest = _build_job_manifest(
             job_name=job_name,
             namespace=ns,
@@ -740,8 +778,8 @@ class _KubernetesJobBackend(RuntimeBackend):
             active_deadline_seconds=timeout,
             ttl_seconds=self._ttl_after_finished(),
             backoff_limit=self._job_backoff_limit(),
-            gpu_sku=self._gpu_plan_short_name(),
-            gpu_count=self._gpu_plan_gpu_count(),
+            gpu_sku=gpu_sku,
+            gpu_count=gpu_count,
             pod_template_extra_labels=self._cloud.pod_template_extra_labels,
             sandbox_label=self._cloud.sandbox_label,
         )

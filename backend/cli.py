@@ -3077,6 +3077,9 @@ def _module_main(argv: list[str] | None = None) -> None:
     if selected_argv and selected_argv[0] == "reproduce":
         sys.stdout.flush()
         sys.stderr.flush()
+        if os.environ.get("OPENRESEARCH_HARDEXIT_CLEANUP", "").strip().lower() in ("1", "true", "yes"):
+            from backend.agents.rlm.process_cleanup import terminate_children_then_exit
+            terminate_children_then_exit(code)
         os._exit(code)
     raise SystemExit(code)
 

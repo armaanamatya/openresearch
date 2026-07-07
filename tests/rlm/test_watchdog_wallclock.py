@@ -49,6 +49,34 @@ def test_fires_when_deadline_passed(monkeypatch, tmp_path: Path) -> None:
     assert (tmp_path / "final_report.json").exists()
 
 
+def test_fires_with_hardexit_cleanup_flag_on(monkeypatch, tmp_path: Path) -> None:
+    """OPENRESEARCH_HARDEXIT_CLEANUP=1 routes the hard-stop's exit through
+    terminate_children_then_exit before the still-reached os._exit.
+    """
+    import backend.agents.rlm.process_cleanup as process_cleanup
+
+    monkeypatch.setenv("OPENRESEARCH_HARDEXIT_CLEANUP", "1")
+
+    cleanup_calls: list[int] = []
+    monkeypatch.setattr(
+        process_cleanup, "terminate_children_then_exit",
+        lambda code: cleanup_calls.append(code),
+    )
+
+    fired = threading.Event()
+    monkeypatch.setattr(run.os, "_exit", lambda code: fired.set())
+    monkeypatch.setattr(run, "_WATCHDOG_GRACE_S", 0.0)
+    monkeypatch.setattr(run, "_WATCHDOG_POLL_S", 0.05)
+    handle = _arm(0.0, tmp_path)
+    try:
+        assert fired.wait(2.0), "watchdog did not fire within 2s of a passed deadline"
+    finally:
+        handle.cancel()
+
+    assert cleanup_calls, "terminate_children_then_exit should have been invoked"
+    assert (tmp_path / "final_report.json").exists()
+
+
 def test_cancel_prevents_fire(monkeypatch, tmp_path: Path) -> None:
     fired = threading.Event()
     monkeypatch.setattr(run.os, "_exit", lambda code: fired.set())

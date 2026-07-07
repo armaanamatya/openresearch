@@ -177,6 +177,11 @@ def _make_fake_settings(**overrides: Any) -> MagicMock:
     s.azure_pending_timeout_seconds = 900
     s.azure_ttl_seconds_after_finished = 3600
     s.azure_job_backoff_limit = 0
+    # Explicit empty default: a bare MagicMock auto-vivifies undefined attributes as
+    # a truthy Mock (unlike a real unset Settings field), which would make
+    # _default_gpu_sku() silently inject a garbage nodeSelector into every test that
+    # doesn't care about it. Tests exercising the fallback override this explicitly.
+    s.azure_gpu_skus = []
     for k, v in overrides.items():
         setattr(s, k, v)
     return s

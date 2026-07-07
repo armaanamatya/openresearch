@@ -2338,6 +2338,9 @@ def _hard_stop_with_report(
         _write_demo_status(project_dir, "failed", error=status_error)
     except Exception:  # noqa: BLE001
         logger.exception("run_pipeline_rlm: hard-stop could not write demo_status")
+    if os.environ.get("OPENRESEARCH_HARDEXIT_CLEANUP", "").strip().lower() in ("1", "true", "yes"):
+        from backend.agents.rlm.process_cleanup import terminate_children_then_exit
+        terminate_children_then_exit(exit_code)
     os._exit(exit_code)
 
 

@@ -39,7 +39,10 @@ Severity policy:
 from __future__ import annotations
 
 import ast
+import io
+import os
 import re
+import tokenize
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Literal
@@ -111,6 +114,35 @@ class PreFlightViolation:
 # Helpers
 # ---------------------------------------------------------------------------
 
+# OPENRESEARCH_PREFLIGHT_UNION_SCOPE (default OFF): widens _iter_python_files
+# — and therefore every check built on it (_all_text/_check_variants, and the
+# ``trees`` dict fed to _check_real_model_loaded/_check_loss_terms_present/
+# etc.) — from "train.py + exp_*.py only" to the union of every top-level
+# ``.py`` plus every recursively-nested file matching the multi-file-
+# architecture filenames below. Fixes the false-block where a legitimate
+# train.py + train_cell.py + build_cells.py split (train.py orchestrates,
+# train_cell.py is the per-cell GPU worker) hid the real code from every
+# fidelity check, because the ``train.py`` branch below shadows the "scan
+# every top-level .py" fallback the instant train.py exists. Off ⇒
+# byte-identical to today.
+_UNION_SCOPE_FILENAMES: frozenset[str] = frozenset({
+    "train.py",
+    "train_cell.py",
+    "build_cells.py",
+    "trainer.py",
+    "model.py",
+    "reward.py",
+    "policy.py",
+    "env.py",
+    "main.py",
+})
+
+
+def _union_scope_enabled() -> bool:
+    return os.environ.get("OPENRESEARCH_PREFLIGHT_UNION_SCOPE", "").strip().lower() in (
+        "1", "true", "yes",
+    )
+
 
 def _iter_python_files(code_dir: Path) -> list[Path]:
     """Return the .py files this validator should inspect.
@@ -123,9 +155,17 @@ def _iter_python_files(code_dir: Path) -> list[Path]:
 
     Sub-directories are NOT walked — the validator targets the entry
     points the agent writes, not vendored library code.
+
+    ``OPENRESEARCH_PREFLIGHT_UNION_SCOPE=1`` replaces this narrow scope with
+    :func:`_iter_python_files_union_scope` — the ``train.py`` branch above
+    otherwise SHADOWS the "every top-level .py" fallback the instant
+    ``train.py`` exists, hiding sibling files like ``train_cell.py``.
     """
     if not code_dir.exists() or not code_dir.is_dir():
         return []
+
+    if _union_scope_enabled():
+        return _iter_python_files_union_scope(code_dir)
 
     candidates: list[Path] = []
     train = code_dir / "train.py"
@@ -140,6 +180,35 @@ def _iter_python_files(code_dir: Path) -> list[Path]:
 
     # Fallback: scan every top-level .py the agent emitted.
     return sorted(p for p in code_dir.glob("*.py") if p.is_file())
+
+
+def _iter_python_files_union_scope(code_dir: Path) -> list[Path]:
+    """Union-of-relevant-files variant of :func:`_iter_python_files`.
+
+    Returns every top-level ``.py`` (unconditionally — covers ``train.py``,
+    ``exp_*.py``, and anything else the agent wrote at the root) PLUS every
+    file anywhere in the recursive tree whose name is in
+    ``_UNION_SCOPE_FILENAMES`` — the same multi-file-architecture superset
+    ``code_review_gate._TRAINING_FILENAMES`` uses and the same recursive-walk
+    convention the antifabrication scanner (``preflight_ast.scan_code_dir``'s
+    env-interface-contract check) already relies on. Only called when
+    ``OPENRESEARCH_PREFLIGHT_UNION_SCOPE`` is on.
+    """
+    seen: set[Path] = set()
+    ordered: list[Path] = []
+
+    def _add(p: Path) -> None:
+        if p.is_file() and p not in seen:
+            seen.add(p)
+            ordered.append(p)
+
+    for p in sorted(code_dir.glob("*.py")):
+        _add(p)
+    for p in sorted(code_dir.rglob("*.py")):
+        if p.name in _UNION_SCOPE_FILENAMES:
+            _add(p)
+
+    return ordered
 
 
 def _variant_tokens(variant: str) -> tuple[str, ...]:
@@ -826,6 +895,57 @@ def _check_optimizer_double_keyword(
             ))
 
 
+def _strip_comments_and_docstrings(source: str) -> str:
+    """Best-effort removal of ``#`` comments and bare-string docstring
+    statements from Python source text.
+
+    Used (only under ``OPENRESEARCH_PREFLIGHT_UNION_SCOPE``) so a comment or
+    docstring merely NAMING an algorithm token (e.g. ``"# TODO: implement
+    GRPO"``) cannot satisfy a token-presence check meant to detect the token
+    used in actual code. Fail-open: any parse/tokenize error returns
+    ``source`` unchanged rather than losing the file's signal.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return source
+
+    docstring_lines: set[int] = set()
+    doc_holders: list[ast.AST] = [tree]
+    doc_holders.extend(
+        n for n in ast.walk(tree)
+        if isinstance(n, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+    )
+    for node in doc_holders:
+        body = getattr(node, "body", None)
+        if not body:
+            continue
+        first = body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            end = getattr(first, "end_lineno", first.lineno) or first.lineno
+            docstring_lines.update(range(first.lineno, end + 1))
+
+    lines = source.splitlines()
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+            if tok.type == tokenize.COMMENT:
+                row, col = tok.start
+                if 1 <= row <= len(lines):
+                    lines[row - 1] = lines[row - 1][:col]
+    except Exception:  # noqa: BLE001 — fail-soft: keep whatever we blanked so far
+        pass
+
+    for ln in docstring_lines:
+        if 1 <= ln <= len(lines):
+            lines[ln - 1] = ""
+
+    return "\n".join(lines)
+
+
 def _check_loss_terms_present(
     code_dir: Path,
     loss_invariants: tuple,  # tuple[LossInvariant, ...]
@@ -842,22 +962,44 @@ def _check_loss_terms_present(
     grep (case-insensitive) tolerates the agent's variable-naming
     paraphrasing — what we want is presence of the algorithmic concept,
     not exact symbol identity.
+
+    ``OPENRESEARCH_PREFLIGHT_UNION_SCOPE=1`` widens the file scope to the
+    same superset :func:`_iter_python_files_union_scope` uses (train_cell.py,
+    build_cells.py, trainer.py, ... — a legitimate multi-file architecture
+    keeps the loss implementation out of train.py) and strips comments/
+    docstrings before the token search so a comment merely NAMING a token
+    cannot satisfy it.
     """
     if not loss_invariants:
         return
-    # Read every train*.py + exp_*.py file's source text once.
-    candidate_paths: list[Path] = []
-    for p in code_dir.glob("**/*.py"):
-        if p.name == "train.py" or p.name.startswith("exp_") or p.name == "main.py":
-            candidate_paths.append(p)
+    union_scope = _union_scope_enabled()
+    if union_scope:
+        # Same file superset as _iter_python_files_union_scope, plus
+        # recursively-nested exp_*.py (this check has always recursed for
+        # those; _iter_python_files's exp_*.py glob is top-level only).
+        candidate_paths = list(_iter_python_files_union_scope(code_dir))
+        seen = set(candidate_paths)
+        for p in sorted(code_dir.glob("**/*.py")):
+            if p.name.startswith("exp_") and p not in seen:
+                seen.add(p)
+                candidate_paths.append(p)
+    else:
+        # Read every train*.py + exp_*.py file's source text once.
+        candidate_paths = [
+            p for p in code_dir.glob("**/*.py")
+            if p.name == "train.py" or p.name.startswith("exp_") or p.name == "main.py"
+        ]
     if not candidate_paths:
         return
     corpus = ""
     for p in candidate_paths:
         try:
-            corpus += "\n" + p.read_text(encoding="utf-8", errors="ignore")
+            text = p.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
+        if union_scope:
+            text = _strip_comments_and_docstrings(text)
+        corpus += "\n" + text
     corpus_lower = corpus.lower()
     if not corpus_lower.strip():
         return
@@ -1033,12 +1175,22 @@ def _check_real_model_loaded(
     Substring match on the constant path argument tolerates the agent
     adding suffixes like `-Instruct` if the yaml lists `Qwen/Qwen3-1.7B`
     but the agent uses `Qwen/Qwen3-1.7B-Instruct`.
+
+    ``OPENRESEARCH_PREFLIGHT_UNION_SCOPE=1`` additionally accepts the
+    correct DRY pattern ``AutoModelForCausalLM.from_pretrained(hf_id, ...)``
+    where ``hf_id`` is a variable/subscript (e.g. pulled from a
+    ``MODEL_HF_IDS`` registry dict) rather than a literal. The call is
+    matched structurally (shape only), then GROUNDED by requiring the
+    canonical id to appear as a string literal somewhere in the same file
+    union — a variable-arg call to an unrelated/wrong model still blocks.
     """
     if not canonical_hf_paths:
         return
+    union_scope = _union_scope_enabled()
     # Look for ANY from_pretrained call whose first arg substring-matches
     # one of the canonical paths. If at least one match exists, no violation.
     found = False
+    has_variable_from_pretrained = False
     for path, tree in trees.items():
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -1050,17 +1202,35 @@ def _check_real_model_loaded(
             if not node.args:
                 continue
             first = node.args[0]
-            if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
-                continue
-            for canonical in canonical_hf_paths:
-                # Substring match either direction — tolerates suffix/prefix drift.
-                if canonical and (canonical in first.value or first.value in canonical):
-                    found = True
-                    break
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                for canonical in canonical_hf_paths:
+                    # Substring match either direction — tolerates suffix/prefix drift.
+                    if canonical and (canonical in first.value or first.value in canonical):
+                        found = True
+                        break
+            elif union_scope and isinstance(first, (ast.Name, ast.Subscript, ast.Attribute)):
+                has_variable_from_pretrained = True
             if found:
                 break
         if found:
             break
+
+    if not found and union_scope and has_variable_from_pretrained:
+        # Ground the variable-driven call: require the canonical id to appear
+        # as a string literal SOMEWHERE in the union (e.g. the MODEL_HF_IDS
+        # dict the variable was looked up from) before accepting it.
+        for tree in trees.values():
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    for canonical in canonical_hf_paths:
+                        if canonical and (canonical in node.value or node.value in canonical):
+                            found = True
+                            break
+                if found:
+                    break
+            if found:
+                break
+
     if found:
         return
     # No matching from_pretrained call found anywhere across all parsed files.

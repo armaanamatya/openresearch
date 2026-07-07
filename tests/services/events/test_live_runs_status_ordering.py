@@ -110,6 +110,31 @@ class TestStatusOrderingInvariant:
             "completed, 1 otherwise."
         )
 
+    def test_hardexit_cleanup_flag_gates_terminate_children_then_exit(self) -> None:
+        # OPENRESEARCH_HARDEXIT_CLEANUP=1 must route the finally-block hard
+        # exit through terminate_children_then_exit BEFORE the unconditional
+        # os._exit fallback below it — that fallback line itself (asserted
+        # verbatim by test_exit_code_follows_final_status) must stay
+        # byte-identical so the off-state behavior never changes.
+        script = _render()
+        finally_idx = script.rfind("finally:")
+        assert finally_idx != -1
+        tail = script[finally_idx:]
+        assert "OPENRESEARCH_HARDEXIT_CLEANUP" in tail, (
+            "finally block must check the hard-exit-cleanup flag"
+        )
+        assert "terminate_children_then_exit" in tail, (
+            "finally block must route through the shared cleanup helper when the flag is on"
+        )
+        cleanup_idx = tail.find("terminate_children_then_exit")
+        exit_idx = tail.rfind(
+            '_os_exit._exit(0 if _final_status == "completed" else 1)'
+        )
+        assert cleanup_idx != -1 and exit_idx != -1
+        assert cleanup_idx < exit_idx, (
+            "the flag-gated cleanup call must precede the unconditional os._exit fallback"
+        )
+
     def test_failure_path_also_reaches_finally(self) -> None:
         # If the pipeline raises, the wrapper writes 'failed' and falls
         # through to finally. The old code had `raise` in the except branch;

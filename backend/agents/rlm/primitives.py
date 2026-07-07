@@ -249,6 +249,13 @@ _RETRY_TIMEOUT_TOTAL_S: float = 90.0
 # aware rather than code_dir-mtime-only, so the threshold matters less.)
 _DEFAULT_PRE_EMIT_STALL_S = 900.0
 
+# SDK aclose-deadlock detection (implement_baseline's watchdog loop): once
+# code/commands.json exists, this many seconds with no new file AND no
+# SDK-stream activity is treated as a stalled cleanup. Module-level (rather
+# than a function-local literal) purely so tests can shrink it via
+# monkeypatch instead of a real multi-minute wait.
+_ACLOSE_STALL_S: float = 120.0  # 2 min of no file/SDK activity after code is written
+
 
 class PreEmitStallError(RuntimeError):
     """Repairable implement_baseline pre-emission stall marker for PR-π."""
@@ -2043,6 +2050,22 @@ def _baseline_subprocess_enabled() -> bool:
     return os.environ.get("OPENRESEARCH_BASELINE_SUBPROCESS", "0").strip().lower() in ("1", "true", "yes")
 
 
+def _impl_abandon_guard_enabled() -> bool:
+    """OPENRESEARCH_IMPL_ABANDON_GUARD (default OFF).
+
+    On the SDK aclose-stall give-up path below, ``pool.shutdown(wait=False,
+    cancel_futures=True)`` cannot stop an already-running worker thread/child
+    process — harvesting code_dir at that point risks reporting "ok" on a
+    directory an abandoned writer is still mutating in the background. When
+    on, that give-up returns a distinguishable, never-"ok" repairable result
+    instead (``failure_class="implement_timeout_abandoned"``). Off: byte
+    -identical harvest-and-return behavior.
+    """
+    return os.environ.get("OPENRESEARCH_IMPL_ABANDON_GUARD", "").strip().lower() in (
+        "1", "true", "yes",
+    )
+
+
 def _drive_baseline_child(
     *,
     heartbeat_path: str,
@@ -2652,7 +2675,6 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
     # by polling: if commands.json exists AND no new files are written for
     # _ACLOSE_STALL_S seconds, the SDK is deadlocked — break out and proceed
     # with the code that was already written.
-    _ACLOSE_STALL_S = 120  # 2 min of no file changes after code is written
     _POLL_S = 10
     _PRE_EMIT_STALL_S = _pre_emit_stall_s()
 
@@ -2865,6 +2887,31 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
                             "code is on disk but SDK hung for %ds. Breaking out.",
                             int(_time.time() - _stall_start),
                         )
+                        if _impl_abandon_guard_enabled():
+                            # OPENRESEARCH_IMPL_ABANDON_GUARD: pool.shutdown(wait=False,
+                            # cancel_futures=True) in the finally below cannot stop an
+                            # already-running worker — the abandoned writer thread (or,
+                            # under OPENRESEARCH_BASELINE_SUBPROCESS, its child process
+                            # if terminate()+join(timeout=5) doesn't land) is not
+                            # confirmed dead and may keep mutating code_dir after we
+                            # give up here. Report a distinguishable, never-"ok"
+                            # repairable failure instead of harvesting a possibly
+                            # -still-mutating directory as success (live incident: the
+                            # fuller implementation landed on disk 12-14 min AFTER this
+                            # give-up had already harvested + reported "ok").
+                            _err = _baseline_error_envelope(
+                                error_code="sdk_aclose_stall_abandoned",
+                                error=(
+                                    "implement_baseline: gave up after SDK aclose stall "
+                                    f"({int(_time.time() - _stall_start)}s with no file/SDK "
+                                    "activity); the abandoned writer is not confirmed "
+                                    "stopped, so the harness is not harvesting code_dir "
+                                    "as a success"
+                                ),
+                                code_dir=code_dir,
+                            )
+                            _err["failure_class"] = "implement_timeout_abandoned"
+                            return _err
                         harvested = _harvest_baseline_artifacts(
                             code_dir,
                             error_code="sdk_aclose_incomplete_artifacts",

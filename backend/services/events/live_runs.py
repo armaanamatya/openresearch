@@ -2268,6 +2268,12 @@ finally:
         _final_status = _json_exit.loads(status_path.read_text()).get("status", "failed")
     except Exception:
         pass
+    if _os_exit.environ.get("OPENRESEARCH_HARDEXIT_CLEANUP", "").strip().lower() in ("1", "true", "yes"):
+        try:
+            from backend.agents.rlm.process_cleanup import terminate_children_then_exit as _term_children_exit
+            _term_children_exit(0 if _final_status == "completed" else 1)
+        except Exception:
+            pass
     _os_exit._exit(0 if _final_status == "completed" else 1)
 """
 

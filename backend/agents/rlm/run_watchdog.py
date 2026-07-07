@@ -459,8 +459,25 @@ def _detect_active_primitive(sse_log_path: Path, max_lookback_lines: int = 100) 
     """Return the name of the most recently started (but not yet completed) primitive.
 
     Scans the last ``max_lookback_lines`` lines of ``dashboard_events.jsonl``
-    looking for a ``primitive_call`` event with ``phase="start"``.  Returns
-    the primitive name, or ``None`` if not found or the file doesn't exist.
+    for the MOST RECENT ``primitive_call`` event. The dashboard emitter
+    (``RunContext.dashboard.primitive_call(name, status, ...)`` in
+    ``binding.py``) writes the in-flight/terminal marker under the key
+    ``"status"`` (values: ``"start"``, then later ``"ok"``/``"error"``) —
+    NOT ``"phase"``. This function previously only checked ``"phase"``,
+    which no ``primitive_call`` event has ever set, so it always fell
+    through and returned ``None``. That silently disabled the per-primitive
+    idle-threshold override (``PRIMITIVE_IDLE_BASELINE_S`` — e.g. 4h for
+    ``run_experiment``) for every run: the watchdog always fell back to the
+    generic ``kill_after_seconds`` (default 1500s/25min), killing legitimate
+    multi-hour GCP training Jobs and leaving a dangling ``_watch_job`` poll
+    that then 404s on ``read_namespaced_job_status`` once the Job is deleted.
+
+    We walk backwards and inspect only the FIRST ``primitive_call`` event
+    found (the most recent one): if its status is ``"start"`` that
+    primitive is still in flight; any other status (``"ok"``/``"error"``/
+    etc.) means it already completed, so nothing is active right now.
+    ``"phase"`` is still checked first for backward compatibility with any
+    older event shape.
 
     Fail-soft: any I/O or parse error returns ``None``.
     """
@@ -475,7 +492,8 @@ def _detect_active_primitive(sse_log_path: Path, max_lookback_lines: int = 100) 
         return None
 
     import json as _json
-    # Walk backwards to find the most recent primitive_call with phase=start.
+    # Walk backwards; the FIRST primitive_call event found is the most
+    # recent one and fully determines current in-flight state.
     for line in reversed(lines[-max_lookback_lines:]):
         try:
             d = _json.loads(line.strip())
@@ -483,10 +501,13 @@ def _detect_active_primitive(sse_log_path: Path, max_lookback_lines: int = 100) 
             continue
         if d.get("event") != "primitive_call":
             continue
-        if str(d.get("phase") or "").lower() == "start":
-            primitive = d.get("primitive") or d.get("name") or ""
-            if primitive:
-                return str(primitive)
+        marker = str(d.get("phase") or d.get("status") or "").lower()
+        primitive = d.get("primitive") or d.get("name") or ""
+        if marker == "start" and primitive:
+            return str(primitive)
+        # Most recent primitive_call is already terminal (ok/error/etc) —
+        # nothing is in flight. Stop here; don't look further back.
+        return None
     return None
 
 
