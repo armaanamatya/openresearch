@@ -100,6 +100,38 @@ function RlmFixtureContent({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+// gpuCount persistence — a dedicated key rather than the shared
+// ProviderPrefs blob (lib/user-prefs.ts), since that interface's shape is
+// owned outside this change. Mirrors vramGb's semantics: 0 means "unset/
+// auto" and clears the persisted value; a positive int (1-8) is retained
+// across reloads exactly like the other advanced GPU knobs.
+const GPU_COUNT_STORAGE_KEY = "openresearch:gpuCount";
+
+function readPersistedGpuCount(): number {
+  if (typeof window === "undefined") return 0;
+  try {
+    const raw = window.localStorage.getItem(GPU_COUNT_STORAGE_KEY);
+    if (!raw) return 0;
+    const parsed = parseInt(raw, 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writePersistedGpuCount(value: number): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (value > 0) {
+      window.localStorage.setItem(GPU_COUNT_STORAGE_KEY, String(value));
+    } else {
+      window.localStorage.removeItem(GPU_COUNT_STORAGE_KEY);
+    }
+  } catch {
+    // localStorage may be disabled (private mode etc.) — non-fatal.
+  }
+}
+
 function resolveInitialModel(preferred: string, models: ModelChoice[]): string {
   if (models.length === 0) return preferred;
   const selected = models.find((candidate) => candidate.id === preferred);
@@ -163,6 +195,10 @@ export function LabShell({
   const [forceSingleGpu, setForceSingleGpu] = useState<boolean>(() => readProviderPrefs().force_single_gpu ?? false);
   const [maxGpuUsdPerHour, setMaxGpuUsdPerHour] = useState<number>(() => readProviderPrefs().max_gpu_usd_per_hour ?? 0);
   const [vramGb, setVramGb] = useState<number>(() => readProviderPrefs().vram_gb ?? 0);
+  // User-selectable GPU count (1-8). 0 = unset/auto — mirrors vramGb's
+  // sentinel convention. Persisted under its own key (see
+  // readPersistedGpuCount above) rather than the shared ProviderPrefs blob.
+  const [gpuCount, setGpuCount] = useState<number>(() => readPersistedGpuCount());
   // Lane Q — minimize-compute toggle. Persisted alongside the other run-config
   // prefs so the user's preferred reproduction style sticks across reloads.
   const [minimizeCompute, setMinimizeCompute] = useState<boolean>(() => readProviderPrefs().minimize_compute ?? false);
@@ -214,6 +250,7 @@ export function LabShell({
     forceSingleGpu: forceSingleGpu || undefined,
     maxGpuUsdPerHour: maxGpuUsdPerHour > 0 ? maxGpuUsdPerHour : undefined,
     vramGb: vramGb > 0 ? vramGb : undefined,
+    gpuCount: gpuCount > 0 ? gpuCount : undefined,
     minimizeCompute: minimizeCompute || undefined,
     providerCredentials,
     estimateId: budget.estimate?.estimate_id,
@@ -354,6 +391,11 @@ export function LabShell({
               onVramGbChange={(value) => {
                 setVramGb(value);
                 writeProviderPrefs({ ...readProviderPrefs(), vram_gb: value });
+              }}
+              gpuCount={gpuCount}
+              onGpuCountChange={(value) => {
+                setGpuCount(value);
+                writePersistedGpuCount(value);
               }}
               onMinimizeComputeChange={(value) => {
                 setMinimizeCompute(value);

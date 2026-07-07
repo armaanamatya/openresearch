@@ -1014,3 +1014,65 @@ async def test_exec_uses_default_ttl_when_setting_absent(tmp_path: Path):
 
     body = batch_api.created_jobs[0]["body"]
     assert body["spec"]["ttlSecondsAfterFinished"] == _DEFAULT_TTL_AFTER_FINISHED_S
+
+
+# ---------------------------------------------------------------------------
+# Per-run GPU-USD / pod-second budget cap on the exec path (fail-closed).
+# The GKE exec path previously stored _run_budget but never checked it, so a
+# sandbox="gcp" run had no per-run dollar ceiling at exec time. _enforce_run_budget
+# mirrors runpod_backend.exec: refuse to submit a new Job once cumulative pod-time
+# cost (elapsed_hr * plan.total_usd_per_hr) reaches the cap.
+# ---------------------------------------------------------------------------
+
+def _sandbox_created_secs_ago(tmp_path: Path, secs_ago: float) -> Sandbox:
+    from datetime import timedelta
+    return _make_sandbox(tmp_path).model_copy(
+        update={"created_at": datetime.now(timezone.utc) - timedelta(seconds=secs_ago)}
+    )
+
+
+class TestGkeRunBudgetCap:
+    def test_enforce_raises_when_run_gpu_usd_exceeded(self, tmp_path: Path):
+        from backend.agents.resilience.budget import RunBudget
+        from backend.agents.resilience.failures import BudgetExhausted
+        backend = _make_backend()
+        backend._run_budget = RunBudget(max_run_gpu_usd=1.0)
+        backend._gpu_plan = {"total_usd_per_hr": 30.0, "gpu_count": 8}
+        sandbox = _sandbox_created_secs_ago(tmp_path, 3600)  # 1 hr * $30 = $30 >= $1 cap
+        with pytest.raises(BudgetExhausted):
+            backend._enforce_run_budget(sandbox)
+
+    def test_enforce_noop_when_budget_none(self, tmp_path: Path):
+        backend = _make_backend()
+        backend._run_budget = None
+        backend._gpu_plan = {"total_usd_per_hr": 30.0}
+        backend._enforce_run_budget(_sandbox_created_secs_ago(tmp_path, 3600))  # no raise
+
+    def test_enforce_noop_when_cap_disabled(self, tmp_path: Path):
+        from backend.agents.resilience.budget import RunBudget
+        backend = _make_backend()
+        backend._run_budget = RunBudget(max_run_gpu_usd=0.0)  # 0 disables
+        backend._gpu_plan = {"total_usd_per_hr": 30.0}
+        backend._enforce_run_budget(_sandbox_created_secs_ago(tmp_path, 3600))  # no raise
+
+    def test_enforce_under_cap_does_not_raise(self, tmp_path: Path):
+        from backend.agents.resilience.budget import RunBudget
+        backend = _make_backend()
+        backend._run_budget = RunBudget(max_run_gpu_usd=1000.0)
+        backend._gpu_plan = {"total_usd_per_hr": 30.0}
+        backend._enforce_run_budget(_sandbox_created_secs_ago(tmp_path, 60))  # $0.5 < $1000
+
+    def test_exec_refuses_to_submit_when_budget_exhausted(self, tmp_path: Path):
+        """The cap fires from exec() BEFORE any Job is created (no GPU spend)."""
+        import asyncio
+        from backend.agents.resilience.budget import RunBudget
+        from backend.agents.resilience.failures import BudgetExhausted
+        batch_api = FakeBatchApi(job_factory=lambda: FakeJob(complete=True))
+        backend = _make_backend(batch_api=batch_api)
+        backend._run_budget = RunBudget(max_run_gpu_usd=1.0)
+        backend._gpu_plan = {"total_usd_per_hr": 30.0, "gpu_count": 8}
+        sandbox = _sandbox_created_secs_ago(tmp_path, 3600)
+        backend._active_jobs[sandbox.sandbox_id] = []
+        with pytest.raises(BudgetExhausted):
+            asyncio.run(backend.exec(sandbox, "echo x", timeout=10))
+        assert batch_api.created_jobs == []  # no Job submitted

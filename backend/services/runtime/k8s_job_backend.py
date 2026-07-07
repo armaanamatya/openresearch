@@ -603,6 +603,47 @@ class _KubernetesJobBackend(RuntimeBackend):
         except Exception:
             return 1
 
+    def _gpu_plan_total_usd_per_hr(self) -> float:
+        """Return total_usd_per_hr (per-GPU rate * gpu_count) from the stored gpu_plan, else 0.0."""
+        plan = self._gpu_plan
+        if plan is None:
+            return 0.0
+        try:
+            if isinstance(plan, dict):
+                return float(plan.get("total_usd_per_hr") or 0.0)
+            return float(getattr(plan, "total_usd_per_hr", None) or 0.0)
+        except Exception:
+            return 0.0
+
+    def _enforce_run_budget(self, sandbox: Sandbox) -> None:
+        """Fail-closed per-run pod-second + GPU-USD ceiling BEFORE launching a Job.
+
+        The GKE exec path previously stored ``self._run_budget`` but never checked
+        it, so a ``sandbox="gcp"`` run had NO per-run dollar ceiling at exec time
+        (only the cell-matrix path enforced ``OPENRESEARCH_MAX_RUN_GPU_USD``).
+        Mirrors ``runpod_backend.exec``: refuse to submit a new GPU Job once the
+        run's cumulative pod-time cost (``elapsed_hr * plan.total_usd_per_hr``)
+        reaches the cap. Ephemeral Jobs self-terminate (activeDeadline + TTL), so
+        unlike RunPod there is no persistent pod to destroy — refusing new launches
+        IS the protection. Raises ``BudgetExhausted`` (same contract as RunPod); a
+        None budget / unset caps / missing ``created_at`` are a no-op (byte-identical
+        to before)."""
+        if self._run_budget is None:
+            return
+        self._run_budget.check_pod_seconds(
+            pod_started_at=sandbox.created_at,
+            agent_id="experiment-runner",
+        )
+        rate = self._gpu_plan_total_usd_per_hr()
+        if rate > 0 and sandbox.created_at is not None:
+            elapsed_hr = (
+                datetime.now(timezone.utc) - sandbox.created_at
+            ).total_seconds() / 3600.0
+            self._run_budget.check_run_gpu_usd(
+                cumulative_pod_usd=elapsed_hr * rate,
+                agent_id="experiment-runner",
+            )
+
     def _get_batch_api(self) -> Any:
         if self._batch_api is not None:
             return self._batch_api
@@ -678,6 +719,8 @@ class _KubernetesJobBackend(RuntimeBackend):
         the ``OPENRESEARCH_EXEC_COMMAND`` environment variable).  On infra failures
         raises ``SandboxRuntimeError(backend_unavailable, ...)``.
         """
+        # Fail-closed per-run $ / pod-second ceiling before spending on a new Job.
+        self._enforce_run_budget(sandbox)
         started_at = datetime.now(timezone.utc)
         ns = self._namespace()
         image = self._base_image()

@@ -74,6 +74,7 @@ export function UploadView({
   forceSingleGpu,
   maxGpuUsdPerHour,
   vramGb,
+  gpuCount,
   minimizeCompute,
   autonomous,
   repoUrl,
@@ -89,6 +90,7 @@ export function UploadView({
   onAcceleratorChange,
   onMaxGpuUsdPerHourChange,
   onVramGbChange,
+  onGpuCountChange,
   onMinimizeComputeChange,
   onAutonomousChange,
   onRepoUrlChange,
@@ -126,6 +128,9 @@ export function UploadView({
   forceSingleGpu: boolean;
   maxGpuUsdPerHour: number;
   vramGb: number;
+  // User-selectable GPU count (1-8). 0 = unset/auto, mirroring vramGb's
+  // sentinel convention (see lab-shell.tsx's gpuCount state).
+  gpuCount: number;
   minimizeCompute: boolean;
   autonomous: boolean;
   repoUrl: string;
@@ -141,6 +146,7 @@ export function UploadView({
   onAcceleratorChange: (value: DemoAccelerator) => void;
   onMaxGpuUsdPerHourChange: (value: number) => void;
   onVramGbChange: (value: number) => void;
+  onGpuCountChange: (value: number) => void;
   onMinimizeComputeChange: (value: boolean) => void;
   onAutonomousChange: (value: boolean) => void;
   onRepoUrlChange: (value: string) => void;
@@ -727,6 +733,41 @@ export function UploadView({
               disabled={busy}
               onChange={(e) => onVramGbChange(parseInt(e.target.value, 10) || 0)}
             />
+          </div>
+          <div className="upload-advanced-row">
+            <label className="upload-advanced-label" htmlFor="gpu-count-input">
+              GPU count
+            </label>
+            <input
+              id="gpu-count-input"
+              type="number"
+              min={1}
+              max={8}
+              step={1}
+              className="upload-advanced-number"
+              // 0 (the "unset" sentinel) renders as an empty field so the
+              // "auto" placeholder shows through, matching the contract:
+              // empty input ⇒ undefined = auto.
+              value={gpuCount > 0 ? gpuCount : ""}
+              placeholder="auto"
+              disabled={busy}
+              onChange={(e) => {
+                const raw = e.target.value.trim();
+                if (raw === "") {
+                  onGpuCountChange(0);
+                  return;
+                }
+                const parsed = parseInt(raw, 10);
+                if (!Number.isFinite(parsed)) {
+                  onGpuCountChange(0);
+                  return;
+                }
+                // Clamp to the 1-8 contract range instead of rejecting —
+                // keeps the field always in a valid state for the backend.
+                onGpuCountChange(Math.min(8, Math.max(1, parsed)));
+              }}
+            />
+            <span className="upload-advanced-hint">Number of GPUs to request (1-8); leave blank for auto</span>
           </div>
         </div>
       </details>

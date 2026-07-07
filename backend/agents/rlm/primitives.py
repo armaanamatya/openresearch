@@ -1458,6 +1458,7 @@ def resolve_gpu_requirements(
         cloud_types=cloud_types,
         provider=_provider,
         provisioned_skus=_provisioned_skus,
+        gpu_count_override=settings.gpu_count,
     )
 
     # ---- Persist atomically.

@@ -636,6 +636,15 @@ class Settings(BaseSettings):
     force_single_gpu: bool = Field(default=True, description="Cap RunPod GPU count at 1 regardless of paper")
     max_gpu_usd_per_hour: float = Field(default=10.0, ge=0.0, description="Per-GPU $/hr cap; 0 disables")
     max_run_gpu_usd: float = Field(default=10.0, ge=0.0, description="Total RunPod $ per run cap; 0 disables")
+    gpu_count: int | None = Field(
+        default=None,
+        description=(
+            "Operator-selected GPU count (env OPENRESEARCH_GPU_COUNT). None = auto-resolve "
+            "from the paper / machine SKU (byte-identical to pre-existing behaviour). When set, "
+            "it overrides the force_single_gpu default and pins the resolved GpuPlan.gpu_count "
+            "(and thus the K8s nvidia.com/gpu request), capped to the chosen SKU's physical count."
+        ),
+    )
     dynamic_gpu_headroom: float = Field(default=1.25, ge=1.0, description="Multiplier on LLM VRAM estimate before tier-up")
     dynamic_gpu_fallback_vram_gb: int = Field(default=24, ge=1, description="Substitute VRAM when LLM cannot estimate")
     dynamic_gpu_max_escalations: int = Field(default=2, ge=0, description="Max OOM-driven ladder advances per run")

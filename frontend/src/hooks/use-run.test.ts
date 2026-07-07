@@ -42,6 +42,116 @@ function renderRun(options: ProviderRunOptions) {
   return renderHook(() => useRun(null, options));
 }
 
+describe("useRun launchers — gpuCount threading", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    window.localStorage.clear();
+  });
+
+  describe("startUploadedRun", () => {
+    it('sets FormData "gpuCount" when options.gpuCount is set', async () => {
+      const fetchMock = vi.fn().mockResolvedValue(okRunStateResponse());
+      vi.stubGlobal("fetch", fetchMock);
+      const { result } = renderRun({ gpuCount: 4 });
+
+      await act(async () => {
+        await result.current.startUploadedRun(new File(["dummy"], "paper.pdf"), "sonnet");
+      });
+
+      const call = fetchMock.mock.calls.find((c: unknown[]) => c[0] === "/api/demo");
+      expect(call).toBeDefined();
+      const formData = call![1].body as FormData;
+      expect(formData.get("gpuCount")).toBe("4");
+    });
+
+    it("omits FormData gpuCount when options.gpuCount is unset", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(okRunStateResponse());
+      vi.stubGlobal("fetch", fetchMock);
+      const { result } = renderRun({});
+
+      await act(async () => {
+        await result.current.startUploadedRun(new File(["dummy"], "paper.pdf"), "sonnet");
+      });
+
+      const call = fetchMock.mock.calls.find((c: unknown[]) => c[0] === "/api/demo");
+      const formData = call![1].body as FormData;
+      expect(formData.get("gpuCount")).toBeNull();
+    });
+  });
+
+  describe("startArxivRun", () => {
+    it("includes gpu_count (snake_case) in the JSON body when set", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(okRunStateResponse());
+      vi.stubGlobal("fetch", fetchMock);
+      const { result } = renderRun({ gpuCount: 4 });
+
+      await act(async () => {
+        await result.current.startArxivRun("arxiv.org/abs/1234.56789", "sonnet");
+      });
+
+      const call = fetchMock.mock.calls.find((c: unknown[]) => c[0] === "/api/demo/arxiv");
+      expect(call).toBeDefined();
+      const body = JSON.parse(call![1].body as string);
+      expect(body.gpu_count).toBe(4);
+    });
+
+    it("omits the gpu_count key from the JSON body when unset", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(okRunStateResponse());
+      vi.stubGlobal("fetch", fetchMock);
+      const { result } = renderRun({});
+
+      await act(async () => {
+        await result.current.startArxivRun("arxiv.org/abs/1234.56789", "sonnet");
+      });
+
+      const call = fetchMock.mock.calls.find((c: unknown[]) => c[0] === "/api/demo/arxiv");
+      const body = JSON.parse(call![1].body as string);
+      expect("gpu_count" in body).toBe(false);
+    });
+  });
+
+  describe("startFixtureRun", () => {
+    it("sets gpuCount as a camelCase query param when set", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(okRunStateResponse());
+      vi.stubGlobal("fetch", fetchMock);
+      const { result } = renderRun({ gpuCount: 4 });
+
+      await act(async () => {
+        await result.current.startFixtureRun("sonnet");
+      });
+
+      const call = fetchMock.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).startsWith("/api/demo?")
+      );
+      expect(call).toBeDefined();
+      const url = new URL(call![0] as string, "http://localhost");
+      expect(url.searchParams.get("gpuCount")).toBe("4");
+    });
+
+    it("omits the gpuCount query param when unset", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(okRunStateResponse());
+      vi.stubGlobal("fetch", fetchMock);
+      const { result } = renderRun({});
+
+      await act(async () => {
+        await result.current.startFixtureRun("sonnet");
+      });
+
+      const call = fetchMock.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === "string" && (c[0] as string).startsWith("/api/demo?")
+      );
+      expect(call).toBeDefined();
+      const url = new URL(call![0] as string, "http://localhost");
+      expect(url.searchParams.has("gpuCount")).toBe(false);
+    });
+  });
+});
+
 describe("useRun launchers — autonomous + repoUrl threading", () => {
   beforeEach(() => {
     window.localStorage.clear();

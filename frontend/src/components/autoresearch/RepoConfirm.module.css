@@ -30,6 +30,37 @@
   margin: 4px 0;
 }
 
+.gpuCountRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 4px 0;
+}
+
+.gpuCountLabel {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--or-ink);
+}
+
+.gpuCountSelect {
+  box-sizing: border-box;
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--or-ink);
+  background: var(--or-paper);
+  border: var(--or-border);
+  border-radius: var(--or-radius);
+  cursor: pointer;
+}
+
+.gpuCountSelect:focus-visible {
+  outline: 2px solid var(--or-maroon);
+  outline-offset: 2px;
+}
+
 .cta {
   width: 100%;
   margin-top: 4px;
@@ -77,6 +108,25 @@
   color: var(--or-ink);
 }
 
+.dialogEstimate {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--or-ink);
+}
+
+.dialogEstimateLoading {
+  margin: 0;
+  font-size: 13px;
+  color: var(--or-muted);
+}
+
+.dialogGpuChoice {
+  margin: 0;
+  font-size: 13px;
+  color: var(--or-muted);
+}
+
 .dialogWarning {
   margin: 0;
   font-size: 13px;
@@ -84,10 +134,49 @@
   color: var(--or-maroon);
 }
 
+.dialogErrorBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .dialogError {
   margin: 0;
   font-size: 13px;
   color: var(--or-maroon);
+}
+
+.dialogErrorDetail {
+  margin: 0;
+  font-size: 12px;
+  color: var(--or-muted);
+}
+
+.retryBtn {
+  align-self: flex-start;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--or-maroon);
+  background: var(--or-maroon-tint);
+  border: 1.5px solid var(--or-maroon);
+  border-radius: var(--or-radius);
+  cursor: pointer;
+}
+
+.retryBtn:hover:not(:disabled) {
+  background: var(--or-maroon);
+  color: #fff;
+}
+
+.retryBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.retryBtn:focus-visible {
+  outline: 2px solid var(--or-maroon);
+  outline-offset: 2px;
 }
 
 .dialogActions {

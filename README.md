@@ -1,7 +1,7 @@
-<!-- doc-meta: status=current; last-verified=2026-06-09 -->
+<!-- doc-meta: status=current; last-verified=2026-07-06 -->
 # OpenResearch
 
-> **Doc status:** Current · last verified 2026-06-09 against `backend/` + `CLAUDE.md`.
+> **Doc status:** Current · last verified 2026-07-06 against `backend/` + `CLAUDE.md`.
 > This README is the public front door (source-of-truth tier 3): it must not claim
 > anything the code, [`system_overview.md`](system_overview.md), or
 > [`CLAUDE.md`](CLAUDE.md) don't back. Freshness is enforced by `make docs-check`
@@ -129,23 +129,31 @@ cp .env.example .env
 
 ### Run
 
+**One command starts the full stack** — backend (`:8000`) + frontend (`:3000`)
+together — with RunPod/GKE/Docker preflight and automatic Node selection via `nvm`
+(the system Node is often outside Next's supported range):
+
+```bash
+./start.sh
+# → backend  http://127.0.0.1:8000
+# → frontend http://localhost:3000   ← open this
+```
+
+`OPENRESEARCH_DEFAULT_SANDBOX` (shell env > `.env` > `runpod`) selects the sandbox and
+which preflight runs. Escape hatches: `START_BACKEND_ONLY=1`, `START_FRONTEND_ONLY=1`,
+`START_SKIP_PREFLIGHT=1`. `Ctrl-C` tears down both processes.
+
+Or run the two processes by hand:
+
 ```bash
 # Terminal 1: backend
 .venv/bin/uvicorn backend.app:create_app --factory --reload --port 8000
 
-# Terminal 2: frontend
+# Terminal 2: frontend  (Node 20.19–<21 or ≥22.12; `nvm use 20` if the system Node is out of range)
 cd frontend
 export OPENRESEARCH_BACKEND_URL=http://127.0.0.1:8000
 npm run dev
 # Open http://localhost:3000
-```
-
-Or start the **backend only** via the preflight-aware launcher (Terminal 2 is
-still needed for the UI):
-
-```bash
-./start.sh  # sandbox default: shell env > .env > runpod; checks RunPod creds
-            # (runpod) + the Docker daemon (any non-local sandbox) up front
 ```
 
 ### CLI

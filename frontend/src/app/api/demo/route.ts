@@ -115,6 +115,13 @@ function toVramGb(request: Request): number | undefined {
   return isNaN(n) ? undefined : n;
 }
 
+function toGpuCount(request: Request): number | undefined {
+  const v = search(request).get("gpuCount");
+  if (v == null) return undefined;
+  const n = parseInt(v, 10);
+  return isNaN(n) ? undefined : n;
+}
+
 function toMinimizeCompute(request: Request): boolean | undefined {
   const v = search(request).get("minimizeCompute");
   return v === "true" ? true : v === "false" ? false : undefined;
@@ -243,6 +250,7 @@ export async function POST(request: Request) {
     const forceSingleGpu = toForceSingleGpu(request);
     const maxGpuUsdPerHour = toMaxGpuUsdPerHour(request);
     const vramGb = toVramGb(request);
+    const gpuCount = toGpuCount(request);
     const minimizeCompute = toMinimizeCompute(request);
     const gpuParallelism = toGpuParallelism(request);
     const accelerator = toAccelerator(request);
@@ -252,6 +260,7 @@ export async function POST(request: Request) {
     if (forceSingleGpu != null) runBody.force_single_gpu = forceSingleGpu;
     if (maxGpuUsdPerHour != null) runBody.max_gpu_usd_per_hour = maxGpuUsdPerHour;
     if (vramGb != null) runBody.vram_gb = vramGb;
+    if (gpuCount != null) runBody.gpu_count = gpuCount;
     if (minimizeCompute != null) runBody.minimize_compute = minimizeCompute;
     if (gpuParallelism != null) runBody.gpu_parallelism = gpuParallelism;
     if (accelerator != null) runBody.accelerator = accelerator;

@@ -79,6 +79,7 @@ def resolve(
     cloud_types: tuple[str, ...] = ("COMMUNITY",),
     provider: str = "runpod",
     provisioned_skus: tuple[str, ...] | None = None,
+    gpu_count_override: int | None = None,
 ) -> GpuPlan:
     """Resolve requirements to a GpuPlan. Pure function — no I/O.
 
@@ -114,9 +115,21 @@ def resolve(
         SKU, or required SKU exceeds the per-GPU $/hr cap). The error message names the
         cheapest SKU that would have satisfied VRAM if the cap were lifted.
     """
+    # Operator GPU-count override (OPENRESEARCH_GPU_COUNT): an explicit count pins
+    # the plan's gpu_count and overrides the force_single_gpu default. It MUST relax
+    # force_single_gpu for SKU SELECTION — _provisioned_ladder filters to gpu_count==1
+    # rows when force_single_gpu is set, which would exclude an N-GPU-only provisioned
+    # pool (e.g. GCP's default gcp_a100_80x8) and empty the ladder. The final count is
+    # then capped to the chosen SKU's physical gpu_count (you cannot request more GPUs
+    # than the node physically has). None = auto-resolve (byte-identical to before).
+    _override: int | None = None
+    if gpu_count_override is not None:
+        _override = max(1, int(gpu_count_override))
+        force_single_gpu = False
+
     if provider in ("azure", "gcp"):
         _fallback = _AZURE_FALLBACK_SHORT_NAME if provider == "azure" else _GCP_FALLBACK_SHORT_NAME
-        return _resolve_provisioned_cloud(
+        plan = _resolve_provisioned_cloud(
             requirements=requirements,
             provider=provider,
             fallback_short_name=_fallback,
@@ -126,15 +139,25 @@ def resolve(
             headroom_multiplier=headroom_multiplier,
             provisioned_skus=provisioned_skus,
         )
-    return _resolve_runpod(
-        requirements=requirements,
-        dynamic_gpu_enabled=dynamic_gpu_enabled,
-        force_single_gpu=force_single_gpu,
-        max_gpu_usd_per_hour=max_gpu_usd_per_hour,
-        headroom_multiplier=headroom_multiplier,
-        fallback_vram_gb=fallback_vram_gb,
-        cloud_types=cloud_types,
-    )
+    else:
+        plan = _resolve_runpod(
+            requirements=requirements,
+            dynamic_gpu_enabled=dynamic_gpu_enabled,
+            force_single_gpu=force_single_gpu,
+            max_gpu_usd_per_hour=max_gpu_usd_per_hour,
+            headroom_multiplier=headroom_multiplier,
+            fallback_vram_gb=fallback_vram_gb,
+            cloud_types=cloud_types,
+        )
+
+    if _override is not None:
+        capped = max(1, min(_override, plan.gpu_count))
+        plan = plan.model_copy(update={
+            "gpu_count": capped,
+            "total_usd_per_hr": round(plan.sku_usd_per_hr * capped, 4),
+            "source": "manual",
+        })
+    return plan
 
 
 def _resolve_runpod(

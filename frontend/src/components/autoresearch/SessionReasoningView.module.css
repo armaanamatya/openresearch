@@ -7,7 +7,15 @@
 .view {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  /* flex:1 (not height:100%) — this view now sits alongside a sibling
+   * GpuStatusStrip inside the session page's flex-column `.main` (see
+   * app/sessions/[runId]/page.module.css), so it must size itself by
+   * FILLING THE REMAINDER of that column rather than claiming the whole
+   * parent height outright. flex:1 has no effect if some other caller ever
+   * renders this outside a flex parent — it just falls back to intrinsic
+   * content height (this component is only rendered from that one page
+   * today, so no such caller exists). */
+  flex: 1;
   min-height: 0;
   background: var(--or-paper);
 }

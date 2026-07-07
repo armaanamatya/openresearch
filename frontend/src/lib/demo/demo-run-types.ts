@@ -208,6 +208,10 @@ export interface LiveDemoRunState {
   executionMode?: DemoExecutionMode;
   sandboxMode?: DemoSandboxMode;
   gpuMode?: DemoGpuMode;
+  // User-selectable GPU count (1-8). Absent/null means "auto" — the backend
+  // picks the GPU count itself. Echoed back on the live run state alongside
+  // the other advanced GPU knobs (gpuMode) for display/resume parity.
+  gpuCount?: number | null;
   model?: DemoModelChoice;
   status: DemoRunStatus;
   sourceKind?: "workspace_fixture" | "uploaded_pdf";

@@ -654,6 +654,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             accelerator=request.accelerator,
             max_gpu_usd_per_hour=request.max_gpu_usd_per_hour,
             vram_gb=request.vram_gb,
+            gpu_count=request.gpu_count,
             autonomous=request.autonomous,
         )
         return await service.start_uploaded_run(
@@ -704,6 +705,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             accelerator=_optional_form_value(form, "accelerator"),
             max_gpu_usd_per_hour=_optional_form_float(form, "maxGpuUsdPerHour"),
             vram_gb=_optional_form_int(form, "vramGb"),
+            gpu_count=_optional_form_gpu_count(form, "gpuCount"),
             root_provider=_optional_form_value(form, "rootProvider"),
             subagent_auth=_optional_form_value(form, "subagentAuth"),
             # autonomous is a concrete bool (not Optional) on StartRunRequest,
@@ -1198,6 +1200,9 @@ class StartArxivRunRequest(BaseModel):
     accelerator: str | None = None
     max_gpu_usd_per_hour: float | None = None
     vram_gb: int | None = None
+    # User-selectable GPU count. None => existing auto-resolution — mirrors
+    # StartRunRequest.gpu_count (see live_runs.py).
+    gpu_count: int | None = Field(default=None, ge=1, le=8)
     # Opt-in "autonomous" profile (autonomous-upload UI, T2/T3). Concrete
     # bool default False — mirrors StartRunRequest.autonomous (no tri-state
     # "unspecified" meaning, unlike the advanced GPU knobs above).
@@ -1289,6 +1294,27 @@ def _optional_form_int(form: Any, key: str) -> int | None:
         return int(str(value))
     except ValueError:
         return None
+
+
+def _optional_form_gpu_count(form: Any, key: str) -> int | None:
+    """Parse a multipart form field as an optional GPU count (1-8).
+
+    Unlike ``_optional_form_int``, an out-of-range or unparsable value is
+    rejected to ``None`` (auto-resolution) rather than being passed through
+    to the ``StartRunRequest`` pydantic field, whose ``ge=1, le=8``
+    constraint would otherwise raise a raw ValidationError caught only by
+    the generic 500 handler. Missing/empty/bad/out-of-range -> None.
+    """
+    value = form.get(key)
+    if value in (None, ""):
+        return None
+    try:
+        parsed = int(str(value))
+    except ValueError:
+        return None
+    if parsed < 1 or parsed > 8:
+        return None
+    return parsed
 
 
 def _optional_form_bool(form: Any, key: str) -> bool | None:

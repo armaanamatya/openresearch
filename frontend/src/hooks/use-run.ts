@@ -149,6 +149,12 @@ export interface ProviderRunOptions {
   forceSingleGpu?: boolean;
   maxGpuUsdPerHour?: number;
   vramGb?: number;
+  // User-selectable GPU count (1-8). Absent/undefined ⇒ unchanged behavior
+  // (backend picks automatically). Sent as `gpuCount` (multipart/query) and
+  // `gpu_count` (arxiv JSON). A sibling /abs RepoConfirm flow also sets this
+  // field directly on the ProviderRunOptions object passed to useRun(), so
+  // the name MUST stay `gpuCount`.
+  gpuCount?: number;
   // Lane Q — "reproduce the CLAIM, not the recipe" mode. Pipes to the
   // baseline-implementation prompt's _MINIMIZE_COMPUTE_BLOCK.
   minimizeCompute?: boolean;
@@ -487,6 +493,7 @@ export function useRun(
       if (opts.forceSingleGpu != null) params.set("forceSingleGpu", String(opts.forceSingleGpu));
       if (opts.maxGpuUsdPerHour != null) params.set("maxGpuUsdPerHour", String(opts.maxGpuUsdPerHour));
       if (opts.vramGb != null) params.set("vramGb", String(opts.vramGb));
+      if (opts.gpuCount != null) params.set("gpuCount", String(opts.gpuCount));
       if (opts.minimizeCompute != null) params.set("minimizeCompute", String(opts.minimizeCompute));
       if (opts.gpuParallelism) params.set("gpuParallelism", opts.gpuParallelism);
       if (opts.accelerator) params.set("accelerator", opts.accelerator);
@@ -528,6 +535,7 @@ export function useRun(
       if (opts.forceSingleGpu != null) formData.set("forceSingleGpu", String(opts.forceSingleGpu));
       if (opts.maxGpuUsdPerHour != null) formData.set("maxGpuUsdPerHour", String(opts.maxGpuUsdPerHour));
       if (opts.vramGb != null) formData.set("vramGb", String(opts.vramGb));
+      if (opts.gpuCount != null) formData.set("gpuCount", String(opts.gpuCount));
       if (opts.minimizeCompute != null) formData.set("minimizeCompute", String(opts.minimizeCompute));
       if (opts.gpuParallelism) formData.set("gpuParallelism", opts.gpuParallelism);
       if (opts.accelerator) formData.set("accelerator", opts.accelerator);
@@ -592,6 +600,7 @@ export function useRun(
           ...(opts.forceSingleGpu != null ? { force_single_gpu: opts.forceSingleGpu } : {}),
           ...(opts.maxGpuUsdPerHour != null ? { max_gpu_usd_per_hour: opts.maxGpuUsdPerHour } : {}),
           ...(opts.vramGb != null ? { vram_gb: opts.vramGb } : {}),
+          ...(opts.gpuCount != null ? { gpu_count: opts.gpuCount } : {}),
           ...(opts.minimizeCompute != null ? { minimize_compute: opts.minimizeCompute } : {}),
           ...(opts.gpuParallelism ? { gpu_parallelism: opts.gpuParallelism } : {}),
           ...(opts.accelerator ? { accelerator: opts.accelerator } : {}),

@@ -197,6 +197,11 @@ class StartRunRequest(BaseModel):
     accelerator: str | None = None  # off|auto|local|runpod|azure|endpoint
     max_gpu_usd_per_hour: float | None = None
     vram_gb: int | None = None
+    # User-selectable GPU count. None => existing auto-resolution (gpu_resolver
+    # picks GPU count from budget/vram/sandbox heuristics) — byte-identical to
+    # today. When set (1-8), threaded into the run subprocess env as
+    # OPENRESEARCH_GPU_COUNT for the sandbox backend to consume.
+    gpu_count: int | None = Field(default=None, ge=1, le=8)
     # Lane Q — "reproduce the CLAIM, not the recipe" mode. When True the
     # subprocess gets --minimize-compute and the agent's prompt swaps slow
     # paper schedules for modern fast equivalents (annotated in
@@ -590,6 +595,8 @@ class FileLiveRunService:
             env["OPENRESEARCH_MAX_GPU_USD_PER_HOUR"] = str(request.max_gpu_usd_per_hour)
         if request.vram_gb is not None:
             env["OPENRESEARCH_VRAM_OVERRIDE_GB"] = str(request.vram_gb)
+        if request.gpu_count is not None:
+            env["OPENRESEARCH_GPU_COUNT"] = str(request.gpu_count)
         env["OPENRESEARCH_LLM_PROVIDER"] = request.provider
         if request.verificationProvider:
             env["OPENRESEARCH_VERIFICATION_PROVIDER"] = request.verificationProvider

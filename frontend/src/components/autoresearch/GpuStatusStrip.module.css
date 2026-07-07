@@ -1,0 +1,99 @@
+/* GpuStatusStrip — compact live GPU/compute status chip for the session
+ * view (alphaXiv screen `_5`). Requires an ancestor `.autoresearch` wrapper
+ * for its --or-* tokens (see src/styles/autoresearch-tokens.css). Mirrors
+ * the quieter "chip row" surface language SessionReasoningView's own
+ * rubricStrip uses (flat fill + hairline, no hard offset-shadow) rather
+ * than the heavier Card/PrimaryButton language.
+ */
+
+.strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 16px;
+  margin: 0 0 12px;
+  background: var(--or-chip-bg);
+  border: 1px solid var(--or-hairline);
+  border-radius: var(--or-radius);
+  font-size: 13px;
+  color: var(--or-ink);
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--or-muted);
+}
+
+.dot[data-tone="active"] {
+  background: var(--or-maroon);
+}
+
+.dot[data-tone="pending"] {
+  background: var(--or-muted);
+  animation: gpuStripPulse 1.6s ease-in-out infinite;
+}
+
+.dot[data-tone="err"] {
+  background: var(--or-maroon);
+}
+
+.dot[data-tone="done"] {
+  background: #2f6f4e;
+}
+
+@keyframes gpuStripPulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.85);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dot {
+    animation: none !important;
+  }
+}
+
+.label {
+  font-weight: 600;
+  color: var(--or-ink);
+}
+
+.cloudType {
+  color: var(--or-muted);
+  font-size: 12px;
+  text-transform: lowercase;
+}
+
+.rate {
+  color: var(--or-maroon);
+  font-weight: 600;
+}
+
+.fallback {
+  padding: 2px 6px;
+  border-radius: var(--or-radius);
+  background: var(--or-maroon-tint);
+  color: var(--or-maroon);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.statusWord {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--or-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}

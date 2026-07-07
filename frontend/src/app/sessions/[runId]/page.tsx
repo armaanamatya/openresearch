@@ -13,6 +13,7 @@ import {
 } from "@/lib/autoresearch/session-events";
 import { SessionReasoningView } from "@/components/autoresearch/SessionReasoningView";
 import { SpecValidationStepper } from "@/components/autoresearch/SpecValidationStepper";
+import { GpuStatusStrip } from "@/components/autoresearch/GpuStatusStrip";
 import { SessionRail, type SessionRailSession } from "@/components/autoresearch/ui/SessionRail";
 import styles from "./page.module.css";
 
@@ -69,13 +70,17 @@ export function SessionRouteContent({ runId, events, startedAt }: SessionRouteCo
   return (
     <div className={`autoresearch ${styles.page}`}>
       <SessionRail projectName={runId} sessions={sessions} />
-      {showStepper ? (
-        <div className={styles.main}>
+      <div className={styles.main}>
+        {/* The gpu_resolved plan is already folded into RlmRunState by the
+         * SAME useRlmRun(events) call above (rlmState.gpuPlan) — no new SSE
+         * subscription or shared-reducer edit needed to surface it here. */}
+        <GpuStatusStrip gpuPlan={rlmState.gpuPlan} status={rlmState.status} />
+        {showStepper ? (
           <SpecValidationStepper runId={runId} events={events} />
-        </div>
-      ) : (
-        <SessionReasoningView runId={runId} events={events} className={styles.main} />
-      )}
+        ) : (
+          <SessionReasoningView runId={runId} events={events} className={styles.mainInner} />
+        )}
+      </div>
     </div>
   );
 }

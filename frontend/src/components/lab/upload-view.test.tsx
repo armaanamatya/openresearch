@@ -68,6 +68,7 @@ const DEFAULT_PROPS = {
   forceSingleGpu: false,
   maxGpuUsdPerHour: 0,
   vramGb: 0,
+  gpuCount: 0,
   minimizeCompute: false,
   autonomous: false,
   repoUrl: "",
@@ -82,6 +83,7 @@ const DEFAULT_PROPS = {
   onAcceleratorChange: NOP,
   onMaxGpuUsdPerHourChange: NOP,
   onVramGbChange: NOP,
+  onGpuCountChange: NOP,
   onMinimizeComputeChange: NOP,
   onAutonomousChange: NOP,
   onRepoUrlChange: NOP,
@@ -227,6 +229,55 @@ describe("UploadView advanced options", () => {
   it("renders VRAM number input", () => {
     render(<UploadView {...DEFAULT_PROPS} />);
     expect(screen.getByLabelText("VRAM (GB)")).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GPU count (user-selectable, 1-8, blank = auto)
+// ---------------------------------------------------------------------------
+
+describe("UploadView GPU count", () => {
+  it("renders the GPU count number input", () => {
+    render(<UploadView {...DEFAULT_PROPS} />);
+    expect(screen.getByLabelText("GPU count")).toBeInTheDocument();
+  });
+
+  it("renders blank (auto) when gpuCount is unset (0)", () => {
+    render(<UploadView {...DEFAULT_PROPS} gpuCount={0} />);
+    expect(screen.getByLabelText("GPU count")).toHaveValue(null);
+  });
+
+  it("reflects a set gpuCount value", () => {
+    render(<UploadView {...DEFAULT_PROPS} gpuCount={4} />);
+    expect(screen.getByLabelText("GPU count")).toHaveValue(4);
+  });
+
+  it("calls onGpuCountChange with the typed value", () => {
+    const onChange = vi.fn();
+    render(<UploadView {...DEFAULT_PROPS} onGpuCountChange={onChange} />);
+    fireEvent.change(screen.getByLabelText("GPU count"), { target: { value: "4" } });
+    expect(onChange).toHaveBeenCalledWith(4);
+  });
+
+  it("clamps values above 8 down to 8", () => {
+    const onChange = vi.fn();
+    render(<UploadView {...DEFAULT_PROPS} onGpuCountChange={onChange} />);
+    fireEvent.change(screen.getByLabelText("GPU count"), { target: { value: "20" } });
+    expect(onChange).toHaveBeenCalledWith(8);
+  });
+
+  it("clamps values below 1 up to 1", () => {
+    const onChange = vi.fn();
+    render(<UploadView {...DEFAULT_PROPS} onGpuCountChange={onChange} />);
+    fireEvent.change(screen.getByLabelText("GPU count"), { target: { value: "0" } });
+    expect(onChange).toHaveBeenCalledWith(1);
+  });
+
+  it("calls onGpuCountChange with 0 (auto) when the field is cleared", () => {
+    const onChange = vi.fn();
+    render(<UploadView {...DEFAULT_PROPS} gpuCount={4} onGpuCountChange={onChange} />);
+    fireEvent.change(screen.getByLabelText("GPU count"), { target: { value: "" } });
+    expect(onChange).toHaveBeenCalledWith(0);
   });
 });
 
