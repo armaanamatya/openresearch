@@ -88,7 +88,7 @@ flowchart TD
 
 | Layer | Technology |
 |---|---|
-| Backend | Python 3.14, FastAPI, SQLite (event store) |
+| Backend | Python 3.12 (floor 3.11), FastAPI, SQLite (event store) |
 | Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS |
 | RLM Engine | [`rlms`](https://pypi.org/project/rlms/) library (Algorithm 1 reference implementation) |
 | Sub-agents | Claude Agent SDK (Sonnet) |
@@ -204,7 +204,7 @@ See `.env.example` for the full list.
 
 ```bash
 # Backend tests
-.venv/bin/python -m pytest tests/ -n auto       # all (~340 files / ~4,400 tests, <1 min parallel)
+.venv/bin/python -m pytest tests/ -n auto       # all (~560 files / ~7,200 tests, ~2.5 min parallel)
 .venv/bin/python -m pytest tests/rlm/            # RLM tests only
 
 # Frontend
