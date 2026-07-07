@@ -31,10 +31,13 @@ asyncssh>=2.14,<3
 # /proc fallback, so on macOS (no /proc) the signal silently vanished and
 # quiet CPU-busy jobs were stall-killed until this was declared (2026-06-09).
 psutil>=5.9,<8
-# Azure AKS GPU backend (lazy-imported; only needed when --sandbox azure)
+# Azure AKS / GCP GKE GPU backends (lazy-imported; only needed when --sandbox
+# azure/gcp). kubernetes is shared by both; google-cloud-storage stages cell
+# artifacts to GCS for the GKE-Job path (the sandbox=gcp preflight requires it).
 azure-identity>=1.16,<2
 azure-storage-blob>=12.19,<13
 kubernetes>=29,<32
+google-cloud-storage>=2.16,<4
 
 # --- Evaluation: reproduction + innovation scoring --------------------------
 # Required by backend/evals/* — install if you use the `eval` CLI.

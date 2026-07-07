@@ -13,6 +13,8 @@
   "OPENRESEARCH_STUB_METRICS_GUARD": "1",
   "OPENRESEARCH_TWO_AXIS_VERDICT": "1",
   "OPENRESEARCH_SPEC_VALIDATOR": "1",
-  "OPENRESEARCH_MAX_RUN_GPU_USD": "10.0",
+  "OPENRESEARCH_SKILLS": "1",
+  "OPENRESEARCH_SKILL_SELECT": "1",
+  "OPENRESEARCH_MAX_RUN_GPU_USD": "35.0",
   "models": "executor=sonnet-foundry,grader=sonnet-foundry,verifier=sonnet-foundry,spec_validator=grok"
 }
