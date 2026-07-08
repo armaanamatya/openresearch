@@ -4,9 +4,9 @@
 
 ## Summary
 
-- **Total distinct flags:** 398
+- **Total distinct flags:** 399
 - **Managed by `config.py` Settings (typed, default known):** 137
-- **Ad-hoc `os.environ` reads (no central default):** 261
+- **Ad-hoc `os.environ` reads (no central default):** 262
 - **Mentioned in `CLAUDE.md`:** 92 (23%)
 
 Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **sites** = ad-hoc read count; **default** = literal default at first read site (best effort).
@@ -978,6 +978,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_SUBAGENT_IDLE_TIMEOUT_S` |  |  | 1 | `""` |
 | `OPENRESEARCH_SUBAGENT_TRANSPORT_BACKOFF_S` |  |  | 1 | `"8"` |
 | `OPENRESEARCH_SUBAGENT_TRANSPORT_RETRIES` |  |  | 1 | `""` |
 
@@ -1004,7 +1005,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_TWO_AXIS_VERDICT` |  | ✅ | 3 | `""` |
+| `OPENRESEARCH_TWO_AXIS_VERDICT` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_UPDATE_*`
 
