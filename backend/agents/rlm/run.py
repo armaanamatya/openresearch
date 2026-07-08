@@ -667,9 +667,9 @@ def _resolve_and_clone_repo(
     """
     import json as _json
 
-    if os.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() not in (
-        "1", "true", "yes", "on"
-    ):
+    from backend.agents.rlm.feature_flags import use_author_repo
+
+    if not use_author_repo():
         return None, None
     try:
         from backend.services.ingestion.repo.provisioner import RepoProvisioner
@@ -4228,7 +4228,16 @@ async def run_pipeline_rlm(
         # same wrapped primitives the root uses (ctx re-supplied by the wrapper).
         tools=custom_tools,
         oauth_root=oauth_root,
-        drive_enabled=_lifecycle_drive_enabled(),
+        # Default-ON for oauth roots. The claude-oauth (Sonnet) root
+        # non-deterministically degenerates into a FINAL_VAR refusal loop that
+        # never reaches implement_baseline; the harness-driven lifecycle backstop
+        # (drive_lifecycle_chain) is the reliable recovery. It engages ONLY after
+        # the degenerate detector fires (i.e. the root has already failed to make
+        # lifecycle progress), so a healthy oauth root is unaffected and a
+        # non-oauth root (gpt-5) is byte-identical — it still honors the explicit
+        # OPENRESEARCH_LIFECYCLE_DRIVE flag. This closes the "no result" gap where
+        # a degenerate oauth run early-aborted with a scoreless report.
+        drive_enabled=_lifecycle_drive_enabled() or oauth_root,
         paper_text=context_dict.get("paper_text"),
         rubric_spec=context_dict.get("rubric_spec"),
     )

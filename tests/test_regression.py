@@ -18,7 +18,6 @@ from backend.messaging.event import (
     register_event,
 )
 from backend.schemas.citations import Citation, NonEmptyCitations
-from backend.schemas.scope import Scope
 
 
 @pytest.fixture(autouse=True)
@@ -67,11 +66,6 @@ def test_all_backend_modules_import_cleanly():
         "backend.services.context",
         "backend.services.events",
         "backend.services.ingestion",
-        "backend.services.orchestration",
-        "backend.services.orchestration.blackboard",
-        "backend.services.orchestration.delegation",
-        "backend.services.orchestration.spawn_policy",
-        "backend.services.orchestration.task_lifecycle",
         "backend.services.runtime",
         "backend.services.verification",
     ]
@@ -135,22 +129,6 @@ def test_eventstore_public_api_is_complete():
 
 
 # --- Schema compatibility with teammate's code -----------------------------
-
-
-def test_blackboard_scope_strings_match_our_enum():
-    """The existing BlackboardService records scope as a raw string. Our
-    Scope enum must round-trip through their string column losslessly."""
-    from backend.services.orchestration.blackboard import BlackboardRecord
-
-    record = BlackboardRecord(
-        key="env_python_version",
-        value="3.11",
-        scope=Scope.branch_shared.value,  # we serialize via .value
-        owner_task_id="task_42",
-        created_at="2026-05-09T00:00:00+00:00",
-    )
-    # Round-trip back into our enum.
-    assert Scope(record.scope) == Scope.branch_shared
 
 
 def test_teammate_event_payload_still_constructible():

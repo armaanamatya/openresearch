@@ -47,13 +47,10 @@ _RESULT_MATCH_PREFIX = "result match"  # the replication area; excluded from fid
 _DEFAULT_MIN_SEEDS = 2
 
 
-def _truthy(value: str | None) -> bool:
-    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
 def is_enabled() -> bool:
     """Two-axis verdict is opt-in (default OFF). Escape hatch: unset the flag."""
-    return _truthy(os.environ.get("OPENRESEARCH_TWO_AXIS_VERDICT"))
+    from backend.agents.rlm.feature_flags import env_truthy
+    return env_truthy("OPENRESEARCH_TWO_AXIS_VERDICT")
 
 
 def _min_seeds_for_contradiction() -> int:

@@ -1477,11 +1477,9 @@ def _build_reproduction_block(project_dir: Path) -> dict | None:
     OPENRESEARCH_USE_AUTHOR_REPO is on AND rlm_state/repo_spec.json carries a
     non-null url (a real repo run).
     """
-    import os as _os
+    from backend.agents.rlm.feature_flags import use_author_repo as _use_author_repo
 
-    if _os.environ.get("OPENRESEARCH_USE_AUTHOR_REPO", "").strip().lower() not in (
-        "1", "true", "yes", "on",
-    ):
+    if not _use_author_repo():
         return None
     project_dir = Path(project_dir)
     spec_path = project_dir / "rlm_state" / "repo_spec.json"

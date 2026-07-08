@@ -7,7 +7,6 @@ from __future__ import annotations
 import types
 from unittest.mock import MagicMock
 
-import pytest
 
 import backend.agents.rlm.executor as ex
 from backend.agents.rlm.executor import ExecutorPlan, resolve_executor

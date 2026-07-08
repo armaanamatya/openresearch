@@ -415,11 +415,8 @@ class RunpodBackend(RuntimeBackend):
         ssh_ready: dict[str, Any] | None = None,
     ) -> Sandbox:
         ready = ssh_ready or await self._wait_for_pod_ssh(pod_id)
-        remote_base = _join_posix(
-            self.volume_mount_path,
-            "reprolab",
-            _safe_name(config.project_id),
-            _safe_name(config.run_id),
+        remote_base = _remote_base(
+            self.volume_mount_path, config.project_id, config.run_id
         )
         connection = _RunpodConnection(
             pod_id=pod_id,
@@ -505,7 +502,22 @@ class RunpodBackend(RuntimeBackend):
 
         try:
             conn = await self._ssh(sandbox.sandbox_id)
-            script = _remote_command(sandbox.config, command)
+            # Recompute the remote workdir DETERMINISTICALLY from the mount path +
+            # project/run ids (the exact formula _finish_create uses to build
+            # connection.remote_workdir). The in-memory self._connections lookup
+            # returns None when exec runs on a different backend instance than the
+            # one that created the pod — which silently fell back to config.workdir
+            # (the host /Volumes path) and reintroduced `cd: can't cd to /Volumes`.
+            # This recompute has no such cross-instance dependency.
+            _remote_wd = _join_posix(
+                _remote_base(
+                    self.volume_mount_path,
+                    sandbox.config.project_id,
+                    sandbox.config.run_id,
+                ),
+                "work",
+            )
+            script = _remote_command(sandbox.config, command, remote_workdir=_remote_wd)
             remote_cmd = f"/bin/bash -lc {_shell_quote(script)}"
             # Streaming path requires the asyncssh create_process API. A test
             # double exposing only conn.run (legacy/fake) falls back to the
@@ -1008,7 +1020,7 @@ class RunpodBackend(RuntimeBackend):
             await self._upload_directory(sftp, config.project_root, connection.remote_workdir)
         if self.bootstrap_command:
             bootstrap = await conn.run(
-                f"/bin/bash -lc {_shell_quote(_remote_command(config, self.bootstrap_command))}",
+                f"/bin/bash -lc {_shell_quote(_remote_command(config, self.bootstrap_command, remote_workdir=connection.remote_workdir))}",
                 check=False,
             )
             if bootstrap.returncode != 0:
@@ -1697,14 +1709,24 @@ def _runpod_start_command() -> str:
     )
 
 
-def _remote_command(config: SandboxConfig, command: str) -> str:
+def _remote_command(
+    config: SandboxConfig, command: str, *, remote_workdir: str | None = None
+) -> str:
     exports = "; ".join(
         f"export {key}={_shell_quote(value)}"
         for key, value in sorted(config.environment.items())
         if key.replace("_", "").isalnum()
     )
     prefix = f"{exports}; " if exports else ""
-    return f"{prefix}cd {_shell_quote(config.workdir)} && {command}"
+    # cd to the REMOTE upload dir where the code physically lives. config.workdir
+    # is the ORCHESTRATOR-HOST path (e.g. /Volumes/.../code) that only resolves on
+    # the pod via a symlink created in _prepare_workspace — a fragile dependency
+    # that broke in practice (`sh: cd: can't cd to /Volumes/.../code`, starving
+    # every run_experiment). remote_workdir (…/work under the /workspace mount) is
+    # the guaranteed target; fall back to config.workdir only when a caller can't
+    # supply it (e.g. legacy test doubles), preserving prior behavior there.
+    workdir = remote_workdir or config.workdir
+    return f"{prefix}cd {_shell_quote(workdir)} && {command}"
 
 
 def _replace_path_with_symlink(path: str, target: str) -> str:
@@ -1769,6 +1791,18 @@ def _join_posix(*parts: str) -> str:
         if part:
             result /= part
     return result.as_posix()
+
+
+def _remote_base(mount_path: str, project_id: str, run_id: str) -> str:
+    """Deterministic per-run remote root on the pod: <mount>/reprolab/<pid>/<rid>.
+
+    The SINGLE source of truth for the pod-side layout, shared by _finish_create
+    (which uploads code to ``<base>/work``) and the exec path (which cd's there).
+    Deriving both from this helper means they cannot drift — the drift is exactly
+    what reintroduced the `cd: can't cd to /Volumes` wedge when exec fell back to
+    the host path.
+    """
+    return _join_posix(mount_path, "reprolab", _safe_name(project_id), _safe_name(run_id))
 
 
 def _shell_quote(value: str) -> str:

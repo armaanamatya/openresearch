@@ -50,7 +50,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
 import re
 import unicodedata
 from pathlib import Path
@@ -62,13 +61,10 @@ logger = logging.getLogger(__name__)
 # Feature gate (mirrors two_axis_report.is_enabled)
 # ---------------------------------------------------------------------------
 
-def _truthy(value: str | None) -> bool:
-    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
 def is_enabled() -> bool:
     """Returns True when ``OPENRESEARCH_TWO_AXIS_VERDICT`` is set (mirrors two_axis_report)."""
-    return _truthy(os.environ.get("OPENRESEARCH_TWO_AXIS_VERDICT"))
+    from backend.agents.rlm.feature_flags import env_truthy
+    return env_truthy("OPENRESEARCH_TWO_AXIS_VERDICT")
 
 
 # ---------------------------------------------------------------------------

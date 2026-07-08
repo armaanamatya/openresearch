@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,7 +55,8 @@ _TRANSIENT_TRANSPORT_RE = re.compile(
     r"|Connection refused"
     r"|ECONNREFUSED"
     r"|Unable to connect to API"
-    r"|error_during_execution",
+    r"|error_during_execution"
+    r"|subagent_idle_timeout",             # FM-001 silent SDK hang (no exception)
     re.IGNORECASE,
 )
 
@@ -112,6 +114,108 @@ async def _backoff_with_liveness(
                 pass
 
 
+# FM-001 silent-hang idle timeout (2026-07-07).
+#
+# The retry above only fires on an EXCEPTION (ConnectionRefused / zero-text
+# success). A DIFFERENT failure mode — the claude-agent-sdk async generator
+# hanging with no exception, awaiting a subprocess stream read that never
+# yields — has no bound at all: ``await run_isolated(_do_sdk_call)`` blocks
+# forever, wedging the whole reproduction (observed: implement_baseline stuck,
+# main thread idle, run never finalizes). The stream emits an ``on_event`` per
+# token/tool-call/usage, so a genuine hang is distinguishable from a slow-but-
+# working agent by *idle time since the last event*. On idle timeout we reap the
+# run's own claude-CLI child (so the hung generator unblocks and stops holding
+# the OAuth transport) and raise a transient-signatured error, so the existing
+# retry-with-backoff spawns a fresh attempt.
+def _subagent_idle_timeout_s() -> float:
+    """Seconds of NO SDK stream activity before a sub-agent call is declared hung.
+
+    ``OPENRESEARCH_SUBAGENT_IDLE_TIMEOUT_S`` (default 420s = 7 min). ``0``
+    disables the idle watchdog (restores the pre-2026-07-07 unbounded-await
+    behavior). A working sub-agent streams text/tool-call/usage events well
+    inside this window; only a genuinely wedged SDK generator stays silent.
+    """
+    raw = os.environ.get("OPENRESEARCH_SUBAGENT_IDLE_TIMEOUT_S", "").strip()
+    if not raw:
+        return 420.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        logger.warning("invalid OPENRESEARCH_SUBAGENT_IDLE_TIMEOUT_S=%r; using 420", raw)
+        return 420.0
+
+
+def _reap_claude_children() -> int:
+    """SIGKILL this process's own claude-CLI descendants (best-effort, fail-soft).
+
+    Called only on an idle-timeout: the hung claude-agent-sdk child is awaiting
+    nothing and won't exit on its own, so killing it (a) unblocks the leaked SDK
+    generator thread and (b) frees the shared OAuth transport for the retry.
+    Scope is ``psutil.Process().children(recursive=True)`` — the RUN process's
+    OWN subtree — so a sibling ``claude`` CLI (e.g. an interactive session in
+    another process) is never touched. Returns the count signalled.
+    """
+    try:
+        import psutil  # local import — optional dep, fail-soft if absent
+    except Exception:  # noqa: BLE001
+        return 0
+    killed = 0
+    try:
+        me = psutil.Process()
+        for child in me.children(recursive=True):
+            try:
+                name = (child.name() or "").lower()
+                cmd = " ".join(child.cmdline() or []).lower()
+            except Exception:  # noqa: BLE001 — process vanished mid-inspect
+                continue
+            if "claude" in name or "/claude" in cmd or " claude " in f" {cmd} ":
+                try:
+                    child.kill()
+                    killed += 1
+                except Exception:  # noqa: BLE001 — already gone / not ours
+                    pass
+    except Exception:  # noqa: BLE001 — never let reaping break the caller
+        pass
+    return killed
+
+
+async def _await_with_idle_timeout(
+    coro,
+    *,
+    idle_s: float,
+    last_activity: list[float],
+):
+    """Await *coro*, cancelling it if no stream event lands for *idle_s* seconds.
+
+    ``last_activity[0]`` is a monotonic timestamp bumped by the wrapped
+    ``on_event`` on every SDK stream event. When ``idle_s <= 0`` the watchdog is
+    disabled and the coro is awaited unbounded (legacy behavior). On idle
+    timeout: reap the run's claude-CLI child, cancel the task, and raise a
+    transient-signatured ``TimeoutError`` so ``collect_agent_text``'s retry loop
+    treats it like any other recoverable transport wedge.
+    """
+    if idle_s <= 0:
+        return await coro
+    last_activity[0] = time.monotonic()
+    task = asyncio.ensure_future(coro)
+    check = min(15.0, max(1.0, idle_s / 4.0))
+    while True:
+        done, _ = await asyncio.wait({task}, timeout=check)
+        if task in done:
+            return task.result()
+        if time.monotonic() - last_activity[0] >= idle_s:
+            reaped = _reap_claude_children()
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            raise TimeoutError(
+                f"subagent_idle_timeout: no SDK stream activity for {idle_s:.0f}s "
+                f"(reaped {reaped} claude child(ren))"
+            )
+
+
 async def collect_agent_text(
     agent_id: str,
     prompt: str,
@@ -155,6 +259,21 @@ async def collect_agent_text(
         "input_tokens": 0, "output_tokens": 0,
         "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
     }
+    # FM-001 idle watchdog: monotonic timestamp of the last SDK stream event,
+    # bumped by _bump_activity (below) inside the stream loop. Shared list so the
+    # value is mutable across the run_isolated thread boundary.
+    _idle_s = _subagent_idle_timeout_s()
+    _last_activity: list[float] = [0.0]
+
+    def _bump_activity() -> None:
+        # time.monotonic() is process-wide (not per-loop), so it is comparable
+        # across the run_isolated worker thread and the main-loop watchdog.
+        _last_activity[0] = time.monotonic()
+        if on_event is not None:
+            try:
+                on_event()
+            except Exception:  # noqa: BLE001
+                pass
 
     async def _do_sdk_call() -> tuple[list[str], list[dict[str, object]], dict[str, int]]:
         # Inner coroutine so run_isolated can thread-isolate the SDK call and
@@ -174,11 +293,9 @@ async def collect_agent_text(
             # written any file. A polling watchdog uses this to distinguish a model
             # that is reasoning / generating a large file from a genuinely hung SDK,
             # so a working agent is never falsely cancelled. Never let it break the stream.
-            if on_event is not None:
-                try:
-                    on_event()
-                except Exception:  # noqa: BLE001
-                    pass
+            # _bump_activity records the idle-watchdog timestamp AND forwards to
+            # the caller's on_event.
+            _bump_activity()
             if isinstance(event, StreamText):
                 _inner_collected.append(event.text)
             elif isinstance(event, StreamToolCall):
@@ -195,7 +312,11 @@ async def collect_agent_text(
     attempts = _transport_attempts()
     for attempt in range(1, attempts + 1):
         try:
-            collected, tool_calls, subagent_usage = await run_isolated(_do_sdk_call)
+            collected, tool_calls, subagent_usage = await _await_with_idle_timeout(
+                run_isolated(_do_sdk_call),
+                idle_s=_idle_s,
+                last_activity=_last_activity,
+            )
             break
         except Exception as exc:
             # FM-001: a transient bundled-CLI transport wedge surfaces as a

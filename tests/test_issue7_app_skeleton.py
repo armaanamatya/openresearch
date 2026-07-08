@@ -13,7 +13,6 @@ import pytest
 REQUIRED_MODULES = [
     "backend",
     "backend.services.ingestion",
-    "backend.services.orchestration",
     "backend.services.context",
     "backend.services.runtime",
     "backend.services.verification",

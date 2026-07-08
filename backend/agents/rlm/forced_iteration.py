@@ -634,11 +634,11 @@ class ForcedIterationPolicy:
             # OmniZip attempt 3): a root that NEVER calls verify_against_rubric
             # carries no score/target, sails past the iteration floor, and the
             # rubric-less accept below would ship a fabricated report under a
-            # 0.656 best-attempt floor. With REPROLAB_FLOOR_HARD on, at least
+            # 0.656 best-attempt floor. With OPENRESEARCH_FLOOR_HARD on, at least
             # one real verification is required before any finalize; checks
             # 0/0.3/0.4/0.5 (wall clock, budget, terminal, refusal cap) still
             # dominate above.
-            if os.environ.get("REPROLAB_FLOOR_HARD", "").strip() in ("1", "true", "yes"):
+            if os.environ.get("OPENRESEARCH_FLOOR_HARD", "").strip() in ("1", "true", "yes"):
                 msg = (
                     f"FINAL_VAR refused (hard floor) at iteration {cur}: this run has "
                     "NEVER recorded a rubric score — there is no evidence to report. "
@@ -702,7 +702,7 @@ class ForcedIterationPolicy:
         if _repair_refuse:
             return self._build_repair_refusal(min_repair)
 
-        # 4.7. Hard best-attempt floor (REPROLAB_FLOOR_HARD=1, default off).
+        # 4.7. Hard best-attempt floor (OPENRESEARCH_FLOOR_HARD=1, default off).
         # Ratchet semantics for multi-attempt climbs: when the target is the
         # prior best attempt's score, the iteration-floor escape hatch below
         # let the 2026-06-12 OmniZip attempt 2 ship a 0.0 report under a
@@ -710,7 +710,7 @@ class ForcedIterationPolicy:
         # stays refused while score < target and time remains. Checks 0 / 0.3
         # / 0.4 / 0.5 still dominate, so a genuinely stuck or out-of-time run
         # ships its best partial instead of never terminating.
-        if os.environ.get("REPROLAB_FLOOR_HARD", "").strip() in ("1", "true", "yes"):
+        if os.environ.get("OPENRESEARCH_FLOOR_HARD", "").strip() in ("1", "true", "yes"):
             msg = (
                 f"FINAL_VAR refused (hard floor): rubric overall_score={score:.3f} is "
                 f"below target_score={target:.3f} and wall clock remains. This run's "
