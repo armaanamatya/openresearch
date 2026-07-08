@@ -39,7 +39,20 @@ _NEW_GCP_ENVVARS = [
 
 @pytest.fixture
 def clean_new_gcp_env(monkeypatch):
-    """Remove the new env vars so defaults are exercised."""
+    """Remove the gcp/oauth env vars so the field defaults are exercised.
+
+    A developer .env populates OPENRESEARCH_GCP_* (project, region, bucket,
+    namespace, service_account, base_image, …) and pytest-dotenv loads it into
+    os.environ for the session, so ``test_existing_gcp_fields_unchanged`` sees
+    the real values instead of the defaults. Sweep the whole OPENRESEARCH_GCP_*
+    prefix (not just the two hand-listed image/mount vars) so the defaults test
+    is hermetic on any machine with a live GCP config.
+    """
+    import os
+
+    for k in list(os.environ):
+        if k.startswith("OPENRESEARCH_GCP_"):
+            monkeypatch.delenv(k, raising=False)
     for k in _NEW_GCP_ENVVARS:
         monkeypatch.delenv(k, raising=False)
 

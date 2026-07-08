@@ -186,6 +186,7 @@ def test_settings_accepts_unprefixed_runpod_api_key(monkeypatch: pytest.MonkeyPa
     assert settings.runpod_api_key == "runpod-from-shell-env"
 
 
+@pytest.mark.ambient_env  # exercises real .env-file loading; opt out of env-file isolation
 def test_settings_reads_unprefixed_provider_keys_from_dotenv(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
