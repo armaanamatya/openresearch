@@ -1,0 +1,47 @@
+[
+  {
+    "id": "sdar_alfworld_3b",
+    "label": "SDAR ALFWorld 3B (authors' verl trainer)",
+    "vm": "sdar-2model-a",
+    "zone": "us-central1-a",
+    "project": "deepinvent-ext-ut",
+    "log_path": "/mnt/sdar-cache/logs/run_alfworld_3b.log",
+    "process_pattern": "main[_]sdar",
+    "sentinel_paths": ["/run/sdar_run_exited", "/tmp/sdar_run_exited"],
+    "total_steps": 150,
+    "validation_metric_regex": "val/success_rate:([0-9.]+)",
+    "progress_regex": "([0-9]+)/150 \\[([^<\\]]*)<([^,\\]]*), ([^\\]]*)\\]",
+    "error_regex": "Traceback|CUDA out of memory|RuntimeError|AssertionError|Killed process|CUDA error|Segmentation fault|FATAL|\\bOOM\\b",
+    "poll_interval_s": 45
+  },
+  {
+    "id": "sdar_search_3b",
+    "label": "SDAR Search-QA 3B (authors' verl trainer, COMPLETED)",
+    "vm": "sdar-2model-a",
+    "zone": "us-central1-a",
+    "project": "deepinvent-ext-ut",
+    "log_path": "/mnt/sdar-cache/logs/run_search_3b.log",
+    "process_pattern": "main[_]sdar",
+    "sentinel_paths": ["/run/sdar_run_exited", "/tmp/sdar_run_exited"],
+    "total_steps": 150,
+    "validation_metric_regex": "val/success_rate:([0-9.]+)",
+    "progress_regex": "([0-9]+)/150 \\[([^<\\]]*)<([^,\\]]*), ([^\\]]*)\\]",
+    "error_regex": "Traceback|CUDA out of memory|RuntimeError|AssertionError|Killed process|CUDA error|Segmentation fault|FATAL|\\bOOM\\b",
+    "poll_interval_s": 300
+  },
+  {
+    "id": "sdar_webshop_3b",
+    "label": "SDAR WebShop 3B (authors' verl trainer, not yet launched)",
+    "vm": "sdar-2model-a",
+    "zone": "us-central1-a",
+    "project": "deepinvent-ext-ut",
+    "log_path": "/mnt/sdar-cache/logs/run_webshop_3b.log",
+    "process_pattern": "main[_]sdar",
+    "sentinel_paths": ["/run/sdar_run_exited", "/tmp/sdar_run_exited"],
+    "total_steps": 150,
+    "validation_metric_regex": "val/success_rate:([0-9.]+)",
+    "progress_regex": "([0-9]+)/150 \\[([^<\\]]*)<([^,\\]]*), ([^\\]]*)\\]",
+    "error_regex": "Traceback|CUDA out of memory|RuntimeError|AssertionError|Killed process|CUDA error|Segmentation fault|FATAL|\\bOOM\\b",
+    "poll_interval_s": 120
+  }
+]
