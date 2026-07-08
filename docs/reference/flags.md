@@ -4,10 +4,10 @@
 
 ## Summary
 
-- **Total distinct flags:** 463
+- **Total distinct flags:** 469
 - **Managed by `config.py` Settings (typed, default known):** 140
-- **Ad-hoc `os.environ` reads (no central default):** 323
-- **Mentioned in `CLAUDE.md`:** 2 (0%)
+- **Ad-hoc `os.environ` reads (no central default):** 329
+- **Mentioned in `CLAUDE.md`:** 3 (0%)
 
 Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **sites** = ad-hoc read count; **default** = literal default at first read site (best effort).
 
@@ -113,7 +113,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_ARTIFACT_DIR` |  |  |  | |
+| `OPENRESEARCH_ARTIFACT_DIR` |  |  | 1 | |
 
 ### `OPENRESEARCH_ASSET_*`
 
@@ -270,14 +270,14 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | `OPENRESEARCH_CELL_FINGERPRINT` |  |  |  | |
 | `OPENRESEARCH_CELL_GPU_COUNT` |  |  |  | |
 | `OPENRESEARCH_CELL_GRAD_CHECKPOINT` |  |  |  | |
-| `OPENRESEARCH_CELL_ID` |  |  | 1 | |
+| `OPENRESEARCH_CELL_ID` |  |  | 2 | `"monolithic"` |
 | `OPENRESEARCH_CELL_MAX_OOM_RETRIES` |  |  | 1 | |
 | `OPENRESEARCH_CELL_MAX_STEPS` |  |  |  | |
 | `OPENRESEARCH_CELL_MEM_FRACTION` |  |  | 1 | |
 | `OPENRESEARCH_CELL_NOW_ISO` |  |  |  | |
 | `OPENRESEARCH_CELL_OOM_BATCH_SCALE_FLOOR` |  |  |  | |
 | `OPENRESEARCH_CELL_OOM_BATCH_SCALE_STEP1` |  |  |  | |
-| `OPENRESEARCH_CELL_OUTPUT_DIR` |  |  | 2 | `""` |
+| `OPENRESEARCH_CELL_OUTPUT_DIR` |  |  | 3 | `""` |
 | `OPENRESEARCH_CELL_PARAMS` |  |  | 1 | |
 | `OPENRESEARCH_CELL_PREEMPT_GRACE_S` |  |  |  | |
 | `OPENRESEARCH_CELL_RESUME_AUTO` |  |  | 1 | `""` |
@@ -369,7 +369,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_DEFAULT_SANDBOX` |  |  |  | |
+| `OPENRESEARCH_DEFAULT_SANDBOX` |  |  | 1 | `""` |
 
 ### `OPENRESEARCH_DEGENERATE_*`
 
@@ -601,6 +601,12 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | `OPENRESEARCH_GCP_WATCH_POLL_INTERVAL_S` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_ZONE` |  |  |  | |
 
+### `OPENRESEARCH_GKE_*`
+
+| Flag | cfg | doc | sites | default |
+|---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_GKE_SYNTH_CELL` |  | ✅ | 1 | `""` |
+
 ### `OPENRESEARCH_GPU_*`
 
 | Flag | cfg | doc | sites | default |
@@ -626,6 +632,12 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | `OPENRESEARCH_GRADER_MODEL` |  |  | 3 | `""` |
 | `OPENRESEARCH_GRADER_SAMPLES` |  |  | 2 | `"1"` |
 
+### `OPENRESEARCH_HARDEXIT_*`
+
+| Flag | cfg | doc | sites | default |
+|---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_HARDEXIT_CLEANUP` |  |  | 3 | `""` |
+
 ### `OPENRESEARCH_HF_*`
 
 | Flag | cfg | doc | sites | default |
@@ -643,6 +655,12 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_HYBRID_EXEC_ROUTE` |  |  | 1 | `""` |
+
+### `OPENRESEARCH_IMPL_*`
+
+| Flag | cfg | doc | sites | default |
+|---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_IMPL_ABANDON_GUARD` |  |  | 1 | `""` |
 
 ### `OPENRESEARCH_INJECT_*`
 
@@ -851,6 +869,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_PREFLIGHT_SMOKE` |  |  | 1 | `"on"` |
+| `OPENRESEARCH_PREFLIGHT_UNION_SCOPE` |  |  | 1 | `""` |
 
 ### `OPENRESEARCH_PRELOAD_*`
 
@@ -1091,6 +1110,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_SKILL_CANDIDATES_MAX` |  |  |  | |
+| `OPENRESEARCH_SKILL_INFRA_SELECT` |  |  |  | |
 | `OPENRESEARCH_SKILL_SELECT` |  |  |  | |
 | `OPENRESEARCH_SKILL_SELECT_DETERMINISTIC` |  |  |  | |
 | `OPENRESEARCH_SKILL_VERIFIER_BODIES` |  |  | 1 | `""` |
@@ -1150,6 +1170,12 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_SUBRLM_OPENAI_TIMEOUT_S` |  |  | 1 | |
+
+### `OPENRESEARCH_SYNTH_*`
+
+| Flag | cfg | doc | sites | default |
+|---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_SYNTH_CELL_VRAM_GB` |  |  | 1 | `""` |
 
 ### `OPENRESEARCH_TARGET_*`
 
