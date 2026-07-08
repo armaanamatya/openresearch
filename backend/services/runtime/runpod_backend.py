@@ -347,11 +347,8 @@ class RunpodBackend(RuntimeBackend):
         ssh_ready: dict[str, Any] | None = None,
     ) -> Sandbox:
         ready = ssh_ready or await self._wait_for_pod_ssh(pod_id)
-        remote_base = _join_posix(
-            self.volume_mount_path,
-            "reprolab",
-            _safe_name(config.project_id),
-            _safe_name(config.run_id),
+        remote_base = _remote_base(
+            self.volume_mount_path, config.project_id, config.run_id
         )
         connection = _RunpodConnection(
             pod_id=pod_id,
@@ -437,12 +434,22 @@ class RunpodBackend(RuntimeBackend):
 
         try:
             conn = await self._ssh(sandbox.sandbox_id)
-            _conn_meta = self._connections.get(sandbox.sandbox_id)
-            script = _remote_command(
-                sandbox.config,
-                command,
-                remote_workdir=_conn_meta.remote_workdir if _conn_meta else None,
+            # Recompute the remote workdir DETERMINISTICALLY from the mount path +
+            # project/run ids (the exact formula _finish_create uses to build
+            # connection.remote_workdir). The in-memory self._connections lookup
+            # returns None when exec runs on a different backend instance than the
+            # one that created the pod — which silently fell back to config.workdir
+            # (the host /Volumes path) and reintroduced `cd: can't cd to /Volumes`.
+            # This recompute has no such cross-instance dependency.
+            _remote_wd = _join_posix(
+                _remote_base(
+                    self.volume_mount_path,
+                    sandbox.config.project_id,
+                    sandbox.config.run_id,
+                ),
+                "work",
             )
+            script = _remote_command(sandbox.config, command, remote_workdir=_remote_wd)
             remote_cmd = f"/bin/bash -lc {_shell_quote(script)}"
             # Streaming path requires the asyncssh create_process API. A test
             # double exposing only conn.run (legacy/fake) falls back to the
@@ -1556,6 +1563,18 @@ def _join_posix(*parts: str) -> str:
         if part:
             result /= part
     return result.as_posix()
+
+
+def _remote_base(mount_path: str, project_id: str, run_id: str) -> str:
+    """Deterministic per-run remote root on the pod: <mount>/reprolab/<pid>/<rid>.
+
+    The SINGLE source of truth for the pod-side layout, shared by _finish_create
+    (which uploads code to ``<base>/work``) and the exec path (which cd's there).
+    Deriving both from this helper means they cannot drift — the drift is exactly
+    what reintroduced the `cd: can't cd to /Volumes` wedge when exec fell back to
+    the host path.
+    """
+    return _join_posix(mount_path, "reprolab", _safe_name(project_id), _safe_name(run_id))
 
 
 def _shell_quote(value: str) -> str:

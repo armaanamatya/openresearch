@@ -42,3 +42,15 @@ def test_env_exports_precede_cd() -> None:
     script = _remote_command(cfg, "python train.py", remote_workdir=_REMOTE)
     assert "export FOO='bar'" in script
     assert script.index("export FOO") < script.index("cd ")
+
+
+def test_remote_base_is_deterministic_and_pod_side() -> None:
+    # The exec path recomputes remote_workdir from _remote_base (no in-memory
+    # connection lookup) — it must match the create-time layout and never be the
+    # host /Volumes path.
+    from backend.services.runtime.runpod_backend import _remote_base
+    base = _remote_base("/workspace", "prj_abc", "run_xyz")
+    assert base == "/workspace/reprolab/prj-abc/run-xyz"
+    assert "/Volumes" not in base
+    # exec cd target = <base>/work — this is where _finish_create uploads code.
+    assert f"{base}/work" == "/workspace/reprolab/prj-abc/run-xyz/work"
