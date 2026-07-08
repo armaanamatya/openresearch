@@ -248,3 +248,39 @@ def test_collect_shell_vars_rejects_metachars_and_resolves_nested():
     assert resolved["F"] == "hello_world/leaf"   # multi-pass nested resolution
     assert "D" not in resolved                   # command substitution rejected
     assert "E" not in resolved                   # pipe metachar rejected
+
+
+# --- held-out validation enablement (Option A: faithful eval provenance) --------
+
+def test_plan_enables_held_out_eval_when_val_file_present(tmp_path):
+    """When the repo ships a real val parquet, plan() enables verl validation
+    (test_freq>0), slices the held-out val set, and offers the held-out eval
+    keys (preferred over the train reward)."""
+    code_dir = tmp_path / "code"
+    _write_shell_var_verl_fixture(code_dir)
+    # the shell-var fixture references data.val_files=./dataset/valid_data.parquet
+    # but does not create it — create it so _extract_val_file resolves it.
+    (code_dir / "dataset" / "valid_data.parquet").write_bytes(b"")
+
+    spec = execute_planner.plan(code_dir)
+    assert spec is not None
+    assert spec.reward.eval_keys == execute_planner._EVAL_KEYS
+    assert spec.launch.overrides["trainer.test_freq"] == str(execute_planner._VAL_TEST_FREQ)
+    assert spec.data_slice["val_file"] == "./dataset/valid_data.parquet"
+    assert spec.data_slice["val_rows"] == execute_planner._VAL_SLICE_ROWS
+    # train slice untouched
+    assert spec.data_slice["train_file"] == "./dataset/train_data_10k.parquet"
+
+
+def test_plan_no_val_file_keeps_validation_off_and_no_eval_keys(tmp_path):
+    """Without a val set on disk, validation stays off (test_freq=-1) and only
+    the honest train-reward fallback is offered (eval_keys empty) — enabling
+    test_freq with no val_files would make verl error."""
+    code_dir = tmp_path / "code"
+    _write_shell_var_verl_fixture(code_dir)  # creates the train parquet only
+
+    spec = execute_planner.plan(code_dir)
+    assert spec is not None
+    assert spec.reward.eval_keys == ()
+    assert spec.launch.overrides["trainer.test_freq"] == "-1"
+    assert "val_file" not in (spec.data_slice or {})

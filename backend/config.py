@@ -462,6 +462,16 @@ class Settings(BaseSettings):
     # Artifact Registry tag. The runner errors clearly on empty rather than
     # defaulting to a floating :latest tag.
     gcp_base_image: str = Field(default="", description="Pre-baked Artifact Registry base image (build_environment no-op); operator must set to a PINNED tag — never :latest")
+    # E1: framework->validated-image floor. Maps a cell's declared framework /
+    # image_key (e.g. "verl") to a PINNED Artifact Registry image that owns that
+    # framework's validated heavy stack (verl -> gke-cell-verl). Read ONLY when
+    # OPENRESEARCH_FRAMEWORK_IMAGES is on (default off => today's single
+    # gcp_base_image). Env: OPENRESEARCH_GCP_FRAMEWORK_IMAGES as a JSON object,
+    # e.g. '{"verl": "us-central1-docker.pkg.dev/deepinvent-ext-ut/reprolab/gke-cell-verl:v1"}'.
+    gcp_framework_images: dict[str, str] = Field(
+        default_factory=dict,
+        description="Map framework/image_key -> pinned validated Artifact Registry image; consumed only when OPENRESEARCH_FRAMEWORK_IMAGES is on (default off).",
+    )
     gcp_gpu_usd_per_hour: float = Field(default=3.93, ge=0.0, description="Per-GPU $/hr for budget tracking (default = A100-80 on-demand list price; set your negotiated rate). 0 disables the run-USD cost cap.")
     gcp_boot_timeout_seconds: int = Field(default=900, ge=1, description="Seconds to wait for a Job pod to leave Pending")
     gcp_pending_timeout_seconds: int = Field(default=1500, ge=1, description="Seconds before a stuck-Pending cell is failed as capacity_exhausted (GKE GPU cold-start from zero can take 10-12 min; 900s killed legitimate scale-up)")

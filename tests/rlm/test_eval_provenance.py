@@ -851,11 +851,19 @@ class TestAggregateProvenance:
         assert detail is not None
         assert "[0,1]" in detail or "out of" in detail.lower()
 
-    def test_aggregate_nonexistent_source_vetoed(self, tmp_path, monkeypatch):
-        """source points at a file that does not exist on disk → veto."""
+    def test_aggregate_nonexistent_source_not_vetoed_round_trip(self, tmp_path, monkeypatch):
+        """source points at a file that does not exist on the host → NOT a veto.
+
+        On the GKE path the ``source`` is a POD-side absolute path that
+        legitimately does not exist on the orchestrator host after the
+        pod→GCS→host round-trip, and the host guard cannot distinguish that
+        from a fabricated path. Source existence is therefore best-effort only;
+        the value cross-checks (metric_value finite, in [0,1], reported ==
+        metric_value) are the real honesty guarantee, and they pass here."""
         monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
         prov = {
             "provenance_kind": "aggregate",
+            "adapter": "verl_metrics_adapter",  # the real adapter always stamps this
             "metric_value": 0.456,
             "source": str(tmp_path / "does_not_exist.log"),
         }
@@ -865,17 +873,41 @@ class TestAggregateProvenance:
             provenance=prov,
         )
         veto, detail = eval_provenance_should_veto(tmp_path)
-        assert veto is True
-        assert detail is not None
-        assert "does not exist" in detail.lower()
+        assert veto is False
+        assert detail is None
 
-    def test_aggregate_no_source_key_passes(self, tmp_path, monkeypatch):
-        """No 'source' key at all + a coherent metric_value → veto False
-        (source-absence alone is fail-soft; steps 1-3 already bound honesty)."""
+    def test_aggregate_no_source_no_marker_is_unverifiable_vetoed(self, tmp_path, monkeypatch):
+        """A coherent aggregate (reported == metric_value, in [0,1]) that is
+        NEITHER stamped by the trusted verl_metrics_adapter NOR backed by a
+        resolvable source file is unverifiable self-attestation → veto. Internal
+        consistency alone is not a real held-out measurement (closes the
+        self-attestation loophole a pure-inline aggregate would otherwise open)."""
         monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
         prov = {
             "provenance_kind": "aggregate",
             "metric_value": 0.456,
+        }
+        _make_cell(
+            tmp_path,
+            {"status": "success", "success_rate": 0.456},
+            provenance=prov,
+        )
+        veto, detail = eval_provenance_should_veto(tmp_path)
+        assert veto is True
+        assert detail is not None
+        assert "unverifiable" in detail.lower()
+
+    def test_aggregate_resolvable_source_no_marker_passes(self, tmp_path, monkeypatch):
+        """The local/docker path: a source file that resolves on disk binds the
+        aggregate to a real artifact even without the producer marker → pass."""
+        monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        src = tmp_path / "outputs" / "run_01" / "cell_0" / "train.log"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text("val/success_rate: 0.456", encoding="utf-8")
+        prov = {
+            "provenance_kind": "aggregate",
+            "metric_value": 0.456,
+            "source": str(src),
         }
         _make_cell(
             tmp_path,
@@ -917,6 +949,79 @@ class TestAggregateProvenance:
             tmp_path,
             {"status": "ok", "success_rate": 0.5},
             provenance=prov,
+        )
+        veto, detail = eval_provenance_should_veto(tmp_path)
+        assert veto is False
+        assert detail is None
+
+
+# ---------------------------------------------------------------------------
+# Inline provenance (GKE round-trip) + honest reward_mean exemption
+# ---------------------------------------------------------------------------
+
+class TestInlineProvenanceRoundTrip:
+    """The GKE pod entrypoint uploads only metrics.json — a standalone
+    eval_provenance.json sidecar never survives the pod→GCS→host round-trip.
+    The adapter therefore also embeds the aggregate provenance INLINE under
+    metrics.json['eval_provenance'], and the guard credits it identically."""
+
+    def test_inline_aggregate_provenance_credited(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        metrics = {
+            "status": "success",
+            "success_rate": 0.42,
+            "eval_provenance": {
+                "provenance_kind": "aggregate",
+                "adapter": "verl_metrics_adapter",
+                "metric_name": "success_rate",
+                "metric_value": 0.42,
+                "source": "/pod/only/train.log",  # a pod path, absent on host
+            },
+        }
+        _make_cell(tmp_path, metrics, provenance=None)  # NO sidecar
+        veto, detail = eval_provenance_should_veto(tmp_path)
+        assert veto is False
+        assert detail is None
+
+    def test_inline_provenance_value_mismatch_still_vetoed(self, tmp_path, monkeypatch):
+        """Inline provenance whose metric_value disagrees with the reported rate
+        metric is still vetoed — the value cross-check stays authoritative."""
+        monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        metrics = {
+            "status": "success",
+            "success_rate": 0.90,
+            "eval_provenance": {"provenance_kind": "aggregate", "metric_value": 0.42},
+        }
+        _make_cell(tmp_path, metrics, provenance=None)
+        veto, detail = eval_provenance_should_veto(tmp_path)
+        assert veto is True
+        assert detail is not None
+
+    def test_sidecar_still_wins_when_present(self, tmp_path, monkeypatch):
+        """A standalone sidecar (local/docker path) is used when present, even if
+        an inline block also exists — sidecar read is tried first. Both carry the
+        trusted producer marker, so the honesty binding is satisfied."""
+        monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        prov = {
+            "provenance_kind": "aggregate",
+            "adapter": "verl_metrics_adapter",
+            "metric_value": 0.42,
+        }
+        metrics = {"status": "success", "success_rate": 0.42, "eval_provenance": prov}
+        _make_cell(tmp_path, metrics, provenance=prov)
+        veto, detail = eval_provenance_should_veto(tmp_path)
+        assert veto is False
+        assert detail is None
+
+    def test_reward_mean_cell_is_exempt(self, tmp_path, monkeypatch):
+        """A train-reward cell writes reward_mean (NOT a rate-metric key), so the
+        guard treats it as RL-reward-only and never vetoes for a missing sidecar —
+        the honest fallback when no held-out val score is available."""
+        monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        _make_cell(
+            tmp_path,
+            {"status": "success", "reward_mean": 0.141, "reward": 0.141, "metric": 0.141},
+            provenance=None,
         )
         veto, detail = eval_provenance_should_veto(tmp_path)
         assert veto is False

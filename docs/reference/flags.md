@@ -4,9 +4,9 @@
 
 ## Summary
 
-- **Total distinct flags:** 470
+- **Total distinct flags:** 472
 - **Managed by `config.py` Settings (typed, default known):** 140
-- **Ad-hoc `os.environ` reads (no central default):** 330
+- **Ad-hoc `os.environ` reads (no central default):** 332
 - **Mentioned in `CLAUDE.md`:** 3 (0%)
 
 Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **sites** = ad-hoc read count; **default** = literal default at first read site (best effort).
@@ -556,6 +556,12 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | `OPENRESEARCH_FORCE_SANDBOX` |  |  | 1 | `""` |
 | `OPENRESEARCH_FORCE_SINGLE_GPU` | ✅ |  |  | `Field(...)` |
 
+### `OPENRESEARCH_FRAMEWORK_*`
+
+| Flag | cfg | doc | sites | default |
+|---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_FRAMEWORK_IMAGES` |  |  |  | |
+
 ### `OPENRESEARCH_FSDP_*`
 
 | Flag | cfg | doc | sites | default |
@@ -577,6 +583,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | `OPENRESEARCH_GCP_CSI_MOUNT_PATH` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_FILESTORE_SHARE` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_FILES_CACHE_ENABLED` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_GCP_FRAMEWORK_IMAGES` |  |  |  | |
 | `OPENRESEARCH_GCP_GCS_BUCKET` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_GKE_CLUSTER` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_GPUS_PER_NODE` | ✅ |  |  | `Field(...)` |

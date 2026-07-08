@@ -84,6 +84,7 @@ from backend.agents.rlm.cell_scheduler import (  # noqa: E402
     should_skip_cell,
     write_cell_manifest,
 )
+from backend.agents.rlm.feature_flags import env_truthy  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -1434,6 +1435,50 @@ def _lookup_sku_by_short_name(short_name: str) -> Any | None:
     return None
 
 
+def _resolve_framework_image(
+    cells: list[dict[str, Any]], base_image: str, mapping: dict[str, str]
+) -> str:
+    """Pure: resolve the framework->image floor for a cell matrix.
+
+    A cell declares its framework via ``image_key`` (preferred) then
+    ``framework`` (fallback); the first that maps to a non-empty image in
+    ``mapping`` selects that image. Returns the mapped image ONLY when every
+    matching cell agrees on exactly ONE distinct image (the deterministic
+    single-framework synth case). Zero matches, an empty mapping, or an
+    ambiguous mix of two+ distinct images all fall back to ``base_image`` —
+    never guess a run-level image for a heterogeneous matrix.
+    """
+    if not mapping:
+        return base_image
+    resolved: set[str] = set()
+    for cell in cells:
+        if not isinstance(cell, dict):
+            continue
+        for field in ("image_key", "framework"):
+            val = cell.get(field)
+            if isinstance(val, str) and val:
+                image = mapping.get(val)
+                if image:
+                    resolved.add(image)
+                    break
+    if len(resolved) == 1:
+        return next(iter(resolved))
+    return base_image
+
+
+def _maybe_framework_image(cells: list[dict[str, Any]], base_image: str) -> str:
+    """E1 gate: apply the framework->image floor when
+    ``OPENRESEARCH_FRAMEWORK_IMAGES`` is on. Off/unmapped => ``base_image``
+    unchanged (byte-identical). The mapping is the cloud-prefixed
+    ``<prefix>_framework_images`` setting (gcp_framework_images on GKE)."""
+    if not env_truthy("OPENRESEARCH_FRAMEWORK_IMAGES"):
+        return base_image
+    mapping = _cloud_setting("framework_images", {}) or {}
+    if not isinstance(mapping, dict):
+        return base_image
+    return _resolve_framework_image(cells, base_image, mapping)
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -1505,6 +1550,10 @@ def run_matrix(
     node_pool_name: str = _cloud_setting("node_pool_name", "gpunodes")
     # P1-fix-5: default is "" — _build_job_manifest raises clearly if still empty.
     base_image: str = _cloud_setting("base_image", "")
+    # E1: framework->validated-image floor (OPENRESEARCH_FRAMEWORK_IMAGES,
+    # default off). A verl cell auto-targets gke-cell-verl instead of the single
+    # gcp_base_image; off/unmapped => base_image unchanged.
+    base_image = _maybe_framework_image(cells, base_image)
     storage_account: str = _cloud_setting("storage_account", "") or ""
     blob_container: str = _cloud_setting("blob_container", "reprolab-artifacts") or "reprolab-artifacts"
     # P1-fix-5: align with config.py default of 4 (was incorrectly 8 here).

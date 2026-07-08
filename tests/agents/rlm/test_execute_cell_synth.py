@@ -182,3 +182,47 @@ def test_shim_pins_checkpoint_dir_under_out_dir(tmp_path, monkeypatch):
     assert 'trainer.default_local_dir=' in shim
     assert 'ckpt_dir = out_dir / "checkpoint"' in shim
     assert 'f"trainer.default_local_dir={ckpt_dir}"' in shim
+
+
+# --- Option A: held-out eval wiring surfaces in the synthesized cell -------------------
+
+def test_synth_shim_carries_dual_key_bridge_and_val_slice(tmp_path, monkeypatch):
+    """The generated shim prefers the HELD-OUT eval key (metric_name=success_rate)
+    and falls back to the TRAIN reward (metric_name=reward_mean), and slices the
+    val set when the repo ships one — so the eval-provenance guard credits a real
+    held-out score instead of vetoing a mislabeled train reward."""
+    monkeypatch.setenv("OPENRESEARCH_EXECUTE_SYNTH", "1")
+    code_dir = tmp_path / "code"
+    _write_verl_fixture(code_dir)
+    # give the fixture a real val parquet + a data.val_files reference so the
+    # planner enables held-out validation.
+    (code_dir / "scripts" / "run.sh").write_text(
+        "#!/bin/bash\n"
+        "python3 -m demo.main_run \\\n"
+        "    algorithm.adv_estimator=grpo \\\n"
+        "    data.max_response_length=3072 \\\n"
+        "    data.train_files=dataset/train.parquet \\\n"
+        "    data.val_files=dataset/valid.parquet \\\n"
+        "    trainer.test_freq=10 \\\n"
+        "    trainer.n_gpus_per_node=4\n",
+        encoding="utf-8",
+    )
+    (code_dir / "dataset" / "valid.parquet").write_bytes(b"")
+
+    result = execute_cell_synth.maybe_synthesize_execute_cells(code_dir)
+    assert isinstance(result, dict)
+
+    spec_json = json.loads((code_dir / "execute_spec.json").read_text(encoding="utf-8"))
+    # held-out eval keys offered + validation enabled + val slice present
+    assert spec_json["reward"]["eval_keys"], "eval_keys should be populated when a val set exists"
+    assert spec_json["launch"]["overrides"]["trainer.test_freq"] != "-1"
+    assert spec_json["data_slice"]["val_file"] == "dataset/valid.parquet"
+
+    shim_text = (code_dir / "train_cell.py").read_text(encoding="utf-8")
+    # dual-key bridge markers
+    assert 'metric_name="success_rate"' in shim_text
+    assert 'metric_name="reward_mean"' in shim_text
+    # val-slice logic present
+    assert "val_slice" in shim_text
+    assert "data.val_files=" in shim_text
+    py_compile.compile(str(code_dir / "train_cell.py"), doraise=True)

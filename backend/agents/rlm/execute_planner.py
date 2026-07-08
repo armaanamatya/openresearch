@@ -49,9 +49,10 @@ class LaunchSpec:
 @dataclass(frozen=True)
 class RewardSpec:
     kind: str                 # "verl" | "hf_trainer" | "json_file" | "log_regex"
-    keys: tuple               # ordered reward-key candidates, first found wins
+    keys: tuple               # TRAIN reward-key candidates (fallback) -> reward_mean
     log_glob: str             # "$OUTPUT_DIR/*.log"
     metrics_file: str | None  # for json_file: "all_results.json"
+    eval_keys: tuple = ()     # HELD-OUT val-key candidates (preferred) -> success_rate
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,16 @@ _SCRIPT_GLOB_PATTERNS: tuple[str, ...] = (
 
 _SLICE_ROWS = 32
 
+# Estimated VRAM for the downscaled single-GPU execute cell. MUST stay <= 64 so
+# the shared capacity_gate (cell_matrix.py: est_vram_gb * 1.25 headroom vs the
+# 80GB A100-80 budget) does not drop the cell BEFORE dispatch — 60 * 1.25 = 75 < 80.
+# The downscale (param+optimizer offload, gpu_memory_utilization=0.6, batch 8, a
+# 1.5B model) fits well under 80GB; the prior 70.0 was a pre-gate estimate that the
+# direct-run_matrix proof tolerated but the full harness path (which applies the
+# gate) rejected as capacity_exhausted. Tunable per model/GPU via
+# OPENRESEARCH_EXECUTE_SYNTH_VRAM_GB at the synth layer (execute_cell_synth).
+_EXECUTE_CELL_VRAM_GB = 60.0
+
 # The verl-adapter downscale: fit 1xA100 + a fast non-zero-reward proof,
 # applied AFTER the authors' own args (hydra last-wins). Mirrors the flags in
 # scripts/ucpo_execute_cell/train_cell.py. `data.max_response_length` is
@@ -118,14 +129,37 @@ _DOWNSCALE_OVERRIDES: tuple[tuple[str, str], ...] = (
     ("actor_rollout_ref.ref.fsdp_config.param_offload", "True"),
 )
 
-# Candidate reward keys verl logs, most-specific first (mirrors
-# scripts/ucpo_execute_cell/train_cell.py's _REWARD_KEYS).
+# TRAIN reward keys verl logs, most-specific first (mirrors
+# scripts/ucpo_execute_cell/train_cell.py's _REWARD_KEYS). These are a TRAINING
+# signal, not a held-out measurement — the shim writes them as ``reward_mean``
+# (never ``success_rate``), so the eval-provenance guard treats the cell as
+# RL-reward-only (exempt) instead of vetoing a mislabeled success rate.
 _REWARD_KEYS: tuple[str, ...] = (
     "critic/rewards/mean",
     "critic/score/mean",
     "reward/mean",
     "critic/rewards/mean/all",
 )
+
+# HELD-OUT validation keys verl logs, preferred over the train reward — THIS is
+# the paper's actual claimed result (e.g. UCPO's math-benchmark accuracy). The
+# shim writes the first that resolves as ``success_rate`` with aggregate
+# provenance. A key ending in ``/`` is a per-data_source PREFIX (verl's
+# reward-manager val logs ``val/test_score/<data_source>`` with no bare
+# aggregate) resolved to its single distinct concrete sub-key. Only tried when
+# the repo actually ships a held-out val set (see ``plan``).
+_EVAL_KEYS: tuple[str, ...] = (
+    "val/success_rate",   # agentic (SDAR): verl logs the flat aggregate directly
+    "val/test_score/",    # verl reward-manager val, one key per data_source (math, ...)
+    "val/acc/mean",
+    "val/score/mean",
+)
+
+# Validate every step so a real ``val/*`` score is logged for the shim to bridge.
+# The val slice is tiny (``_VAL_SLICE_ROWS``) so the extra passes are cheap; the
+# adapter keeps the LAST logged value (verl's final/most-converged val point).
+_VAL_TEST_FREQ = 1
+_VAL_SLICE_ROWS = 8
 
 
 def _strip_one_quote_layer(value: str) -> str:
@@ -272,6 +306,29 @@ def _extract_train_file(code_dir: Path, args: list[str]) -> str | None:
     return None
 
 
+def _extract_val_file(code_dir: Path, args: list[str]) -> str | None:
+    """Return the authors' ``data.val_files=`` value if it resolves to a real
+    ``.parquet`` file under ``code_dir``, else ``None`` (mirror of
+    ``_extract_train_file`` — a held-out val set is what makes verl log a real
+    ``val/*`` score; without one the cell honestly falls back to the train
+    reward)."""
+    resolved_root = code_dir.resolve()
+    for token in args:
+        if not token.startswith("data.val_files="):
+            continue
+        value = token.split("=", 1)[1]
+        if not value.endswith(".parquet"):
+            continue
+        candidate = (code_dir / value).resolve()
+        try:
+            candidate.relative_to(resolved_root)
+        except ValueError:
+            continue  # escapes code/ — never trust a path traversal
+        if candidate.is_file():
+            return value
+    return None
+
+
 def _detect_verl_dirname(code_dir: Path) -> str:
     """The bundled verl project's directory name — "usually 'verl'"."""
     candidate = code_dir / "verl"
@@ -299,23 +356,38 @@ def plan(code_path: str | Path) -> ExecuteSpec | None:
         return None
     script_path, module, args = found
 
-    launch = LaunchSpec(
-        kind="module",
-        command=f"python -m {module} " + " ".join(args),
-        cwd="",
-        overrides=dict(_DOWNSCALE_OVERRIDES),
-    )
+    overrides = dict(_DOWNSCALE_OVERRIDES)  # test_freq=-1 default (validation off)
 
     data_slice: dict | None = None
     train_file = _extract_train_file(code_dir, args)
     if train_file is not None:
         data_slice = {"train_file": train_file, "slice_rows": _SLICE_ROWS}
 
+    # Held-out validation: only when the repo actually ships a val set. Enabling
+    # test_freq with no val_files would make verl error; without a val set we
+    # honestly fall back to the train reward (eval_keys stays empty).
+    eval_keys: tuple = ()
+    val_file = _extract_val_file(code_dir, args)
+    if val_file is not None:
+        overrides["trainer.test_freq"] = str(_VAL_TEST_FREQ)  # hydra last-wins over the -1 default
+        data_slice = dict(data_slice or {})
+        data_slice["val_file"] = val_file
+        data_slice["val_rows"] = _VAL_SLICE_ROWS
+        eval_keys = _EVAL_KEYS
+
+    launch = LaunchSpec(
+        kind="module",
+        command=f"python -m {module} " + " ".join(args),
+        cwd="",
+        overrides=overrides,
+    )
+
     reward = RewardSpec(
         kind="verl",
         keys=_REWARD_KEYS,
         log_glob="$OUTPUT_DIR/*.log",
         metrics_file=None,
+        eval_keys=eval_keys,
     )
 
     verl_dirname = _detect_verl_dirname(code_dir)
@@ -332,7 +404,7 @@ def plan(code_path: str | Path) -> ExecuteSpec | None:
         launch=launch,
         reward=reward,
         image_key="verl",
-        est_vram_gb=70.0,
+        est_vram_gb=_EXECUTE_CELL_VRAM_GB,
         confidence=confidence,
         source="deterministic",
         reason=f"verl launch entrypoint '{module}' found in {rel_script}",

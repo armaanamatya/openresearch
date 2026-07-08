@@ -2244,6 +2244,119 @@ def _seed_code_from_repo(repo_dir: "Path", code_dir: "Path") -> int:
     return copied
 
 
+def _execute_synth_flag_enabled() -> bool:
+    """``OPENRESEARCH_EXECUTE_SYNTH`` — the E4 execute-floor master gate."""
+    from backend.agents.rlm.feature_flags import env_truthy
+
+    return env_truthy("OPENRESEARCH_EXECUTE_SYNTH")
+
+
+def _is_synth_owned_execute_cell(code_dir: "Path") -> bool:
+    """True iff ``code_dir`` holds a COMPLETE, synth-OWNED execute cell.
+
+    Requires all three synth artifacts (``cells.json`` + ``train_cell.py`` +
+    ``execute_spec.json``) AND the manifest's synth marker
+    (``execute_cell_synth`` stamps ``_comment: "synthesized by
+    OPENRESEARCH_EXECUTE_SYNTH"``). A bare/orphaned ``execute_spec.json`` beside a
+    non-synth or missing ``cells.json`` returns False — the floor must then fall
+    through to the SDK, never vouch for a manifest it did not write (the
+    idempotence red line: E4's warm-retry recognition must not skip the SDK on a
+    directory it does not own)."""
+    import json as _json
+
+    cells = code_dir / "cells.json"
+    if not (
+        cells.is_file()
+        and (code_dir / "train_cell.py").is_file()
+        and (code_dir / "execute_spec.json").is_file()
+    ):
+        return False
+    try:
+        manifest = _json.loads(cells.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return "OPENRESEARCH_EXECUTE_SYNTH" in str(manifest.get("_comment", ""))
+
+
+def _maybe_execute_synth_floor(
+    ctx: "RunContext", code_dir: "Path", *, repair_context: dict | None
+) -> dict | None:
+    """E4 — deterministic execute-mode floor.
+
+    When execute mode is active and the seeded repo is a confidently-detected
+    known framework (verl today), synthesize ``cells.json`` + ``train_cell.py``
+    from the authors' OWN launch (no LLM) and return a success envelope so
+    ``implement_baseline`` skips the SDK code-writing sub-agent entirely.
+
+    Returns ``None`` (fall through to the SDK path) when: ``OPENRESEARCH_EXECUTE_SYNTH``
+    is off, the resolved repo_spec mode isn't ``"execute"``, a ``repair_context``
+    is present (repairs fall through to the SDK — E3 will own env-repair), or the
+    framework isn't confident / no launch entrypoint was found. Recognizes an
+    already-synthesized cell (a COMPLETE, synth-owned ``cells.json`` +
+    ``train_cell.py`` + ``execute_spec.json`` set — ``_is_synth_owned_execute_cell``)
+    so a warm retry of a successful synth stays deterministic instead of falling
+    into the SDK path.
+
+    Byte-identical off — every branch below is behind the flag check.
+    """
+    if not _execute_synth_flag_enabled():
+        return None
+    if repair_context is not None:
+        return None
+    if _load_repo_spec(ctx.project_dir).get("mode", "adapt") != "execute":
+        return None
+
+    spec_marker = code_dir / "execute_spec.json"
+    try:
+        from backend.agents.rlm import execute_cell_synth as _ecs
+
+        cell = _ecs.maybe_synthesize_execute_cells(str(code_dir))
+    except Exception:  # noqa: BLE001 — the deterministic floor must never block the SDK fallback
+        logger.warning(
+            "implement_baseline[%s]: execute-synth floor errored; falling back to SDK",
+            ctx.project_id, exc_info=True,
+        )
+        return None
+
+    # cell is the freshly-synthesized cell (guaranteed complete). None means
+    # either "not a confident framework / no launch" OR "already synthesized"
+    # (no-clobber). For the latter, only vouch for a COMPLETE, synth-OWNED cell
+    # set — a stale/orphaned execute_spec.json beside a non-synth or missing
+    # cells.json must fall through to the SDK, never skip it (idempotence red line).
+    if cell is None and not _is_synth_owned_execute_cell(code_dir):
+        return None
+
+    framework = (cell or {}).get("framework")
+    if framework is None:
+        try:
+            import json as _json
+
+            framework = _json.loads(spec_marker.read_text(encoding="utf-8")).get("framework", "?")
+        except (OSError, ValueError):
+            framework = "?"
+
+    logger.info(
+        "implement_baseline[%s]: execute-synth floor active (framework=%s) — "
+        "skipping SDK implementer",
+        ctx.project_id, framework,
+    )
+    try:
+        _emit_dashboard_event(ctx, event_type="run_warning", payload={
+            "code": "execute_synth_floor",
+            "message": (
+                f"execute-mode floor: deterministically synthesized cells.json + "
+                f"train_cell.py for framework '{framework}' (no LLM implementer)"
+            ),
+        })
+    except Exception:  # noqa: BLE001
+        logger.debug("implement_baseline: could not emit execute_synth_floor event")
+
+    envelope = _baseline_ok_envelope(code_dir)
+    envelope["execute_synth"] = True
+    envelope["framework"] = framework
+    return envelope
+
+
 def _seed_cells_manifest(code_dir: "Path", *, force: bool = False) -> bool:
     """Operator pre-seed: copy OPENRESEARCH_CELLS_SEED_PATH to code/cells.json (Task #7).
 
@@ -2733,6 +2846,16 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
             "code": "cells_seeded",
             "message": f"seeded code/cells.json from operator path ({_cells_seed_src})",
         })
+
+    # E4: deterministic execute-mode floor (OPENRESEARCH_EXECUTE_SYNTH, default
+    # off). A confidently-detected known-framework (verl) execute-mode repo is
+    # RUN via the authors' own launch behind the generic shim, with NO LLM
+    # implementer call. No-op (falls through to the SDK path below) when the flag
+    # is off, mode != execute, this is a repair, or the framework isn't confident
+    # — byte-identical off.
+    _execute_floor = _maybe_execute_synth_floor(ctx, code_dir, repair_context=repair_context)
+    if _execute_floor is not None:
+        return _execute_floor
 
     # Route-retention (2026-06-11): remember whether a cells manifest existed
     # before this (repair) implementation so its silent disappearance — the

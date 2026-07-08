@@ -275,25 +275,32 @@ def eval_provenance_should_veto(code_dir: str | Path) -> tuple[bool, str | None]
                 rate_key, reported = pair
                 cell_label = str(metrics_path.parent)
 
-                # Look for eval_provenance.json in the same directory
+                # Provenance may live in a standalone sidecar (local/docker) OR
+                # INLINE inside metrics.json under "eval_provenance" (the GKE
+                # path — the pod entrypoint uploads only metrics.json, so a
+                # standalone sidecar never round-trips back to the host).
+                sc: Any = None
                 prov_path = metrics_path.parent / "eval_provenance.json"
-                if not prov_path.exists():
+                if prov_path.exists():
+                    try:
+                        sc = json.loads(prov_path.read_text(encoding="utf-8"))
+                    except Exception:  # noqa: BLE001
+                        # Sidecar unreadable — treat as absent
+                        violations.append(
+                            f"{cell_label}: eval_provenance.json is unreadable"
+                        )
+                        if len(violations) >= 3:
+                            break
+                        continue
+                elif isinstance(m.get("eval_provenance"), dict):
+                    sc = m["eval_provenance"]
+
+                if sc is None:
                     violations.append(
                         f"{cell_label}: claims {rate_key}={reported:.4f} but has no"
-                        f" eval_provenance.json (the metric is not verifiable as a real"
-                        f" held-out measurement)"
-                    )
-                    if len(violations) >= 3:
-                        break
-                    continue
-
-                # Load and validate the sidecar
-                try:
-                    sc = json.loads(prov_path.read_text(encoding="utf-8"))
-                except Exception:  # noqa: BLE001
-                    # Sidecar unreadable — treat as absent
-                    violations.append(
-                        f"{cell_label}: eval_provenance.json is unreadable"
+                        f" eval_provenance (neither an eval_provenance.json sidecar nor"
+                        f" an inline metrics.json['eval_provenance'] — the metric is not"
+                        f" verifiable as a real held-out measurement)"
                     )
                     if len(violations) >= 3:
                         break
@@ -301,7 +308,7 @@ def eval_provenance_should_veto(code_dir: str | Path) -> tuple[bool, str | None]
 
                 if not isinstance(sc, dict):
                     violations.append(
-                        f"{cell_label}: eval_provenance.json has unexpected format"
+                        f"{cell_label}: eval_provenance has unexpected format"
                     )
                     if len(violations) >= 3:
                         break
@@ -349,18 +356,43 @@ def eval_provenance_should_veto(code_dir: str | Path) -> tuple[bool, str | None]
                             break
                         continue
 
+                    # Honesty binding (closes the self-attestation loophole): the
+                    # value cross-checks above only prove INTERNAL consistency
+                    # (reported == metric_value, in [0,1]). To be credited as a real
+                    # held-out measurement the aggregate must ALSO be bound to
+                    # something the cell did not simply assert — EITHER:
+                    #   (a) a ``source`` file that resolves on disk (the local/docker
+                    #       path, where the value was read from a real artifact), OR
+                    #   (b) the trusted harness producer marker
+                    #       ``adapter == "verl_metrics_adapter"`` — the value-preserving
+                    #       shim (harness-owned code copied into the cell) whose GKE
+                    #       source path is a POD-side path that legitimately does not
+                    #       round-trip to the host (the ONLY artifact the pod uploads
+                    #       is metrics.json).
+                    # A bare aggregate with NEITHER is unverifiable self-attestation
+                    # → veto. (Source resolution is tried both absolute and relative
+                    # to the metrics dir, to survive a relocated run tree.)
                     src = sc.get("source")
+                    src_resolves = False
                     if isinstance(src, str) and src.strip():
-                        if not Path(src).exists():
-                            violations.append(
-                                f"{cell_label}: aggregate eval_provenance.json cites a"
-                                f" source file that does not exist ({src})"
+                        try:
+                            src_resolves = (
+                                Path(src).exists()
+                                or (metrics_path.parent / Path(src).name).exists()
                             )
-                            if len(violations) >= 3:
-                                break
-                            continue
-                    # else: source is absent/blank — fail-soft, not a violation on its
-                    # own (steps 1-3 above already bound honesty).
+                        except Exception:  # noqa: BLE001 — fail-soft to "does not resolve"
+                            src_resolves = False
+                    produced_by_trusted_adapter = sc.get("adapter") == "verl_metrics_adapter"
+                    if not (src_resolves or produced_by_trusted_adapter):
+                        violations.append(
+                            f"{cell_label}: aggregate {rate_key}={reported:.4f} is"
+                            f" unverifiable — no resolvable source file and not stamped"
+                            f" by the trusted verl_metrics_adapter (self-attestation"
+                            f" alone is not a held-out measurement)"
+                        )
+                        if len(violations) >= 3:
+                            break
+                        continue
 
                     # All checks pass — verifiably the authors' own reported number.
                     continue
