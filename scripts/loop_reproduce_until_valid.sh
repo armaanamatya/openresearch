@@ -65,11 +65,11 @@ for i in $(seq 1 "$MAX_ATTEMPTS"); do
     exit 3
   fi
 
-  log "attempt $i: launching reproduction…"
+  log "attempt $i: launching reproduction (LIFECYCLE_PRIMARY, 4h wall-clock)…"
   env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY OPENRESEARCH_MIN_DISK_GB=0 \
     .venv/bin/python -m backend.cli reproduce "$PAPER" \
     --sandbox runpod --model claude-oauth \
-    --max-usd 6 --max-pod-seconds 5400 --max-wall-clock 7200 \
+    --max-usd 8 --max-pod-seconds 7200 --max-wall-clock 14400 \
     >> "$LOG" 2>&1
   rc=$?
   log "attempt $i: reproduction exited rc=$rc"
