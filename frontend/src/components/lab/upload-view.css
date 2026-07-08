@@ -292,6 +292,44 @@
   white-space: nowrap;
 }
 
+/* Plain-language captions + selected-option detail for the picker groups.
+   The chips stay compact; these two lines carry "what does this control"
+   (caption, under the legend) and "what your current pick means" (detail,
+   below the chips) visibly — not hover-only — for a mixed technical /
+   non-technical audience. */
+.upload-provider-caption {
+  margin: -2px 0 2px;
+  font-size: 11.5px;
+  color: var(--muted-2);
+  line-height: 1.4;
+}
+
+.upload-provider-detail {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.4;
+  /* Reserve one line so the layout doesn't jump when the text changes on a
+     different selection. */
+  min-height: 1.4em;
+}
+
+/* "Recommended" pill on the funded default (Foundry) — a quiet accent, not a
+   shout: it signals the pre-selected choice without competing with the ✓/✗
+   availability badge beside it. */
+.upload-provider-recommended {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 999px;
+  padding: 1px 6px;
+  line-height: 1.5;
+}
+
 /* ── BYO key fields (optional, conditional on root provider) ────────────── */
 
 .upload-byo-fieldset {

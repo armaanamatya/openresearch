@@ -31,6 +31,28 @@ def test_c1_bare_key_resolves():
     assert cost == pytest.approx(3.00, rel=1e-4)
 
 
+def test_c1_foundry_opus_key_resolves():
+    """estimate_cost_usd prices 'claude-opus-4-8' (Foundry root) at the Opus rate."""
+    from backend.agents.resilience.pricing import estimate_cost_usd
+
+    usage = {"input_tokens": 1000, "output_tokens": 1000}
+    cost = estimate_cost_usd("claude-opus-4-8", usage)
+    assert cost is not None
+    # Same per-token rate as claude-opus-4-7: $15/1M in, $75/1M out.
+    assert cost == pytest.approx((1000 * 15.00 + 1000 * 75.00) / 1_000_000, rel=1e-6)
+
+
+def test_c1_foundry_sonnet_key_resolves():
+    """estimate_cost_usd prices 'claude-sonnet-5' (Foundry sub-agent) at the Sonnet rate."""
+    from backend.agents.resilience.pricing import estimate_cost_usd
+
+    usage = {"input_tokens": 1000, "output_tokens": 1000}
+    cost = estimate_cost_usd("claude-sonnet-5", usage)
+    assert cost is not None
+    # Same per-token rate as claude-sonnet-4-6: $3/1M in, $15/1M out.
+    assert cost == pytest.approx((1000 * 3.00 + 1000 * 15.00) / 1_000_000, rel=1e-6)
+
+
 def test_c1_bare_oauth_key_resolves():
     """estimate_cost_usd resolves 'claude-oauth' (zero-cost subscription)."""
     from backend.agents.resilience.pricing import estimate_cost_usd

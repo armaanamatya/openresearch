@@ -46,6 +46,37 @@ def test_module_main_bypasses_atexit_for_reproduce(monkeypatch):
     assert exit_codes == [3]
 
 
+def test_module_main_reproduce_hardexit_cleanup_flag_on(monkeypatch):
+    """OPENRESEARCH_HARDEXIT_CLEANUP=1 routes the reproduce hard-exit through
+    terminate_children_then_exit before the (still-reached, defensive) os._exit.
+    """
+    from backend import cli
+    from backend.agents.rlm import process_cleanup
+
+    monkeypatch.setenv("OPENRESEARCH_HARDEXIT_CLEANUP", "1")
+
+    cleanup_calls: list[int] = []
+    monkeypatch.setattr(
+        process_cleanup, "terminate_children_then_exit",
+        lambda code: cleanup_calls.append(code),
+    )
+
+    exit_codes: list[int] = []
+
+    def _fake_exit(code: int) -> None:
+        exit_codes.append(code)
+        raise RuntimeError("os._exit intercepted")
+
+    monkeypatch.setattr(cli, "main", lambda argv=None: 5)
+    monkeypatch.setattr(cli.os, "_exit", _fake_exit)
+
+    with pytest.raises(RuntimeError, match="intercepted"):
+        cli._module_main(["reproduce", "ftrl"])
+
+    assert cleanup_calls == [5], f"expected terminate_children_then_exit(5): {cleanup_calls}"
+    assert exit_codes == [5]
+
+
 def test_module_main_uses_system_exit_for_non_reproduce(monkeypatch):
     from backend import cli
 

@@ -178,6 +178,11 @@ def _make_fake_settings(**overrides: Any) -> MagicMock:
     s.gcp_pending_timeout_seconds = 900
     s.gcp_ttl_seconds_after_finished = 3600
     s.gcp_job_backoff_limit = 0
+    # Explicit empty default: a bare MagicMock auto-vivifies undefined attributes as
+    # a truthy Mock (unlike a real unset Settings field), which would make
+    # _default_gpu_sku() silently inject a garbage nodeSelector into every test that
+    # doesn't care about it. Tests exercising the fallback override this explicitly.
+    s.gcp_gpu_skus = []
     for k, v in overrides.items():
         setattr(s, k, v)
     return s
@@ -851,6 +856,86 @@ async def test_exec_without_gpu_plan_no_node_selector_in_submitted_job(tmp_path:
     await backend.exec(sandbox, "echo hi", timeout=10)
 
     assert len(batch_api.created_jobs) == 1
+    body = batch_api.created_jobs[0]["body"]
+    pod_spec = body["spec"]["template"]["spec"]
+    assert "nodeSelector" not in pod_spec
+
+
+# ---------------------------------------------------------------------------
+# Autoscaler-thrash regression: gpu_sku=None must fall back to the configured
+# gcp_gpu_skus[0] rather than submit an unschedulable pod with no nodeSelector
+# at all (see backend/services/runtime/CLAUDE.md GKE section + P0-fix-3 parity
+# in k8s_job_cell_runner._build_job_manifest).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_exec_no_gpu_plan_falls_back_to_configured_gpu_sku(tmp_path: Path):
+    """(a) gpu_sku=None + non-empty gcp_gpu_skus => nodeSelector uses gpu_skus[0].
+
+    Regression guard for the GKE autoscaler thrash bug: a run whose GpuPlan was
+    never resolved (no rlm_state/gpu_plan.json) must still submit a pod that can
+    bind to a real, provisioned reprolab/sku node pool instead of thrashing the
+    scale-to-zero autoscaler forever.
+    """
+    batch_api = FakeBatchApi(job_factory=lambda: FakeJob(complete=True))
+    fake_settings = _make_fake_settings(gcp_gpu_skus=["gcp_a100_80x8", "gcp_l4_24"])
+    backend = GkeJobBackend(batch_api=batch_api, core_api=FakeCoreApi(), settings=fake_settings)
+    sandbox = _make_sandbox(tmp_path)
+    backend._active_jobs[sandbox.sandbox_id] = []
+
+    await backend.exec(sandbox, "python train.py", timeout=30)
+
+    assert len(batch_api.created_jobs) == 1
+    body = batch_api.created_jobs[0]["body"]
+    pod_spec = body["spec"]["template"]["spec"]
+    assert pod_spec.get("nodeSelector") == {"reprolab/sku": "gcp_a100_80x8"}
+    # Existing GPU-resource-request behavior is untouched.
+    container = pod_spec["containers"][0]
+    assert container["resources"]["limits"]["nvidia.com/gpu"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_exec_explicit_gpu_plan_ignores_gpu_skus_fallback(tmp_path: Path):
+    """(b) gpu_sku set explicitly (via a resolved GpuPlan) => unchanged/byte-identical.
+
+    Even when gcp_gpu_skus is ALSO configured (to a DIFFERENT SKU), a resolved
+    GpuPlan's short_name must win — the fallback must never override an explicit
+    plan. This is the common cell-matrix-equivalent path and must be untouched.
+    """
+    plan = _make_gpu_plan_obj("gcp_a100_40gb", gpu_count=1)
+    batch_api = FakeBatchApi(job_factory=lambda: FakeJob(complete=True))
+    fake_settings = _make_fake_settings(gcp_gpu_skus=["gcp_a100_80x8"])
+    backend = GkeJobBackend(
+        gpu_plan=plan,
+        batch_api=batch_api,
+        core_api=FakeCoreApi(),
+        settings=fake_settings,
+    )
+    sandbox = _make_sandbox(tmp_path)
+    backend._active_jobs[sandbox.sandbox_id] = []
+
+    await backend.exec(sandbox, "python train.py", timeout=30)
+
+    body = batch_api.created_jobs[0]["body"]
+    pod_spec = body["spec"]["template"]["spec"]
+    # The plan's own short_name wins, NOT the unrelated gcp_gpu_skus[0].
+    assert pod_spec.get("nodeSelector") == {"reprolab/sku": "gcp_a100_40gb"}
+
+
+@pytest.mark.asyncio
+async def test_exec_no_gpu_plan_and_no_gpu_skus_still_no_node_selector(tmp_path: Path):
+    """(c) cpu-only / unconfigured-cluster fallback: gpu_sku=None AND gcp_gpu_skus=[]
+    => no nodeSelector (never invent a bogus label; cluster-default behavior preserved).
+    """
+    batch_api = FakeBatchApi(job_factory=lambda: FakeJob(complete=True))
+    fake_settings = _make_fake_settings(gcp_gpu_skus=[])
+    backend = GkeJobBackend(batch_api=batch_api, core_api=FakeCoreApi(), settings=fake_settings)
+    sandbox = _make_sandbox(tmp_path)
+    backend._active_jobs[sandbox.sandbox_id] = []
+
+    await backend.exec(sandbox, "echo hi", timeout=10)
+
     body = batch_api.created_jobs[0]["body"]
     pod_spec = body["spec"]["template"]["spec"]
     assert "nodeSelector" not in pod_spec

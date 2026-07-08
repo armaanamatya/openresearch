@@ -41,6 +41,23 @@ PRICING: dict[str, ModelPricing] = {
         cache_read_input_per_1m=1.50,
         cache_creation_input_per_1m=18.75,
     ),
+    # Foundry-routed Claude models (backend.agents.runtime.foundry_anthropic) —
+    # same per-token rates as their non-Foundry siblings above; the ledger
+    # records these bare model ids directly (see backend.agents.rlm.role_models
+    # opus-foundry/sonnet-foundry), so without an entry here estimate_cost_usd
+    # returns None and every Foundry-routed row prices at $0.
+    "claude-opus-4-8": ModelPricing(
+        input_per_1m=15.00,
+        output_per_1m=75.00,
+        cache_read_input_per_1m=1.50,
+        cache_creation_input_per_1m=18.75,
+    ),
+    "claude-sonnet-5": ModelPricing(
+        input_per_1m=3.00,
+        output_per_1m=15.00,
+        cache_read_input_per_1m=0.30,
+        cache_creation_input_per_1m=3.75,
+    ),
     "gpt-4o": ModelPricing(input_per_1m=2.50, output_per_1m=10.00),
     "o4-mini": ModelPricing(
         input_per_1m=1.10,

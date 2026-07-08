@@ -916,6 +916,37 @@ def test_watchdog_fires_on_timeout() -> None:
     assert exit_calls == [124], f"Expected os._exit(124), got: {exit_calls}"
 
 
+def test_watchdog_fires_with_hardexit_cleanup_flag_on() -> None:
+    """OPENRESEARCH_HARDEXIT_CLEANUP=1 routes _fire() through
+    terminate_children_then_exit before the still-reached os._exit(124).
+    """
+    import os as os_mod
+
+    cleanup_calls: list[int] = []
+    exit_calls: list[int] = []
+
+    def fake_cleanup(code: int) -> None:
+        cleanup_calls.append(code)
+
+    def fake_exit(code: int) -> None:
+        exit_calls.append(code)
+
+    with patch.dict(os_mod.environ, {"OPENRESEARCH_HARDEXIT_CLEANUP": "1"}), \
+            patch(
+                "backend.agents.rlm.process_cleanup.terminate_children_then_exit",
+                side_effect=fake_cleanup,
+            ), \
+            patch("backend.agents.rdr.controller.os._exit", side_effect=fake_exit):
+        wd = _ClusterWatchdog(timeout_s=0.05, label="test_fire_hardexit_cleanup")
+        wd.arm()
+        time.sleep(0.25)
+
+    assert cleanup_calls == [124], (
+        f"Expected terminate_children_then_exit(124), got: {cleanup_calls}"
+    )
+    assert exit_calls == [124], f"Expected os._exit(124), got: {exit_calls}"
+
+
 def test_watchdog_disarm_is_idempotent() -> None:
     """Calling disarm() multiple times must not raise."""
     wd = _ClusterWatchdog(timeout_s=10.0, label="test_idempotent")

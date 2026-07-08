@@ -113,6 +113,9 @@ class _ClusterWatchdog:
                 )
             except Exception:  # noqa: BLE001 — never raise from the watchdog thread
                 pass
+        if os.environ.get("OPENRESEARCH_HARDEXIT_CLEANUP", "").strip().lower() in ("1", "true", "yes"):
+            from backend.agents.rlm.process_cleanup import terminate_children_then_exit
+            terminate_children_then_exit(124)
         os._exit(124)
 
     def arm(self) -> None:

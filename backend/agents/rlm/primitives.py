@@ -249,6 +249,13 @@ _RETRY_TIMEOUT_TOTAL_S: float = 90.0
 # aware rather than code_dir-mtime-only, so the threshold matters less.)
 _DEFAULT_PRE_EMIT_STALL_S = 900.0
 
+# SDK aclose-deadlock detection (implement_baseline's watchdog loop): once
+# code/commands.json exists, this many seconds with no new file AND no
+# SDK-stream activity is treated as a stalled cleanup. Module-level (rather
+# than a function-local literal) purely so tests can shrink it via
+# monkeypatch instead of a real multi-minute wait.
+_ACLOSE_STALL_S: float = 120.0  # 2 min of no file/SDK activity after code is written
+
 
 class PreEmitStallError(RuntimeError):
     """Repairable implement_baseline pre-emission stall marker for PR-π."""
@@ -1264,11 +1271,28 @@ def detect_environment(method_spec: dict, *, ctx: "RunContext") -> dict:
                 and _skill_sel.load_active_skills(ctx.project_dir) is None
             ):
                 from backend.agents.rlm.skill_catalog import load_catalog as _load_skill_catalog_sel
+                _catalog_sel = _load_skill_catalog_sel()
                 _active = _skill_sel.select_active_skills(
                     method_spec,
                     spec_dict,
-                    _load_skill_catalog_sel(),
+                    _catalog_sel,
                     llm_client=getattr(ctx, "llm_client", None),
+                )
+                # Environment-keyed infra skills (OPENRESEARCH_SKILL_INFRA_SELECT):
+                # force-include the sandbox's infra playbook (e.g. gcp-gke-reproduction
+                # on sandbox=gcp/gke) — the content matcher scores skills against the
+                # paper, so it can never recall an infra skill. No-op when the flag is
+                # off or the sandbox has no infra skill (byte-identical).
+                _sandbox_val = getattr(ctx, "sandbox_mode", None)
+                _sandbox_key = getattr(
+                    _sandbox_val,
+                    "value",
+                    str(_sandbox_val) if _sandbox_val is not None else None,
+                )
+                if not _sandbox_key or str(_sandbox_key).strip().lower() in ("", "auto"):
+                    _sandbox_key = os.environ.get("OPENRESEARCH_DEFAULT_SANDBOX", "")
+                _active = _skill_sel.apply_infra_skills(
+                    _active, sandbox=_sandbox_key, catalog=_catalog_sel
                 )
                 _skill_sel.write_active_skills(ctx.project_dir, _active)
                 _emit_dashboard_event(
@@ -2043,6 +2067,22 @@ def _baseline_subprocess_enabled() -> bool:
     return os.environ.get("OPENRESEARCH_BASELINE_SUBPROCESS", "0").strip().lower() in ("1", "true", "yes")
 
 
+def _impl_abandon_guard_enabled() -> bool:
+    """OPENRESEARCH_IMPL_ABANDON_GUARD (default OFF).
+
+    On the SDK aclose-stall give-up path below, ``pool.shutdown(wait=False,
+    cancel_futures=True)`` cannot stop an already-running worker thread/child
+    process — harvesting code_dir at that point risks reporting "ok" on a
+    directory an abandoned writer is still mutating in the background. When
+    on, that give-up returns a distinguishable, never-"ok" repairable result
+    instead (``failure_class="implement_timeout_abandoned"``). Off: byte
+    -identical harvest-and-return behavior.
+    """
+    return os.environ.get("OPENRESEARCH_IMPL_ABANDON_GUARD", "").strip().lower() in (
+        "1", "true", "yes",
+    )
+
+
 def _drive_baseline_child(
     *,
     heartbeat_path: str,
@@ -2652,7 +2692,6 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
     # by polling: if commands.json exists AND no new files are written for
     # _ACLOSE_STALL_S seconds, the SDK is deadlocked — break out and proceed
     # with the code that was already written.
-    _ACLOSE_STALL_S = 120  # 2 min of no file changes after code is written
     _POLL_S = 10
     _PRE_EMIT_STALL_S = _pre_emit_stall_s()
 
@@ -2865,6 +2904,31 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
                             "code is on disk but SDK hung for %ds. Breaking out.",
                             int(_time.time() - _stall_start),
                         )
+                        if _impl_abandon_guard_enabled():
+                            # OPENRESEARCH_IMPL_ABANDON_GUARD: pool.shutdown(wait=False,
+                            # cancel_futures=True) in the finally below cannot stop an
+                            # already-running worker — the abandoned writer thread (or,
+                            # under OPENRESEARCH_BASELINE_SUBPROCESS, its child process
+                            # if terminate()+join(timeout=5) doesn't land) is not
+                            # confirmed dead and may keep mutating code_dir after we
+                            # give up here. Report a distinguishable, never-"ok"
+                            # repairable failure instead of harvesting a possibly
+                            # -still-mutating directory as success (live incident: the
+                            # fuller implementation landed on disk 12-14 min AFTER this
+                            # give-up had already harvested + reported "ok").
+                            _err = _baseline_error_envelope(
+                                error_code="sdk_aclose_stall_abandoned",
+                                error=(
+                                    "implement_baseline: gave up after SDK aclose stall "
+                                    f"({int(_time.time() - _stall_start)}s with no file/SDK "
+                                    "activity); the abandoned writer is not confirmed "
+                                    "stopped, so the harness is not harvesting code_dir "
+                                    "as a success"
+                                ),
+                                code_dir=code_dir,
+                            )
+                            _err["failure_class"] = "implement_timeout_abandoned"
+                            return _err
                         harvested = _harvest_baseline_artifacts(
                             code_dir,
                             error_code="sdk_aclose_incomplete_artifacts",
@@ -4234,13 +4298,19 @@ async def _execute_in_sandbox(
     # modules — so a missing dep (the matplotlib ModuleNotFoundError class) fails in
     # seconds; the command loop then short-circuits the GPU training and the import
     # error becomes the next iteration's repair_context.
-    try:
-        from backend.agents.rlm import preflight_smoke as _preflight_smoke
-        if _preflight_smoke.is_enabled():
-            _preflight_smoke.emit(code_dir)
-            bootstrap_commands.append(_preflight_smoke.smoke_command(code_dir))
-    except Exception:  # noqa: BLE001 — preflight smoke wiring must never block the run
-        logger.exception("_execute_in_sandbox: preflight smoke wiring failed")
+    # Gated off remote k8s sandboxes (gcp/azure): smoke_command() bakes a
+    # host-absolute `cd "<code_dir>"` into the shell string, which is never valid
+    # inside a remote GKE/AKS pod (the orchestrator host's path doesn't exist
+    # there) — a straight bug fix, not flag-gated. local/docker/runpod keep the
+    # smoke bootstrap exactly as before.
+    if "gcp" not in _mode_str and "azure" not in _mode_str:
+        try:
+            from backend.agents.rlm import preflight_smoke as _preflight_smoke
+            if _preflight_smoke.is_enabled():
+                _preflight_smoke.emit(code_dir)
+                bootstrap_commands.append(_preflight_smoke.smoke_command(code_dir))
+        except Exception:  # noqa: BLE001 — preflight smoke wiring must never block the run
+            logger.exception("_execute_in_sandbox: preflight smoke wiring failed")
 
     # Layer 1 execution smoke: when OPENRESEARCH_EXECUTION_SMOKE is on, run the agent's
     # entry script for 1 step per experiment on tiny data (OPENRESEARCH_SMOKE_STEPS=1) with
@@ -4249,22 +4319,25 @@ async def _execute_in_sandbox(
     # line in seconds, short-circuits the GPU training, and becomes repair_context — the
     # exact class that cost a 25-min run 0.12 of its score. A script that ignores the
     # smoke env is killed by `timeout` (exit 124) and treated as a soft pass (no block).
-    try:
-        from backend.agents.rlm import execution_smoke as _execution_smoke
-        if _execution_smoke.is_enabled():
-            _entry = next(
-                (e for e in ("train.py", "train_cell.py", "main.py", "run.py")
-                 if (code_dir / e).exists()),
-                None,
-            )
-            if _entry is not None:
-                bootstrap_commands.append(
-                    _execution_smoke.smoke_command(code_dir, entry_script=_entry)
+    # Same remote-k8s gate as the preflight smoke above — smoke_command() also
+    # bakes a host-absolute `cd "<code_dir>"`, invalid inside a remote gcp/azure pod.
+    if "gcp" not in _mode_str and "azure" not in _mode_str:
+        try:
+            from backend.agents.rlm import execution_smoke as _execution_smoke
+            if _execution_smoke.is_enabled():
+                _entry = next(
+                    (e for e in ("train.py", "train_cell.py", "main.py", "run.py")
+                     if (code_dir / e).exists()),
+                    None,
                 )
-            else:
-                logger.info("_execute_in_sandbox: execution smoke skipped — no known entry script")
-    except Exception:  # noqa: BLE001 — execution smoke wiring must never block the run
-        logger.exception("_execute_in_sandbox: execution smoke wiring failed")
+                if _entry is not None:
+                    bootstrap_commands.append(
+                        _execution_smoke.smoke_command(code_dir, entry_script=_entry)
+                    )
+                else:
+                    logger.info("_execute_in_sandbox: execution smoke skipped — no known entry script")
+        except Exception:  # noqa: BLE001 — execution smoke wiring must never block the run
+            logger.exception("_execute_in_sandbox: execution smoke wiring failed")
 
     # Lane E: spawn the stall watchdog alongside command execution.
     # It polls exec.log + .heartbeat + dashboard_events.jsonl every 30 s
@@ -6940,6 +7013,22 @@ def run_experiment(
         _seed_cells_manifest(code_path, force=True)
         from backend.services.runtime.gpu_capacity import describe_capacity
         _caps = describe_capacity(ctx)
+        # OPENRESEARCH_GKE_SYNTH_CELL: on gcp, a monolithic commands.json-only project
+        # never reaches the cell-matrix route below (no cells.json) and instead falls
+        # back to the monolithic exec path, which never downloads the GCS-uploaded code
+        # into the pod (see gke_cell_synth.py). When the flag is on, synthesize a
+        # single-cell cells.json + train_cell.py shim wrapping commands.json BEFORE the
+        # route gate runs, so the existing gate picks up the cell route with no change
+        # to the gate itself. No-op for every other backend/flag-off.
+        from backend.agents.rlm import gke_cell_synth
+        _synth_cell = gke_cell_synth.maybe_synthesize_gke_cell(code_path, _caps.backend_kind)
+        if _synth_cell is not None:
+            _emit_dashboard_event(ctx, event_type="cell_synth", payload={
+                "detail": (
+                    "synthesized single-cell manifest for monolithic commands.json "
+                    "(OPENRESEARCH_GKE_SYNTH_CELL)"
+                ),
+            })
         # C6 (2026-06-16): the cell-matrix route gate historically allowed only
         # ("local","docker") — which made the azure K8s branch in
         # _execute_cell_matrix (the `_sb_key_ecm == "azure"` arm that dispatches

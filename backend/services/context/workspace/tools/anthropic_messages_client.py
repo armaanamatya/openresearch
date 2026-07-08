@@ -109,16 +109,14 @@ class AnthropicMessagesClient:
         # Mirror the sibling clients: callers (binding._ledger) read
         # ``_last_usage`` after a call for cost-ledger recording.
         self._last_usage: dict[str, int] = _zero_usage()
+        # Latched once a model rejects ``temperature`` (see _messages_create):
+        # Claude Opus 4.8 / Sonnet 5 (incl. the Foundry deployments) deprecate
+        # it, so subsequent calls omit the param instead of re-probing.
+        self._omit_temperature = False
 
     @with_429_backoff
     def complete(self, *, system: str, user: str) -> str:
-        resp = self._client.messages.create(
-            model=self._model,
-            max_tokens=self._max_tokens,
-            temperature=0,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-        )
+        resp = self._messages_create(system=system, user=user, temperature=0)
         self._last_usage = _usage_from_message(getattr(resp, "usage", None))
         return _text_from_content(getattr(resp, "content", None))
 
@@ -146,15 +144,37 @@ class AnthropicMessagesClient:
                 for _ in range(n)]
 
     def _complete_once(self, *, system: str, user: str, temperature: float) -> str:
-        resp = self._client.messages.create(
-            model=self._model,
-            max_tokens=self._max_tokens,
-            temperature=temperature,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-        )
+        resp = self._messages_create(system=system, user=user, temperature=temperature)
         self._last_usage = _usage_from_message(getattr(resp, "usage", None))
         return _text_from_content(getattr(resp, "content", None))
+
+    def _messages_create(self, *, system: str, user: str, temperature: float):
+        """Call ``messages.create``, tolerating models that deprecate ``temperature``.
+
+        Claude Opus 4.8 / Sonnet 5 (incl. the Foundry deployments
+        ``claude-opus-4-8`` / ``claude-sonnet-5``) reject ``temperature``
+        ("temperature is deprecated for this model"). On that specific 400 we
+        drop the param and retry — the model is near-deterministic by default
+        and the caller's median-of-N still squeezes residual nondeterminism —
+        and latch ``_omit_temperature`` so later calls skip the wasted probe.
+        Models that accept ``temperature`` (the default ``claude-sonnet-4-6``
+        grader) are byte-identical to before.
+        """
+        base = {
+            "model": self._model,
+            "max_tokens": self._max_tokens,
+            "system": system,
+            "messages": [{"role": "user", "content": user}],
+        }
+        if not self._omit_temperature:
+            try:
+                return self._client.messages.create(temperature=temperature, **base)
+            except Exception as exc:  # noqa: BLE001 — inspect + re-raise non-temperature errors
+                msg = str(exc).lower()
+                if not ("temperature" in msg and "deprecat" in msg):
+                    raise
+                self._omit_temperature = True
+        return self._client.messages.create(**base)
 
 
 __all__ = ["AnthropicMessagesClient", "DEFAULT_GRADER_MODEL"]

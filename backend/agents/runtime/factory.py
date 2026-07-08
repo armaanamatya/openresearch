@@ -465,23 +465,33 @@ def aggregate_auth_status() -> dict:
     openai_available = _has_openai_credentials()
     azure_available = _has_azure_openai_credentials()
     featherless_available = _has_featherless_credentials()
+    foundry_available = has_foundry_credentials()
 
-    # Determine defaults (first available wins, in priority order)
-    default_root = "anthropic_oauth" if oauth_available else (
-        "anthropic_api" if anthropic_api_key else (
-            "openai_api" if openai_available else (
-                "azure_openai" if azure_available else (
-                    "featherless" if featherless_available else "anthropic_oauth"
+    # Determine defaults (first available wins, in priority order). Foundry
+    # leads the chain: when its funded key resolves it is the pre-selected root
+    # provider (Opus-4.8/Sonnet-5 via the Anthropic-Foundry endpoint) — the
+    # deliberate default for this deployment.
+    default_root = "foundry" if foundry_available else (
+        "anthropic_oauth" if oauth_available else (
+            "anthropic_api" if anthropic_api_key else (
+                "openai_api" if openai_available else (
+                    "azure_openai" if azure_available else (
+                        "featherless" if featherless_available else "anthropic_oauth"
+                    )
                 )
             )
         )
     )
 
-    # Sub-agent auth: SDK uses ANTHROPIC_API_KEY or OAuth
+    # Sub-agent auth: SDK uses ANTHROPIC_API_KEY or OAuth; Foundry runs the
+    # executor on Anthropic-Foundry Sonnet-5. Foundry leads here too so the
+    # sub-agent tier defaults onto the same funded endpoint as the root.
     subagent_api = anthropic_api_key
     subagent_oauth = oauth_available
-    default_subagent = "anthropic_oauth" if subagent_oauth else (
-        "anthropic_api" if subagent_api else "anthropic_oauth"
+    default_subagent = "foundry" if foundry_available else (
+        "anthropic_oauth" if subagent_oauth else (
+            "anthropic_api" if subagent_api else "anthropic_oauth"
+        )
     )
 
     return {
@@ -506,10 +516,15 @@ def aggregate_auth_status() -> dict:
                 "available": featherless_available,
                 "detail": "FEATHERLESS_API_KEY set" if featherless_available else "FEATHERLESS_API_KEY missing",
             },
+            "foundry": {
+                "available": foundry_available,
+                "detail": "AZURE_FOUNDRY_API_KEY set" if foundry_available else "AZURE_FOUNDRY_API_KEY missing",
+            },
         },
         "subagent_auth": {
             "anthropic_api": subagent_api,
             "anthropic_oauth": subagent_oauth,
+            "foundry": foundry_available,
         },
         "defaults": {
             "root_provider": default_root,

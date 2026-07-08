@@ -682,9 +682,8 @@ def test_lr_too_small_is_blocked(tmp_path: Path) -> None:
 
 
 def test_lr_aliases_caught(tmp_path: Path) -> None:
-    """The check covers common LR aliases (alpha, base_lr, max_lr, etc.)."""
+    """The check covers common unambiguous LR aliases (base_lr, max_lr, etc.)."""
     body = """\
-alpha = 2.5
 base_lr = 5.0
 max_lr = 3.0
 init_lr = 8.0
@@ -693,9 +692,25 @@ initial_lr = 6.0
     _write(tmp_path / "train.py", body)
     out = validate_code_pre_flight(tmp_path, {})
     hard = _hard(out)
-    aliases = ("alpha", "base_lr", "max_lr", "init_lr", "initial_lr")
+    aliases = ("base_lr", "max_lr", "init_lr", "initial_lr")
     for a in aliases:
         assert any(f"{a}=" in v.detail for v in hard), f"missed alias: {a}"
+
+
+def test_alpha_is_not_treated_as_learning_rate(tmp_path: Path) -> None:
+    """`alpha` is an ambiguous coefficient (UCPO sharpening / label smoothing /
+    EMA / focal-loss α), not a learning rate — an `alpha=0.0` ablation and an
+    `alpha=2.5` coefficient must NOT be hard-blocked. Regression for the UCPO
+    `alpha=0.0` sharpening-ablation false block (prj_618, 2026-07-07)."""
+    body = """\
+alpha = 0.0
+sharpen_alpha = 2.5
+adv = compute_dgrpo_advantage(x, alpha=0.0)
+CFG = {"alpha": 2.5}
+"""
+    _write(tmp_path / "train.py", body)
+    out = validate_code_pre_flight(tmp_path, {})
+    assert not any("alpha=" in v.detail for v in _hard(out))
 
 
 def test_lr_negative_literal_caught(tmp_path: Path) -> None:
@@ -1140,3 +1155,291 @@ def test_per_model_metrics_block_single_env_omits_nesting() -> None:
     # Unknown arxiv id → no YAML → base block only.
     block_unknown = _per_model_metrics_block(arxiv_id="9999.99999")
     assert "MULTI-ENV METRICS NESTING" not in block_unknown
+
+
+# ---------------------------------------------------------------------------
+# OPENRESEARCH_PREFLIGHT_UNION_SCOPE — file-scoping bug fix (2026-07-07)
+#
+# Live forensic audit of run prj_23f04429cd3beaf7: _iter_python_files returns
+# ONLY [train.py] the instant train.py exists, so a legitimate multi-file
+# architecture (train.py orchestrates, train_cell.py is the per-cell GPU
+# worker, build_cells.py is the variant registry) is invisible to every check
+# built on it — false-blocking a faithful reproduction for 3 wasted repair
+# cycles. Flag ON widens the scope (recursive, filename superset) and
+# de-lexicalizes two matchers (structural from_pretrained call shape +
+# comment/docstring-stripped loss-term search) WITHOUT weakening the
+# fail-closed bar for a genuine surrogate. Flag OFF must stay byte-identical
+# to every test above this section.
+# ---------------------------------------------------------------------------
+
+
+def test_union_scope_enabled_reads_flag(monkeypatch) -> None:
+    from backend.agents.rlm.pre_flight_validator import _union_scope_enabled
+    monkeypatch.delenv("OPENRESEARCH_PREFLIGHT_UNION_SCOPE", raising=False)
+    assert _union_scope_enabled() is False
+    for v in ("1", "true", "yes", "TRUE", "Yes"):
+        monkeypatch.setenv("OPENRESEARCH_PREFLIGHT_UNION_SCOPE", v)
+        assert _union_scope_enabled() is True
+    for v in ("0", "false", "no", "off", ""):
+        monkeypatch.setenv("OPENRESEARCH_PREFLIGHT_UNION_SCOPE", v)
+        assert _union_scope_enabled() is False
+
+
+# --- (a) faithful multi-file impl: train.py orchestrates; the real code (real
+# model load via a DRY variable-driven from_pretrained, GRPO+OPSD loss terms,
+# the variant/baseline registry) lives in train_cell.py / trainer.py /
+# build_cells.py. ---
+
+_UNION_TRAIN = """\
+import subprocess
+
+
+def main():
+    subprocess.run(["python", "train_cell.py", "--cell-id=0"])
+
+
+if __name__ == "__main__":
+    main()
+"""
+
+_UNION_BUILD_CELLS = """\
+MODEL_VARIANTS = ["qwen3_1_7b", "qwen2_5_3b", "qwen2_5_7b"]
+BASELINE_VARIANTS = ["grpo", "opsd", "skill_sd", "grpo_opsd", "rlsd", "sdar"]
+
+
+def all_cells():
+    return [
+        {"model": m, "baseline": b}
+        for m in MODEL_VARIANTS
+        for b in BASELINE_VARIANTS
+    ]
+"""
+
+_UNION_TRAIN_CELL = """\
+from transformers import AutoModelForCausalLM
+
+MODEL_HF_IDS = {
+    "qwen3_1_7b": "Qwen/Qwen3-1.7B",
+    "qwen2_5_3b": "Qwen/Qwen2.5-3B-Instruct",
+    "qwen2_5_7b": "Qwen/Qwen2.5-7B-Instruct",
+}
+
+
+def load_model(model_key):
+    hf_id = MODEL_HF_IDS[model_key]
+    return AutoModelForCausalLM.from_pretrained(hf_id)
+"""
+
+_UNION_TRAINER = """\
+import torch
+
+
+def grpo_step(model, batch):
+    logprobs = model.log_prob(batch.actions)
+    advantages = batch.rewards - batch.value
+    ratio = (logprobs - batch.old_logprobs).exp()
+    clip_ratio = torch.clamp(ratio, 0.8, 1.2)
+    return -torch.min(ratio * advantages, clip_ratio * advantages).mean()
+
+
+def opsd_gate(student_logp, teacher_logp, beta):
+    delta = student_logp - teacher_logp
+    gate = torch.sigmoid(beta * delta).detach()
+    return gate
+"""
+
+_UNION_VARIANTS_REQUIRED = [
+    "qwen3_1_7b", "qwen2_5_3b", "qwen2_5_7b",
+    "grpo", "opsd", "skill_sd", "grpo_opsd", "rlsd", "sdar",
+]
+
+
+def _write_union_scope_fixture(tmp_path: Path) -> None:
+    _write(tmp_path / "train.py", _UNION_TRAIN)
+    _write(tmp_path / "build_cells.py", _UNION_BUILD_CELLS)
+    _write(tmp_path / "train_cell.py", _UNION_TRAIN_CELL)
+    _write(tmp_path / "trainer.py", _UNION_TRAINER)
+
+
+def test_union_scope_multi_file_faithful_impl_passes_when_flag_on(tmp_path: Path, monkeypatch) -> None:
+    _write_union_scope_fixture(tmp_path)
+    monkeypatch.setenv("OPENRESEARCH_PREFLIGHT_UNION_SCOPE", "1")
+    out = validate_code_pre_flight(
+        tmp_path,
+        {"variants_required": _UNION_VARIANTS_REQUIRED},
+        arxiv_id="2605.15155",
+    )
+    hard = _hard(out)
+    assert hard == [], f"faithful multi-file impl false-blocked: {[v.detail[:100] for v in hard]}"
+
+
+def test_union_scope_multi_file_faithful_impl_false_blocks_when_flag_off(tmp_path: Path, monkeypatch) -> None:
+    """Documents the bug: flag OFF (today's default) still false-blocks this
+    exact faithful reproduction because train_cell.py/trainer.py/build_cells.py
+    are invisible to every check built on _iter_python_files."""
+    _write_union_scope_fixture(tmp_path)
+    monkeypatch.delenv("OPENRESEARCH_PREFLIGHT_UNION_SCOPE", raising=False)
+    out = validate_code_pre_flight(
+        tmp_path,
+        {"variants_required": _UNION_VARIANTS_REQUIRED},
+        arxiv_id="2605.15155",
+    )
+    hard = _hard(out)
+    assert hard, "expected the pre-fix narrow file-scope bug to false-block this faithful impl"
+    assert any("from_pretrained" in v.detail for v in hard)
+    assert any("GRPO" in v.detail for v in hard)
+    assert any("qwen3_1_7b" in v.detail for v in hard)
+
+
+# --- (b) genuine surrogate spread across files: no from_pretrained call
+# ANYWHERE in the union — the widened scope must not launder a real
+# surrogate just because more files are now visible. ---
+
+_UNION_SURROGATE_TRAIN = "print('dispatch')\n"
+
+_UNION_SURROGATE_TRAIN_CELL = """\
+import torch.nn as nn
+
+
+class SDARModel(nn.Module):
+    def __init__(self, d, V):
+        super().__init__()
+        self.lm_head = nn.Linear(d, V)
+        self.embed = nn.Embedding(V, d)
+"""
+
+
+def test_union_scope_surrogate_spread_across_files_still_blocked_when_flag_on(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    _write(tmp_path / "train.py", _UNION_SURROGATE_TRAIN)
+    _write(tmp_path / "train_cell.py", _UNION_SURROGATE_TRAIN_CELL)
+    monkeypatch.setenv("OPENRESEARCH_PREFLIGHT_UNION_SCOPE", "1")
+    out = validate_code_pre_flight(tmp_path, {}, arxiv_id="2605.15155")
+    hard = _hard(out)
+    bug = next((v for v in hard if "from_pretrained" in v.detail), None)
+    assert bug is not None, f"surrogate spread across files was not blocked: {[v.detail[:80] for v in hard]}"
+
+
+def test_union_scope_surrogate_spread_across_files_still_blocked_when_flag_off(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The narrower flag-off scope also blocks (for a different reason: only
+    train.py is visible, and it has no from_pretrained call either) — the fix
+    must not regress this existing fail-closed guarantee."""
+    _write(tmp_path / "train.py", _UNION_SURROGATE_TRAIN)
+    _write(tmp_path / "train_cell.py", _UNION_SURROGATE_TRAIN_CELL)
+    monkeypatch.delenv("OPENRESEARCH_PREFLIGHT_UNION_SCOPE", raising=False)
+    out = validate_code_pre_flight(tmp_path, {}, arxiv_id="2605.15155")
+    assert any("from_pretrained" in v.detail for v in _hard(out))
+
+
+# --- structural (non-lexical) from_pretrained matching: a variable/subscript
+# first-arg call is accepted ONLY when grounded by a canonical-id literal
+# appearing somewhere in the union. ---
+
+_UNION_GROUNDED_VAR_ARG_BODY = """\
+from transformers import AutoModelForCausalLM
+
+MODEL_HF_IDS = {"qwen3_1_7b": "Qwen/Qwen3-1.7B"}
+
+
+def load(model_key):
+    hf_id = MODEL_HF_IDS[model_key]
+    return AutoModelForCausalLM.from_pretrained(hf_id)
+"""
+
+
+def test_real_model_variable_arg_from_pretrained_accepted_when_flag_on(tmp_path: Path, monkeypatch) -> None:
+    """The correct DRY pattern — from_pretrained driven by a variable pulled
+    from a MODEL_HF_IDS registry — must be accepted once grounded."""
+    _write(tmp_path / "train.py", _UNION_GROUNDED_VAR_ARG_BODY)
+    monkeypatch.setenv("OPENRESEARCH_PREFLIGHT_UNION_SCOPE", "1")
+    out = validate_code_pre_flight(tmp_path, {}, arxiv_id="2605.15155")
+    rm = [v for v in _hard(out) if "from_pretrained" in v.detail]
+    assert rm == []
+
+
+def test_real_model_variable_arg_from_pretrained_false_blocked_when_flag_off(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Documents the pre-fix bug: a variable-arg from_pretrained call (the
+    correct DRY pattern) is invisible to the literal-only match today."""
+    _write(tmp_path / "train.py", _UNION_GROUNDED_VAR_ARG_BODY)
+    monkeypatch.delenv("OPENRESEARCH_PREFLIGHT_UNION_SCOPE", raising=False)
+    out = validate_code_pre_flight(tmp_path, {}, arxiv_id="2605.15155")
+    rm = [v for v in _hard(out) if "from_pretrained" in v.detail]
+    assert rm, "documents the pre-fix false-block on the variable-arg DRY pattern"
+
+
+_UNION_UNGROUNDED_VAR_ARG_BODY = """\
+from transformers import AutoModelForCausalLM
+
+OTHER_MODEL_IDS = {"some_other_model": "facebook/opt-125m"}
+
+
+def load(model_key):
+    hf_id = OTHER_MODEL_IDS[model_key]
+    return AutoModelForCausalLM.from_pretrained(hf_id)
+"""
+
+
+def test_real_model_variable_arg_ungrounded_still_blocked_when_flag_on(tmp_path: Path, monkeypatch) -> None:
+    """A variable-arg from_pretrained call is only accepted once GROUNDED by a
+    canonical-id literal appearing somewhere in the union — an unrelated
+    model id must still block. Proves the (a) widening does not weaken the
+    fail-closed bar (gameability direction #2)."""
+    _write(tmp_path / "train.py", _UNION_UNGROUNDED_VAR_ARG_BODY)
+    monkeypatch.setenv("OPENRESEARCH_PREFLIGHT_UNION_SCOPE", "1")
+    out = validate_code_pre_flight(tmp_path, {}, arxiv_id="2605.15155")
+    rm = [v for v in _hard(out) if "from_pretrained" in v.detail]
+    assert rm, "an ungrounded variable-arg from_pretrained call must still block"
+
+
+def test_real_model_variable_arg_ungrounded_still_blocked_when_flag_off(tmp_path: Path, monkeypatch) -> None:
+    _write(tmp_path / "train.py", _UNION_UNGROUNDED_VAR_ARG_BODY)
+    monkeypatch.delenv("OPENRESEARCH_PREFLIGHT_UNION_SCOPE", raising=False)
+    out = validate_code_pre_flight(tmp_path, {}, arxiv_id="2605.15155")
+    rm = [v for v in _hard(out) if "from_pretrained" in v.detail]
+    assert rm
+
+
+# --- (c) a comment/docstring merely NAMING the algorithm tokens must not
+# satisfy the loss-term check once de-lexicalized. ---
+
+_UNION_COMMENT_ONLY_TOKENS_BODY = '''\
+"""
+Planned algorithm (not yet implemented): compute logprobs, advantages, ratio,
+and clip for the GRPO term, plus a teacher/student sigmoid gate for OPSD.
+"""
+# logprobs, advantages, ratio, clip, teacher, student, sigmoid — named here
+# only; never used in the real code below.
+import torch.nn.functional as F
+
+
+def train_step(model, x, y):
+    logits = model(x)
+    return F.cross_entropy(logits, y)
+'''
+
+
+def test_loss_check_comment_only_tokens_blocked_when_flag_on(tmp_path: Path, monkeypatch) -> None:
+    """Flag ON strips comments/docstrings first — a naming-only comment must
+    NOT satisfy the loss-term presence check."""
+    _write(tmp_path / "train.py", _UNION_COMMENT_ONLY_TOKENS_BODY)
+    monkeypatch.setenv("OPENRESEARCH_PREFLIGHT_UNION_SCOPE", "1")
+    out = validate_code_pre_flight(tmp_path, {}, arxiv_id="2605.15155")
+    hard = _hard(out)
+    assert any("GRPO" in v.detail for v in hard)
+    assert any("OPSD" in v.detail for v in hard)
+
+
+def test_loss_check_comment_only_tokens_pass_when_flag_off(tmp_path: Path, monkeypatch) -> None:
+    """Documents the pre-fix gameability: a comment/docstring merely NAMING
+    the algorithm tokens satisfies the lexical loss-term check today."""
+    _write(tmp_path / "train.py", _UNION_COMMENT_ONLY_TOKENS_BODY)
+    monkeypatch.delenv("OPENRESEARCH_PREFLIGHT_UNION_SCOPE", raising=False)
+    out = validate_code_pre_flight(tmp_path, {}, arxiv_id="2605.15155")
+    hard = _hard(out)
+    assert not any("GRPO" in v.detail for v in hard)
+    assert not any("OPSD" in v.detail for v in hard)

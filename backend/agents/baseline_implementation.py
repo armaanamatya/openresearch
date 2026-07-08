@@ -2025,6 +2025,50 @@ def _skill_shortlist_block(project_dir: Path | str) -> str:
         return ""
 
 
+# Relevance-gated SELECTED skills (OPENRESEARCH_SKILL_SELECT): the LLM-pruned active
+# set persisted by detect_environment (rlm_state/active_skills.json). Richer than the
+# raw deterministic shortlist above — it steers the implementer with the SAME skills
+# the root's consult_skill index and the verifier already consult, and it carries the
+# force-included infra skill (e.g. gcp-gke-reproduction on a GKE run).
+def _active_skill_block(project_dir: Path | str) -> str:
+    """Implementer-guidance block naming the skills SELECTED for this paper.
+
+    Returns ``""`` when SKILL_SELECT is off, the active-set file is absent, or
+    nothing was selected — so a caller that ORs it with ``_skill_shortlist_block``
+    stays byte-identical when the selection layer is off. Advisory; never fatal.
+    """
+    try:
+        from backend.agents.rlm import skill_selection as _sel
+        if not _sel.select_enabled():
+            return ""
+        artifact = _sel.load_active_skills(project_dir)
+        if not artifact:
+            return ""
+        from backend.agents.rlm.skill_catalog import load_catalog
+        entries = _sel.active_skill_entries(artifact, load_catalog())
+        if not entries:
+            return ""
+        lines = [
+            "\n\nSELECTED SKILL PLAYBOOKS (relevance-gated for THIS paper, OPENRESEARCH_SKILL_SELECT):",
+            "These playbooks were selected as most relevant to this paper's method / "
+            "environment. Consult the matching one before implementing that part of the pipeline:",
+        ]
+        for e in entries:
+            desc = (e.get("description") or "").strip()
+            if len(desc) > 160:
+                desc = desc[:157] + "..."
+            reason = (e.get("reason") or "").strip()
+            suffix = f"  ({reason})" if reason else ""
+            lines.append(f"  - {e['name']}: {desc}{suffix}")
+        lines.append(
+            "Call consult_skill(name=<skill>) for the full playbook (setup steps, code "
+            "patterns, common pitfalls) before implementing that part.\n"
+        )
+        return "\n".join(lines)
+    except Exception:  # noqa: BLE001 — advisory selected-skill block must never break the prompt
+        return ""
+
+
 def _extract_arxiv_id(project_id: str) -> str | None:
     """Extract a bare arXiv ID (e.g. '2605.15155') from a project_id string.
 
@@ -2598,9 +2642,12 @@ def _compute_constraint_guidance(
     # match / file absent, so guidance stays byte-identical when the flag is off.
     if project_dir is not None:
         try:
-            shortlist = _skill_shortlist_block(project_dir)
-            if shortlist:
-                guidance += shortlist
+            # Prefer the relevance-SELECTED active set (SKILL_SELECT) — the same
+            # LLM-pruned skills the root + verifier consult; fall back to the raw
+            # deterministic shortlist when SELECT is off (byte-identical to before).
+            skill_block = _active_skill_block(project_dir) or _skill_shortlist_block(project_dir)
+            if skill_block:
+                guidance += skill_block
         except Exception:  # noqa: BLE001 — advisory, never fatal
             logger.debug("skill shortlist block skipped", exc_info=True)
 

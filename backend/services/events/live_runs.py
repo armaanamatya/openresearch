@@ -299,10 +299,15 @@ def _coerce_to_float_or_none(v: Any) -> Any:
 
 
 class BenchmarkSummary(BaseModel):
-    benchmarkName: str
-    paperbenchTaskId: str
+    # benchmarkName/paperbenchTaskId/targetMetric are Optional: they carry a
+    # specific benchmark identity (e.g. the canned "reprolab-demo/ppo-cartpole-v1"
+    # demo task) that must not be asserted for a real paper run whose actual
+    # target the pipeline hasn't measured yet — None means "no fixed demo
+    # claim", never a fabricated default (evidence integrity).
+    benchmarkName: str | None = None
+    paperbenchTaskId: str | None = None
     overallScore: float
-    targetMetric: str
+    targetMetric: str | None = None
     targetValue: float | None = None
     reproducedValue: float | None = None
     deltaValue: float | None = None
@@ -523,6 +528,95 @@ def apply_autonomous_profile_override(request: StartRunRequest) -> StartRunReque
     })
 
 
+# ---------------------------------------------------------------------------
+# /lab provider-picker wiring (root_provider → root model, subagent_auth → env)
+# ---------------------------------------------------------------------------
+# The "LLM provider" radio (root_provider) and "Sub-agent auth" radio
+# (subagent_auth) were forwarded from the UI but never consumed. apply_picker_
+# overrides + the _subprocess_env block below wire them: root_provider maps to
+# request.model (which rides the config dict to the child's resolve_root_model,
+# see _python_script), subagent_auth maps to child env (it can't ride
+# request.model — that selects the root, not the sub-agents).
+
+# root_provider → root-model token. Tier-agnostic providers map to a single
+# token; `foundry` is tier-driven (see _is_opus_tier); `anthropic_api` is
+# intentionally absent — it leaves request.model untouched so the existing
+# opus/sonnet → ANTHROPIC_API_KEY path in _python_script applies.
+_ROOT_PROVIDER_TOKENS: dict[str, str] = {
+    "anthropic_oauth": "claude-oauth",
+    "openai_api": "gpt-5",
+    "azure_openai": "azure-gpt-4o",
+    "featherless": "qwen3-coder-featherless",
+}
+
+
+def _is_opus_tier(model: str) -> bool:
+    """True when the picked model denotes the Opus/reasoning tier.
+
+    Only consulted to choose opus-foundry vs sonnet-foundry for the Foundry
+    provider. Substring match so it holds for ``opus``, ``opus-foundry``,
+    ``claude-opus-4-8``, ….
+    """
+    return "opus" in model.lower()
+
+
+def _merge_role_models(existing: str | None, overrides: dict[str, str]) -> str:
+    """Merge ``overrides`` into an existing OPENRESEARCH_ROLE_MODELS value.
+
+    Returns a JSON-object string. The existing value may be JSON *or* the
+    ``k=v,k=v`` CLI form — both are parsed via the same reader the child uses,
+    so a .env/shell planner/verifier pin survives when the picker adds an
+    executor. A malformed/absent value degrades to overrides-only. (The child's
+    run-spec loader re-applies OPENRESEARCH_* keys after inheriting this env, so
+    an explicit run-spec still wins.)
+    """
+    base: dict[str, str] = {}
+    if existing:
+        try:
+            from backend.agents.rlm.role_models import _parse_role_map
+            base = dict(_parse_role_map(existing))
+        except Exception:  # noqa: BLE001 — unparseable value: fall back to overrides-only
+            base = {}
+    base.update(overrides)
+    return json.dumps(base)
+
+
+def apply_picker_overrides(request: StartRunRequest) -> StartRunRequest:
+    """Wire the /lab "LLM provider" radio (``root_provider``) to the root model.
+
+    Maps the picked provider to ``request.model`` so it actually drives the RLM
+    root (request.model rides the config dict to the child's
+    ``resolve_root_model``). ``subagent_auth`` is a separate, env-only knob
+    wired in ``_subprocess_env`` — not here.
+
+    Precedence (do not reverse):
+    - Identity when ``root_provider`` is None → byte-identical to pre-wiring
+      (the mandatory off-state invariant).
+    - No-op when a ``run_spec`` is explicitly pinned → an advanced run-spec
+      (which can pin the root + per-role models) wins over a UI picker default.
+    - ``apply_autonomous_profile_override`` runs AFTER this and still wins (it
+      force-sets ``model="opus-foundry"``) — the picker never beats autonomous.
+    """
+    rp = request.root_provider
+    if rp is None or request.run_spec:
+        return request
+    if rp == "foundry":
+        new_model = "opus-foundry" if _is_opus_tier(request.model) else "sonnet-foundry"
+    elif rp == "anthropic_api":
+        # Leave request.model as-is: _python_script already maps opus/sonnet via
+        # ANTHROPIC_API_KEY. Nothing to override.
+        return request
+    else:
+        new_model = _ROOT_PROVIDER_TOKENS.get(rp)
+        if new_model is None:
+            # Unknown/future provider value — fail safe: leave the request
+            # untouched rather than guessing a token.
+            return request
+    if new_model == request.model:
+        return request
+    return request.model_copy(update={"model": new_model})
+
+
 class FileLiveRunService:
     """Runs pipelines in subprocesses and exposes their file-backed state."""
 
@@ -600,6 +694,27 @@ class FileLiveRunService:
         env["OPENRESEARCH_LLM_PROVIDER"] = request.provider
         if request.verificationProvider:
             env["OPENRESEARCH_VERIFICATION_PROVIDER"] = request.verificationProvider
+
+        # Sub-agent auth picker (/lab "Sub-agent auth" radio). Forwarded but
+        # previously inert; wire it as env here (it can't ride request.model —
+        # that selects the root, not the sub-agents). Only when explicitly set,
+        # so an unset value is byte-identical to today.
+        #   foundry        → executor runs on Anthropic-Foundry Sonnet-5, merged
+        #                    into any existing OPENRESEARCH_ROLE_MODELS so a
+        #                    .env/run-spec planner/verifier pin is preserved.
+        #   anthropic_oauth → force the OAuth transport for every Claude sub-role
+        #   anthropic_api   → force the paid-API-key transport for the same
+        #                    (OPENRESEARCH_LLM_AUTH_STRATEGY gates the executor
+        #                    start-up + selects the grader/verifier transport).
+        if request.subagent_auth is not None:
+            if request.subagent_auth == "foundry":
+                env["OPENRESEARCH_ROLE_MODELS"] = _merge_role_models(
+                    env.get("OPENRESEARCH_ROLE_MODELS"), {"executor": "sonnet-foundry"}
+                )
+            elif request.subagent_auth == "anthropic_oauth":
+                env["OPENRESEARCH_LLM_AUTH_STRATEGY"] = "oauth_only"
+            elif request.subagent_auth == "anthropic_api":
+                env["OPENRESEARCH_LLM_AUTH_STRATEGY"] = "api_only"
 
         # Bring-your-own credentials — these override .env (and process env)
         # for the subprocess only, because the user explicitly typed them
@@ -846,7 +961,12 @@ class FileLiveRunService:
         _s = get_settings()
         request = apply_sandbox_override(request, _s.force_sandbox)
         request = apply_provider_override(request, _s.force_llm_provider)
-        # Autonomous wins over the two overrides above: the profile is an
+        # Wire the /lab provider picker (root_provider → root model). After the
+        # deployment forces above, before the autonomous override below, so the
+        # picker drives the run by default while autonomous still wins. No-op
+        # when root_provider is unset (byte-identical) or a run_spec is pinned.
+        request = apply_picker_overrides(request)
+        # Autonomous wins over the overrides above: the profile is an
         # explicit per-request opt-in to force the backend, not a deployment
         # default, so it applies last.
         request = apply_autonomous_profile_override(request)
@@ -1135,12 +1255,18 @@ class FileLiveRunService:
         manifest_path = code_dir / "reprolab_manifest.json"
         readme_path = code_dir / "README.md"
 
+        # The hardcoded PPO/CartPole/mean_reward literals below describe the
+        # built-in ReproLab canned demo only. `uploaded` is True for every
+        # real paper run (uploaded PDF), so those fields must not assert a
+        # benchmark/task identity the run never targeted — evidence
+        # integrity requires absent/null over a fabricated default here.
+        # See docs/runbooks — P2 data-integrity fix, false CartPole claim.
         benchmark = {
-            "benchmarkName": "PaperBench-style final benchmark",
-            "paperbenchTaskId": "reprolab-demo/ppo-cartpole-v1",
+            "benchmarkName": "PaperBench-style final benchmark" if not uploaded else None,
+            "paperbenchTaskId": "reprolab-demo/ppo-cartpole-v1" if not uploaded else None,
             "overallScore": 91.4 if not uploaded else 0.0,
-            "targetMetric": "mean_reward",
-            "targetValue": 475.0,
+            "targetMetric": "mean_reward" if not uploaded else None,
+            "targetValue": 475.0 if not uploaded else None,
             "reproducedValue": 492.3 if not uploaded else 0.0,
             "deltaValue": 17.3 if not uploaded else 0.0,
             "verdict": "reproduced_with_caveats" if not uploaded else "pending_pipeline_result",
@@ -1156,14 +1282,26 @@ class FileLiveRunService:
             "run_mode": request.mode,
             "execution_profile": request.executionMode,
             "source": source_pdf,
-            "claim": {
-                "metric": "mean_reward",
-                "target": 475.0,
-                "environment": "CartPole-v1",
-                "evaluation_protocol": "100 deterministic evaluation episodes after PPO training",
-            },
+            "claim": (
+                {
+                    "metric": "mean_reward",
+                    "target": 475.0,
+                    "environment": "CartPole-v1",
+                    "evaluation_protocol": "100 deterministic evaluation episodes after PPO training",
+                }
+                if not uploaded
+                else {
+                    "metric": None,
+                    "target": None,
+                    "environment": None,
+                    "evaluation_protocol": (
+                        "pending — this run's claim is determined by the pipeline's "
+                        "measured artifacts, not a fixed demo target"
+                    ),
+                }
+            ),
             "result": {
-                "metric": "mean_reward",
+                "metric": benchmark["targetMetric"],
                 "value": benchmark["reproducedValue"],
                 "delta_vs_target": benchmark["deltaValue"],
                 "status": benchmark["verdict"],
@@ -1510,6 +1648,21 @@ def _write_minimal_pdf(path: Path, *, title: str) -> None:
     path.write_bytes(bytes(body))
 
 
+def _report_value(value: Any, *, numeric: bool = False) -> str:
+    """Render a benchmark field for the human-readable report/log artifacts.
+
+    `None` means "no fixed demo claim for this run" (a real paper whose
+    target isn't the canned CartPole/mean_reward demo) — render it as an
+    honest "pending" placeholder instead of crashing on `None:.1f` or
+    printing the Python literal "None".
+    """
+    if value is None:
+        return "pending"
+    if numeric:
+        return f"{value:.1f}"
+    return str(value)
+
+
 def _benchmark_report_markdown(
     project_id: str,
     benchmark: dict[str, Any],
@@ -1528,8 +1681,8 @@ def _benchmark_report_markdown(
     return f"""# Final Benchmark Report
 
 **Project:** `{project_id}`  
-**Benchmark:** {benchmark["benchmarkName"]}  
-**Task:** `{benchmark["paperbenchTaskId"]}`  
+**Benchmark:** {_report_value(benchmark["benchmarkName"])}  
+**Task:** `{_report_value(benchmark["paperbenchTaskId"])}`  
 **Verdict:** `{benchmark["verdict"]}`
 
 {status_note}
@@ -1548,7 +1701,7 @@ def _benchmark_report_markdown(
 
 | Metric | Paper target | Reproduced value | Delta |
 | --- | ---: | ---: | ---: |
-| {benchmark["targetMetric"]} | {benchmark["targetValue"]:.1f} | {benchmark["reproducedValue"]:.1f} | {delta_text} |
+| {_report_value(benchmark["targetMetric"])} | {_report_value(benchmark["targetValue"], numeric=True)} | {benchmark["reproducedValue"]:.1f} | {delta_text} |
 
 ## PaperBench-Style Rubric
 
@@ -1582,14 +1735,21 @@ code/
 def _paperbench_log(project_id: str, benchmark: dict[str, Any], uploaded: bool) -> str:
     if uploaded:
         result_line = "pending measured result; waiting for pipeline artifacts"
+        task_line = (
+            "2026-05-10T09:30:12Z paperbench-eval INFO no fixed benchmark task for this "
+            "run — pending the pipeline's measured result"
+        )
     else:
         result_line = (
             f"mean_reward={benchmark['reproducedValue']:.1f}, "
             f"target={benchmark['targetValue']:.1f}, delta={benchmark['deltaValue']:+.1f}"
         )
+        task_line = (
+            f"2026-05-10T09:30:12Z paperbench-eval INFO loaded task {benchmark['paperbenchTaskId']}"
+        )
     return "\n".join(
         [
-            "2026-05-10T09:30:12Z paperbench-eval INFO loaded task reprolab-demo/ppo-cartpole-v1",
+            task_line,
             f"2026-05-10T09:30:13Z paperbench-eval INFO project={project_id}",
             "2026-05-10T09:30:14Z paperbench-eval INFO validating source artifact code/paper.pdf",
             "2026-05-10T09:30:15Z paperbench-eval INFO checking generated code root manifest",
@@ -2153,6 +2313,12 @@ finally:
         _final_status = _json_exit.loads(status_path.read_text()).get("status", "failed")
     except Exception:
         pass
+    if _os_exit.environ.get("OPENRESEARCH_HARDEXIT_CLEANUP", "").strip().lower() in ("1", "true", "yes"):
+        try:
+            from backend.agents.rlm.process_cleanup import terminate_children_then_exit as _term_children_exit
+            _term_children_exit(0 if _final_status == "completed" else 1)
+        except Exception:
+            pass
     _os_exit._exit(0 if _final_status == "completed" else 1)
 """
 

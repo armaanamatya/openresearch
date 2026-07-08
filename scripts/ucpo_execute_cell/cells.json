@@ -1,0 +1,12 @@
+{
+  "_comment": "Hand-authored execute-mode proof cell — runs the UCPO authors' ucpo.main_run verbatim on 1xA100 via train_cell.py. est_vram_gb sized for a single A100-80.",
+  "cells": [
+    {
+      "id": "ucpo-execute",
+      "model_key": "default",
+      "env": "math",
+      "baseline": "ucpo_iq",
+      "est_vram_gb": 70.0
+    }
+  ]
+}
