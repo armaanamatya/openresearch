@@ -125,6 +125,8 @@ header (`hmac.compare_digest`). Empty/unset disables the gate — local-dev beha
   `docs/design/project-rebuild-spec.md`.
 - **Specs / runbooks:** `docs/superpowers/specs/` (design specs, cited from the nested files),
   `docs/runbooks/` (setup, ops, dated handoffs).
+- **Reference:** [`docs/reference/flags.md`](docs/reference/flags.md) — generated inventory of every
+  `OPENRESEARCH_*` flag (regenerate with `python scripts/gen_flag_registry.py`; a test guards freshness).
 - **Reliability rules:** [`learn.md`](learn.md) — active cross-cutting *Rule/How/Why* log
   (pre-2026-06 postmortems archived at `docs/archive/learn.md`).
 - **Baseline test paper:** SDAR (arXiv 2605.15155) — the canonical stress test; full command +
