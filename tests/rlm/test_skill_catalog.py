@@ -72,8 +72,8 @@ def _write_skill(
 # Real vendored library
 # ---------------------------------------------------------------------------
 
-def test_load_catalog_real_library_has_all_40_skills():
-    """All 40 vendored SKILL.md files parse into the catalog.
+def test_load_catalog_real_library_has_all_43_skills():
+    """All 43 vendored SKILL.md files parse into the catalog.
 
     Two upstream corpus defects were repaired on vendoring so every seed skill
     is indexable (the loader's fail-soft contract still skips a genuinely
@@ -86,11 +86,32 @@ def test_load_catalog_real_library_has_all_40_skills():
       (`dependencies: [ray[train], ...]` — an unescaped `[` opening a nested
       flow sequence); the value was quoted (`"ray[train]"`), a
       documentation-only field whose content is preserved exactly.
+
+    2026-07-07: 3 skills were added (40 -> 43) — `sdar-reproduction` +
+    `tool-rl-reproduction` (category `paper-reproduction`) and
+    `gcp-gke-reproduction` (category `cloud-compute`); see
+    ``test_load_catalog_new_paper_and_infra_skills_present`` below.
     """
     catalog = load_catalog()
-    assert len(catalog) == 40
+    assert len(catalog) == 43
     assert "scholar-evaluation" in catalog
     assert "ray-train" in catalog
+
+
+def test_load_catalog_new_paper_and_infra_skills_present():
+    """The 3 skills added 2026-07-07 load with the right frontmatter name +
+    category: two paper-reproduction playbooks (SDAR, Tool-RL) and one
+    cloud-compute infra playbook (GCP/GKE)."""
+    catalog = load_catalog()
+    expected = {
+        "sdar-reproduction": "paper-reproduction",
+        "tool-rl-reproduction": "paper-reproduction",
+        "gcp-gke-reproduction": "cloud-compute",
+    }
+    for name, category in expected.items():
+        assert name in catalog
+        assert catalog[name].name == name
+        assert catalog[name].category == category
 
 
 def test_load_catalog_real_library_known_names_present():

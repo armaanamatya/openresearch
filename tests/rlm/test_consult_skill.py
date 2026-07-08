@@ -260,3 +260,51 @@ def test_compute_constraint_guidance_includes_shortlist_when_flag_on(tmp_path, m
     )
     assert "MATCHED SKILL PLAYBOOKS" in guidance
     assert "verl-rl-training" in guidance
+
+
+# ---------------------------------------------------------------------------
+# ON state — relevance-gated SELECTED skill block (OPENRESEARCH_SKILL_SELECT)
+#
+# _active_skill_block reads rlm_state/active_skills.json (written by
+# detect_environment's selection hook, see test_skill_selection.py) and is
+# preferred over the raw _skill_shortlist_block above at the injection site
+# (baseline_implementation._compute_constraint_guidance: `_active_skill_block(
+# project_dir) or _skill_shortlist_block(project_dir)`).
+# ---------------------------------------------------------------------------
+
+
+def _write_active_skills_fixture(project_dir, selected=("grpo-rl-training",)):
+    state_dir = project_dir / "rlm_state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "active_skills.json").write_text(
+        json.dumps({
+            "selected": list(selected),
+            "candidates": [],
+            "domain": "ml-rl",
+            "subject_matter_keys": {},
+            "selector": "deterministic",
+            "reasons": {},
+        }),
+        encoding="utf-8",
+    )
+
+
+def test_active_skill_block_uses_selected_set(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENRESEARCH_SKILLS", "1")
+    monkeypatch.setenv("OPENRESEARCH_SKILL_SELECT", "1")
+    from backend.agents.baseline_implementation import _active_skill_block
+
+    _write_active_skills_fixture(tmp_path, selected=("grpo-rl-training",))
+    block = _active_skill_block(tmp_path)
+    assert "SELECTED SKILL PLAYBOOKS" in block
+    assert "grpo-rl-training" in block
+
+
+def test_active_skill_block_empty_when_select_off(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENRESEARCH_SKILLS", "1")
+    monkeypatch.delenv("OPENRESEARCH_SKILL_SELECT", raising=False)
+    from backend.agents.baseline_implementation import _active_skill_block
+
+    # Even with a real artifact on disk, SELECT off => empty (byte-identical).
+    _write_active_skills_fixture(tmp_path, selected=("grpo-rl-training",))
+    assert _active_skill_block(tmp_path) == ""

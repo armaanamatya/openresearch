@@ -57,6 +57,16 @@ _VERIFIER_BODY_CHAR_CAP = 2000
 # Bound the LLM-prune completion; unparseable/oversized output falls back.
 _LLM_PRUNE_MAX_CHARS = 8000
 
+# Infra skills key on the COMPUTE ENVIRONMENT (the run's sandbox), not the paper's
+# content — the token matcher (name+tag ∩ paper claim-map) never recalls them. They
+# are force-included by :func:`apply_infra_skills` when OPENRESEARCH_SKILL_INFRA_SELECT
+# is on. Map: sandbox key (``ctx.sandbox_mode.value`` / ``OPENRESEARCH_DEFAULT_SANDBOX``)
+# -> the infra skill's frontmatter ``name``.
+_INFRA_SKILL_BY_SANDBOX = {
+    "gcp": "gcp-gke-reproduction",
+    "gke": "gcp-gke-reproduction",
+}
+
 
 # ---------------------------------------------------------------------------
 # Flag helpers (canonical convention; default-OFF)
@@ -73,6 +83,16 @@ def select_enabled() -> bool:
 
 def _deterministic_only() -> bool:
     return _flag("OPENRESEARCH_SKILL_SELECT_DETERMINISTIC")
+
+
+def infra_select_enabled() -> bool:
+    """True when skill-selection is on AND the infra-skill hook is enabled.
+
+    Infra skills (e.g. ``gcp-gke-reproduction``) are force-included by the compute
+    environment via :func:`apply_infra_skills`, since content recall can never
+    surface them. Sub-feature of ``OPENRESEARCH_SKILL_SELECT`` — off ⇒ byte-identical.
+    """
+    return select_enabled() and _flag("OPENRESEARCH_SKILL_INFRA_SELECT")
 
 
 def _int_flag(name: str, default: int) -> int:
@@ -406,6 +426,72 @@ def select_active_skills(
         "selector": selector,
         "reasons": reasons,
     }
+
+
+# ---------------------------------------------------------------------------
+# Environment-keyed infra skills (force-include, not content recall)
+# ---------------------------------------------------------------------------
+
+def apply_infra_skills(
+    artifact: dict[str, Any],
+    *,
+    sandbox: str | None,
+    catalog: Mapping[str, SkillMeta],
+) -> dict[str, Any]:
+    """Force-include the run environment's infra skill into the active set.
+
+    The content matcher scores a skill's ``name``+``tags`` against the *paper's*
+    claim-map, so an infra skill (``gcp-gke-reproduction``) whose relevance is the
+    *sandbox*, not the paper, can never be recalled. This appends it to the active
+    set when ``OPENRESEARCH_SKILL_INFRA_SELECT`` is on and ``sandbox`` maps to a
+    known infra skill present in the catalog — so the root/implementer see it on a
+    GKE run exactly when they need it. Appended (not prepended) so it never displaces
+    a paper skill from the verifier's bounded body budget.
+
+    No-op returning ``artifact`` unchanged when: the flag is off, the sandbox has no
+    infra skill, the skill isn't in the catalog, or it is already selected. Mutates
+    and returns the same dict (mirrors the ``select_active_skills`` artifact shape).
+    Fail-soft — never raises.
+    """
+    try:
+        if not infra_select_enabled():
+            return artifact
+        key = (sandbox or "").strip().lower()
+        skill_name = _INFRA_SKILL_BY_SANDBOX.get(key)
+        if not skill_name or skill_name not in catalog:
+            return artifact
+        selected = artifact.get("selected")
+        if not isinstance(selected, list) or skill_name in selected:
+            return artifact
+
+        meta = catalog.get(skill_name)
+        reason = f"infra skill for sandbox={key} (force-included; not paper-content matched)"
+        artifact["selected"] = [*selected, skill_name]
+
+        reasons = artifact.get("reasons")
+        if isinstance(reasons, dict):
+            reasons.setdefault(skill_name, reason)
+
+        candidates = artifact.get("candidates")
+        if isinstance(candidates, list) and not any(
+            isinstance(c, Mapping) and c.get("name") == skill_name for c in candidates
+        ):
+            candidates.append(
+                {
+                    "name": skill_name,
+                    "category": meta.category if meta else "",
+                    "description": meta.description if meta else "",
+                    "reason": reason,
+                }
+            )
+
+        infra = artifact.setdefault("infra_selected", [])
+        if isinstance(infra, list) and skill_name not in infra:
+            infra.append(skill_name)
+        return artifact
+    except Exception:  # noqa: BLE001 — infra augmentation is advisory; never break selection
+        logger.warning("skill_selection: infra-skill augmentation failed", exc_info=True)
+        return artifact
 
 
 # ---------------------------------------------------------------------------

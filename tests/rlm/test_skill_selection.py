@@ -45,6 +45,32 @@ def _sdar_env() -> dict:
     return {"framework": "pytorch", "pip_packages": {"vllm": "0.6.3", "verl": "0.1", "trl": "0.14"}}
 
 
+def _tool_rl_claim_map() -> dict:
+    return {
+        "core_contribution": (
+            "MT-GRPO multi-turn tool-calling reinforcement learning with "
+            "iterative reward calibration"
+        ),
+        "model_architecture": "Qwen3.5-4B policy trained with MT-GRPO",
+        "training_recipe": {"optimizer": "AdamW"},
+        "datasets": [{"name": "Tau-Bench airline"}, {"name": "tau2-bench"}],
+        "metrics": [{"name": "pass_rate"}],
+        "claims": [
+            {"method": "MT-GRPO", "dataset": "Tau-Bench airline", "metric": "pass_rate"},
+            {"method": "IRC", "dataset": "tau2-bench", "metric": "pass_rate"},
+            {"method": "verl", "dataset": "Tau-Bench airline", "metric": "pass_rate"},
+            {"method": "Qwen", "dataset": "tau2-bench", "metric": "pass_rate"},
+        ],
+    }
+
+
+def _tool_rl_env() -> dict:
+    return {
+        "framework": "pytorch",
+        "pip_packages": {"verl": "0.8.0", "torch": "2.4.0", "transformers": "4.46.3"},
+    }
+
+
 class _ScriptedClient:
     """Returns one scripted response to every .complete() call."""
 
@@ -145,6 +171,28 @@ def test_match_candidate_skills_respects_candidates_max():
     catalog = load_catalog()
     cands = sel.match_candidate_skills(_sdar_claim_map(), _sdar_env(), catalog, candidates_max=3)
     assert len(cands) <= 3
+
+
+def test_match_candidate_skills_recalls_sdar_reproduction_first():
+    """The dedicated sdar-reproduction skill (2026-07-07 catalog expansion,
+    40 -> 43) must be recalled for an SDAR-shaped paper AND rank ahead of
+    every other candidate — its name/tags carry the densest SDAR-specific
+    token overlap (OPSD/self-distillation/RLSD alongside the generic GRPO/RL
+    terms every RL-flavored skill shares)."""
+    catalog = load_catalog()
+    cands = sel.match_candidate_skills(_sdar_claim_map(), _sdar_env(), catalog)
+    names = [c["name"] for c in cands]
+    assert "sdar-reproduction" in names
+    assert names.index("sdar-reproduction") == 0
+
+
+def test_match_candidate_skills_recalls_tool_rl():
+    """The new tool-rl-reproduction skill must be recalled for a Tau-Bench /
+    MT-GRPO / IRC-shaped paper."""
+    catalog = load_catalog()
+    cands = sel.match_candidate_skills(_tool_rl_claim_map(), _tool_rl_env(), catalog)
+    names = {c["name"] for c in cands}
+    assert "tool-rl-reproduction" in names
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +440,111 @@ def test_grader_prompt_byte_identical_without_skill_context():
     assert grader.users
     assert all("SKILL_CONTEXT_MARKER" not in u for u in grader.users)
     assert all("Skill playbooks relevant to this paper" not in u for u in grader.users)
+
+
+# ---------------------------------------------------------------------------
+# Wiring 4 — infra-skill hook (OPENRESEARCH_SKILL_INFRA_SELECT, 2026-07-07)
+#
+# The content matcher scores a skill's name/tags against the PAPER's claim
+# map, so an infra skill like gcp-gke-reproduction (whose relevance is the
+# run's *sandbox*, not the paper's subject matter) can never be recalled.
+# apply_infra_skills force-includes it when the sandbox maps to a known infra
+# skill present in the catalog and the sub-feature flag is on.
+# ---------------------------------------------------------------------------
+
+def test_infra_select_enabled_requires_all_three_flags(monkeypatch):
+    monkeypatch.delenv("OPENRESEARCH_SKILLS", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_SKILL_SELECT", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_SKILL_INFRA_SELECT", raising=False)
+    assert sel.infra_select_enabled() is False
+
+    monkeypatch.setenv("OPENRESEARCH_SKILLS", "1")
+    assert sel.infra_select_enabled() is False  # SELECT + INFRA_SELECT still off
+
+    monkeypatch.setenv("OPENRESEARCH_SKILL_SELECT", "1")
+    assert sel.infra_select_enabled() is False  # INFRA_SELECT still off
+
+    monkeypatch.setenv("OPENRESEARCH_SKILL_INFRA_SELECT", "1")
+    assert sel.infra_select_enabled() is True
+
+    monkeypatch.delenv("OPENRESEARCH_SKILLS", raising=False)
+    assert sel.infra_select_enabled() is False  # SKILLS master off dominates
+
+
+def test_apply_infra_skills_forces_gcp_skill(monkeypatch):
+    monkeypatch.setenv("OPENRESEARCH_SKILLS", "1")
+    monkeypatch.setenv("OPENRESEARCH_SKILL_SELECT", "1")
+    monkeypatch.setenv("OPENRESEARCH_SKILL_INFRA_SELECT", "1")
+    catalog = load_catalog()
+    for sandbox in ("gcp", "gke"):
+        artifact = {"selected": [], "candidates": [], "reasons": {}}
+        out = sel.apply_infra_skills(artifact, sandbox=sandbox, catalog=catalog)
+        assert out is artifact  # mutates + returns the same dict
+        assert artifact["selected"] == ["gcp-gke-reproduction"]
+        assert artifact["infra_selected"] == ["gcp-gke-reproduction"]
+        assert any(c["name"] == "gcp-gke-reproduction" for c in artifact["candidates"])
+        assert "gcp-gke-reproduction" in artifact["reasons"]
+
+
+def test_apply_infra_skills_noop_when_flag_off(monkeypatch):
+    monkeypatch.setenv("OPENRESEARCH_SKILLS", "1")
+    monkeypatch.setenv("OPENRESEARCH_SKILL_SELECT", "1")
+    monkeypatch.delenv("OPENRESEARCH_SKILL_INFRA_SELECT", raising=False)
+    catalog = load_catalog()
+    artifact = {"selected": ["grpo-rl-training"], "candidates": [], "reasons": {}}
+    out = sel.apply_infra_skills(artifact, sandbox="gcp", catalog=catalog)
+    assert out["selected"] == ["grpo-rl-training"]  # byte-identical
+    assert "infra_selected" not in out
+
+
+def test_apply_infra_skills_noop_for_local_sandbox(monkeypatch):
+    monkeypatch.setenv("OPENRESEARCH_SKILLS", "1")
+    monkeypatch.setenv("OPENRESEARCH_SKILL_SELECT", "1")
+    monkeypatch.setenv("OPENRESEARCH_SKILL_INFRA_SELECT", "1")
+    catalog = load_catalog()
+    artifact = {"selected": ["grpo-rl-training"], "candidates": [], "reasons": {}}
+    out = sel.apply_infra_skills(artifact, sandbox="local", catalog=catalog)
+    assert out["selected"] == ["grpo-rl-training"]
+    assert "infra_selected" not in out
+
+
+def test_apply_infra_skills_idempotent(monkeypatch):
+    monkeypatch.setenv("OPENRESEARCH_SKILLS", "1")
+    monkeypatch.setenv("OPENRESEARCH_SKILL_SELECT", "1")
+    monkeypatch.setenv("OPENRESEARCH_SKILL_INFRA_SELECT", "1")
+    catalog = load_catalog()
+    artifact = {"selected": [], "candidates": [], "reasons": {}}
+    sel.apply_infra_skills(artifact, sandbox="gcp", catalog=catalog)
+    once = list(artifact["selected"])
+    sel.apply_infra_skills(artifact, sandbox="gcp", catalog=catalog)
+    assert artifact["selected"] == once
+    assert artifact["selected"].count("gcp-gke-reproduction") == 1
+
+
+def test_detect_environment_adds_infra_skill_on_gcp(make_context, tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENRESEARCH_SKILLS", "1")
+    monkeypatch.setenv("OPENRESEARCH_SKILL_SELECT", "1")
+    monkeypatch.setenv("OPENRESEARCH_SKILL_INFRA_SELECT", "1")
+    monkeypatch.setenv("OPENRESEARCH_DEFAULT_SANDBOX", "gcp")
+    ctx = make_context(tmp_path)
+    detect_environment(_sdar_claim_map(), ctx=ctx)
+
+    active_path = ctx.project_dir / "rlm_state" / "active_skills.json"
+    art = json.loads(active_path.read_text(encoding="utf-8"))
+    assert "gcp-gke-reproduction" in art["selected"]
+
+
+def test_detect_environment_no_infra_skill_when_infra_select_off(make_context, tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENRESEARCH_SKILLS", "1")
+    monkeypatch.setenv("OPENRESEARCH_SKILL_SELECT", "1")
+    monkeypatch.delenv("OPENRESEARCH_SKILL_INFRA_SELECT", raising=False)
+    monkeypatch.setenv("OPENRESEARCH_DEFAULT_SANDBOX", "gcp")
+    ctx = make_context(tmp_path)
+    detect_environment(_sdar_claim_map(), ctx=ctx)
+
+    active_path = ctx.project_dir / "rlm_state" / "active_skills.json"
+    art = json.loads(active_path.read_text(encoding="utf-8"))
+    assert "gcp-gke-reproduction" not in art["selected"]
 
 
 # ---------------------------------------------------------------------------
