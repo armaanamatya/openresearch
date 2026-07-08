@@ -15,7 +15,11 @@ def test_registry_has_foundry_root_entries():
     assert models.ROOT_MODELS["sonnet-foundry"].backend_kwargs["model_name"] == "claude-sonnet-5"
 
 
-def test_resolve_opus_foundry_alias():
+def test_resolve_opus_foundry_alias(monkeypatch):
+    # resolve_root_model validates the resolved entry's api_key_env is present;
+    # set it explicitly so the test is hermetic (the conftest credential-clearing
+    # fixture strips the ambient AZURE_FOUNDRY_API_KEY the dev .env would provide).
+    monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "test-foundry-key")
     entry = models.resolve_root_model("opus-4-8")
     assert entry.key == "opus-foundry"
 
