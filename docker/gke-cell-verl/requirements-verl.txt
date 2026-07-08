@@ -1,0 +1,29 @@
+# verl runtime deps that vLLM does NOT already pin (transformers/tokenizers/numpy come
+# from vLLM). Mirrors verl setup.py install_requires + the math/reward extras + the cell
+# entrypoint's GCS SDK. flash-attn / liger-kernel omitted on purpose (compile-heavy).
+accelerate
+codetiming
+einops
+datasets
+dill
+hydra-core
+omegaconf
+pandas
+peft
+pyarrow>=19.0.0
+pybind11
+pylatexenc
+ray[default]>=2.41.0
+torchdata
+wandb
+tensorboard
+packaging>=20.0
+# boxed-answer / math RLVR reward graders (verl MATH_REQUIRES + common scorers).
+# `pyext` is intentionally omitted: it needs `inspect.getargspec` (removed in
+# Python 3.11) and is imported ONLY by verl's prime_code reward scorer, which the
+# math-RLVR papers (UCPO, SDAR) never load. Keeping it would break the build.
+math-verify
+mathruler
+word2number
+# cell entrypoint -> GCS artifact upload
+google-cloud-storage>=2.18,<3
