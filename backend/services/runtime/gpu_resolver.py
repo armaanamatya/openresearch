@@ -201,7 +201,8 @@ def _resolve_runpod(
                            requirements=requirements, ladder=remaining, now_iso=now_iso)
 
     # Apply headroom multiplier; round up.
-    needed_vram = math.ceil(estimate * max(headroom_multiplier, 1.0))
+    _headroom = 1.0 if getattr(requirements, "vram_is_explicit", False) else headroom_multiplier
+    needed_vram = math.ceil(estimate * max(_headroom, 1.0))
 
     # Find ladder under cap.
     ladder = find_ladder(
@@ -312,7 +313,8 @@ def _resolve_provisioned_cloud(
                            requirements=requirements, ladder=remaining, now_iso=now_iso)
 
     # Apply headroom multiplier (against per-GPU estimate; same logic as RunPod).
-    needed_vram = math.ceil(estimate * max(headroom_multiplier, 1.0))
+    _headroom = 1.0 if getattr(requirements, "vram_is_explicit", False) else headroom_multiplier
+    needed_vram = math.ceil(estimate * max(_headroom, 1.0))
 
     # Build the ladder filtered by effective capacity and optionally single-GPU.
     ladder = _provisioned_ladder(provider=provider,
