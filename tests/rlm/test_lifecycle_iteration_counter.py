@@ -50,3 +50,35 @@ def test_run_primary_stamps_iterations_in_summary(tmp_path):
     )
     assert summary["iterations"] == ctx.current_iteration
     assert summary["iterations"] >= 6
+
+
+def test_climb_emits_hypothesis_event(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from backend.agents.rlm.lifecycle_driver import run_lifecycle_primary
+
+    events = []
+    d = tmp_path / "proj"; d.mkdir(parents=True, exist_ok=True)
+    ctx = SimpleNamespace(project_dir=d, remaining_s=lambda: None, current_iteration=0)
+
+    def _t(ret):
+        m = MagicMock(); m.return_value = ret; return m
+
+    verify = _t({"overall_score": 0.5, "target_score": 0.7})
+    tools = {
+        "understand_section": {"tool": _t({})},
+        "detect_environment": {"tool": _t({})},
+        "plan_reproduction": {"tool": _t({})},
+        "implement_baseline": {"tool": _t({"ok": True, "code_path": "/c"})},
+        "run_experiment": {"tool": _t({"success": True, "metrics": {"r": 0.5}})},
+        "verify_against_rubric": {"tool": verify},
+        "propose_improvements": {"tool": _t([{"hypothesis": "raise lr", "success": True}])},
+    }
+    run_lifecycle_primary(
+        tools=tools, ctx=ctx, paper_text="p", rubric_spec={"target_score": 0.7},
+        emit=events.append, target_score=0.7, max_improve_iterations=1,
+    )
+    assert any(
+        e.get("event") == "lifecycle_drive_step" and e.get("phase") == "improve"
+        for e in events
+    ), events

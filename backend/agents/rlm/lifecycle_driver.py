@@ -632,6 +632,14 @@ def run_lifecycle_primary(
 
         chosen = valid[0]
 
+        _safe_emit(
+            emit,
+            {"event": "lifecycle_drive_step", "stage": "improve", "phase": "improve",
+             "primitive": "propose_improvements",
+             "hypothesis": chosen.get("hypothesis"),
+             "iteration": int(getattr(ctx, "current_iteration", 0) or 0)},
+        )
+
         # --- implement_baseline with improvement patch (fail-soft) ---
         try:
             impl_fn = _get_tool(tools, "implement_baseline")
