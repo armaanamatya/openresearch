@@ -304,9 +304,21 @@ def drive_lifecycle_chain(
             summary["stopped_reason"] = f"missing_tool:{name}"
             return {}, True
 
+        # Advance the harness-owned iteration counter BEFORE the tool runs so
+        # binding.wrap_primitive (which reads ctx.current_iteration for the
+        # rubric_score event + ctx.latest_rubric_iteration policy state) records
+        # real, non-zero iterations under lifecycle-primary. The root-loop logger
+        # that normally advances it never runs here.
+        try:
+            _it = int(getattr(ctx, "current_iteration", 0) or 0) + 1
+            setattr(ctx, "current_iteration", _it)
+        except Exception:  # noqa: BLE001 — counter is best-effort, never blocks a step
+            _it = int(getattr(ctx, "current_iteration", 0) or 0)
+
         _safe_emit(
             emit,
-            {"event": "lifecycle_drive_step", "stage": start_stage, "primitive": name},
+            {"event": "lifecycle_drive_step", "stage": start_stage,
+             "primitive": name, "iteration": _it},
         )
 
         try:
@@ -493,6 +505,7 @@ def drive_lifecycle_chain(
         summary["rubric_score"] = verify_result.get("overall_score")
         summary["verify_result"] = verify_result
 
+    summary["iterations"] = int(getattr(ctx, "current_iteration", 0) or 0)
     return summary
 
 
@@ -549,6 +562,9 @@ def run_lifecycle_primary(
     summary["stopped_reason"] = base.get("stopped_reason")
     summary["fatal_result"] = base.get("fatal_result")
     summary["stopped_at"] = base.get("stopped_at")
+    # Track iterations from the backbone; updated again at the terminal return
+    # so any climb steps that advance ctx.current_iteration are also captured.
+    summary["iterations"] = int(getattr(ctx, "current_iteration", 0) or 0)
 
     # E2: pre-commit the ordered plan_reproduction steps to disk (fail-soft) and
     # read them back — a durable, re-readable record of the dispatch order this
@@ -671,4 +687,5 @@ def run_lifecycle_primary(
     # by the >= check in the sub_score update block and the non-regress loop).
     summary["rubric_score"] = score
     summary["verify_result"] = verify_result
+    summary["iterations"] = int(getattr(ctx, "current_iteration", 0) or 0)
     return summary
