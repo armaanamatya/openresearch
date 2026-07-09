@@ -74,6 +74,16 @@ PRICING: dict[str, ModelPricing] = {
     ),
 }
 
+# Foundry role aliases: the ledger records these bare role ids (see
+# backend.agents.rlm.role_models opus-foundry/sonnet-foundry). Map them to their
+# priced Claude siblings so estimate_cost_usd no longer returns $0 for every
+# Foundry-routed row. Rates mirror the siblings (see the PRICING note above);
+# Foundry billing is separately reconciled via Azure Cost Management.
+FOUNDRY_ALIASES: dict[str, str] = {
+    "opus-foundry": "claude-opus-4-8",
+    "sonnet-foundry": "claude-sonnet-5",
+}
+
 
 def _resolve_pricing(model: str) -> ModelPricing | None:
     """Resolve a ModelPricing entry for *model*.
@@ -96,6 +106,12 @@ def _resolve_pricing(model: str) -> ModelPricing | None:
     entry = PRICING.get(model)
     if entry is not None:
         return entry
+    # 1b. Foundry role alias -> priced sibling.
+    alias = FOUNDRY_ALIASES.get(model)
+    if alias is not None:
+        entry = PRICING.get(alias)
+        if entry is not None:
+            return entry
     # 2. Match model against suffixes of PRICING keys (strip ``provider.`` prefix).
     for key, entry in PRICING.items():
         dot = key.find(".")
@@ -189,6 +205,7 @@ __all__ = [
     "ModelPricing",
     "PRICING",
     "PRICING_UPDATED_AT",
+    "FOUNDRY_ALIASES",
     "_resolve_pricing",
     "estimate_cost_usd",
     "equivalent_cost_usd",
