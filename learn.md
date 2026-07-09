@@ -14,6 +14,16 @@
 
 ---
 
+## Cloud posture: GCP/Azure primary, RunPod legacy (2026-07-09)
+
+**Rule:** `--sandbox auto` resolves to docker/local ONLY and never a paid remote backend; gcp/azure/runpod are explicit. Foundry LLM rows price via `FOUNDRY_ALIASES` (no more $0). An explicit `--vram-gb` is used verbatim (no 1.25x headroom). `gcp_gpu_skus` mismatch fails loud at the GCP preflight (default stays `["gcp_a100_80x8"]`, Terraform-synced). A cell that would breach `--max-run-gpu-usd` mid-flight is killed (`gpu_budget_exceeded`).
+
+**How:** `execution.resolve_sandbox_mode`, `pricing.FOUNDRY_ALIASES`, `GpuRequirements.vram_is_explicit`, `gpu_resolver.validate_configured_skus` + `gke_job_backend.validate_gcp_skus_against_cluster`, `k8s_job_cell_runner._watch_job` GPU-$ heartbeat.
+
+**Why:** RunPod is legacy; GCP/Azure are the supported clouds. The old auto->runpod default, the $0 Foundry ledger, and uncapped mid-cell burn made the primary clouds untrustworthy for overnight campaigns.
+
+---
+
 ## 2026-07-07 — A hyperparameter guard must key on the variable's ROLE, not an ambiguous name
 
 **Rule.** A preflight/sanity guard that range-checks a hyperparameter (learning rate, dropout, …) must scope to names that unambiguously denote that role — never a Greek-letter/coefficient name (`alpha`, `beta`, `lambda`, `tau`, `eta`) shared with RL/regularization coefficients, where values outside the "sane LR range" (`0.0` ablation, `>1.0` weight) are legitimate.
