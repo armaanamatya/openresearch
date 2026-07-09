@@ -44,6 +44,31 @@ class GpuResolutionError(RuntimeError):
     """Raised when no SKU can satisfy (VRAM + $/hr cap + cloud_type) constraints."""
 
 
+class GpuSkuConfigError(RuntimeError):
+    """Configured GPU SKUs cannot match any provisioned cluster node pool."""
+
+
+def validate_configured_skus(
+    *, configured: list[str], available: list[str]
+) -> None:
+    """Raise GpuSkuConfigError when no configured SKU is provisioned.
+
+    `configured` is settings.gcp_gpu_skus; `available` is the set of
+    reprolab/sku labels actually present on cluster nodes. The resolver can only
+    place a cell on a label that exists, so a zero-overlap config guarantees
+    every GPU request Pends forever - surface it loudly at preflight instead.
+    """
+    if set(configured) & set(available):
+        return
+    raise GpuSkuConfigError(
+        "No configured GPU SKU is provisioned on the cluster.\n"
+        f"  configured (OPENRESEARCH_GCP_GPU_SKUS): {configured}\n"
+        f"  available (reprolab/sku node labels):   {available}\n"
+        "Fix: set OPENRESEARCH_GCP_GPU_SKUS to a JSON array of SKUs your cluster "
+        "actually provisions, e.g. OPENRESEARCH_GCP_GPU_SKUS='[\"gcp_a100_80\"]'."
+    )
+
+
 def _provisioned_default_sku(
     provider: str,
     fallback_short_name: str,
