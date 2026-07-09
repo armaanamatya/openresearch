@@ -3202,6 +3202,10 @@ def _backend_for_sandbox_mode(
         from backend.services.runtime.runpod_backend import RunpodBackend
 
         _runtime.ensure_runpod_available()
+        logger.info(
+            "sandbox=runpod is a LEGACY backend - GCP (--sandbox gcp) and Azure "
+            "(--sandbox azure) are the supported primary clouds."
+        )
         return RunpodBackend(run_budget=run_budget, gpu_plan=gpu_plan)
 
     if mode is SandboxMode.azure:
