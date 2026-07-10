@@ -685,6 +685,31 @@ def test_reproduced_happy_path_sets_champion():
     assert select_champion((a,)) is a
 
 
+@pytest.mark.parametrize("other_verdict", ["inconclusive", "contradicted", "partial", "failed", None])
+def test_reproduced_requires_authoritative_verdict_not_just_grade(other_verdict):
+    """Spec §4.3 ("consumers must read the authority, not the grade"):
+    ``verdict == "reproduced"`` is an AND on top of ``meets_target``, never
+    a replacement -- an otherwise-qualifying attempt (clean, full rung,
+    run_level_clean, rubric ok) whose grade says ``meets_target=True`` but
+    whose deterministic verdict is anything other than "reproduced" must
+    NOT let the campaign terminate REPRODUCED."""
+    a = _assessment(1, meets_target=True, verdict=other_verdict)
+    decision = _decide((a,))
+    assert decision.kind != "REPRODUCED"
+    assert decision.kind == "CONTINUE"
+
+
+def test_reproduced_still_fires_when_verdict_is_explicitly_reproduced():
+    # Companion sanity check pinning the AND (not OR-replace): the happy
+    # path above relies on ``_report``'s default verdict="reproduced" --
+    # this test sets it explicitly so the parametrized negative case above
+    # cannot be passing for a trivial/unrelated reason.
+    a = _assessment(1, meets_target=True, verdict="reproduced")
+    decision = _decide((a,))
+    assert decision.kind == "REPRODUCED"
+    assert decision.champion_attempt_n == 1
+
+
 # ---------------------------------------------------------------------------
 # DECIDE — rule 2: CONTRADICTED
 # ---------------------------------------------------------------------------
@@ -973,6 +998,21 @@ def test_next_scope_rung_reexpands_one_rung_on_green_only():
 
     assert next_scope_rung(2, green, ladder_len=3) == 2  # clamp: already full, stays full
     assert next_scope_rung(1, None, ladder_len=3) == 1  # hold never drops below current_rung
+
+
+@pytest.mark.parametrize("other_verdict", ["inconclusive", "contradicted", "partial", "failed", None])
+def test_next_scope_rung_requires_authoritative_verdict_not_just_grade(other_verdict):
+    """Spec §4.3: the same AND-on-top-of-``meets_target`` verdict check as
+    the REPRODUCED gate applies to scope escalation too -- a
+    ``meets_target=True`` attempt whose deterministic verdict is not
+    "reproduced" must hold the rung, never advance it."""
+    grade_high_wrong_verdict = _assessment(1, meets_target=True, verdict=other_verdict)
+    assert next_scope_rung(0, grade_high_wrong_verdict, ladder_len=3) == 0
+
+    # Companion sanity check pinning the AND (not OR-replace): an explicit
+    # verdict="reproduced" (matching meets_target=True) still advances.
+    green = _assessment(2, meets_target=True, verdict="reproduced")
+    assert next_scope_rung(0, green, ladder_len=3) == 1
 
 
 # ---------------------------------------------------------------------------
