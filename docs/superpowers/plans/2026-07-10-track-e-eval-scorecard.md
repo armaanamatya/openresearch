@@ -163,7 +163,14 @@ def test_record_never_raises_on_bad_dir(monkeypatch):
 
 ### Task 3: Per-experiment efficiency instrumentation (§6.5) — DELEGATABLE (guarded Sonnet)
 
-**Files:**
+> **Status (2026-07-10):** split into **3a — DONE** (`gpu_ledger.py` writer +
+> `aggregate_gpu_cost` + `tests/agents/rlm/test_gpu_ledger.py`, commit `4ff678b0`;
+> flag-gated, byte-identical off since nothing calls it yet) and **3b — PENDING**
+> (the `primitives.py` wiring: stamp `start_ts`/`end_ts`/`gpu_plan`/`retry_id` at
+> the `_stamp_manifest_ids` call seam + `append_gpu_ledger` at the persist seam,
+> flag-gated + off-flag byte-identical). Do 3b in-tree, not a stale worktree.
+
+**Files (3b — remaining):**
 - Create: `backend/agents/rlm/gpu_ledger.py`
 - Modify: `backend/agents/rlm/primitives.py` (stamp row fields at `_stamp_manifest_ids` call site :7471; append GPU-ledger row near the persist :4943-4959)
 - Test: `tests/agents/rlm/test_gpu_ledger.py`
