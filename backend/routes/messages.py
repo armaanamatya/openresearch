@@ -21,6 +21,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
+from backend.agents.rlm.human_intervention import record_intervention
 from backend.config import get_settings
 
 router = APIRouter()
@@ -96,6 +97,11 @@ async def post_message(
     with dashboard_path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(dashboard_entry, default=str) + "\n")
 
+    # Track E §6.5: a run-level operator chat message is a steering/clarification
+    # intervention — recorded for the autonomy metric (display-only, never gates;
+    # no-op + byte-identical when OPENRESEARCH_HUMAN_INTERVENTION_LOG is off).
+    record_intervention(run_dir, kind="clarification", what="operator run-level chat message")
+
     return {"ok": True}
 
 
@@ -146,5 +152,13 @@ async def post_campaign_message(
 
     with dashboard_path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(dashboard_entry, default=str) + "\n")
+
+    # Track E §6.5: campaign steering — a mode change is an operator config-choice,
+    # a note is a clarification. Display-only autonomy telemetry; no-op off-flag.
+    record_intervention(
+        run_dir,
+        kind="config-choice" if body.op == "set_mode" else "clarification",
+        what=f"operator campaign steering (op={body.op})",
+    )
 
     return {"ok": True, "id": message_id}
