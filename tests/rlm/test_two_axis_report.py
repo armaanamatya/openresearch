@@ -277,3 +277,71 @@ def test_none_ledger_keeps_replay_behavior(monkeypatch, tmp_path):
 
     written = json.loads((tmp_path / "final_report.json").read_text())
     assert written["verdict"] == "reproduced"
+
+
+# --- D1 (Task 4): flat sub_tasks fidelity scoring ---
+def test_flat_sub_tasks_rubric_scores_by_leaf_weight():
+    rubric = {"sub_tasks": [
+        {"score": 1.0, "weight": 2.0, "sub_tasks": []},
+        {"score": 0.0, "weight": 1.0, "sub_tasks": []}]}
+    assert abs(tar.fidelity_score_from_rubric(rubric) - (2.0 / 3.0)) < 1e-9
+
+
+def test_nested_sub_tasks_rubric_weights_by_leaf_not_category():
+    """A category node wrapping leaves (the real generate_rubric_tree shape)
+    must be walked to its LEAVES — weighted by each leaf's own weight, not by
+    the intermediate category node's weight."""
+    rubric = {
+        "sub_tasks": [
+            {
+                "score": None,  # category nodes carry no score of their own
+                "weight": 0.9,
+                "sub_tasks": [
+                    {"score": 1.0, "weight": 3.0, "sub_tasks": []},
+                    {"score": 0.5, "weight": 1.0, "sub_tasks": []},
+                ],
+            },
+            {"score": 0.0, "weight": 0.1, "sub_tasks": []},
+        ]
+    }
+    # leaves: (1.0, w=3.0), (0.5, w=1.0), (0.0, w=0.1)
+    expected = (1.0 * 3.0 + 0.5 * 1.0 + 0.0 * 0.1) / (3.0 + 1.0 + 0.1)
+    assert tar.fidelity_score_from_rubric(rubric) == pytest.approx(expected)
+
+
+def test_missing_leaf_weight_defaults_to_one():
+    rubric = {"sub_tasks": [
+        {"score": 1.0, "sub_tasks": []},          # no weight -> 1.0
+        {"score": 0.0, "weight": 1.0, "sub_tasks": []}]}
+    assert tar.fidelity_score_from_rubric(rubric) == pytest.approx(0.5)
+
+
+def test_areas_present_takes_precedence_over_sub_tasks():
+    """When both shapes are present (shouldn't happen in practice, but must
+    stay deterministic), the PaperBench `areas` path wins untouched."""
+    rubric = {
+        "areas": [{"area": "Method fidelity", "score": 0.75, "weight": 1.0}],
+        "sub_tasks": [{"score": 0.0, "weight": 1.0, "sub_tasks": []}],
+    }
+    assert tar.fidelity_score_from_rubric(rubric) == pytest.approx(0.75)
+
+
+def test_empty_sub_tasks_falls_back_to_overall_score():
+    rubric = {"sub_tasks": [], "overall_score": 0.42}
+    assert tar.fidelity_score_from_rubric(rubric) == pytest.approx(0.42)
+
+
+def test_ungraded_sub_tasks_tree_falls_back_to_overall_score():
+    """A freshly-generated, not-yet-graded tree (leaves carry no `score` key
+    at all) must not be treated as a real 0.0 — fall back to overall_score."""
+    rubric = {
+        "sub_tasks": [{"weight": 1.0, "sub_tasks": []}],
+        "overall_score": None,
+    }
+    assert tar.fidelity_score_from_rubric(rubric) == 0.0
+
+
+def test_no_areas_no_sub_tasks_is_legacy_overall_score_path():
+    """Byte-identical legacy behaviour: neither shape present -> overall_score."""
+    rubric = {"overall_score": 0.33}
+    assert tar.fidelity_score_from_rubric(rubric) == pytest.approx(0.33)

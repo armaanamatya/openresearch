@@ -72,8 +72,20 @@ def fidelity_score_from_rubric(rubric: dict[str, Any]) -> float:
     The replication axis owns the result-match area; everything else (method &
     code fidelity, data fidelity, eval-protocol correctness, execution, artifact
     completeness) measures whether WE built + ran the method faithfully.  Weighted
-    by area weight when present, else a simple mean.  Falls back to the rubric's
-    overall_score when no usable areas exist (legacy reports).
+    by area weight when present, else a simple mean.
+
+    D1 fix: an auto-generated rubric (no vendored PaperBench bundle) carries a
+    flat/nested ``sub_tasks`` tree instead of ``areas`` — the PaperBench-shaped
+    branch above then finds no areas and used to collapse straight to
+    ``overall_score`` (often 0.0/None on a freshly-generated, ungraded tree).
+    When ``areas`` is absent/empty, this now walks the ``sub_tasks`` tree down
+    to its LEAVES (nodes with empty/missing ``sub_tasks``, arbitrary nesting
+    depth) and takes the same weighted mean over each leaf's own ``score``/
+    ``weight`` — no result-match exclusion (the generated shape has no such
+    area to exclude). Falls back to the rubric's overall_score only when
+    neither shape yields a usable weight (legacy reports / fully-ungraded
+    trees). This score feeds ONLY the implementation_verdict/impl_fidelity
+    diagnostic axis, never the headline verdict.
     """
     areas = (rubric or {}).get("areas") or []
     num = 0.0
@@ -93,6 +105,28 @@ def fidelity_score_from_rubric(rubric: dict[str, Any]) -> float:
         den += w
     if den > 0:
         return num / den
+
+    sub_tasks = (rubric or {}).get("sub_tasks") or []
+    if isinstance(sub_tasks, list) and sub_tasks:
+        num = 0.0
+        den = 0.0
+        stack = [n for n in sub_tasks if isinstance(n, dict)]
+        while stack:
+            node = stack.pop()
+            children = [c for c in (node.get("sub_tasks") or []) if isinstance(c, dict)]
+            if children:
+                stack.extend(children)
+                continue
+            score = node.get("score")
+            if score is None:
+                continue
+            weight = node.get("weight")
+            w = float(weight) if isinstance(weight, (int, float)) and weight > 0 else 1.0
+            num += w * float(score)
+            den += w
+        if den > 0:
+            return num / den
+
     return float((rubric or {}).get("overall_score", 0.0) or 0.0)
 
 
