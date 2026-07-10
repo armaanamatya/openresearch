@@ -255,7 +255,9 @@ class Settings(BaseSettings):
     # "gke" is a first-class alias for "gcp" (SandboxMode._missing_ maps it to the
     # gcp member); accepted here so OPENRESEARCH_DEFAULT_SANDBOX=gke boots and the
     # start.sh gcp/gke preflight branch is reachable.
-    default_sandbox: Literal["auto", "local", "docker", "runpod", "azure", "gcp", "gke"] = "runpod"
+    # Default is "gcp": GCP/Azure are the primary clouds, runpod is legacy
+    # (cloud-posture, 2026-07). Override with OPENRESEARCH_DEFAULT_SANDBOX.
+    default_sandbox: Literal["auto", "local", "docker", "runpod", "azure", "gcp", "gke"] = "gcp"
 
     # Optional hard override for every run's sandbox mode, regardless of what
     # the client requested. Empty means "honor the request/default_sandbox".
