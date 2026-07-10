@@ -2397,6 +2397,11 @@ def write_final_report_rlm(
     # actually runs and succeeds — the final pre-write guard check (just
     # before `_atomic_write`) only fires when it is populated.
     _post_authority_snapshot: dict[str, Any] | None = None
+    # Finding-3 (design §5): demo_status.json's verdict is mirrored SEPARATELY
+    # from final_report.json (below), so the report-dict tripwire cannot catch a
+    # post-authority mutation of that surface. Snapshot it right after the mirror
+    # and re-read the FILE just before ship (the second guard block below).
+    _ds_post_authority_snapshot: dict[str, Any] | None = None
     if _authority_active:
         try:
             from backend.agents.rlm import result_fidelity as _result_fidelity_mod
@@ -2466,6 +2471,13 @@ def write_final_report_rlm(
                 _ds_tmp = _ds_path.with_suffix(".json.tmp")
                 _ds_tmp.write_text(json.dumps(_ds_existing, indent=2), encoding="utf-8")
                 os.replace(_ds_tmp, _ds_path)
+                # Finding-3: capture the mirrored demo_status verdict surface for
+                # the pre-ship file re-read tripwire below.
+                _ds_post_authority_snapshot = {
+                    k: _ds_existing.get(k)
+                    for k in _va.VERDICT_SURFACE_KEYS
+                    if k in _ds_existing
+                }
             except Exception:  # noqa: BLE001 — demo_status mirror is best-effort
                 logger.warning(
                     "report: demo_status.json verdict mirror failed (non-fatal)",
@@ -2478,31 +2490,49 @@ def write_final_report_rlm(
             # verdict — shipping it would silently defeat the sever on error.
             # So we fail CLOSED: stamp the honest, conservative "inconclusive"
             # (the same verdict decide() returns when it cannot measure a
-            # primary claim), never the grade. Keep the loud warning. The inner
-            # stamp is itself fail-soft so a broken stamp can never crash the
-            # write — but on that (doubly-unlikely) path the pre-authority
-            # value would ship, which is why the stamp is kept minimal.
+            # primary claim), never the grade. Keep the loud warning.
             logger.warning(
                 "report: verdict_authority path raised — failing CLOSED to "
                 "'inconclusive' (never shipping the pre-authority grade-derived "
                 "verdict)", exc_info=True,
             )
+            # H2: the bulletproof HEADLINE is its own FIRST standalone step —
+            # set verdict="inconclusive" + re-serialize BEFORE any diagnostic
+            # stamping, so a throw in the (best-effort) diagnostic block below
+            # can NEVER leave the pre-authority grade-derived verdict in
+            # json_content with the guard skipped. Minimal ops (two json calls +
+            # a literal snapshot); if even THIS raises, the whole report write
+            # is already doomed and no verdict can be honestly shipped anyway.
             try:
-                from backend.agents.rlm.verdict_authority import (
-                    VERDICT_SURFACE_KEYS as _VSK,
-                )
                 _d = json.loads(json_content)
                 _d["verdict"] = "inconclusive"
-                _d["verdict_authority"] = {"reason": "authority_error"}
                 json_content = json.dumps(_d, indent=2)
-                _post_authority_snapshot = {k: _d.get(k) for k in _VSK if k in _d}
+                # Guarantees the pre-write guard below fires on the headline even
+                # if the diagnostic block never runs. A literal — no import that
+                # could throw and skip it.
+                _post_authority_snapshot = {"verdict": "inconclusive"}
                 try:
                     report.verdict = "inconclusive"
                 except Exception:  # noqa: BLE001 — model may be frozen; the dict is authoritative
                     pass
-            except Exception:  # noqa: BLE001 — even the fail-closed stamp must never crash the write
+            except Exception:  # noqa: BLE001 — even the bulletproof headline cannot crash the write
                 logger.exception(
-                    "report: fail-closed 'inconclusive' stamp failed (non-fatal)"
+                    "report: fail-closed 'inconclusive' headline stamp failed (non-fatal)"
+                )
+            # Best-effort diagnostic reason, in a SEPARATE try so a failure here
+            # can no longer affect the already-stamped inconclusive headline.
+            try:
+                from backend.agents.rlm.verdict_authority import (
+                    VERDICT_SURFACE_KEYS as _VSK,
+                )
+                _d2 = json.loads(json_content)
+                _d2["verdict_authority"] = {"reason": "authority_error"}
+                json_content = json.dumps(_d2, indent=2)
+                _post_authority_snapshot = {k: _d2.get(k) for k in _VSK if k in _d2}
+            except Exception:  # noqa: BLE001 — the diagnostic stamp is non-essential
+                logger.debug(
+                    "report: fail-closed diagnostic stamp skipped (non-fatal)",
+                    exc_info=True,
                 )
 
     # Runtime single-writer guard (§4.3 acceptance criterion): this is the
@@ -2522,6 +2552,28 @@ def write_final_report_rlm(
             _post_authority_snapshot,
             json.loads(json_content),
             context="write_final_report_rlm (pre-write)",
+        )
+
+    # Finding-3 (design §5): the demo_status.json verdict mirror is a SEPARATE
+    # on-disk surface, written above independently of final_report.json. Re-read
+    # the FILE and assert its verdict keys still match what the authority
+    # stamped — always passes today (nothing mutates it between the mirror and
+    # here), a loud regression tripwire for a future edit that does.
+    if _ds_post_authority_snapshot is not None:
+        from backend.agents.rlm.verdict_authority import (
+            assert_verdict_surface_unchanged as _assert_ds_surface,
+        )
+        _ds_guard_path = project_dir / "demo_status.json"
+        try:
+            _ds_current = json.loads(_ds_guard_path.read_text(encoding="utf-8"))
+            if not isinstance(_ds_current, dict):
+                _ds_current = {}
+        except Exception:  # noqa: BLE001 — an unreadable mirror is not a mutation
+            _ds_current = dict(_ds_post_authority_snapshot)
+        _assert_ds_surface(
+            _ds_post_authority_snapshot,
+            _ds_current,
+            context="write_final_report_rlm (demo_status.json pre-write)",
         )
 
     _atomic_write(json_path, json_content)
