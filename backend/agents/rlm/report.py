@@ -40,7 +40,16 @@ class RLMFinalReport(BaseModel):
         default_factory=dict,
         description="Paper identity: {id, title, ...}",
     )
-    verdict: Literal["reproduced", "partial", "failed"] = "failed"
+    # "contradicted"/"inconclusive" are the VerdictAuthority taxonomy (Track A
+    # §4.3, backend/agents/rlm/verdict_authority.py) — reachable only when
+    # OPENRESEARCH_TWO_AXIS_VERDICT + OPENRESEARCH_VERDICT_AUTHORITY are both
+    # on; the legacy three stay the sole values either flag off. Widened here
+    # (rather than left stale) because Pydantic v2's default
+    # validate_assignment=False would otherwise let a plain `report.verdict =
+    # "contradicted"` assignment silently escape the declared Literal.
+    verdict: Literal[
+        "reproduced", "partial", "failed", "contradicted", "inconclusive"
+    ] = "failed"
     reproduction_summary: str = ""
     baseline_metrics: dict = Field(
         default_factory=dict,
@@ -1439,6 +1448,85 @@ def _has_experiment_evidence(project_dir: Path) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# VerdictAuthority input assembly (Track A §4.3) — the sever's finalize seam.
+#
+# write_final_report_rlm assembles decide()'s four inputs from ARTIFACTS
+# already on disk / already threaded to this function; it invents no new
+# evidence source (per the design's explicit instruction). ``evidence_gate``
+# in particular reuses the SAME success signal the pre-existing two-axis
+# upgrade-clamp uses a few hundred lines below (``run_experiment_ok_calls``
+# and ``_has_experiment_evidence``) — not a new predicate.
+# ---------------------------------------------------------------------------
+
+
+def _load_repro_spec_for_authority(project_dir: Path) -> dict[str, Any]:
+    """Best-effort read of ``rlm_state/repro_spec.json`` as a raw dict.
+
+    ``result_fidelity.evaluate`` wants the raw ReproSpec dict (it reads
+    ``repro_spec["claims"]`` itself), not the typed ``MeasuredClaim`` list
+    ``two_axis_report.load_claims`` builds for the older CI-based engine —
+    the two loaders serve different consumers and are kept separate. ``{}``
+    (never raises) when the file is absent/malformed/not a dict — ``{}``
+    degrades ``result_fidelity.evaluate`` to its empty result, which
+    ``verdict_authority.decide`` maps to ``inconclusive`` (no repro_spec: the
+    RDR/legacy path, or an arXiv run where extraction never produced a
+    ruler) — never a special case.
+    """
+    path = project_dir / "rlm_state" / "repro_spec.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001 — never break the write over a bad artifact
+        return {}
+
+
+def _load_fidelity_certificate_for_authority(project_dir: Path) -> dict[str, Any] | None:
+    """Best-effort read of ``rlm_state/fidelity_certificate.json``.
+
+    Passed through to ``verdict_authority.decide``'s ``fidelity_certificate``
+    parameter for interface completeness only — ``decide`` does not read it
+    today (§4.4: the certificate is an evidence-gate input upstream, not an
+    independent verdict cap here; Spec B may consume it later). ``None`` when
+    the file is absent/malformed — "decide treats a missing certificate
+    conservatively" per the brief, i.e. it simply isn't read either way.
+    Never raises.
+    """
+    path = project_dir / "rlm_state" / "fidelity_certificate.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _authority_evidence_gate(
+    project_dir: Path, *, run_experiment_ok_calls: int | None
+) -> bool:
+    """``evidence_gate`` input for ``verdict_authority.decide`` (§4.3/§4.4).
+
+    Reuses the EXACT success signal the upgrade-clamp below (~2200) already
+    threads through this function — ``run_experiment_ok_calls`` (>=1
+    success-compatible in-process ``run_experiment`` ledger row,
+    ``binding.wrap_primitive``-stamped, unforgeable by the REPL) AND
+    ``_has_experiment_evidence`` (a real success+metrics row on disk). Does
+    NOT invent a new evidence source. Conservative on ``None`` (no ledger
+    available, e.g. a replay/CLI direct-call path): ``decide()`` then caps an
+    otherwise-all-pass primary set at ``partial`` rather than certifying
+    ``reproduced`` on trust alone — matching ``decide()``'s own documented
+    stance that an unsatisfied/unknown gate never licenses "reproduced".
+    """
+    return bool(
+        run_experiment_ok_calls is not None
+        and run_experiment_ok_calls >= 1
+        and _has_experiment_evidence(project_dir)
+    )
+
+
 def _adaptation_delta(repo_dir: Path, code_dir: Path) -> dict:
     """Count files changed/added/removed between repo/ (pristine) and code/ (adapted).
 
@@ -2200,33 +2288,55 @@ def write_final_report_rlm(
         logger.warning("report: two-axis verdict attach failed (non-fatal)", exc_info=True)
 
     # --- A: Report-claim gate (§4.3, 2026-06-20) ----------------------------
-    # FINAL verdict mutation: caps to "partial" + cites when the root's report
-    # narrative contains result claims absent from code/metrics.json (≥5% tol).
-    # Runs AFTER the best-of-run floor and two-axis attach so nothing re-upgrades
-    # it afterward (codex-6). Byte-identical-off: gate function checks its own flag.
+    # Runs AFTER the best-of-run floor and two-axis attach. Byte-identical-off:
+    # gate function checks its own flag.
+    #
+    # SEVERED (Track A §4.3): the legacy path (verdict authority OFF) keeps
+    # mutating report_dict["verdict"] here exactly as before — the "FINAL
+    # verdict mutation" comment this block used to carry. Once the authority
+    # is active, that mutation is retired: this block instead computes the
+    # cap ONLY (no mutation) via `report_claim_gate.compute_claim_gate_cap`
+    # and stashes it in `_claim_gate_cap` for `verdict_authority.decide` — now
+    # the true final step below — to apply as a downward-only clamp. The
+    # `claim_grounding` observability stamp is attached either way.
+    _authority_active = False
+    _claim_gate_cap: str | None = None
+    try:
+        from backend.agents.rlm import verdict_authority as _va
+        _authority_active = _va.is_enabled()
+    except Exception:  # noqa: BLE001 — never block the write over an import hiccup
+        _authority_active = False
     try:
         from backend.agents.rlm.report_claim_gate import (
             apply_report_claim_gate,
+            compute_claim_gate_cap,
             report_claim_gate_enabled,
         )
         if report_claim_gate_enabled():
-            _rcg_dict = json.loads(json_content)
-            _emit_rcg_warning = None
-            try:
-                import json as _json_ev
-                from backend.agents.rlm.sse_bridge import build_run_warning_event as _bwe
+            if _authority_active:
+                _claim_gate_cap, _cgc_stamp = compute_claim_gate_cap(report, project_dir)
+                if _cgc_stamp:
+                    _d = json.loads(json_content)
+                    _d["claim_grounding"] = _cgc_stamp
+                    json_content = json.dumps(_d, indent=2)
+            else:
+                _rcg_dict = json.loads(json_content)
+                _emit_rcg_warning = None
+                try:
+                    import json as _json_ev
+                    from backend.agents.rlm.sse_bridge import build_run_warning_event as _bwe
 
-                def _emit_rcg_warning(code: str, msg: str) -> None:
-                    _ev = _bwe(code=code, message=msg)
-                    _evp = project_dir / "dashboard_events.jsonl"
-                    with open(_evp, "a", encoding="utf-8") as _ef:
-                        _ef.write(_json_ev.dumps(_ev) + "\n")
-            except Exception:  # noqa: BLE001
-                pass
-            _rcg_dict = apply_report_claim_gate(
-                report, _rcg_dict, project_dir, emit_warning=_emit_rcg_warning
-            )
-            json_content = json.dumps(_rcg_dict, indent=2)
+                    def _emit_rcg_warning(code: str, msg: str) -> None:
+                        _ev = _bwe(code=code, message=msg)
+                        _evp = project_dir / "dashboard_events.jsonl"
+                        with open(_evp, "a", encoding="utf-8") as _ef:
+                            _ef.write(_json_ev.dumps(_ev) + "\n")
+                except Exception:  # noqa: BLE001
+                    pass
+                _rcg_dict = apply_report_claim_gate(
+                    report, _rcg_dict, project_dir, emit_warning=_emit_rcg_warning
+                )
+                json_content = json.dumps(_rcg_dict, indent=2)
     except Exception:  # noqa: BLE001 — claim gate is best-effort, never blocks the write
         logger.warning("report: report_claim_gate failed (non-fatal)", exc_info=True)
 
@@ -2272,6 +2382,147 @@ def write_final_report_rlm(
             json_content = json.dumps(_d, indent=2)
     except Exception:  # noqa: BLE001 — reproduction stamp is best-effort, never blocks
         logger.warning("report: reproduction block attach failed (non-fatal)", exc_info=True)
+
+    # --- VerdictAuthority: the single, last, grade-free verdict writer ------
+    # (Track A §4.3). Invoked UNCONDITIONALLY here — independent of whether
+    # the two-axis attach above ran or a repro_spec exists — as the TRUE FINAL
+    # step before the atomic write: nothing after this point may touch the
+    # verdict surface. Every historical grade-derived writer (two_axis_report,
+    # finalize_regrade, leaf_scorer.amend_final_report, rdr/controller,
+    # run.py's hard-stop salvage) has already been severed to defer to this
+    # call instead of minting its own verdict. Byte-identical-off: gated on
+    # the SAME `_authority_active` flag the claim-gate block above computed
+    # (OPENRESEARCH_TWO_AXIS_VERDICT AND OPENRESEARCH_VERDICT_AUTHORITY).
+    # `_post_authority_snapshot` stays None unless the authority stamp below
+    # actually runs and succeeds — the final pre-write guard check (just
+    # before `_atomic_write`) only fires when it is populated.
+    _post_authority_snapshot: dict[str, Any] | None = None
+    if _authority_active:
+        try:
+            from backend.agents.rlm import result_fidelity as _result_fidelity_mod
+            from backend.agents.rlm import verdict_authority as _va
+
+            _repro_spec = _load_repro_spec_for_authority(project_dir)
+            _result_fidelity = _result_fidelity_mod.evaluate(_repro_spec, project_dir)
+            _evidence_gate = _authority_evidence_gate(
+                project_dir, run_experiment_ok_calls=run_experiment_ok_calls
+            )
+            _fidelity_certificate = _load_fidelity_certificate_for_authority(project_dir)
+            _decision = _va.decide(
+                result_fidelity=_result_fidelity,
+                evidence_gate=_evidence_gate,
+                fidelity_certificate=_fidelity_certificate,
+                claim_gate_cap=_claim_gate_cap,
+            )
+
+            _d = json.loads(json_content)
+            _d["verdict"] = _decision["verdict"]
+            # Additive observability only — never read back into the decision;
+            # the two-axis implementation_verdict/replication_verdict diagnostic
+            # mirrors (if two-axis attach ran above) are untouched.
+            _d["verdict_authority"] = {
+                "reason": _decision["reason"],
+                "evidence_gate": _evidence_gate,
+                "claim_gate_cap": _claim_gate_cap,
+                "result_fidelity": _result_fidelity,
+            }
+            json_content = json.dumps(_d, indent=2)
+            # Snapshot for the pre-write guard below — deliberately taken here
+            # (right after stamping) rather than trusted implicitly, so ANY
+            # later code path in this function that touches json_content
+            # before the atomic write — today none does, but a future edit
+            # might — changes what gets compared against it.
+            _post_authority_snapshot = {
+                k: _d.get(k) for k in _va.VERDICT_SURFACE_KEYS if k in _d
+            }
+
+            # Sync the object too — the markdown renderer + the .preserved /
+            # timing gates below read report.verdict (NOT the dict), and
+            # report_claim_gate's legacy object-sync pattern already
+            # established that the object must never silently disagree with
+            # the shipped JSON.
+            try:
+                report.verdict = _decision["verdict"]
+            except Exception:  # noqa: BLE001 — model may be frozen; the dict stays authoritative
+                pass
+
+            # Mirror into demo_status.json (§4.3/§5): today this key is never
+            # stamped at finalize by write_final_report_rlm and defaults to
+            # "unknown" (`run.py::_write_demo_status`'s auto-derive). Same
+            # atomic tmp+replace pattern as `_write_demo_status`; every other
+            # key is preserved via a merge so a concurrent/prior writer's
+            # fields survive.
+            try:
+                _ds_path = project_dir / "demo_status.json"
+                _ds_existing: dict[str, Any] = {}
+                if _ds_path.exists():
+                    try:
+                        _ds_existing = json.loads(_ds_path.read_text(encoding="utf-8"))
+                        if not isinstance(_ds_existing, dict):
+                            _ds_existing = {}
+                    except Exception:  # noqa: BLE001
+                        _ds_existing = {}
+                _ds_existing["verdict"] = _decision["verdict"]
+                _ds_tmp = _ds_path.with_suffix(".json.tmp")
+                _ds_tmp.write_text(json.dumps(_ds_existing, indent=2), encoding="utf-8")
+                os.replace(_ds_tmp, _ds_path)
+            except Exception:  # noqa: BLE001 — demo_status mirror is best-effort
+                logger.warning(
+                    "report: demo_status.json verdict mirror failed (non-fatal)",
+                    exc_info=True,
+                )
+        except Exception:  # noqa: BLE001 — FAIL CLOSED: never let an error ship the grade
+            # The whole point of the sever is that the grade never reaches the
+            # headline verdict. If ANY step of the authority path raises, the
+            # pre-authority value in json_content is the OLD grade-derived
+            # verdict — shipping it would silently defeat the sever on error.
+            # So we fail CLOSED: stamp the honest, conservative "inconclusive"
+            # (the same verdict decide() returns when it cannot measure a
+            # primary claim), never the grade. Keep the loud warning. The inner
+            # stamp is itself fail-soft so a broken stamp can never crash the
+            # write — but on that (doubly-unlikely) path the pre-authority
+            # value would ship, which is why the stamp is kept minimal.
+            logger.warning(
+                "report: verdict_authority path raised — failing CLOSED to "
+                "'inconclusive' (never shipping the pre-authority grade-derived "
+                "verdict)", exc_info=True,
+            )
+            try:
+                from backend.agents.rlm.verdict_authority import (
+                    VERDICT_SURFACE_KEYS as _VSK,
+                )
+                _d = json.loads(json_content)
+                _d["verdict"] = "inconclusive"
+                _d["verdict_authority"] = {"reason": "authority_error"}
+                json_content = json.dumps(_d, indent=2)
+                _post_authority_snapshot = {k: _d.get(k) for k in _VSK if k in _d}
+                try:
+                    report.verdict = "inconclusive"
+                except Exception:  # noqa: BLE001 — model may be frozen; the dict is authoritative
+                    pass
+            except Exception:  # noqa: BLE001 — even the fail-closed stamp must never crash the write
+                logger.exception(
+                    "report: fail-closed 'inconclusive' stamp failed (non-fatal)"
+                )
+
+    # Runtime single-writer guard (§4.3 acceptance criterion): this is the
+    # LAST check before the atomic write — literally adjacent to it, with no
+    # other content-mutating step in between. It re-derives the verdict
+    # surface from the JSON string about to be shipped and confirms it still
+    # exactly matches what VerdictAuthority.decide() stamped above. By
+    # construction this always passes today (nothing runs between the stamp
+    # and this check); it exists as a regression tripwire — deliberately NOT
+    # wrapped in a swallowing try/except — so that a future edit which
+    # inserts a verdict-mutating step after the authority fails LOUDLY
+    # instead of silently reintroducing a grade leak into the headline
+    # verdict. See tests/agents/rlm/test_single_verdict_authority_guard.py.
+    if _post_authority_snapshot is not None:
+        from backend.agents.rlm.verdict_authority import assert_verdict_surface_unchanged
+        assert_verdict_surface_unchanged(
+            _post_authority_snapshot,
+            json.loads(json_content),
+            context="write_final_report_rlm (pre-write)",
+        )
 
     _atomic_write(json_path, json_content)
 

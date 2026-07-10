@@ -1068,7 +1068,33 @@ def _write_demo_status(
     if process_status is None:
         process_status = "completed" if terminal else "running"
     if verdict is None:
-        verdict = "failed" if status == "failed" else "unknown"
+        # Track A §4.3 (F1): when the VerdictAuthority sever is active, the
+        # reproduction verdict is owned by verdict_authority.decide() and
+        # stamped into final_report.json at finalize. Every _write_demo_status
+        # call site that does NOT pass an explicit verdict= (all of them, incl.
+        # the terminal write in run_pipeline_rlm that runs AFTER finalize and
+        # used to stomp the mirror back to auto-derived) reads the
+        # authoritative value back off disk here, so demo_status.verdict can
+        # never disagree with the shipped report on a live run. Falls back to
+        # the legacy auto-derive when final_report.json is absent/unreadable
+        # (an early failure path that never reached finalize) or carries no
+        # string verdict. Authority OFF => this whole branch is skipped =>
+        # byte-identical to the pre-Track-A auto-derive.
+        _authority_verdict: str | None = None
+        try:
+            from backend.agents.rlm.verdict_authority import is_enabled as _va_is_enabled
+            if _va_is_enabled():
+                _fr_path = project_dir / "final_report.json"
+                if _fr_path.exists():
+                    _fr_data = json.loads(_fr_path.read_text(encoding="utf-8"))
+                    if isinstance(_fr_data, dict) and isinstance(_fr_data.get("verdict"), str):
+                        _authority_verdict = _fr_data["verdict"]
+        except Exception:  # noqa: BLE001 — the mirror read must never block a status write
+            _authority_verdict = None
+        if _authority_verdict is not None:
+            verdict = _authority_verdict
+        else:
+            verdict = "failed" if status == "failed" else "unknown"
     existing: dict[str, Any] = {}
     if path.exists():
         try:
@@ -2225,7 +2251,19 @@ def _salvage_partial_report(
         score = float(raw) if raw is not None else None
         if score is not None:
             report.rubric = rubric
-            report.verdict = reconcile_verdict_with_score("partial", score)
+            # SEVERED (Track A §4.3, discovered beyond the plan's named sites —
+            # this is the wall-clock/SIGTERM hard-stop salvage path, a THIRD
+            # grade-derived `reconcile_verdict_with_score` mint alongside the
+            # RDR controller and finalize_regrade): once VerdictAuthority is
+            # active, `write_final_report_rlm` (called moments after this
+            # helper returns) invokes `decide()` unconditionally as its last
+            # step and overwrites whatever verdict this salvage sets — so
+            # minting one FROM THE SCORE here would just be dead, misleading
+            # work. Skipped in that regime; either flag off => byte-identical
+            # legacy salvage reconcile.
+            from backend.agents.rlm import verdict_authority as _va
+            if not _va.is_enabled():
+                report.verdict = reconcile_verdict_with_score("partial", score)
             report.reproduction_summary = (
                 (report.reproduction_summary or "")
                 + f"\n\n[salvage] Best rubric score recorded before the stop: "

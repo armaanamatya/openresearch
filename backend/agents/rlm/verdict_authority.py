@@ -88,7 +88,16 @@ from typing import Any, Literal, TypedDict
 
 from backend.agents.rlm.reproducibility_verdict import _ROLLUP_ORDER
 
-__all__ = ["VerdictLabel", "Verdict", "decide", "freeze_contract"]
+__all__ = [
+    "VerdictLabel",
+    "Verdict",
+    "decide",
+    "freeze_contract",
+    "is_enabled",
+    "VERDICT_SURFACE_KEYS",
+    "PostAuthorityVerdictMutation",
+    "assert_verdict_surface_unchanged",
+]
 
 
 VerdictLabel = Literal["reproduced", "contradicted", "partial", "inconclusive"]
@@ -97,6 +106,88 @@ VerdictLabel = Literal["reproduced", "contradicted", "partial", "inconclusive"]
 class Verdict(TypedDict):
     verdict: VerdictLabel
     reason: str
+
+
+# ---------------------------------------------------------------------------
+# The sever's activation gate (§4.3) — the ONE place every historical
+# grade-derived verdict writer checks before deciding whether to keep minting
+# a verdict (legacy, flag off) or defer to this module (severed, flag on).
+# ---------------------------------------------------------------------------
+
+
+def is_enabled() -> bool:
+    """True iff the VerdictAuthority sever is fully active.
+
+    Requires BOTH the existing two-axis master flag
+    (``OPENRESEARCH_TWO_AXIS_VERDICT``) AND this module's own sub-flag
+    (``OPENRESEARCH_VERDICT_AUTHORITY``) to be truthy. Either off => every
+    grade-derived verdict writer this module supersedes
+    (``two_axis_report.compute_and_attach``, ``finalize_regrade.regrade_and_emit``,
+    ``leaf_scorer.amend_final_report``, ``rdr/controller.py``,
+    ``run.py``'s hard-stop salvage) keeps its pre-Track-A behaviour, byte-for-
+    byte identical.
+
+    Single canonical gate: every sever-point module imports and calls THIS
+    function rather than re-deriving the AND of two env vars locally, so the
+    activation condition can never drift between call sites.
+    """
+    from backend.agents.rlm.feature_flags import env_truthy  # noqa: PLC0415
+
+    return env_truthy("OPENRESEARCH_TWO_AXIS_VERDICT") and env_truthy(
+        "OPENRESEARCH_VERDICT_AUTHORITY"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Single-writer runtime guard (§4.3 acceptance: "a static + runtime assertion
+# that NO module writes report.verdict / demo_status.verdict for a
+# reproduction run AFTER VerdictAuthority.decide").
+# ---------------------------------------------------------------------------
+
+# The reproduction-verdict surface this module governs (design §4.3 "Scope
+# (explicit)"): the headline verdict plus the two top-level diagnostic mirrors
+# and the demo_status.json mirror. Once ``decide()`` has stamped these for a
+# given finalize call, nothing may write to any of them again.
+VERDICT_SURFACE_KEYS: tuple[str, ...] = (
+    "verdict",
+    "implementation_verdict",
+    "replication_verdict",
+)
+
+
+class PostAuthorityVerdictMutation(RuntimeError):
+    """Raised when a reproduction-verdict key changed after ``decide()`` had
+    already stamped it — a violation of the single-last-writer invariant this
+    module exists to enforce (Track A §4.3). Should never fire on healthy
+    code; it is a regression tripwire, not a normal-path branch.
+    """
+
+
+def assert_verdict_surface_unchanged(
+    stamped: dict[str, Any], current: dict[str, Any], *, context: str = ""
+) -> None:
+    """Raise :class:`PostAuthorityVerdictMutation` iff any key in
+    :data:`VERDICT_SURFACE_KEYS` present in ``stamped`` differs in ``current``.
+
+    ``stamped`` is the snapshot of the verdict surface captured immediately
+    after :func:`decide` stamped it; ``current`` is the surface re-read at (or
+    just before) the moment the report is actually shipped. A mismatch means
+    something wrote to the surface in between — exactly the class of
+    regression the design's runtime guard exists to catch. A key absent from
+    ``stamped`` is not checked (nothing was stamped for it, so there is
+    nothing to protect).
+    """
+    for key in VERDICT_SURFACE_KEYS:
+        if key not in stamped:
+            continue
+        if current.get(key) != stamped.get(key):
+            prefix = f"{context}: " if context else ""
+            raise PostAuthorityVerdictMutation(
+                f"{prefix}{key!r} changed from {stamped.get(key)!r} (stamped by "
+                f"VerdictAuthority.decide()) to {current.get(key)!r} afterward — "
+                "no writer may mutate the reproduction-verdict surface once the "
+                "single authority has spoken (Track A §4.3 sever)."
+            )
 
 
 # ---------------------------------------------------------------------------

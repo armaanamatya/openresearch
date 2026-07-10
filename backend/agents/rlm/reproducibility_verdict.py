@@ -431,6 +431,18 @@ def _legacy_verdict_from_fidelity(impl: ImplementationVerdict) -> str:
     # a faithful-contradicted run never collapses to "failed" via the blended
     # `overall_score` reconcile.  Two-axis (schema>=2) reports use this and SKIP
     # `reconcile_verdict_with_score`.
+    #
+    # SEVERED (Track A §4.3): this value still populates the NESTED
+    # ``ReproducibilityVerdict.legacy_verdict`` diagnostic field (surfaced as
+    # ``report["reproducibility"]["legacy_verdict"]``) exactly as before — it
+    # is a fidelity-derived, grade-influenced diagnostic and is fine to keep
+    # computing. What changed is the ONE call site that used to copy this
+    # value onto the top-level HEADLINE ``report["verdict"]``
+    # (``two_axis_report.compute_and_attach``): that projection is now gated
+    # behind ``not verdict_authority.is_enabled()`` — when the sever is
+    # active, `verdict_authority.decide()` (grade-free, §4.3) is the single
+    # writer of the headline instead, and this function's output never
+    # reaches it.
     return {"faithful": "reproduced", "partial": "partial", "broken": "failed"}[impl]
 
 

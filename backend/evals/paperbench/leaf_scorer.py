@@ -2480,7 +2480,22 @@ def amend_final_report(run_dir: Path, score: dict[str, Any]) -> None:
     # This must happen BEFORE the atomic write and before _rerender_report_markdown
     # so the markdown re-render picks up the corrected verdict automatically.
     # SKIPPED for two-axis (schema>=2) reports — their verdict is fidelity-projected.
-    if not applied_two_axis and "verdict" in report:
+    #
+    # SEVERED (Track A §4.3): also skipped whenever VerdictAuthority is active,
+    # regardless of `applied_two_axis` — this is the offline/post-hoc rescoring
+    # path (scripts/score_run.py), a SEPARATE call chain from
+    # write_final_report_rlm's finalize chokepoint. Once the authority owns the
+    # verdict, it is fully decoupled from the rubric/grade score (it is decided
+    # from result_fidelity + evidence_gate), so a rubric re-grade has nothing to
+    # reconcile the verdict against — the diagnostic refresh above (rubric /
+    # overall_score / meets_target) is the complete update in that regime.
+    # Either flag off => byte-identical legacy behaviour.
+    try:
+        from backend.agents.rlm import verdict_authority as _va
+        _authority_active = _va.is_enabled()
+    except Exception:  # noqa: BLE001 — never let the import block the amend
+        _authority_active = False
+    if not applied_two_axis and not _authority_active and "verdict" in report:
         try:
             from backend.agents.rlm.report import reconcile_verdict_with_score  # lazy import
             report["verdict"] = reconcile_verdict_with_score(

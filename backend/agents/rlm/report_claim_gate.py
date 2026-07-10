@@ -35,6 +35,76 @@ def report_claim_gate_enabled() -> bool:
     return os.environ.get("OPENRESEARCH_REPORT_CLAIM_GATE", "").strip() == "1"
 
 
+def compute_claim_gate_cap(report: Any, project_dir: Path) -> tuple[str | None, dict]:
+    """Pure (no-mutation) computation of the report-claim-gate cap + stamp.
+
+    Track A §4.3 sever: the legacy :func:`apply_report_claim_gate` mutates
+    ``report_dict["verdict"]`` directly, *after* the two-axis attach — exactly
+    the "post-hoc mutation" the sever design retires. This performs the SAME
+    "should we cap" computation (identical claim-extraction + grounding check,
+    reusing ``claim_grounding``) but returns the cap as a plain value for the
+    caller to pass into ``verdict_authority.decide(claim_gate_cap=...)``
+    *before* the authority runs, instead of mutating anything itself.
+
+    Returns ``(cap, stamp)``:
+      * ``cap`` — ``"partial"`` iff >=1 ungrounded RESULT claim exists in the
+        report's own narrative (``reproduction_summary`` + ``reported_metrics``)
+        AND on-disk measured values are non-empty AND the report's verdict at
+        call time is still success-ish (``"reproduced"``/``"partial"``) —
+        mirrors the legacy gate's exact trigger condition. ``None`` otherwise.
+        The success-ish precondition is kept for parity with the legacy
+        trigger even though it is not strictly load-bearing here:
+        ``verdict_authority.decide``'s own cap application is downward-only,
+        so passing a ``"partial"`` cap is a harmless no-op whenever decide()
+        already computed something at or below ``"partial"``.
+      * ``stamp`` — the same ``claim_grounding`` observability shape the
+        legacy path attaches (``claims_found``/``grounded``/``ungrounded``/
+        ``verdict_capped``/``first_ungrounded``), so callers keep the
+        diagnostic even though no verdict mutation happens here.
+        ``verdict_capped`` means "a cap was computed and offered to the
+        authority", not "the shipped verdict was necessarily capped" — the
+        authority may independently have already computed a verdict at or
+        below the cap for other reasons.
+
+    Never raises: any error degrades to ``(None, {})`` — exactly as fail-soft
+    as the legacy gate.
+    """
+    from backend.agents.rlm.claim_grounding import (
+        check_claims_grounded,
+        extract_result_claims,
+        flatten_measured_values,
+    )
+
+    try:
+        summary = getattr(report, "reproduction_summary", "") or ""
+        reported_metrics = getattr(report, "reported_metrics", None)
+        search_text = summary + "\n" + _text_from_reported_metrics(reported_metrics)
+
+        claims = extract_result_claims(search_text)
+        measured = flatten_measured_values(project_dir)
+        grounding = check_claims_grounded(claims, measured)
+        ungrounded = grounding.get("ungrounded", [])
+
+        stamp: dict[str, Any] = {
+            "claims_found": len(claims),
+            "grounded": len(grounding.get("grounded", [])),
+            "ungrounded": len(ungrounded),
+        }
+
+        current_verdict = getattr(report, "verdict", "")
+        if ungrounded and measured and current_verdict in ("reproduced", "partial"):
+            stamp["verdict_capped"] = True
+            first = ungrounded[0]
+            stamp["first_ungrounded"] = {"term": first.term, "value": first.value}
+            return "partial", stamp
+
+        stamp["verdict_capped"] = False
+        return None, stamp
+    except Exception:  # noqa: BLE001 — fail-soft, never break the write
+        logger.debug("report_claim_gate: compute_claim_gate_cap skipped due to exception", exc_info=True)
+        return None, {}
+
+
 def _text_from_reported_metrics(reported_metrics: Any) -> str:
     """Flatten reported_metrics (dict or str) to a searchable string."""
     if not reported_metrics:

@@ -40,6 +40,7 @@ from backend.agents.rlm.reproducibility_verdict import (
     SeedBundle,
     compute_reproducibility_verdict,
 )
+from backend.agents.rlm import verdict_authority as _verdict_authority
 
 logger = logging.getLogger(__name__)
 
@@ -340,7 +341,16 @@ def compute_and_attach(
         report["replication_verdict"] = verdict.replication_verdict
         report["schema_version"] = verdict.schema_version
         # A4 — project the legacy verdict from FIDELITY, NOT the blended score.
-        report["verdict"] = verdict.legacy_verdict
+        # SEVERED (Track A §4.3): once VerdictAuthority owns the headline
+        # verdict (both OPENRESEARCH_TWO_AXIS_VERDICT and the new
+        # OPENRESEARCH_VERDICT_AUTHORITY sub-flag on), this projection must
+        # never reach report["verdict"] — verdict_authority.decide(), invoked
+        # once as the LAST step of write_final_report_rlm, is the single
+        # writer instead. implementation_verdict/replication_verdict above
+        # remain diagnostic axes either way (unchanged). Either flag off =>
+        # byte-identical legacy projection, preserved exactly.
+        if not _verdict_authority.is_enabled():
+            report["verdict"] = verdict.legacy_verdict
         return True
     except Exception as exc:  # noqa: BLE001 — never break report finalisation
         logger.warning("two_axis: compute_and_attach failed (%s) — falling back to legacy", exc)
