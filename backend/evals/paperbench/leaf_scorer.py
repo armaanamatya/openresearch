@@ -1769,6 +1769,13 @@ def score_reproduction(
     leaf_scores: dict[str, float] = {}
     leaf_score_records: list[dict[str, Any]] = []
     graded_count = 0
+    # T5 grader hardening (2026-07-10): leaf ids a batch could not grade even
+    # after exhausting the whole cross-provider fallback chain (never a
+    # phantom 0.0 -- see _grade_batch / _call_grader_with_fallback below),
+    # plus the loud run_warning(s) raised for them. Both stay empty on the
+    # `degraded` early-return path (no grading is attempted there).
+    ungraded_ids: set[str] = set()
+    run_warnings: list[dict[str, Any]] = []
 
     if degraded:
         for leaf in leaves:
@@ -1925,28 +1932,35 @@ def score_reproduction(
         # prompt is byte-identical to today.
         if skill_context:
             user_msg = f"{skill_context}\n\n{user_msg}"
-        try:
-            from backend.agents.rlm.grader_transport import sample_completions
-            raws = sample_completions(
-                _grader_client,
-                system=_SYSTEM_PROMPT,
-                user=user_msg,
-                n=_grader_samples,
-                temperature=0,
-            )
-        except Exception as exc:
+        # T5 grader hardening (2026-07-10): a single transport failure (SDK
+        # error, rate limit, provider outage) must not default the whole
+        # batch to a phantom 0.0 -- retry down the ordered cross-provider
+        # fallback chain BEFORE giving up. Only when EVERY transport (the
+        # primary + the whole chain) fails is the batch marked ungraded.
+        raws, _grader_exc, _attempted = _call_grader_with_fallback(
+            primary_client=_grader_client,
+            system=_SYSTEM_PROMPT,
+            user=user_msg,
+            n=_grader_samples,
+            batch_num=batch_num,
+        )
+        if raws is None:
             logger.warning(
-                "Batch %d grader call failed (%s); defaulting all %d leaves to 0.0",
+                "Batch %d: grader call failed on the primary transport and "
+                "every fallback transport (%d tried; last error: %s) -- "
+                "marking %d leaf/leaves ungraded, never silently 0.0.",
                 batch_num,
-                exc,
+                _attempted,
+                _grader_exc,
                 len(batch),
             )
             return [
                 {
                     "id": str(leaf.get("id", "")),
-                    "score": 0.0,
-                    "justification": "batch_error",
+                    "score": None,
+                    "justification": f"grader_unavailable: {_grader_exc}",
                     "_graded": False,
+                    "_ungraded": True,
                 }
                 for leaf in batch
             ]
@@ -1987,6 +2001,37 @@ def score_reproduction(
         }
         for future in concurrent.futures.as_completed(future_to_batch):
             results = future.result()  # exceptions already handled inside _grade_batch
+            # T5 grader hardening: a batch whose entire fallback chain was
+            # exhausted comes back with EVERY leaf marked `_ungraded` (see
+            # _grade_batch / _call_grader_with_fallback) — never a phantom
+            # 0.0. Keep those leaf ids OUT of leaf_scores entirely (they join
+            # ungraded_ids, unioned into the roll_up skip_set below — the
+            # same "excluded from BOTH numerator AND denominator" treatment
+            # as a data-unavailable leaf) and raise ONE loud run_warning per
+            # batch instead of silently scoring them.
+            if results and results[0].get("_ungraded"):
+                _batch_num, _ = future_to_batch[future]
+                for rec in results:
+                    lid = rec["id"]
+                    ungraded_ids.add(lid)
+                    leaf_score_records.append({
+                        "id": lid,
+                        "score": None,  # explicitly unscored — NEVER 0.0
+                        "justification": rec["justification"],
+                        "state": "ungraded",
+                    })
+                run_warnings.append({
+                    "code": "grader_unavailable",
+                    "level": "warn",
+                    "message": (
+                        f"Batch {_batch_num}: grader unavailable after exhausting "
+                        f"the fallback chain -- {len(results)} leaf/leaves marked "
+                        "ungraded, never silently 0.0."
+                    ),
+                    "batch": _batch_num,
+                    "leaf_ids": [r["id"] for r in results],
+                })
+                continue
             for rec in results:
                 lid = rec["id"]
                 score = rec["score"]
@@ -2093,8 +2138,12 @@ def score_reproduction(
         })
 
     # PR-κ: pass skip_set to roll_up so skipped leaves are excluded from BOTH
-    # numerator AND denominator at every level of the rubric tree.
-    overall_score_raw = roll_up(rubric_tree, leaf_scores, skip_set)
+    # numerator AND denominator at every level of the rubric tree. T5: leaves
+    # a batch could not grade after exhausting the whole fallback chain get
+    # the identical treatment (never a phantom 0.0 dragging the score down).
+    overall_score_raw = roll_up(
+        rubric_tree, leaf_scores, skip_set | frozenset(ungraded_ids)
+    )
     overall_score = overall_score_raw if overall_score_raw is not None else 0.0
 
     # C2c: surface target_score so amend_final_report can compute meets_target
@@ -2108,8 +2157,9 @@ def score_reproduction(
         target_score = None
 
     # β2/κ: coverage_pct = fraction of *eligible* leaves that got a real LLM
-    # grade.  Eligible = total - unavailable.  Ungraded (batch_error) leaves
-    # count against coverage; skipped (data_unavailable) leaves do not.
+    # grade.  Eligible = total - unavailable.  Ungraded (batch_error, or T5's
+    # fallback-chain-exhausted) leaves count against coverage; skipped
+    # (data_unavailable) leaves do not.
     coverage_pct: float = (graded_count / eligible_count) if eligible_count > 0 else 1.0
 
     # Paper-hint invariant gate (2026-05-29): apply deterministic regex gate
@@ -2139,6 +2189,13 @@ def score_reproduction(
         "target_score": target_score,
         "invariant_results": invariant_results,
         "invariant_gate_applied": inv_gate_applied,
+        # T5 grader hardening: structured loud warning(s) for any batch whose
+        # ENTIRE cross-provider fallback chain was exhausted (code
+        # "grader_unavailable"). leaf_scorer has no SSE/ctx emit access of its
+        # own, so this is the caller-facing surface a run_warning gets built
+        # from. Always present (empty list on the healthy path) so callers
+        # can read it unconditionally.
+        "run_warnings": run_warnings,
     }
     # F7: when median-of-N denoising is active (A1, N>1), surface the grader
     # provenance + worst per-leaf noise spread so the report/UI can show the
@@ -2154,6 +2211,66 @@ def score_reproduction(
         result["grader_temperature"] = 0.0
         result["grader_max_spread"] = round(max(_spreads), 4) if _spreads else 0.0
     return result
+
+
+def _call_grader_with_fallback(
+    *,
+    primary_client: Any,
+    system: str,
+    user: str,
+    n: int,
+    batch_num: int,
+) -> tuple[list[str] | None, Exception | None, int]:
+    """Sample completions from ``primary_client``, retrying down the ordered
+    cross-provider fallback chain (:func:`backend.agents.rlm.grader_transport.
+    build_fallback_chain`) on any SDK/transport failure BEFORE the caller
+    gives up on the batch (T5 grader hardening, 2026-07-10 — closes the
+    "single provider outage silently zeros the batch" gap).
+
+    Tries ``primary_client`` first, then each fallback candidate in order
+    (skipping any candidate that IS ``primary_client`` — no point retrying
+    the exact transport that just failed). Never raises itself.
+
+    Returns ``(raws, last_exc, attempted)``:
+      * ``raws`` — the sampled completions from whichever transport
+        succeeded first, or ``None`` iff EVERY transport (the primary plus
+        the whole fallback chain) raised.
+      * ``last_exc`` — the most recent exception (``None`` on success).
+      * ``attempted`` — how many transports were tried (for logging).
+
+    ``raws is None`` is the caller's signal that every transport failed — it
+    must mark the batch ``ungraded`` rather than defaulting it to a phantom
+    ``0.0`` (never-silent-zero, per the grader-hardening contract).
+    """
+    try:
+        from backend.agents.rlm.grader_transport import (
+            build_fallback_chain,
+            sample_completions,
+        )
+        candidates: list[Any] = [primary_client]
+        candidates.extend(c for c in build_fallback_chain() if c is not primary_client)
+    except Exception as exc:  # noqa: BLE001 — building the chain must never crash the batch
+        return None, exc, 0
+
+    last_exc: Exception | None = None
+    for idx, client in enumerate(candidates):
+        try:
+            raws = sample_completions(client, system=system, user=user, n=n, temperature=0)
+        except Exception as exc:  # noqa: BLE001 — try the next transport in the chain
+            last_exc = exc
+            logger.warning(
+                "leaf-grading batch %d: grader transport #%d (%s) failed: %s",
+                batch_num, idx, type(client).__name__, exc,
+            )
+            continue
+        if idx > 0:
+            logger.info(
+                "leaf-grading batch %d: recovered via fallback transport #%d "
+                "(%s) after %d earlier failure(s).",
+                batch_num, idx, type(client).__name__, idx,
+            )
+        return raws, None, len(candidates)
+    return None, last_exc, len(candidates)
 
 
 def _parse_batch_response(
