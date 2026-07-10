@@ -4,9 +4,19 @@
 to a scope-verified ``metric_key``/``model_key``/``env_key``/``baseline_key`` path
 into ``code/metrics.json``, but a resolved path is not yet a verdict — nothing
 compares the measured number to what the paper actually claimed. This module is
-that comparison: ``evaluate(repro_spec, run_dir) -> ResultFidelity`` reuses the
+that comparison: ``evaluate(repro_spec, run_dir) -> ResultFidelity`` first
+normalizes extractor-shape (nested ``comparison``) claims to the flat per-claim
+shape it consumes (``normalize_repro_spec_claims`` — idempotent), reuses the
 bind, reads the measured value via ``repro_spec_extractor.seed_bundle_from_metrics``,
 and applies one of four small, deterministic, per-``kind`` tests.
+
+The nested→flat normalize is load-bearing: ``repro_spec_extractor.build_repro_spec``
+freezes each claim under a ``comparison`` wrapper, but ``bind_claims`` and the
+per-kind tests read ``metric_name``/``is_primary``/``ambiguous``/``scope`` at the
+claim TOP LEVEL — without the lift every real extractor claim reads
+``metric_name=None`` (never bound) and ``is_primary=False`` ("no genuine
+primary"), so a real run measures nothing (the T9 acceptance failure). See
+``normalize_repro_spec_claims`` for the idempotency contract.
 
 Design (locked — see
 ``docs/superpowers/specs/2026-07-09-eval-integrity-track-a-design.md`` §4.2):
@@ -289,6 +299,64 @@ def _evaluate_claim(claim: dict[str, Any], metrics: dict[str, Any], run_dir: Pat
 
 
 # ---------------------------------------------------------------------------
+# Extractor-shape normalizer (idempotent nested -> flat lift)
+# ---------------------------------------------------------------------------
+
+
+def normalize_repro_spec_claims(repro_spec: dict[str, Any]) -> dict[str, Any]:
+    """Idempotently flatten extractor-shape (nested ``comparison``) claims.
+
+    ``repro_spec_extractor.build_repro_spec`` freezes each claim NESTED —
+    ``{"comparison": {metric_name, direction, estimate_kind, claimed_effect,
+    equivalence_margin, scope, is_primary, ambiguous, ...}, "seed_bundle": ...,
+    "measured_scope": ...}`` — but this module and ``metric_binding.bind_claims``
+    read the measurement-relevant fields at the claim TOP LEVEL. Without this
+    lift every real extractor claim reads ``metric_name=None`` (→
+    ``missing_metric_name``, never bound) and ``is_primary=False`` (→ "no genuine
+    primary"), so a real run's verdict is pinned ``inconclusive`` regardless of
+    content and nothing is ever measured (the T9 acceptance failure).
+
+    Idempotent by construction: a claim is treated as extractor-shape iff it
+    carries a dict ``comparison`` key; a claim WITHOUT one is already flat and
+    passes through byte-identically (so this module's own flat fixtures — and a
+    second pass over already-normalized output — are unchanged, and when nothing
+    is nested the SAME ``repro_spec`` object is returned). Every ``comparison``
+    field is lifted to the top level (``comparison`` wins over any stray
+    top-level key of the same name); the claim's declared ``scope`` therefore
+    comes from ``comparison.scope`` — the paper-claim scope ``bind_claims``
+    verifies against — NOT the separate ``measured_scope`` (preserved as-is for
+    downstream consumers). The extractor emits no result-fidelity ``kind`` today,
+    so a lifted claim simply has none: honestly ``unmeasured`` (``missing_kind``)
+    rather than a synthesized/guessed test kind — ``estimate_kind`` is a unit,
+    not a test kind, and is lifted verbatim, never coerced into ``kind``. Pure,
+    stdlib-only, never raises.
+    """
+    if not isinstance(repro_spec, dict):
+        return repro_spec
+    claims = repro_spec.get("claims")
+    if not isinstance(claims, list):
+        return repro_spec
+
+    out_claims: list[Any] = []
+    changed = False
+    for claim in claims:
+        comparison = claim.get("comparison") if isinstance(claim, dict) else None
+        if isinstance(comparison, dict):
+            flat = {k: v for k, v in claim.items() if k != "comparison"}
+            flat.update(comparison)
+            out_claims.append(flat)
+            changed = True
+        else:
+            out_claims.append(claim)
+
+    if not changed:
+        return repro_spec
+    out = dict(repro_spec)
+    out["claims"] = out_claims
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -300,9 +368,12 @@ def evaluate(repro_spec: dict[str, Any], run_dir: Path | str) -> ResultFidelity:
     (bad ``repro_spec`` shape, missing ``run_dir``/``code/metrics.json``,
     malformed individual claims) degrades to ``unmeasured``/an empty result.
 
-    Steps: parse ``<run_dir>/code/metrics.json``; call ``bind_claims`` (Task 1)
-    to attach a scope-verified ``metric_binding`` to each claim; apply the
-    per-kind deterministic test (see module docstring); aggregate.
+    Steps: normalize extractor-shape (nested ``comparison``) claims to the flat
+    shape this module consumes (``normalize_repro_spec_claims`` — idempotent, so
+    already-flat inputs are unchanged); parse ``<run_dir>/code/metrics.json``;
+    call ``bind_claims`` (Task 1) to attach a scope-verified ``metric_binding``
+    to each claim; apply the per-kind deterministic test (see module docstring);
+    aggregate.
     """
     try:
         return _evaluate_inner(repro_spec, Path(run_dir))
@@ -316,6 +387,15 @@ def _evaluate_inner(repro_spec: dict[str, Any], run_dir: Path) -> ResultFidelity
     claims = repro_spec.get("claims")
     if not isinstance(claims, list):
         return dict(_EMPTY_RESULT_FIDELITY)
+
+    # Lift any extractor-shape (nested ``comparison``) claims to the flat
+    # shape this module + ``bind_claims`` read, BEFORE binding — otherwise every
+    # real extractor claim degrades to missing_metric_name / is_primary=False and
+    # nothing is ever measured. Idempotent: already-flat claims pass through.
+    repro_spec = normalize_repro_spec_claims(repro_spec)
+    normalized_claims = repro_spec.get("claims")
+    if isinstance(normalized_claims, list):
+        claims = normalized_claims
 
     metrics = _load_metrics(run_dir)
 

@@ -5,10 +5,19 @@ The first four tests are the brief's required verbatim cases (numeric pass/fail
 (relative/trend/qualitative), the sign-fold, and the aggregate fields the
 "Design (locked)" section also specifies but does not hand over literal test
 code for.
+Added for the T9 acceptance fix: the extractor freezes claims NESTED under a
+``comparison`` wrapper, so a real run degraded to missing_metric_name /
+is_primary=False and measured nothing. ``normalize_repro_spec_claims`` lifts them
+flat idempotently; the last block below covers the real Adam artifact, a
+synthetic nested claim that now measures, and idempotency of the existing flat
+fixtures.
 """
 import json
+from pathlib import Path
 
-from backend.agents.rlm.result_fidelity import evaluate
+import pytest
+
+from backend.agents.rlm.result_fidelity import evaluate, normalize_repro_spec_claims
 
 
 def _run(tmp_path, metrics):
@@ -172,3 +181,104 @@ def test_malformed_repro_spec_never_raises(tmp_path):
 def test_missing_run_dir_never_raises(tmp_path):
     rf = evaluate({"claims": [_claim()]}, tmp_path / "does_not_exist")
     assert rf["per_claim"][0]["status"] == "unmeasured"
+
+
+# --------------------------------------------------------------------------- #
+# T9 acceptance: extractor-shape (nested `comparison`) normalization
+# --------------------------------------------------------------------------- #
+
+_ADAM_REPRO_SPEC = (
+    Path(__file__).resolve().parents[3]
+    / "runs" / "prj_adam_local_1" / "rlm_state" / "repro_spec.json"
+)
+
+
+def _load_adam_spec():
+    if not _ADAM_REPRO_SPEC.exists():
+        pytest.skip(f"real Adam artifact not present at {_ADAM_REPRO_SPEC}")
+    return json.loads(_ADAM_REPRO_SPEC.read_text())
+
+
+def _nested_claim(**comparison_overrides):
+    """A synthetic EXTRACTOR-shape claim (nested under `comparison`)."""
+    comparison = {"claim_id": "primary_0", "metric_name": "accuracy",
+                  "direction": "higher_is_better", "estimate_kind": "absolute",
+                  "kind": "numeric", "claimed_effect": 0.99, "equivalence_margin": 0.01,
+                  "scope": {}, "is_primary": True, "ambiguous": False}
+    comparison.update(comparison_overrides)
+    return {"comparison": comparison,
+            "seed_bundle": {"seeds": [], "per_seed_effect": [], "rng_independent": False},
+            "measured_scope": {"model": "", "dataset": "", "split": "", "protocol": ""}}
+
+
+def test_normalize_lifts_nested_extractor_shape_real_adam():
+    spec = _load_adam_spec()
+    # Precondition: the real artifact IS nested (comparison wrapper, no flat fields).
+    raw = spec["claims"][0]
+    assert "comparison" in raw and raw.get("metric_name") is None and raw.get("is_primary") is None
+
+    normalized = normalize_repro_spec_claims(spec)
+    claim = normalized["claims"][0]
+    assert "comparison" not in claim
+    assert claim["metric_name"] == "per_iteration_wall_clock_slowdown_factor"
+    assert claim["is_primary"] is True
+    assert claim["ambiguous"] is True
+    assert claim["direction"] == "lower_is_better"
+    assert claim["estimate_kind"] == "relative_percent"       # lifted verbatim, NOT coerced to `kind`
+    assert "kind" not in claim                                # extractor emits none
+    assert claim["scope"]["dataset"] == "MNIST"               # declared scope from comparison.scope
+
+
+def test_evaluate_on_real_adam_is_ambiguous_primary_not_missing_metric(tmp_path):
+    # Ambiguous claim short-circuits before any metric read, so run_dir is irrelevant.
+    rf = evaluate(_load_adam_spec(), tmp_path)
+    pc = rf["per_claim"][0]
+    assert pc["claim_id"] == "primary_0"
+    assert pc["is_primary"] is True                           # recognized as a primary (was False pre-fix)
+    assert pc["ambiguous"] is True
+    assert pc["status"] == "unmeasured"
+    assert pc["reason"] == "ambiguous_claim"                  # CORRECT path, NOT missing_metric_name
+    # A lone ambiguous primary → nothing measured, nothing contradicted.
+    assert rf["primary_all_measured"] is False
+    assert rf["any_contradicted"] is False
+
+
+def test_extractor_shape_nested_claim_measures_pass_after_normalize(tmp_path):
+    run = _run(tmp_path, {"accuracy": 0.991})
+    rf = evaluate({"claims": [_nested_claim()]}, run)
+    pc = rf["per_claim"][0]
+    assert pc["is_primary"] is True and pc["status"] == "pass"
+    assert rf["result_fidelity_score"] == 1.0
+    assert rf["primary_all_measured"] is True and rf["any_contradicted"] is False
+
+
+def test_extractor_shape_nested_claim_measures_contradicted_after_normalize(tmp_path):
+    run = _run(tmp_path, {"accuracy": 0.80})
+    rf = evaluate({"claims": [_nested_claim()]}, run)
+    pc = rf["per_claim"][0]
+    assert pc["is_primary"] is True and pc["status"] == "fail"
+    assert rf["any_contradicted"] is True
+
+
+def test_normalize_is_idempotent_on_nested():
+    spec = {"claims": [_nested_claim(claim_id="primary_0")]}
+    once = normalize_repro_spec_claims(spec)
+    twice = normalize_repro_spec_claims(once)
+    assert once == twice
+    assert "comparison" not in once["claims"][0]
+
+
+def test_normalize_flat_claim_passthrough_is_unchanged_identity():
+    # A claim WITHOUT a `comparison` key is already flat → the SAME object is returned.
+    flat = {"claims": [_claim()]}
+    assert normalize_repro_spec_claims(flat) is flat
+
+
+def test_normalize_never_raises_on_degenerate_input():
+    assert normalize_repro_spec_claims(None) is None
+    assert normalize_repro_spec_claims({"claims": "nope"}) == {"claims": "nope"}
+    # A non-dict claim element is passed through untouched.
+    weird = {"claims": [None, 7, {"comparison": {"metric_name": "x"}}]}
+    out = normalize_repro_spec_claims(weird)
+    assert out["claims"][0] is None and out["claims"][1] == 7
+    assert out["claims"][2]["metric_name"] == "x" and "comparison" not in out["claims"][2]
