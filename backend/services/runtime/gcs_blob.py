@@ -17,11 +17,31 @@ Duck-type shape expected of an injected ``client``
 The injected object must implement::
 
     client.blob(name: str) -> object  # object has:
-        .upload_from_string(data: bytes) -> None
+        .upload_from_string(data: bytes, if_generation_match: int | None = None) -> None
         .download_as_bytes() -> bytes
+        .generation: int | None  # populated after upload_from_string/download_as_bytes
 
 Both ``upload_from_string`` and ``download_as_bytes`` operate on the full blob
 *name* (i.e. the path within the bucket).
+
+Compare-and-swap (generation preconditions)
+--------------------------------------------
+``upload_bytes`` accepts an optional ``if_generation_match`` forwarded
+verbatim to ``Blob.upload_from_string`` (``0`` = create-only-if-absent, a
+positive int = overwrite-only-if-still-at-that-generation).  A failed
+precondition — the real SDK raises ``google.api_core.exceptions
+.PreconditionFailed`` (HTTP 412) — is caught at this module's boundary and
+re-raised as the typed :class:`PreconditionFailedError`, so callers (e.g.
+``backend.services.runtime.blob_lease.BlobLease``) never need to import the
+google exception hierarchy themselves.  A duck-typed test double must raise
+the real ``google.api_core.exceptions.PreconditionFailed``/``NotFound`` (both
+lightweight, dependency-free exception classes) to exercise this path — see
+``tests/services/runtime/test_gcs_blob.py``'s ``FakeBucketClient`` for the
+reference implementation.
+
+``read_bytes_with_generation`` is the CAS-aware counterpart of
+``download_bytes``: it returns ``(data, generation)`` for an existing blob,
+or ``None`` (never raises) when the blob is absent.
 
 Exclusions applied by ``upload_prefix``
 ----------------------------------------
@@ -47,6 +67,8 @@ __all__ = [
     "upload_bytes",
     "download_artifact",
     "download_bytes",
+    "read_bytes_with_generation",
+    "PreconditionFailedError",
 ]
 
 logger = logging.getLogger(__name__)
@@ -110,6 +132,49 @@ def _client_or_new(
     if client is not None:
         return client
     return _make_bucket_client(bucket, project)
+
+
+# ---------------------------------------------------------------------------
+# Compare-and-swap (generation precondition) support
+# ---------------------------------------------------------------------------
+
+class PreconditionFailedError(Exception):
+    """Raised when a ``if_generation_match`` compare-and-swap write loses a race.
+
+    Normalizes ``google.api_core.exceptions.PreconditionFailed`` (HTTP 412)
+    into a type this module's callers can catch without importing the google
+    SDK's exception hierarchy — e.g. ``blob_lease.BlobLease`` branches on this
+    to return ``None`` (superseded) instead of propagating a raw google
+    exception.
+    """
+
+
+def _precondition_failed_exc_types() -> tuple[type[BaseException], ...]:
+    """Return the real SDK exception class(es) meaning "CAS precondition failed".
+
+    Imported lazily (same pattern as :func:`_make_bucket_client`) so this
+    module stays importable without google-cloud-storage installed.  If the
+    import itself fails there is nothing meaningful to catch as a precondition
+    failure, so an empty tuple is returned; ``except ():`` matches nothing and
+    whatever the caller's client raised propagates unmodified.
+    """
+    try:
+        from google.api_core import exceptions as gcs_exceptions  # type: ignore[import]
+    except ImportError:
+        return ()
+    return (gcs_exceptions.PreconditionFailed,)
+
+
+def _not_found_exc_types() -> tuple[type[BaseException], ...]:
+    """Return the real SDK exception class(es) meaning "blob does not exist".
+
+    Same lazy-import rationale as :func:`_precondition_failed_exc_types`.
+    """
+    try:
+        from google.api_core import exceptions as gcs_exceptions  # type: ignore[import]
+    except ImportError:
+        return ()
+    return (gcs_exceptions.NotFound,)
 
 
 # ---------------------------------------------------------------------------
@@ -251,11 +316,13 @@ def upload_bytes(
     bucket: str,
     project: str | None = None,
     client: Any | None = None,
-) -> None:
-    """Upload raw *data* to a single blob.
+    if_generation_match: int | None = None,
+) -> int:
+    """Upload raw *data* to a single blob, returning the written generation.
 
-    Uses ``upload_from_string`` so repeated calls are idempotent (GCS always
-    overwrites on upload).
+    Uses ``upload_from_string`` so a call with ``if_generation_match=None``
+    (the default) always overwrites unconditionally — byte-identical to this
+    function's behavior before the CAS parameter existed.
 
     Parameters
     ----------
@@ -270,11 +337,48 @@ def upload_bytes(
         GCP project ID (used when *client* is ``None``; optional).
     client:
         Optional pre-built duck-typed ``Bucket``-like object.
+    if_generation_match:
+        Optional compare-and-swap precondition forwarded to
+        ``Blob.upload_from_string`` **only when not None** — ``0`` means
+        "create only if the blob is currently absent"; a positive int means
+        "overwrite only if the blob's live generation still equals this".
+        ``None`` omits the precondition kwarg entirely, so the call and its
+        on-the-wire semantics are unchanged from before this parameter
+        existed.
+
+    Returns
+    -------
+    int
+        The object's generation as it now exists in the bucket — read back
+        off the blob handle (``blob.generation``) immediately after the
+        upload call returns.
+
+    Raises
+    ------
+    PreconditionFailedError
+        If *if_generation_match* is given and the blob's live generation no
+        longer matches it (someone else won the race).  The underlying
+        ``google.api_core.exceptions.PreconditionFailed`` is chained as
+        ``__cause__``.
     """
     _validate_blob_name(blob_name)
     bucket_client = _client_or_new(client, bucket, project)
-    logger.debug("upload_bytes -> %s (%d bytes)", blob_name, len(data))
-    bucket_client.blob(blob_name).upload_from_string(data)
+    blob = bucket_client.blob(blob_name)
+    logger.debug(
+        "upload_bytes -> %s (%d bytes, if_generation_match=%r)",
+        blob_name, len(data), if_generation_match,
+    )
+    try:
+        if if_generation_match is None:
+            blob.upload_from_string(data)
+        else:
+            blob.upload_from_string(data, if_generation_match=if_generation_match)
+    except _precondition_failed_exc_types() as exc:
+        raise PreconditionFailedError(
+            f"upload_bytes: generation precondition failed for "
+            f"{blob_name!r} (if_generation_match={if_generation_match!r})"
+        ) from exc
+    return blob.generation
 
 
 def download_artifact(
@@ -352,3 +456,47 @@ def download_bytes(
     bucket_client = _client_or_new(client, bucket, project)
     logger.debug("download_bytes <- %s", blob_name)
     return bucket_client.blob(blob_name).download_as_bytes()
+
+
+def read_bytes_with_generation(
+    *,
+    blob_name: str,
+    bucket: str,
+    project: str | None = None,
+    client: Any | None = None,
+) -> tuple[bytes, int] | None:
+    """Download a blob's bytes together with its current generation.
+
+    This is the CAS-aware counterpart of :func:`download_bytes`, used by
+    ``blob_lease.BlobLease`` to read the current fence token before deciding
+    whether/how to write.  Never raises on a missing blob — that is the
+    "no lease yet" / "first write" case callers must distinguish from a real
+    error, so it is signalled by returning ``None`` rather than an exception.
+
+    Parameters
+    ----------
+    blob_name:
+        Source blob path within the bucket.
+    bucket:
+        GCS bucket name (used when *client* is ``None``).
+    project:
+        GCP project ID (used when *client* is ``None``; optional).
+    client:
+        Optional pre-built duck-typed ``Bucket``-like object.
+
+    Returns
+    -------
+    tuple[bytes, int] | None
+        ``(data, generation)`` if the blob exists, else ``None``.
+    """
+    _validate_blob_name(blob_name)
+    bucket_client = _client_or_new(client, bucket, project)
+    blob = bucket_client.blob(blob_name)
+    try:
+        data = blob.download_as_bytes()
+    except _not_found_exc_types():
+        return None
+    logger.debug(
+        "read_bytes_with_generation <- %s (generation=%r)", blob_name, blob.generation
+    )
+    return data, blob.generation

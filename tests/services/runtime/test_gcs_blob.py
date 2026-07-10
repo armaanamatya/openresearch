@@ -1,16 +1,21 @@
 """Unit tests for ``backend.services.runtime.gcs_blob``.
 
 All tests use a ``FakeBucketClient`` backed by an in-memory dict.  The real
-google-cloud-storage package is **never imported** — the module import is
-checked to work without it, and all data-plane calls go through the injected
-fake.
+google-cloud-storage package's *SDK* (``google.cloud.storage``) is **never
+imported** for the data plane — all data-plane calls go through the injected
+fake.  The lightweight, dependency-free ``google.api_core.exceptions`` module
+*is* used directly (by both the fake and by ``gcs_blob`` itself) since it is
+just exception classes, not a network client — raising the real
+``PreconditionFailed``/``NotFound`` types is what makes the fake a faithful
+double of the real ``Blob`` object's error behavior.
 
 Duck-type contract the fake satisfies (and that callers of
 ``gcs_blob.*`` must honour when injecting a client)::
 
     client.blob(name: str) -> _BlobHandle
-        _BlobHandle.upload_from_string(data: bytes) -> None
+        _BlobHandle.upload_from_string(data: bytes, if_generation_match: int | None = None) -> None
         _BlobHandle.download_as_bytes() -> bytes
+        _BlobHandle.generation: int | None
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from google.api_core import exceptions as gcs_exceptions
 
 
 # ---------------------------------------------------------------------------
@@ -49,18 +55,44 @@ def test_module_imports_without_google_sdk(monkeypatch):
 # ---------------------------------------------------------------------------
 
 class _BlobHandle:
-    """Minimal stand-in for a GCS Blob object."""
+    """Minimal stand-in for a GCS Blob object.
 
-    def __init__(self, store: dict[str, bytes], name: str) -> None:
+    Tracks a per-name generation counter (starting at 1 on first write) in a
+    dict separate from ``store`` so every pre-existing test that pokes
+    ``client.blobs[name] = raw_bytes`` directly (bypassing generation
+    tracking entirely) keeps working unmodified: ``.generation`` on such a
+    blob simply defaults to 1 the first time it is observed, mirroring "some
+    generation exists, we just didn't track how we got there".
+    """
+
+    def __init__(
+        self, store: dict[str, bytes], generations: dict[str, int], name: str
+    ) -> None:
         self._store = store
+        self._generations = generations
         self._name = name
+        # None until populated by an upload or a download — mirrors the real
+        # SDK Blob, whose .generation is None until the resource is loaded.
+        self.generation: int | None = None
 
-    def upload_from_string(self, data: bytes) -> None:
+    def upload_from_string(
+        self, data: bytes, if_generation_match: int | None = None
+    ) -> None:
+        current_gen = self._generations.get(self._name, 0)
+        if if_generation_match is not None and if_generation_match != current_gen:
+            raise gcs_exceptions.PreconditionFailed(
+                f"generation mismatch for {self._name!r}: "
+                f"wanted {if_generation_match!r}, live generation is {current_gen!r}"
+            )
+        new_gen = current_gen + 1
         self._store[self._name] = data
+        self._generations[self._name] = new_gen
+        self.generation = new_gen
 
     def download_as_bytes(self) -> bytes:
         if self._name not in self._store:
-            raise KeyError(f"Blob not found: {self._name!r}")
+            raise gcs_exceptions.NotFound(f"Blob not found: {self._name!r}")
+        self.generation = self._generations.get(self._name, 1)
         return self._store[self._name]
 
 
@@ -69,14 +101,16 @@ class FakeBucketClient:
 
     Satisfies the duck-type contract documented in ``gcs_blob.py``::
 
-        client.blob(name) -> object with .upload_from_string(data) and .download_as_bytes()
+        client.blob(name) -> object with .upload_from_string(data, if_generation_match=None),
+                              .download_as_bytes(), and .generation
     """
 
     def __init__(self) -> None:
         self.blobs: dict[str, bytes] = {}
+        self._generations: dict[str, int] = {}
 
     def blob(self, name: str) -> _BlobHandle:
-        return _BlobHandle(self.blobs, name)
+        return _BlobHandle(self.blobs, self._generations, name)
 
 
 # ---------------------------------------------------------------------------
@@ -473,3 +507,144 @@ class TestBlobNameSanitization:
         gb.upload_bytes(b"x", blob_name="test", bucket=BUCKET,
                         project=PROJECT, client=client)
         gb.download_bytes("test", bucket=BUCKET, project=PROJECT, client=client)
+
+
+# ---------------------------------------------------------------------------
+# upload_bytes / read_bytes_with_generation — compare-and-swap primitive
+# ---------------------------------------------------------------------------
+
+class TestGenerationCas:
+    """Covers the WS3 CAS extension: ``if_generation_match`` + generation
+    read-back on ``upload_bytes``, and the new ``read_bytes_with_generation``.
+    """
+
+    # -- if_generation_match=None: byte-identical unconditional overwrite ---
+
+    def test_none_precondition_is_unconditional_overwrite_and_returns_generation(
+        self,
+    ) -> None:
+        """Omitting if_generation_match must behave exactly as before: an
+        unconditional overwrite that always succeeds, now additionally
+        returning the resulting generation."""
+        client = _fake()
+        gen1 = gb.upload_bytes(b"v1", blob_name="k", bucket=BUCKET,
+                                project=PROJECT, client=client)
+        assert gen1 == 1
+        gen2 = gb.upload_bytes(b"v2", blob_name="k", bucket=BUCKET,
+                                project=PROJECT, client=client)
+        assert gen2 == 2
+        assert gb.download_bytes("k", bucket=BUCKET, project=PROJECT,
+                                  client=client) == b"v2"
+
+    def test_none_precondition_never_raises_precondition_failed(self) -> None:
+        client = _fake()
+        for i in range(5):
+            gb.upload_bytes(f"v{i}".encode(), blob_name="k", bucket=BUCKET,
+                             project=PROJECT, client=client)
+        # No exception across 5 unconditional overwrites of the same key.
+
+    # -- if_generation_match=0: create-only-if-absent -----------------------
+
+    def test_create_if_absent_succeeds_on_new_blob(self) -> None:
+        client = _fake()
+        gen = gb.upload_bytes(b"first", blob_name="k", bucket=BUCKET,
+                               project=PROJECT, client=client,
+                               if_generation_match=0)
+        assert gen == 1
+        assert gb.download_bytes("k", bucket=BUCKET, project=PROJECT,
+                                  client=client) == b"first"
+
+    def test_create_if_absent_fails_when_already_present(self) -> None:
+        client = _fake()
+        gb.upload_bytes(b"first", blob_name="k", bucket=BUCKET,
+                         project=PROJECT, client=client, if_generation_match=0)
+        with pytest.raises(gb.PreconditionFailedError):
+            gb.upload_bytes(b"second", blob_name="k", bucket=BUCKET,
+                             project=PROJECT, client=client,
+                             if_generation_match=0)
+        # The losing write must not have clobbered the winner's content.
+        assert gb.download_bytes("k", bucket=BUCKET, project=PROJECT,
+                                  client=client) == b"first"
+
+    def test_precondition_failed_chains_original_exception(self) -> None:
+        """PreconditionFailedError normalizes the raw google exception but
+        keeps it discoverable via __cause__ for debugging."""
+        client = _fake()
+        gb.upload_bytes(b"first", blob_name="k", bucket=BUCKET,
+                         project=PROJECT, client=client, if_generation_match=0)
+        with pytest.raises(gb.PreconditionFailedError) as exc_info:
+            gb.upload_bytes(b"second", blob_name="k", bucket=BUCKET,
+                             project=PROJECT, client=client,
+                             if_generation_match=0)
+        assert isinstance(exc_info.value.__cause__, gcs_exceptions.PreconditionFailed)
+
+    # -- if_generation_match=<gen>: overwrite-only-if-still-current ---------
+
+    def test_overwrite_with_matching_generation_succeeds(self) -> None:
+        client = _fake()
+        gen1 = gb.upload_bytes(b"v1", blob_name="k", bucket=BUCKET,
+                                project=PROJECT, client=client,
+                                if_generation_match=0)
+        gen2 = gb.upload_bytes(b"v2", blob_name="k", bucket=BUCKET,
+                                project=PROJECT, client=client,
+                                if_generation_match=gen1)
+        assert gen2 == gen1 + 1
+        assert gb.download_bytes("k", bucket=BUCKET, project=PROJECT,
+                                  client=client) == b"v2"
+
+    def test_overwrite_with_stale_generation_fails(self) -> None:
+        client = _fake()
+        gen1 = gb.upload_bytes(b"v1", blob_name="k", bucket=BUCKET,
+                                project=PROJECT, client=client,
+                                if_generation_match=0)
+        # A rival advances the generation past gen1.
+        gb.upload_bytes(b"v2", blob_name="k", bucket=BUCKET,
+                         project=PROJECT, client=client,
+                         if_generation_match=gen1)
+        # Our stale attempt, still using gen1, must fail.
+        with pytest.raises(gb.PreconditionFailedError):
+            gb.upload_bytes(b"v3-stale", blob_name="k", bucket=BUCKET,
+                             project=PROJECT, client=client,
+                             if_generation_match=gen1)
+        assert gb.download_bytes("k", bucket=BUCKET, project=PROJECT,
+                                  client=client) == b"v2"
+
+    # -- read_bytes_with_generation ------------------------------------------
+
+    def test_read_bytes_with_generation_missing_returns_none(self) -> None:
+        client = _fake()
+        result = gb.read_bytes_with_generation(
+            blob_name="does/not/exist", bucket=BUCKET, project=PROJECT,
+            client=client,
+        )
+        assert result is None
+
+    def test_read_bytes_with_generation_round_trip(self) -> None:
+        client = _fake()
+        gen = gb.upload_bytes(b"payload", blob_name="k", bucket=BUCKET,
+                               project=PROJECT, client=client)
+        result = gb.read_bytes_with_generation(
+            blob_name="k", bucket=BUCKET, project=PROJECT, client=client,
+        )
+        assert result == (b"payload", gen)
+
+    def test_read_bytes_with_generation_reflects_latest_after_overwrite(
+        self,
+    ) -> None:
+        client = _fake()
+        gb.upload_bytes(b"v1", blob_name="k", bucket=BUCKET, project=PROJECT,
+                         client=client)
+        gen2 = gb.upload_bytes(b"v2", blob_name="k", bucket=BUCKET,
+                                project=PROJECT, client=client)
+        result = gb.read_bytes_with_generation(
+            blob_name="k", bucket=BUCKET, project=PROJECT, client=client,
+        )
+        assert result == (b"v2", gen2)
+
+    def test_read_bytes_with_generation_rejects_bad_blob_name(self) -> None:
+        client = _fake()
+        with pytest.raises((ValueError, Exception)):
+            gb.read_bytes_with_generation(
+                blob_name="/absolute", bucket=BUCKET, project=PROJECT,
+                client=client,
+            )
