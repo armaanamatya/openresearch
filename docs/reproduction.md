@@ -16,8 +16,8 @@ historical runbooks: one local setup, one local run path, one check path.
 | RunPod | Required only for `--sandbox runpod`: API key plus SSH key |
 
 The default local-dev sandbox in `.env.example` is `local`, which does not need
-Docker or RunPod. The code default remains `runpod` when no environment file or
-shell override is present.
+Docker or a cloud backend. The code default is `gcp` (GCP/Azure are the primary
+clouds; RunPod is legacy) when no environment file or shell override is present.
 
 ## Fresh Clone
 

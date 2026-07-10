@@ -17,10 +17,12 @@ the source of truth for **either** engine. One teammate on Docker Desktop and
 one on OrbStack are fully interchangeable. Anywhere this doc says "engine up,"
 it means `docker info` returns 0; it does **not** mean a particular product.
 
-> The default sandbox is `runpod`. Since `875995c`, `build_environment`
-> short-circuits to a no-op for **both `local` and `runpod`** — only `docker`
+> The default sandbox is `gcp` (GCP/Azure primary; `runpod` legacy). Since
+> `875995c`, `build_environment` short-circuits to a no-op for `local` and
+> `runpod` (and for `gcp`/`gke`, whose image is pre-baked) — only `docker`
 > and `auto`/unknown do a **local** `docker build`. So the engine must be up
-> only for `--sandbox docker`/`auto` runs; `local` and `runpod` need no daemon.
+> only for `--sandbox docker`/`auto` runs; `local`, `runpod`, and the clouds
+> need no local daemon.
 
 Convention used below: credentials live in **`.env`** (or OAuth via
 `claude login`); your **shell stays empty** of `OPENAI_API_KEY` /
