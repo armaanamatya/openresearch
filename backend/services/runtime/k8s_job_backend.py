@@ -19,6 +19,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
+import shlex
 import time
 import typing
 import uuid
@@ -155,6 +157,113 @@ def _extract_exit_code(job: Any) -> int | None:
         return None
     except Exception:
         return None
+
+
+# WS2 guard (docs/superpowers/specs — Phase-3 durable-controller fan-out):
+# ``exec()`` submits the base image with NO code-staging step (the
+# ``blob_prefix`` uploaded in ``create_sandbox`` is never read back here) — see
+# the module docstring gap this closes. This predicate decides, conservatively,
+# whether a shell *command* reads project code that this path never stages.
+_PY_INTERPRETER_RE = re.compile(r"^python3?(?:\.\d+)?$")
+# "-m <module>" invocations that are common environment/tooling bootstrap
+# steps, not a project entrypoint — e.g. ``python -m pip install -r
+# requirements.txt`` (the dominant "-m" shape actually emitted by this
+# codebase's own environment setup, see primitives.py/env_pin.py). Keeping
+# this list short and well-known avoids the false positives this guard must
+# not produce; an unrecognised module conservatively counts as project code.
+_NON_PROJECT_PY_MODULES = frozenset(
+    {
+        "pip",
+        "venv",
+        "ensurepip",
+        "http.server",
+        "pytest",
+        "unittest",
+        "compileall",
+        "site",
+        "pdb",
+        "cProfile",
+        "profile",
+        "json.tool",
+    }
+)
+
+
+# Shell chain operators that start a new (sub)command when scanning a flat
+# shlex token stream (shlex has no notion of shell control operators; each
+# becomes its own whitespace-delimited token, e.g. "a && b" -> ["a", "&&",
+# "b"]). Used ONLY to gate the bare-".py"-token branch below: a review
+# finding (phase3-owner2-job_backend-ws2guard.md) confirmed that branch
+# previously fired for ANY ".py"-suffixed token anywhere in the command
+# (e.g. "cat code/train.py", "git diff -- train.py") rather than only the
+# program actually being invoked.
+_SHELL_OPERATORS = frozenset({"&&", "||", ";", "|"})
+
+
+def _command_needs_staged_code(command: str) -> bool:
+    """Conservatively decide whether *command* needs project code on disk.
+
+    True for a ``python``/``python3``/``python3.NN`` invocation of a project
+    ``.py`` file (``python train.py``) or an unrecognised ``-m`` module
+    (``python -m project.train``); also True for a bare ``*.py`` script
+    token that is itself the **invoked program** of a (sub)command
+    (``./train.py``, ``pip install -r requirements.txt && ./train.py``) — a
+    "train/run-style script" invocation per the design. False for a
+    ``python -c "..."`` inline snippet (no file is read), a known
+    environment-bootstrap ``-m`` module (``pip``, ...), a ``.py``-suffixed
+    token that is merely an ARGUMENT to some other program rather than the
+    thing being executed (``cat code/train.py``, ``echo train.py``,
+    ``wc -l code/*.py``, ``black train.py``, ``git diff -- train.py``), and
+    any command with no python/`.py` reference at all (``nvidia-smi``,
+    ``pip install torch``, ``echo``, ``ls``, ``nvcc --version``).
+
+    Deliberately errs toward **False** on anything ambiguous: a false
+    negative just preserves today's (already-broken) behavior, whereas a
+    false positive would block a legitimate non-code exec. Scans the whole
+    (possibly ``&&``/``;``/``|``-chained) command string — a token-by-token
+    ``shlex`` split is used so quoting is respected; a command that is not
+    validly shell-quoted falls back to a plain whitespace split rather than
+    raising. The bare-``.py``-token check only fires at a command-start
+    position (index 0, or immediately after a ``_SHELL_OPERATORS`` token) —
+    a ``.py``-suffixed token appearing anywhere else in the same (sub)command
+    is an argument to whatever program was actually invoked, not code this
+    path would execute.
+    """
+    if not command or not command.strip():
+        return False
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        tokens = command.split()
+
+    at_command_start = True
+    for i, tok in enumerate(tokens):
+        if tok in _SHELL_OPERATORS:
+            at_command_start = True
+            continue
+        base = tok.rsplit("/", 1)[-1]
+        if _PY_INTERPRETER_RE.match(base):
+            rest = tokens[i + 1 :]
+            for j, arg in enumerate(rest):
+                if arg == "-c":
+                    break  # inline snippet — no file read from disk
+                if arg == "-m":
+                    module = rest[j + 1] if j + 1 < len(rest) else ""
+                    if module and module not in _NON_PROJECT_PY_MODULES:
+                        return True
+                    break
+                if arg.startswith("-"):
+                    continue  # some other interpreter flag — keep scanning
+                if arg.endswith(".py"):
+                    return True
+                break  # first unrecognised non-flag arg — stop guessing
+            at_command_start = False
+            continue
+        if at_command_start and base.endswith(".py"):
+            return True  # direct script execution, e.g. "./train.py --seed 1"
+        at_command_start = False
+
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -754,6 +863,28 @@ class _KubernetesJobBackend(RuntimeBackend):
         env_vars = dict(sandbox.config.environment)
         env_vars["OPENRESEARCH_EXEC_COMMAND"] = command
         env_vars["OPENRESEARCH_EXEC_MODE"] = "1"
+
+        # WS2 fail-loud guard (flag-gated, default OFF/byte-identical): this
+        # path never stages project code into the pod (see
+        # ``_command_needs_staged_code`` above) — on gcp, once the durable
+        # controller is enabled, refuse a doomed code-dependent Job instead
+        # of silently running it against an absent checkout. Local import —
+        # ``run_controller`` imports only ``feature_flags`` (cycle-safe) but
+        # this keeps the module's own import graph untouched when unused.
+        from backend.agents.rlm import run_controller
+
+        if (
+            run_controller.durable_controller_enabled()
+            and self._cloud.provider == "gcp"
+            and _command_needs_staged_code(command)
+        ):
+            raise SandboxRuntimeError(
+                RuntimeCauseKind.backend_unavailable,
+                f"{self._cloud.provider.upper()} backend: monolithic_exec_unstaged — the "
+                f"k8s_job_backend.exec path does not stage project code into the pod; route "
+                f"training via cells.json + train_cell.py (OPENRESEARCH_GKE_SYNTH_CELL). "
+                f"Refusing to submit a code-less Job for: {command!r}"
+            )
 
         gpu_count = self._gpu_plan_gpu_count()
         gpu_sku = self._gpu_plan_short_name()
