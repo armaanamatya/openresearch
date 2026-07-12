@@ -950,6 +950,54 @@ class FileLiveRunService:
             if counter % 15 == 0:
                 yield sse_event("heartbeat", {"projectId": project_id, "status": state.status})
 
+    def _should_use_durable_controller(self, request: StartRunRequest) -> bool:
+        """Pure decision: durable-controller cluster submit vs. local Popen.
+
+        WS3 seam (docs/superpowers/specs/2026-07-10-durable-cloud-native-
+        orchestration-ws3-design.md §4.4). True only when
+        ``OPENRESEARCH_DURABLE_CONTROLLER`` is enabled AND
+        ``request.sandbox == "gcp"``. ``request.sandbox`` (post the override
+        chain in ``_start_python_run``) is the only place "sandbox" lives at
+        this scope — ``apply_autonomous_profile_override`` forces the literal
+        ``"gcp"``, never ``"gke"`` (that alias only exists in the unrelated
+        ``backend.agents.execution.SandboxMode`` enum).
+
+        Flag OFF (default) is always ``False`` for every request, regardless
+        of sandbox, so the existing ``subprocess.Popen`` reproduce path stays
+        byte-identical. No side effects — safe to call unconditionally.
+        """
+        from backend.agents.rlm import run_controller
+
+        return run_controller.durable_controller_enabled() and request.sandbox == "gcp"
+
+    async def _submit_durable_controller(
+        self,
+        request: StartRunRequest,
+        *,
+        project_id: str,
+        uploaded_paper: dict[str, str] | None,
+    ) -> LiveRunState:
+        """Seam for the WS3 durable-controller cluster submit — drill-gated.
+
+        The real submit (build the fenced controller Deployment/Job via
+        ``run_controller.build_controller_command`` + ``acquire_drive_lease``,
+        then record the controller handle into ``demo_status.json`` in place
+        of a local ``pid``) needs a live GKE cluster and the wired
+        orchestrator Deployment — that is operator/drill-gated and out of
+        scope for this seam. Kept as a method (rather than inlined) so a
+        drill-time change, or a test, can replace this one body with the real
+        submit / a recording fake without touching ``_start_python_run``.
+
+        Deliberately fail-loud rather than a silent no-op: an accidental
+        flag-flip before the cluster path is wired must surface immediately,
+        not pretend to have started a run.
+        """
+        raise NotImplementedError(
+            "durable controller submit is wired at drill time (WS3 §4.4); "
+            "OPENRESEARCH_DURABLE_CONTROLLER is opt-in and this cluster-submit "
+            "path is not yet live"
+        )
+
     async def _start_python_run(
         self,
         request: StartRunRequest,
@@ -1005,6 +1053,16 @@ class FileLiveRunService:
             benchmark=benchmark,
         )
         await asyncio.to_thread(self._write_status, project_id, meta)
+
+        # WS3 seam: a durable-controller-eligible request (flag on + sandbox
+        # "gcp") diverts here, before any local log file / subprocess is
+        # opened. Flag off (default) ⇒ _should_use_durable_controller is
+        # always False ⇒ this branch is never taken and the Popen path below
+        # runs exactly as before, byte-identical.
+        if self._should_use_durable_controller(request):
+            return await self._submit_durable_controller(
+                request, project_id=project_id, uploaded_paper=uploaded_paper,
+            )
 
         stderr = (output_dir / "runner.stderr.log").open("a", encoding="utf-8")
         stdout = (output_dir / "runner.stdout.log").open("a", encoding="utf-8")
