@@ -1911,6 +1911,22 @@ def run_experiment_success_count(ctx: RunContext) -> int | None:
     ``None`` when no ledger is available (gate skips the check)."""
     ledger = getattr(ctx, "cost_ledger", None)
     if ledger is None:
+        # Out-of-process re-grade (no in-memory ledger): fall back to the
+        # forge-resistant ok-receipts on disk (Track E §6.6) — minted ONLY
+        # inside the in-process run_experiment success path, keyed to the same
+        # metrics_sha256 the evidence bundle uses, so a replay cannot forge one.
+        # Only LIFTS the count when genuine receipts exist; absent them it stays
+        # None (the gate skips the in-process-call check exactly as today),
+        # byte-identical when the flag is off. Flag-gated OPENRESEARCH_OK_RECEIPT.
+        try:
+            from backend.agents.rlm import ok_receipt as _ok_receipt
+
+            if _ok_receipt.ok_receipt_enabled():
+                _rc = _ok_receipt.count_ok_receipts(getattr(ctx, "project_dir", None))
+                if _rc > 0:
+                    return _rc
+        except Exception:  # noqa: BLE001 — a gate input must never crash finalization
+            pass
         return None
     try:
         counter = getattr(ledger, "session_success_compatible_count", None)
@@ -2584,6 +2600,22 @@ def write_final_report_rlm(
     # timing.json). The renderer fails soft on any missing/corrupt sidecar.
     md_content = _render_markdown(report, project_dir=project_dir)
     _atomic_write(md_path, md_content)
+
+    # Track E (§6.1): emit the diagnostic EvaluationReport scorecard sidecar.
+    # Deliberately placed AFTER final_report.json is on disk (EvaluationReport.
+    # from_run reads its verdict read-only) and AFTER both verdict tripwires
+    # above — it writes SEPARATE evaluation_report.{json,md} files and never
+    # touches final_report.json / demo_status.json, so the eval stays decoupled
+    # and report/rank-only per the north-star (it can NEVER move the verdict).
+    # Flag-gated OPENRESEARCH_EVAL_SCORECARD (off => returns None, writes
+    # nothing, byte-identical). Lazy import breaks the scorecard -> report import
+    # cycle. Fail-soft: a sidecar error never breaks finalize.
+    try:
+        from backend.evals.scorecard import write_evaluation_report
+
+        write_evaluation_report(project_dir)
+    except Exception:  # noqa: BLE001 — a diagnostic sidecar must never break finalize
+        logger.debug("report: evaluation_report sidecar skipped (non-fatal)", exc_info=True)
 
     # --- Preservation marker --------------------------------------------
     # Stamp a tiny manifest so future cleanup / GC scripts know this run

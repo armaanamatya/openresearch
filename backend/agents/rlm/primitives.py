@@ -4877,12 +4877,104 @@ def _stamp_manifest_ids(result: dict, *, run_id: str, env_id: str, commands: lis
     result.setdefault("commands", list(commands) if commands else [])
 
 
+def _read_gpu_plan_snapshot(ctx: "RunContext") -> dict | None:
+    """Best-effort read of ``rlm_state/gpu_plan.json`` (the same plan
+    run_experiment consumes) for the efficiency row snapshot. Fail-soft."""
+    try:
+        _p = ctx.project_dir / "rlm_state" / "gpu_plan.json"
+        if _p.exists():
+            _d = json.loads(_p.read_text(encoding="utf-8"))
+            return _d if isinstance(_d, dict) else None
+    except Exception:  # noqa: BLE001 — snapshot is best-effort, never blocks a run
+        return None
+    return None
+
+
+def _stamp_efficiency_row_fields(entry: dict, ctx: "RunContext", *, start_ts: str | None) -> None:
+    """E-3b: add per-experiment efficiency fields to the experiment_runs.jsonl
+    row (``start_ts``/``end_ts``/``retry_id``/``gpu_plan``), flag-gated on
+    ``OPENRESEARCH_GPU_LEDGER``. Additive via ``setdefault`` so the base row
+    schema stays byte-identical when the flag is off. Display-only telemetry,
+    never a fitness term; fail-soft."""
+    try:
+        from backend.agents.rlm.gpu_ledger import gpu_ledger_enabled
+
+        if not gpu_ledger_enabled() or not isinstance(entry, dict):
+            return
+        _end = entry.get("timestamp")
+        entry.setdefault("start_ts", start_ts or _end)
+        entry.setdefault("end_ts", _end)
+        entry.setdefault("retry_id", entry.get("retry_id") or entry.get("attempt"))
+        if "gpu_plan" not in entry:
+            _plan = _read_gpu_plan_snapshot(ctx)
+            if _plan is not None:
+                entry["gpu_plan"] = _plan
+    except Exception:  # noqa: BLE001 — efficiency stamping never breaks a run
+        pass
+
+
+def _emit_experiment_telemetry(
+    ctx: "RunContext", result: dict, entry: dict, *, start_ts: str | None
+) -> None:
+    """E-3b / G-S1a: additive telemetry sidecars for a persisted run_experiment
+    row, each INDEPENDENTLY flag-gated inside its own writer (so all-off is
+    byte-identical) and fail-soft. None of these feeds the verdict: the
+    ok-receipt is a forge-resistant evidence INPUT consumed only by report.py's
+    out-of-process re-grade fallback; the gpu-ledger + dag-node are
+    display/orchestration only and can never move a verdict."""
+    _rid = str(result.get("experiment_run_id") or "") or None
+    _ts = entry.get("timestamp") if isinstance(entry, dict) else None
+    # ok-receipt (OPENRESEARCH_OK_RECEIPT): minted ONLY on a genuine in-process
+    # success, keyed to the same metrics_sha256 the evidence bundle uses.
+    try:
+        if result.get("success") is True and _rid:
+            from backend.agents.rlm.ok_receipt import write_ok_receipt
+
+            write_ok_receipt(
+                ctx.project_dir,
+                experiment_run_id=_rid,
+                ok=True,
+                metrics_sha256=str(result.get("metrics_sha256") or ""),
+                ts=str(_ts or ""),
+            )
+    except Exception:  # noqa: BLE001 — telemetry never breaks a run
+        pass
+    # gpu-ledger (OPENRESEARCH_GPU_LEDGER): display-only per-experiment efficiency.
+    try:
+        from backend.agents.rlm.gpu_ledger import append_gpu_ledger
+
+        _provider = str(
+            getattr(ctx, "sandbox_mode", "") or result.get("sandbox_backend") or "unknown"
+        )
+        append_gpu_ledger(
+            ctx.project_dir,
+            experiment_run_id=_rid or "unknown",
+            start_ts=str(start_ts or _ts or ""),
+            end_ts=str(_ts or ""),
+            gpu_plan=entry.get("gpu_plan") if isinstance(entry, dict) else None,
+            provider=_provider,
+            rate_usd_per_hr=0.0,
+        )
+    except Exception:  # noqa: BLE001 — telemetry never breaks a run
+        pass
+    # dag-node (OPENRESEARCH_DAG_BACKBONE): observed-DAG S1 recorder.
+    try:
+        from backend.agents.rlm.dag_nodes import append_dag_node
+
+        append_dag_node(
+            ctx.project_dir, node_id=_rid or "unknown", kind="run_experiment", ts=str(_ts or "")
+        )
+    except Exception:  # noqa: BLE001 — telemetry never breaks a run
+        pass
+
+
 def _persist_experiment_result(
     ctx: "RunContext",
     result: dict,
     *,
     model_id: str = "default",
     eval_env: str = "default",
+    start_ts: str | None = None,
 ) -> dict:
     """Append a run_experiment result to ``experiment_runs.jsonl`` and return it.
 
@@ -4950,15 +5042,25 @@ def _persist_experiment_result(
             "run_experiment failed: %s",
             result.get("error") or "(see experiment_runs.jsonl for logs)",
         )
+    _persisted_entry: dict | None = None
     try:
         entry = {"timestamp": datetime.now(timezone.utc).isoformat(), **result}
         entry.setdefault("model_id", model_id)
         entry.setdefault("eval_env", eval_env)
+        # E-3b: additive efficiency row fields (flag-gated OPENRESEARCH_GPU_LEDGER;
+        # setdefault ⇒ byte-identical when off).
+        _stamp_efficiency_row_fields(entry, ctx, start_ts=start_ts)
         path = ctx.project_dir / "experiment_runs.jsonl"
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, default=str) + "\n")
+        _persisted_entry = entry
     except Exception:  # noqa: BLE001 — observability must never break the run
         logger.exception("run_experiment: failed to persist experiment result")
+    # E-3b / G-S1a: emit the additive telemetry sidecars only after the row
+    # actually landed (each writer self-gates on its own flag; all-off is
+    # byte-identical). None of these ever feeds the verdict.
+    if _persisted_entry is not None:
+        _emit_experiment_telemetry(ctx, result, _persisted_entry, start_ts=start_ts)
     # A1: emit experiment_completed so the Lane γ multi-model UI panel fires on
     # real runs (foldExperimentCompleted in use-rlm-run.ts was dead code until
     # this event was wired on the backend side).  Fail-soft via _emit_dashboard_event.
@@ -7026,6 +7128,13 @@ def run_experiment(
     _per_command_timeout = timeout if _is_local_sb else None
     _outer_timeout = (timeout + _OUTER_TIMEOUT_BUFFER_S) if _is_local_sb else timeout
 
+    # E-3b: capture the experiment start timestamp for the per-experiment GPU
+    # efficiency ledger (threaded to the persist seam; display-only telemetry,
+    # never a fitness term, no-op unless OPENRESEARCH_GPU_LEDGER is on).
+    from datetime import datetime as _dt, timezone as _tz
+
+    _exp_start_ts = _dt.now(_tz.utc).isoformat()
+
     # Load cached gpu_plan if present (written by resolve_gpu_requirements).
     from backend.agents.schemas import GpuPlan as _GpuPlan
     from backend.config import get_settings
@@ -7946,7 +8055,9 @@ def run_experiment(
         logger.exception("run_experiment: metrics_shape post-run check failed — skipping")
 
 
-    return _persist_experiment_result(ctx, result, model_id=model_id, eval_env=eval_env)
+    return _persist_experiment_result(
+        ctx, result, model_id=model_id, eval_env=eval_env, start_ts=_exp_start_ts
+    )
 
 
 def _leaf_status(score: object, state: object) -> str:
