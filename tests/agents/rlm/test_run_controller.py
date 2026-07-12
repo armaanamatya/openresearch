@@ -70,6 +70,20 @@ class TestClassifyControllerExit:
     def test_sigkill_137_is_crash(self) -> None:
         assert classify_controller_exit(137) == "crash"
 
+    def test_three_is_money_halt_not_crash(self) -> None:
+        # Exit 3 is cmd_campaign's own [MONEY-HALT] (backend/cli.py, on
+        # CampaignLedgerError) -- a deliberate fail-closed safety stop, not a
+        # process crash. A durable reaper/restarter must be able to tell the
+        # two apart so it never respawns/retries after a money-halt.
+        assert classify_controller_exit(3) == "money_halt"
+
+    def test_pre_existing_terminals_unchanged_by_the_money_halt_branch(self) -> None:
+        # Regression guard: adding the exit-3 branch must not perturb the
+        # pre-existing 0/2/137 mappings.
+        assert classify_controller_exit(0) == "complete"
+        assert classify_controller_exit(2) == "paused"
+        assert classify_controller_exit(137) == "crash"
+
 
 # ---------------------------------------------------------------------------
 # acquire_drive_lease -- duck-typed lease double, contention semantics

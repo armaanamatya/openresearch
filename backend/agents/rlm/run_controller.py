@@ -60,13 +60,21 @@ def classify_controller_exit(code: int) -> str:
 
     ``0`` -> ``"complete"`` (a terminal state was reached cleanly);
     ``2`` -> ``"paused"`` (the campaign CLI's own checkpoint/refusal
-    convention -- resumable via ``--resume``); anything else (a crash,
-    ``137``/SIGKILL, an uncaught exception, ...) -> ``"crash"``.
+    convention -- resumable via ``--resume``); ``3`` -> ``"money_halt"``
+    (the campaign CLI's own ``[MONEY-HALT]`` -- ``cmd_campaign`` catching
+    ``CampaignLedgerError`` on ledger corruption/unwritability and halting
+    BEFORE any further spend, ``backend/cli.py``'s ``cmd_campaign``). This is
+    a deliberate fail-closed safety stop, not a process crash -- a durable
+    reaper/restarter MUST NOT respawn/retry on ``"money_halt"`` the way it
+    might for a genuine ``"crash"``; anything else (a real crash, ``137``/
+    SIGKILL, an uncaught exception, ...) -> ``"crash"``.
     """
     if code == 0:
         return "complete"
     if code == 2:
         return "paused"
+    if code == 3:
+        return "money_halt"
     return "crash"
 
 

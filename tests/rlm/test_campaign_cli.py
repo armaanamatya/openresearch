@@ -153,6 +153,26 @@ def test_existing_reproduce_parser_untouched():
     assert args.project_id is None
 
 
+def test_campaign_accepts_project_id_flag():
+    # Phase-3 gotcha 2: run_controller.build_controller_command emits this
+    # exact argv shape (campaign <paper> --project-id <id> --resume); before
+    # this flag existed, argparse died with "unrecognized arguments" (exit 2)
+    # for a durable controller's relaunch.
+    argv = [
+        "campaign", "2401.00001",
+        "--max-llm-usd", "1", "--max-gpu-usd", "1", "--max-gpu-hours", "1",
+        "--project-id", "prj_x", "--resume",
+    ]
+    args = cli._build_parser().parse_args(argv)
+    assert args.project_id == "prj_x"
+    assert args.resume is True
+
+
+def test_campaign_project_id_defaults_to_none():
+    args = cli._build_parser().parse_args(_campaign_argv())
+    assert args.project_id is None
+
+
 # --------------------------------------------------------------------------- #
 # cmd_campaign wiring                                                          #
 # --------------------------------------------------------------------------- #
@@ -350,3 +370,77 @@ def test_campaign_help_does_not_leak_into_reproduce(tmp_path):
     # flag name as an error, not as an inherited option.
     with pytest.raises(SystemExit):
         cli._build_parser().parse_args(["reproduce", "x.pdf", "--max-llm-usd", "5"])
+
+
+# --------------------------------------------------------------------------- #
+# cmd_campaign --project-id threading (Phase-3 gotcha 2)                      #
+# --------------------------------------------------------------------------- #
+
+
+def _capture_project_id_override(monkeypatch, intake):
+    """Wrap ``intake.register_project`` to record the ``project_id_override``
+    kwarg it is called with, without changing its behaviour — purely-additive
+    local helper (the shared ``_FakeIntake`` class above is left untouched)."""
+    captured: list = []
+    original = intake.register_project
+
+    def _wrapped(cmd, project_id_override=None):
+        captured.append(project_id_override)
+        return original(cmd, project_id_override=project_id_override)
+
+    monkeypatch.setattr(intake, "register_project", _wrapped)
+    return captured
+
+
+def test_cmd_campaign_threads_project_id_override_into_registration(tmp_path, monkeypatch):
+    # The fake's own project_id is set to match --project-id so the
+    # mismatch-guard (mirrored from cmd_reproduce) passes cleanly — this
+    # isolates the assertion to "was the override forwarded", not the guard.
+    intake, *_ = _install_fakes(monkeypatch, project_id="prj_x")
+    captured = _capture_project_id_override(monkeypatch, intake)
+    _install_fake_campaign(
+        monkeypatch, {"kind": "EXHAUSTED", "rule": "r", "stop_reason": None,
+                      "champion_attempt_n": None, "spent": {}}
+    )
+
+    args = cli._build_parser().parse_args(
+        _campaign_argv("--project-id", "prj_x", runs_root=str(tmp_path / "runs"))
+    )
+    rc = cli.cmd_campaign(args)
+
+    assert rc == 0
+    assert captured == ["prj_x"]
+
+
+def test_cmd_campaign_project_id_override_is_none_when_omitted(tmp_path, monkeypatch):
+    intake, *_ = _install_fakes(monkeypatch)
+    captured = _capture_project_id_override(monkeypatch, intake)
+    _install_fake_campaign(
+        monkeypatch, {"kind": "EXHAUSTED", "rule": "r", "stop_reason": None,
+                      "champion_attempt_n": None, "spent": {}}
+    )
+
+    args = cli._build_parser().parse_args(_campaign_argv(runs_root=str(tmp_path / "runs")))
+    rc = cli.cmd_campaign(args)
+
+    assert rc == 0
+    assert captured == [None]
+
+
+def test_cmd_campaign_project_id_mismatch_is_rejected(tmp_path, monkeypatch, capsys):
+    # Mirrors cmd_reproduce's mismatch guard: an override that does not equal
+    # what register_project resolves to (here the fake's fixed "prj_fake")
+    # must fail loudly (exit 1) rather than silently diverging and dying
+    # later at fetch_paper with an opaque UnknownProject.
+    _install_fakes(monkeypatch, project_id="prj_fake")
+    built: list = []
+    monkeypatch.setattr(cli, "build_campaign", lambda pid, opts: built.append(pid))
+
+    args = cli._build_parser().parse_args(
+        _campaign_argv("--project-id", "prj_other", runs_root=str(tmp_path / "runs"))
+    )
+    rc = cli.cmd_campaign(args)
+
+    assert rc == 1
+    assert not built
+    assert "prj_other" in capsys.readouterr().err
