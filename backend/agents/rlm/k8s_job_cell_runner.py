@@ -56,6 +56,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 import threading
 import time
@@ -310,8 +311,23 @@ def _get_fence_generation() -> int | None:
     inside a worker thread would silently see ``None`` even when a generation
     is bound — always thread the value explicitly instead of calling this a
     second time deeper in the stack.
+
+    Env fallback: inside the durable controller Pod nothing binds the
+    ContextVar, so when it is unbound this reads the stable fence epoch the
+    submit stamped into the Pod env (``OPENRESEARCH_CELL_FENCE_EPOCH``). An
+    explicit ContextVar binding wins; a missing/non-integer env yields ``None``
+    (byte-identical to before for every non-controller caller).
     """
-    return _RUN_CONTEXT.get({}).get("fence_generation")
+    bound = _RUN_CONTEXT.get({}).get("fence_generation")
+    if bound is not None:
+        return bound
+    raw = os.environ.get("OPENRESEARCH_CELL_FENCE_EPOCH", "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
 
 
 def _get_settings_prefix() -> str:

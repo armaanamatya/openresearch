@@ -125,3 +125,27 @@ class TestAcquireDriveLease:
         )
         assert token_a is not None
         assert token_b is None
+
+
+# ---------------------------------------------------------------------------
+# durable_controller_default_for_sandbox -- launch-boundary default (ON for gcp)
+# ---------------------------------------------------------------------------
+
+class TestDurableDefaultForSandbox:
+    def test_default_on_for_gcp_when_unset(self, monkeypatch) -> None:
+        from backend.agents.rlm import run_controller as rc
+
+        monkeypatch.delenv("OPENRESEARCH_DURABLE_CONTROLLER", raising=False)
+        assert rc.durable_controller_default_for_sandbox("gcp") is True
+
+    def test_off_for_non_gcp_regardless_of_flag(self, monkeypatch) -> None:
+        from backend.agents.rlm import run_controller as rc
+
+        monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        assert rc.durable_controller_default_for_sandbox("local") is False
+
+    def test_opt_out_with_explicit_zero(self, monkeypatch) -> None:
+        from backend.agents.rlm import run_controller as rc
+
+        monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "0")
+        assert rc.durable_controller_default_for_sandbox("gcp") is False
