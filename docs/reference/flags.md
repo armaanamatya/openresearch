@@ -4,9 +4,9 @@
 
 ## Summary
 
-- **Total distinct flags:** 472
+- **Total distinct flags:** 479
 - **Managed by `config.py` Settings (typed, default known):** 140
-- **Ad-hoc `os.environ` reads (no central default):** 332
+- **Ad-hoc `os.environ` reads (no central default):** 339
 - **Mentioned in `CLAUDE.md`:** 3 (0%)
 
 Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **sites** = ad-hoc read count; **default** = literal default at first read site (best effort).
@@ -414,6 +414,12 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | `OPENRESEARCH_DOOMED_MIN_PROGRESS` |  |  |  | |
 | `OPENRESEARCH_DOOMED_POLLS` |  |  |  | |
 
+### `OPENRESEARCH_DURABLE_*`
+
+| Flag | cfg | doc | sites | default |
+|---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_DURABLE_CONTROLLER` |  |  |  | |
+
 ### `OPENRESEARCH_DYNAMIC_*`
 
 | Flag | cfg | doc | sites | default |
@@ -455,6 +461,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_EVAL_PROVENANCE_GUARD` |  |  | 1 | `""` |
+| `OPENRESEARCH_EVAL_SCORECARD` |  |  |  | |
 
 ### `OPENRESEARCH_EVIDENCE_*`
 
@@ -483,7 +490,8 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_EXECUTE_OWNS_DEPS` |  |  | 1 | `""` |
-| `OPENRESEARCH_EXECUTE_SYNTH` |  |  | 1 | `""` |
+| `OPENRESEARCH_EXECUTE_SYNTH` |  |  |  | |
+| `OPENRESEARCH_EXECUTE_SYNTH_VRAM_GB` |  |  | 1 | `""` |
 
 ### `OPENRESEARCH_EXECUTION_*`
 
@@ -621,6 +629,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_GPU_COUNT` |  |  |  | |
 | `OPENRESEARCH_GPU_DEVICE_IDS` |  |  | 1 | |
+| `OPENRESEARCH_GPU_LEDGER` |  |  |  | |
 | `OPENRESEARCH_GPU_MODE` |  |  |  | |
 | `OPENRESEARCH_GPU_PARALLELISM` |  |  | 1 | |
 
@@ -657,6 +666,12 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_HOST` | ✅ |  |  | `"127.0.0.1"` |
+
+### `OPENRESEARCH_HUMAN_*`
+
+| Flag | cfg | doc | sites | default |
+|---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_HUMAN_INTERVENTION_LOG` |  |  |  | |
 
 ### `OPENRESEARCH_HYBRID_*`
 
@@ -810,6 +825,12 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_OAUTH_AUTODRIVE` |  |  | 1 | `""` |
 | `OPENRESEARCH_OAUTH_FALLBACK_MODEL` |  |  | 1 | `""` |
+
+### `OPENRESEARCH_OK_*`
+
+| Flag | cfg | doc | sites | default |
+|---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_OK_RECEIPT` |  |  |  | |
 
 ### `OPENRESEARCH_OOM_*`
 
@@ -1231,6 +1252,12 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | `OPENRESEARCH_VALIDATOR_CHECK_REPORT` |  |  | 1 | `""` |
 | `OPENRESEARCH_VALIDATOR_MODEL` |  |  | 7 | `""` |
 | `OPENRESEARCH_VALIDATOR_PANEL_N` |  |  | 1 | `""` |
+
+### `OPENRESEARCH_VERDICT_*`
+
+| Flag | cfg | doc | sites | default |
+|---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_VERDICT_AUTHORITY` |  |  |  | |
 
 ### `OPENRESEARCH_VERIFICATION_*`
 
