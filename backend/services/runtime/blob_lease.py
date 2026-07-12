@@ -34,7 +34,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from backend.services.runtime import gcs_blob
 
@@ -257,24 +257,76 @@ class BlobLease:
         _, current_gen = existing
         return current_gen == token.generation
 
-    def reap_older_generations(self, run_id: str, token: LeaseToken) -> int:
-        """STUB — delete stale-generation K8s Jobs on lease acquisition.
+    def reap_older_generations(
+        self,
+        run_id: str,
+        token: LeaseToken,
+        *,
+        list_jobs: Callable[[str], list[tuple[str, int]]],
+        delete_job: Callable[[str], None],
+    ) -> int:
+        """Delete stale-generation K8s Jobs for ``run_id`` via injected I/O.
 
         Per design §4.3 ("Reaper"): on winning the lease, the new owner
-        should enumerate ``label_selector=run_id=<id>`` Jobs whose fenced
-        name carries an older generation than ``token.generation`` and
-        delete them, closing the orphaned-GPU-Job cost leak. The RBAC
-        (``list``/``watch``/``delete`` on ``batch/jobs``) already exists and
-        is unused; wiring the actual ``list_namespaced_job``/
-        ``delete_namespaced_job`` calls is a **later WS3 task** — it needs
-        the K8s client, which does not belong in this pure module.
+        deletes every Job whose fenced name carries an older generation than
+        ``token.generation``, closing the orphaned-GPU-Job cost leak. This
+        module stays cloud-SDK-free — the real ``list_namespaced_job``/
+        ``delete_namespaced_job`` calls belong to the (drill-time) caller,
+        which supplies them here as plain callables:
 
-        Intentionally unimplemented: raises ``NotImplementedError`` rather
-        than silently no-op-ing, so a caller can't mistake "not wired yet"
-        for "there was nothing to reap".
+        - ``list_jobs(run_id) -> [(job_name, generation), ...]`` — every
+          fenced Job currently associated with ``run_id``, regardless of
+          generation.
+        - ``delete_job(job_name) -> None`` — best-effort delete of one Job
+          by name (e.g. wrapping ``batch_api.delete_namespaced_job``).
+
+        Every ``(job_name, gen)`` with ``gen < token.generation`` is
+        deleted; Jobs at the current generation or newer are NEVER touched.
+
+        Fail-soft, on purpose, at two levels:
+
+        - A single ``delete_job`` failure is logged and skipped — the reap
+          continues with the remaining stale Jobs (mirrors
+          ``k8s_job_backend._delete_job_quietly``'s never-raise discipline:
+          one bad delete must not abort the reap or block lease
+          acquisition).
+        - A ``list_jobs`` failure is logged and treated as "nothing (further)
+          to reap" — it returns the count of Jobs already deleted (``0`` if
+          the listing itself is what failed) rather than propagating.
+          Reaping is best-effort cleanup, not a correctness precondition of
+          holding the lease, so a transient listing error must never crash
+          lease acquisition.
+
+        Returns the number of Jobs actually deleted (successful
+        ``delete_job`` calls only).
         """
-        raise NotImplementedError(
-            "BlobLease.reap_older_generations is a WS3 stub — the K8s job "
-            "lister/deleter (design doc §4.3 'Reaper') is wired in a later "
-            "task; do not treat this as a no-op."
-        )
+        try:
+            jobs = list_jobs(run_id)
+        except Exception as exc:
+            logger.warning(
+                "reap_older_generations(%s): list_jobs failed, treating as "
+                "nothing to reap: %s",
+                run_id,
+                exc,
+            )
+            return 0
+
+        deleted = 0
+        for job_name, gen in jobs:
+            if gen >= token.generation:
+                continue
+            try:
+                delete_job(job_name)
+            except Exception as exc:
+                logger.warning(
+                    "reap_older_generations(%s): failed to delete stale Job "
+                    "%s (generation %d < %d, ignored): %s",
+                    run_id,
+                    job_name,
+                    gen,
+                    token.generation,
+                    exc,
+                )
+                continue
+            deleted += 1
+        return deleted

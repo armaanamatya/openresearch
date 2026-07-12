@@ -16,6 +16,8 @@ deterministic.
 
 from __future__ import annotations
 
+import dataclasses
+
 from google.api_core import exceptions as gcs_exceptions
 
 from backend.services.runtime import blob_lease as bl
@@ -326,15 +328,152 @@ class TestIsCurrent:
 
 
 # ---------------------------------------------------------------------------
-# reap_older_generations — stub
+# reap_older_generations — real implementation, pure injected-callable fakes
 # ---------------------------------------------------------------------------
 
-class TestReapStub:
-    def test_reap_older_generations_is_an_unimplemented_stub(self) -> None:
-        """Reaping needs the K8s job lister (design doc §4.3) — a later WS3
-        task wires it. This module must not silently no-op; it must fail
-        loud so a caller can't mistake "not wired yet" for "nothing to
-        reap"."""
+class TestReapOlderGenerations:
+    def test_deletes_only_older_generation_jobs(self) -> None:
+        client = _fake()
+        lease = _lease(client)
+        token = lease.acquire("run-1", "owner-a", now_epoch=1000.0)
+        assert token is not None
+        token = dataclasses.replace(token, generation=3)
+
+        jobs = [("j-g1", 1), ("j-g2", 2), ("j-g3", 3)]
+        deleted_names: list[str] = []
+
+        count = lease.reap_older_generations(
+            "run-1",
+            token,
+            list_jobs=lambda run_id: jobs,
+            delete_job=deleted_names.append,
+        )
+
+        assert count == 2
+        assert deleted_names == ["j-g1", "j-g2"]
+
+    def test_current_and_newer_generations_never_deleted(self) -> None:
+        client = _fake()
+        lease = _lease(client)
+        token = lease.acquire("run-1", "owner-a", now_epoch=1000.0)
+        assert token is not None
+        token = dataclasses.replace(token, generation=2)
+
+        jobs = [("j-current", 2), ("j-newer", 5)]
+        deleted_names: list[str] = []
+
+        count = lease.reap_older_generations(
+            "run-1",
+            token,
+            list_jobs=lambda run_id: jobs,
+            delete_job=deleted_names.append,
+        )
+
+        assert count == 0
+        assert deleted_names == []
+
+    def test_empty_job_list_returns_zero_and_deletes_nothing(self) -> None:
+        client = _fake()
+        lease = _lease(client)
+        token = lease.acquire("run-1", "owner-a", now_epoch=1000.0)
+        assert token is not None
+        deleted_names: list[str] = []
+
+        count = lease.reap_older_generations(
+            "run-1",
+            token,
+            list_jobs=lambda run_id: [],
+            delete_job=deleted_names.append,
+        )
+
+        assert count == 0
+        assert deleted_names == []
+
+    def test_fail_soft_one_delete_raising_does_not_block_the_others(self) -> None:
+        client = _fake()
+        lease = _lease(client)
+        token = lease.acquire("run-1", "owner-a", now_epoch=1000.0)
+        assert token is not None
+        token = dataclasses.replace(token, generation=3)
+
+        jobs = [("j-g1", 1), ("j-boom", 2), ("j-g3", 3)]
+        deleted_names: list[str] = []
+
+        def flaky_delete(job_name: str) -> None:
+            if job_name == "j-boom":
+                raise RuntimeError("delete_namespaced_job: simulated 500")
+            deleted_names.append(job_name)
+
+        count = lease.reap_older_generations(
+            "run-1",
+            token,
+            list_jobs=lambda run_id: jobs,
+            delete_job=flaky_delete,
+        )
+
+        # j-boom's raise must not propagate, and must not abort reaping the
+        # other older-generation job.
+        assert count == 1
+        assert deleted_names == ["j-g1"]
+
+    def test_list_jobs_raising_returns_zero_and_does_not_crash(self) -> None:
+        client = _fake()
+        lease = _lease(client)
+        token = lease.acquire("run-1", "owner-a", now_epoch=1000.0)
+        assert token is not None
+
+        def flaky_list(run_id: str) -> list[tuple[str, int]]:
+            raise RuntimeError("list_namespaced_job: simulated transport error")
+
+        count = lease.reap_older_generations(
+            "run-1",
+            token,
+            list_jobs=flaky_list,
+            delete_job=lambda job_name: None,
+        )
+
+        assert count == 0
+
+    def test_run_id_is_forwarded_to_list_jobs(self) -> None:
+        """The reaper must scope the listing to this run — a caller mixing
+        up run_ids would reap another run's live Jobs."""
+        client = _fake()
+        lease = _lease(client)
+        token = lease.acquire("run-42", "owner-a", now_epoch=1000.0)
+        assert token is not None
+        token = dataclasses.replace(token, generation=2)
+        seen_run_ids: list[str] = []
+
+        def recording_list_jobs(run_id: str) -> list[tuple[str, int]]:
+            seen_run_ids.append(run_id)
+            return [("j-g1", 1)]
+
+        count = lease.reap_older_generations(
+            "run-42",
+            token,
+            list_jobs=recording_list_jobs,
+            delete_job=lambda job_name: None,
+        )
+
+        assert count == 1
+        assert seen_run_ids == ["run-42"]
+
+
+# ---------------------------------------------------------------------------
+# reap_older_generations — NOW IMPLEMENTED (real behavior covered by
+# TestReapOlderGenerations above). This guards the injected-I/O contract: the
+# K8s job lister/deleter are REQUIRED keyword-only callables (design §4.3),
+# so the pre-Phase-3 no-kwargs stub call is now a TypeError, not the old
+# NotImplementedError.
+# ---------------------------------------------------------------------------
+
+class TestReapRequiresInjectedIO:
+    def test_reap_older_generations_requires_list_and_delete_callables(self) -> None:
+        """The reaper no longer stubs out — it deletes stale-generation Jobs
+        via caller-injected ``list_jobs``/``delete_job`` (kept SDK-free per
+        the module's purity contract). The old 2-positional-arg call must now
+        raise ``TypeError`` (missing required keyword-only args), NOT
+        ``NotImplementedError``."""
         client = _fake()
         lease = _lease(client)
         token = lease.acquire("run-1", "owner-a", now_epoch=1000.0)
@@ -342,8 +481,8 @@ class TestReapStub:
 
         import pytest
 
-        with pytest.raises(NotImplementedError):
-            lease.reap_older_generations("run-1", token)
+        with pytest.raises(TypeError):
+            lease.reap_older_generations("run-1", token)  # type: ignore[call-arg]
 
 
 # ---------------------------------------------------------------------------
