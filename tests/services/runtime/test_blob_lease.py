@@ -493,3 +493,128 @@ class TestLeaseTtlConstant:
     def test_ttl_is_positive_and_documented_multiple_of_heartbeat(self) -> None:
         assert bl.LEASE_TTL_S > 0
         assert bl.LEASE_TTL_S == bl._HEARTBEAT_INTERVAL_S * 3
+
+
+# ---------------------------------------------------------------------------
+# fence_epoch — a renew-invariant fence token, distinct from the CAS
+# generation. renew() advances the generation every heartbeat; fence_epoch
+# stays put so a controller never reaps its own still-running Jobs. It bumps
+# only on a real takeover (a DIFFERENT owner acquiring).
+# ---------------------------------------------------------------------------
+
+class TestFenceEpoch:
+    def test_first_acquire_sets_fence_epoch_1(self) -> None:
+        client = _fake()
+        lease = _lease(client)
+        token = lease.acquire("run-1", "owner-a", now_epoch=1000.0)
+        assert token is not None
+        assert token.fence_epoch == 1
+
+    def test_renew_preserves_fence_epoch_while_advancing_generation(self) -> None:
+        client = _fake()
+        lease = _lease(client)
+        token = lease.acquire("run-1", "owner-a", now_epoch=1000.0)
+        assert token is not None
+        renewed = lease.renew(token, now_epoch=1030.0)
+        assert renewed is not None
+        assert renewed.fence_epoch == token.fence_epoch
+        assert renewed.generation == token.generation + 1
+
+    def test_same_owner_reacquire_preserves_fence_epoch(self) -> None:
+        client = _fake()
+        lease = _lease(client)
+        token1 = lease.acquire("run-1", "owner-a", now_epoch=1000.0)
+        assert token1 is not None
+        token2 = lease.acquire("run-1", "owner-a", now_epoch=1001.0)
+        assert token2 is not None
+        assert token2.fence_epoch == token1.fence_epoch
+
+    def test_takeover_by_new_owner_bumps_fence_epoch(self) -> None:
+        client = _fake()
+        lease = _lease(client)
+        token1 = lease.acquire("run-1", "owner-a", now_epoch=1000.0)
+        assert token1 is not None
+        past_ttl = 1000.0 + bl.LEASE_TTL_S + 1
+        token2 = lease.acquire("run-1", "owner-b", now_epoch=past_ttl)
+        assert token2 is not None
+        assert token2.fence_epoch == token1.fence_epoch + 1
+
+    def test_same_owner_expired_reacquire_does_not_bump_fence_epoch(self) -> None:
+        """The same controller returning after its own TTL lapse (a long Pod
+        restart with a stable owner_id) is not a takeover — its prior Jobs are
+        still its own, so the fence must NOT bump."""
+        client = _fake()
+        lease = _lease(client)
+        token1 = lease.acquire("run-1", "owner-a", now_epoch=1000.0)
+        assert token1 is not None
+        past_ttl = 1000.0 + bl.LEASE_TTL_S + 1
+        token2 = lease.acquire("run-1", "owner-a", now_epoch=past_ttl)
+        assert token2 is not None
+        assert token2.fence_epoch == token1.fence_epoch
+
+
+class TestReapStaleFenceEpochs:
+    def test_own_current_fence_jobs_not_reaped_after_a_renew(self) -> None:
+        """The core self-reaping regression: after a heartbeat renew advances
+        the CAS generation, the controller's OWN current-fence Jobs must NOT be
+        reaped — the reaper keys on fence_epoch, which renew preserves."""
+        client = _fake()
+        lease = _lease(client)
+        token = lease.acquire("run-1", "owner-a", now_epoch=1000.0)
+        assert token is not None
+        token = lease.renew(token, now_epoch=1030.0)
+        assert token is not None and token.fence_epoch == 1
+
+        jobs = [("job-fe1", 1)]  # this controller's own current-epoch job
+        deleted: list[str] = []
+        count = lease.reap_stale_fence_epochs(
+            "run-1", token, list_jobs=lambda r: jobs, delete_job=deleted.append
+        )
+        assert count == 0
+        assert deleted == []
+
+    def test_successor_reaps_predecessor_older_fence_jobs(self) -> None:
+        client = _fake()
+        lease = _lease(client)
+        token1 = lease.acquire("run-1", "owner-a", now_epoch=1000.0)
+        assert token1 is not None
+        past_ttl = 1000.0 + bl.LEASE_TTL_S + 1
+        token2 = lease.acquire("run-1", "owner-b", now_epoch=past_ttl)
+        assert token2 is not None and token2.fence_epoch == 2
+
+        jobs = [("pred-fe1", 1), ("succ-fe2", 2)]
+        deleted: list[str] = []
+        count = lease.reap_stale_fence_epochs(
+            "run-1", token2, list_jobs=lambda r: jobs, delete_job=deleted.append
+        )
+        assert count == 1
+        assert deleted == ["pred-fe1"]
+
+    def test_fail_soft_on_delete_and_list_errors(self) -> None:
+        client = _fake()
+        lease = _lease(client)
+        token = lease.acquire("run-1", "owner-a", now_epoch=1000.0)
+        assert token is not None
+        token = dataclasses.replace(token, fence_epoch=3)
+
+        jobs = [("j1", 1), ("boom", 2)]
+        deleted: list[str] = []
+
+        def flaky(name: str) -> None:
+            if name == "boom":
+                raise RuntimeError("delete_namespaced_job: simulated 500")
+            deleted.append(name)
+
+        count = lease.reap_stale_fence_epochs(
+            "run-1", token, list_jobs=lambda r: jobs, delete_job=flaky
+        )
+        assert count == 1
+        assert deleted == ["j1"]
+
+        def flaky_list(run_id: str) -> list[tuple[str, int]]:
+            raise RuntimeError("list_namespaced_job: simulated transport error")
+
+        count2 = lease.reap_stale_fence_epochs(
+            "run-1", token, list_jobs=flaky_list, delete_job=lambda n: None
+        )
+        assert count2 == 0

@@ -71,6 +71,13 @@ class LeaseToken:
     generation: int
     owner_id: str
     acquired_epoch: float
+    # A renew-invariant fence token, distinct from ``generation``: ``renew``
+    # advances the CAS ``generation`` on every heartbeat, but ``fence_epoch``
+    # stays constant for as long as the same owner holds the lease. Fenced Job
+    # names embed ``fence_epoch`` (never ``generation``), so a controller does
+    # NOT reap its own still-running Jobs after a heartbeat. It bumps by one
+    # only on a real takeover (a DIFFERENT owner acquiring).
+    fence_epoch: int = 1
 
 
 def _lease_blob_name(run_id: str) -> str:
@@ -78,13 +85,19 @@ def _lease_blob_name(run_id: str) -> str:
 
 
 def _encode_lease(
-    *, run_id: str, owner_id: str, acquired_epoch: float, renewed_epoch: float
+    *,
+    run_id: str,
+    owner_id: str,
+    acquired_epoch: float,
+    renewed_epoch: float,
+    fence_epoch: int,
 ) -> bytes:
     payload = {
         "run_id": run_id,
         "owner_id": owner_id,
         "acquired_epoch": acquired_epoch,
         "renewed_epoch": renewed_epoch,
+        "fence_epoch": fence_epoch,
     }
     return json.dumps(payload, sort_keys=True).encode("utf-8")
 
@@ -129,6 +142,7 @@ class BlobLease:
         owner_id: str,
         acquired_epoch: float,
         renewed_epoch: float,
+        fence_epoch: int,
         if_generation_match: int,
     ) -> int | None:
         payload = _encode_lease(
@@ -136,6 +150,7 @@ class BlobLease:
             owner_id=owner_id,
             acquired_epoch=acquired_epoch,
             renewed_epoch=renewed_epoch,
+            fence_epoch=fence_epoch,
         )
         try:
             return gcs_blob.upload_bytes(
@@ -181,6 +196,7 @@ class BlobLease:
                 owner_id=owner_id,
                 acquired_epoch=now_epoch,
                 renewed_epoch=now_epoch,
+                fence_epoch=1,
                 if_generation_match=0,
             )
             if new_gen is None:
@@ -190,6 +206,7 @@ class BlobLease:
                 generation=new_gen,
                 owner_id=owner_id,
                 acquired_epoch=now_epoch,
+                fence_epoch=1,
             )
 
         data, current_gen = existing
@@ -203,11 +220,19 @@ class BlobLease:
         if current_owner != owner_id and not expired:
             return None  # live lease, held by someone else — refused.
 
+        # A takeover by a DIFFERENT owner advances the fence so the successor
+        # can reap the predecessor's now-orphaned Jobs. A same-owner reacquire
+        # (process/Pod restart with a stable owner_id, expired or not) is not a
+        # takeover — its Jobs are still its own, so the fence is preserved.
+        prev_fence = int(record.get("fence_epoch", 1))
+        fence_epoch = prev_fence + 1 if current_owner != owner_id else prev_fence
+
         new_gen = self._write(
             run_id=run_id,
             owner_id=owner_id,
             acquired_epoch=now_epoch,
             renewed_epoch=now_epoch,
+            fence_epoch=fence_epoch,
             if_generation_match=current_gen,
         )
         if new_gen is None:
@@ -217,6 +242,7 @@ class BlobLease:
             generation=new_gen,
             owner_id=owner_id,
             acquired_epoch=now_epoch,
+            fence_epoch=fence_epoch,
         )
 
     def renew(self, token: LeaseToken, now_epoch: float) -> LeaseToken | None:
@@ -238,6 +264,7 @@ class BlobLease:
             owner_id=token.owner_id,
             acquired_epoch=token.acquired_epoch,
             renewed_epoch=now_epoch,
+            fence_epoch=token.fence_epoch,
             if_generation_match=token.generation,
         )
         if new_gen is None:
@@ -325,6 +352,62 @@ class BlobLease:
                     job_name,
                     gen,
                     token.generation,
+                    exc,
+                )
+                continue
+            deleted += 1
+        return deleted
+
+    def reap_stale_fence_epochs(
+        self,
+        run_id: str,
+        token: LeaseToken,
+        *,
+        list_jobs: Callable[[str], list[tuple[str, int]]],
+        delete_job: Callable[[str], None],
+    ) -> int:
+        """Delete Jobs whose fence epoch predates ``token.fence_epoch``.
+
+        The fence-epoch analogue of :meth:`reap_older_generations`, and the
+        method a durable controller MUST use: because ``fence_epoch`` is
+        renew-invariant (unlike the CAS generation), a controller reaping by
+        ``token.fence_epoch`` never deletes its own current-fence Jobs after a
+        heartbeat renewal — only a predecessor's older-fence Jobs, on takeover.
+
+        ``list_jobs(run_id) -> [(job_name, fence_epoch), ...]`` and
+        ``delete_job(job_name) -> None`` are caller-injected (kept SDK-free per
+        this module's purity contract). Every ``(job_name, fe)`` with
+        ``fe < token.fence_epoch`` is deleted; current/newer fences are never
+        touched. Fail-soft at both levels (a single ``delete_job`` raise is
+        logged and skipped; a ``list_jobs`` raise is treated as nothing to
+        reap) — reaping is best-effort cleanup, never a correctness
+        precondition of holding the lease. Returns the count actually deleted.
+        """
+        try:
+            jobs = list_jobs(run_id)
+        except Exception as exc:
+            logger.warning(
+                "reap_stale_fence_epochs(%s): list_jobs failed, treating as "
+                "nothing to reap: %s",
+                run_id,
+                exc,
+            )
+            return 0
+
+        deleted = 0
+        for job_name, fence_epoch in jobs:
+            if fence_epoch >= token.fence_epoch:
+                continue
+            try:
+                delete_job(job_name)
+            except Exception as exc:
+                logger.warning(
+                    "reap_stale_fence_epochs(%s): failed to delete stale Job "
+                    "%s (fence_epoch %d < %d, ignored): %s",
+                    run_id,
+                    job_name,
+                    fence_epoch,
+                    token.fence_epoch,
                     exc,
                 )
                 continue
