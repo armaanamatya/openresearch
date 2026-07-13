@@ -3692,3 +3692,179 @@ class TestPersistedFencedDeadline:
 
         assert results["c0"]["status"] == "ok"
         assert captured["active_deadline_seconds"] == 3600  # fresh fallback, not a crash
+
+
+# ---------------------------------------------------------------------------
+# Phase D: CPU cloud lane — _build_job_manifest(accelerator=...) golden +
+# CPU-branch coverage (OPENRESEARCH_CPU_CLOUD_CELLS design)
+# ---------------------------------------------------------------------------
+
+class TestBuildJobManifestAcceleratorGolden:
+    """Default accelerator="gpu" must leave the manifest byte-identical to
+    before the ``accelerator`` param existed."""
+
+    def test_default_matches_explicit_gpu(self, monkeypatch: pytest.MonkeyPatch):
+        manifest_default = kjcr._build_job_manifest(**_MANIFEST_BASE_KWARGS)
+        manifest_explicit_gpu = kjcr._build_job_manifest(
+            **_MANIFEST_BASE_KWARGS, accelerator="gpu",
+        )
+        assert manifest_default == manifest_explicit_gpu
+
+
+class TestBuildJobManifestCpuBranch:
+    """accelerator="cpu" swaps the GPU-specific manifest bits for a CPU pool."""
+
+    def test_cpu_manifest_has_no_gpu_traces(self, monkeypatch: pytest.MonkeyPatch):
+        manifest = kjcr._build_job_manifest(
+            **_MANIFEST_BASE_KWARGS, accelerator="cpu",
+        )
+        manifest_str = str(manifest)
+        assert "nvidia.com/gpu" not in manifest_str
+        assert "OPENRESEARCH_CELL_GPU_COUNT" not in manifest_str
+
+    def test_cpu_manifest_node_selector_is_cpu_pool_label(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.delenv("OPENRESEARCH_CPU_POOL_LABEL", raising=False)
+        manifest = kjcr._build_job_manifest(
+            **_MANIFEST_BASE_KWARGS, accelerator="cpu",
+        )
+        pod_spec = manifest["spec"]["template"]["spec"]
+        assert pod_spec["nodeSelector"] == {"reprolab/pool": "cpu"}
+
+    def test_cpu_manifest_node_selector_reads_env_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("OPENRESEARCH_CPU_POOL_LABEL", "custom/pool=cheap")
+        manifest = kjcr._build_job_manifest(
+            **_MANIFEST_BASE_KWARGS, accelerator="cpu",
+        )
+        pod_spec = manifest["spec"]["template"]["spec"]
+        assert pod_spec["nodeSelector"] == {"custom/pool": "cheap"}
+
+    def test_cpu_manifest_has_cpu_request_no_gpu_resources(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        manifest = kjcr._build_job_manifest(
+            **_MANIFEST_BASE_KWARGS, accelerator="cpu",
+        )
+        container = manifest["spec"]["template"]["spec"]["containers"][0]
+        assert container["resources"] == {"requests": {"cpu": "2", "memory": "8Gi"}}
+
+    def test_cpu_manifest_has_no_tolerations(self, monkeypatch: pytest.MonkeyPatch):
+        manifest = kjcr._build_job_manifest(
+            **_MANIFEST_BASE_KWARGS, accelerator="cpu",
+        )
+        pod_spec = manifest["spec"]["template"]["spec"]
+        assert pod_spec["tolerations"] == []
+
+
+# ---------------------------------------------------------------------------
+# Phase D: run_matrix routing + all-infra-failure local fallback
+# (OPENRESEARCH_CPU_CLOUD_CELLS, default OFF)
+# ---------------------------------------------------------------------------
+
+class TestCpuCloudCellsFlagOff:
+    """Flag OFF (default/unset) must be byte-identical: a cell declaring
+    accelerator="cpu" still takes the GPU manifest path."""
+
+    def test_cpu_declared_cell_still_takes_gpu_manifest_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.delenv("OPENRESEARCH_CPU_CLOUD_CELLS", raising=False)
+        cells = [{"id": "cpu0", "accelerator": "cpu"}]
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.5})
+
+        results = run_matrix(
+            cells, tmp_path / "train_cell.py", output_root=tmp_path / "out"
+        )
+
+        assert results["cpu0"]["status"] == "ok"
+        created = k8s.batch.created_jobs[0]
+        pod_spec = created["spec"]["template"]["spec"]
+        # GPU path: reprolab/sku (never reprolab/pool), nvidia.com/gpu present.
+        assert "reprolab/sku" in pod_spec["nodeSelector"]
+        assert "reprolab/pool" not in pod_spec["nodeSelector"]
+        container = pod_spec["containers"][0]
+        assert "nvidia.com/gpu" in container["resources"]["requests"]
+        env_names = {e["name"] for e in container["env"]}
+        assert "OPENRESEARCH_CELL_GPU_COUNT" in env_names
+
+
+class TestCpuCloudCellsFlagOnFallback:
+    """Flag ON: an all-CPU-class matrix that infra-fails entirely on the
+    cluster path falls back to the local in-process gpu_cell_runner."""
+
+    def test_all_infra_failed_cpu_class_falls_back_locally(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("OPENRESEARCH_CPU_CLOUD_CELLS", "1")
+        cells = [
+            {"id": "cpu0", "accelerator": "cpu"},
+            {"id": "cpu1", "accelerator": "cpu"},
+        ]
+        jobs, pods = _failed_job(exit_code=1)
+        k8s = _make_k8s(job_sequence=jobs, pods=pods)
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics=None)
+
+        recorded: dict[str, Any] = {}
+
+        def fake_local_run_matrix(
+            cells_arg: list[dict[str, Any]], cell_script_arg: Any, **kwargs: Any
+        ) -> dict[str, dict[str, Any]]:
+            recorded["cells"] = cells_arg
+            recorded["kwargs"] = kwargs
+            return {
+                c["id"]: {
+                    "status": "ok",
+                    "metrics": {"m": 1.0},
+                    "gpu": "local:cpu",
+                    "retries": 0,
+                    "error": None,
+                }
+                for c in cells_arg
+            }
+
+        monkeypatch.setattr(gcr, "run_matrix", fake_local_run_matrix)
+
+        events: list[tuple[str, dict]] = []
+        with bind_run_context(event_sink=lambda t, p: events.append((t, p))):
+            results = run_matrix(
+                cells, tmp_path / "train_cell.py", output_root=tmp_path / "out"
+            )
+
+        assert recorded.get("cells") == cells
+        assert results["cpu0"]["status"] == "ok"
+        assert results["cpu1"]["status"] == "ok"
+        fallback_events = [
+            e for e in events
+            if e[0] == "run_warning" and e[1].get("code") == "cpu_cloud_fallback"
+        ]
+        assert len(fallback_events) == 1
+
+    def test_one_ok_cell_suppresses_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("OPENRESEARCH_CPU_CLOUD_CELLS", "1")
+        cells = [{"id": "cpu_ok", "accelerator": "cpu"}]
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.9})
+
+        called = {"n": 0}
+
+        def fake_local_run_matrix(*a: Any, **k: Any) -> dict[str, dict[str, Any]]:
+            called["n"] += 1
+            return {}
+
+        monkeypatch.setattr(gcr, "run_matrix", fake_local_run_matrix)
+
+        results = run_matrix(
+            cells, tmp_path / "train_cell.py", output_root=tmp_path / "out"
+        )
+
+        assert results["cpu_ok"]["status"] == "ok"
+        assert called["n"] == 0

@@ -85,6 +85,7 @@ from backend.agents.rlm.cell_scheduler import (  # noqa: E402
     should_skip_cell,
     write_cell_manifest,
 )
+from backend.agents.rlm import cpu_class  # noqa: E402
 from backend.agents.rlm.feature_flags import env_truthy  # noqa: E402
 from backend.agents.rlm.run_controller import durable_controller_enabled  # noqa: E402
 from backend.services.runtime import deadline  # noqa: E402
@@ -696,6 +697,11 @@ def _build_job_manifest(
     # Spec 2026-06-14 §4.1: blob-only fallback. When False (or files_share is
     # empty) the cache volume is an ephemeral emptyDir, not the Azure Files PVC.
     files_cache_enabled: bool = True,
+    # Phase D (CPU cloud lane, OPENRESEARCH_CPU_CLOUD_CELLS): "gpu" (default)
+    # preserves every byte of the manifest below; "cpu" swaps the GPU node
+    # selector/toleration/resources for a CPU pool. See the accelerator=="cpu"
+    # branch below for the exact substitutions.
+    accelerator: str = "gpu",
 ) -> dict[str, Any]:
     """Build the K8s Job manifest dict for a single training cell.
 
@@ -712,6 +718,15 @@ def _build_job_manifest(
         (the default) the Azure Workload Identity label is applied, preserving
         byte-for-byte compatibility for existing callers.  Pass ``{}`` explicitly
         for GCP (or any cloud that does not need WI labels).
+
+    ``accelerator``:
+        ``"gpu"`` (the default) leaves every line below byte-identical to the
+        pre-Phase-D manifest. ``"cpu"`` targets the CPU pool label parsed from
+        ``OPENRESEARCH_CPU_POOL_LABEL`` (default ``"reprolab/pool=cpu"``),
+        drops all GPU tolerations (including the spot toleration — a CPU pool
+        is never the spot GPU pool), swaps the container's ``nvidia.com/gpu``
+        resources for a plain CPU/memory request, and omits
+        ``OPENRESEARCH_CELL_GPU_COUNT`` (meaningless without a GPU).
     """
     # P1-fix-5: refuse to submit with an empty image tag rather than silently
     # using whatever :latest resolves to at runtime.
@@ -794,40 +809,52 @@ def _build_job_manifest(
     # torchrun-wrap a >1-GPU distributed cell
     # (gke_cell_entrypoint.resolve_cell_gpu_count). Additive + default 1 → every
     # single-GPU cell (incl. the AKS path) is byte-for-byte unchanged where unread.
-    env_vars.append({"name": "OPENRESEARCH_CELL_GPU_COUNT", "value": gpu_count_str})
+    # Phase D: a CPU-class cell has no GPU to count — the entrypoint never reads
+    # this var on that path, so it is simply omitted rather than stamped "1".
+    if accelerator != "cpu":
+        env_vars.append({"name": "OPENRESEARCH_CELL_GPU_COUNT", "value": gpu_count_str})
 
-    # P0-fix-3: node selector uses the infra pool label reprolab/sku in ALL paths.
-    # With gpu_plan → target that SKU's pool; without → fall back to the default SKU.
-    if gpu_plan is not None:
-        node_selector: dict[str, str] = {
-            "reprolab/sku": str(getattr(gpu_plan, "short_name", default_sku))
-        }
+    if accelerator == "cpu":
+        # Phase D (OPENRESEARCH_CPU_CLOUD_CELLS): target the CPU pool label
+        # instead of the GPU reprolab/sku pool. "key=value" → {key: value}.
+        _cpu_label = os.environ.get("OPENRESEARCH_CPU_POOL_LABEL", "reprolab/pool=cpu")
+        _cpu_key, _, _cpu_value = _cpu_label.partition("=")
+        node_selector = {_cpu_key: _cpu_value}
+        # No GPU taint to tolerate on a CPU pool — never the spot GPU pool either.
+        _tolerations = []
     else:
-        node_selector = {"reprolab/sku": default_sku}
-
-    # Toleration for the nvidia.com/gpu taint (always present; required by AKS GPU nodes).
-    gpu_toleration = {
-        "key": "nvidia.com/gpu",
-        "operator": "Exists",
-        "effect": "NoSchedule",
-    }
-
-    # Spot toleration (opt-in via <prefix>_use_spot): a spot/preemptible GPU pool gets a
-    # cloud-specific taint, so the cell Pod must tolerate it or it never schedules onto a
-    # spot node. Cloud-specific key (GKE vs AKS). Default (use_spot off) → tolerations is
-    # exactly [gpu_toleration], byte-identical to the on-demand path.
-    _tolerations: list[dict[str, Any]] = [gpu_toleration]
-    if _cloud_setting("use_spot", False):
-        if _get_settings_prefix() == "gcp":
-            _tolerations.append({
-                "key": "cloud.google.com/gke-spot",
-                "operator": "Equal", "value": "true", "effect": "NoSchedule",
-            })
+        # P0-fix-3: node selector uses the infra pool label reprolab/sku in ALL paths.
+        # With gpu_plan → target that SKU's pool; without → fall back to the default SKU.
+        if gpu_plan is not None:
+            node_selector = {
+                "reprolab/sku": str(getattr(gpu_plan, "short_name", default_sku))
+            }
         else:
-            _tolerations.append({
-                "key": "kubernetes.azure.com/scalesetpriority",
-                "operator": "Equal", "value": "spot", "effect": "NoSchedule",
-            })
+            node_selector = {"reprolab/sku": default_sku}
+
+        # Toleration for the nvidia.com/gpu taint (always present; required by AKS GPU nodes).
+        gpu_toleration = {
+            "key": "nvidia.com/gpu",
+            "operator": "Exists",
+            "effect": "NoSchedule",
+        }
+
+        # Spot toleration (opt-in via <prefix>_use_spot): a spot/preemptible GPU pool gets a
+        # cloud-specific taint, so the cell Pod must tolerate it or it never schedules onto a
+        # spot node. Cloud-specific key (GKE vs AKS). Default (use_spot off) → tolerations is
+        # exactly [gpu_toleration], byte-identical to the on-demand path.
+        _tolerations = [gpu_toleration]
+        if _cloud_setting("use_spot", False):
+            if _get_settings_prefix() == "gcp":
+                _tolerations.append({
+                    "key": "cloud.google.com/gke-spot",
+                    "operator": "Equal", "value": "true", "effect": "NoSchedule",
+                })
+            else:
+                _tolerations.append({
+                    "key": "kubernetes.azure.com/scalesetpriority",
+                    "operator": "Equal", "value": "spot", "effect": "NoSchedule",
+                })
 
     # Pod template labels: base labels + cloud-specific extras.
     # Default to Azure Workload Identity label when pod_template_extra_labels is
@@ -868,10 +895,15 @@ def _build_job_manifest(
                     "name": "cell",
                     "image": base_image,
                     "env": env_vars,
-                    "resources": {
-                        "requests": {"nvidia.com/gpu": gpu_count_str},
-                        "limits": {"nvidia.com/gpu": gpu_count_str},
-                    },
+                    "resources": (
+                        # Phase D: plain CPU/memory request, no nvidia.com/gpu anywhere.
+                        {"requests": {"cpu": "2", "memory": "8Gi"}}
+                        if accelerator == "cpu"
+                        else {
+                            "requests": {"nvidia.com/gpu": gpu_count_str},
+                            "limits": {"nvidia.com/gpu": gpu_count_str},
+                        }
+                    ),
                     "volumeMounts": [
                         {
                             "name": "reprolab-cache",
@@ -1406,6 +1438,10 @@ def _run_cell_job(
     fence_generation: int | None = None,
     blob_client: Any | None = None,
     pod_template_extra_labels: dict | None = None,
+    # Phase D (OPENRESEARCH_CPU_CLOUD_CELLS): "gpu" (default) is byte-identical
+    # to before this param existed; "cpu" threads through to
+    # _build_job_manifest's accelerator="cpu" branch.
+    accelerator: str = "gpu",
 ) -> CellResult:
     """Submit a K8s Job for ``cell`` and block until terminal, then return a CellResult.
 
@@ -1471,6 +1507,7 @@ def _run_cell_job(
                 (_cloud_setting("gpu_skus", []) or ["azure_a100_80"])[0]
             ),
             pod_template_extra_labels=pod_template_extra_labels,
+            accelerator=accelerator,
         )
     except ValueError as exc:
         # P1-fix-5: manifest builder raises ValueError on empty base_image.
@@ -1913,6 +1950,13 @@ def run_matrix(
     _force_cells: set[str] = force_cells or set()
     _resume_armed: bool = is_resume_armed()
 
+    # Phase D (CPU cloud lane): read ONCE here, main thread — mirrors the
+    # gpu_plan/fence_generation precedent above (ContextVars/env reads that
+    # gate per-cell worker-thread behavior are always resolved up front, never
+    # re-read inside a worker thread). Off (default) ⇒ every cell below keeps
+    # accelerator="gpu" and the post-matrix fallback block never runs.
+    _cpu_cloud_enabled: bool = env_truthy("OPENRESEARCH_CPU_CLOUD_CELLS")
+
     run_budget = _get_run_budget()
     event_sink = _get_event_sink()
     gpu_plan = _get_gpu_plan()
@@ -2064,6 +2108,14 @@ def run_matrix(
 
         cell_id: str = cell.get("id", f"cell_{id(cell)}")
         output_dir = output_root / cell_id
+
+        # Phase D: per-cell CPU-vs-GPU routing. Off (default), or any cell
+        # carrying a hard/soft GPU signal, keeps accelerator="gpu" — the
+        # manifest stays byte-identical. Only a CPU-class cell with the flag
+        # on gets accelerator="cpu".
+        _cell_accelerator: str = (
+            "cpu" if _cpu_cloud_enabled and not cpu_class.requires_gpu(cell) else "gpu"
+        )
 
         # --- Resume skip (Track B) ---
         if _resume_armed and should_skip_cell(cell_id, output_dir, _fingerprints, _force_cells):
@@ -2240,6 +2292,9 @@ def run_matrix(
                 # P0-scale-2: shared client avoids per-call MSI probe.
                 blob_client=shared_blob_client,
                 pod_template_extra_labels=_pod_extra_labels,
+                # Phase D: closure-captured per-cell routing decision (see
+                # _cell_accelerator above) — never re-derived here.
+                accelerator=_cell_accelerator,
             )
 
             # Escalation check: only if oom_failed + plan available + cap not hit.
@@ -2389,7 +2444,43 @@ def run_matrix(
                 error="worker exited without recording a result",
             )
 
-    return {cid: r.to_dict() for cid, r in results.items()}
+    result_dicts = {cid: r.to_dict() for cid, r in results.items()}
+
+    # Phase D (OPENRESEARCH_CPU_CLOUD_CELLS): when this ENTIRE matrix is
+    # CPU-class and EVERY cell came back infra-failed on the cluster path (a
+    # single real result — ok/oom_failed/skipped/anything but "error" —
+    # suppresses this branch so a genuine result is never discarded), fall
+    # back to running the identical cells locally in-process via
+    # gpu_cell_runner.run_matrix — the durable controller Pod always has CPU,
+    # so a CPU-class matrix should never be stuck behind a broken CPU node
+    # pool. Off (default) ⇒ this block never executes.
+    if _cpu_cloud_enabled and cpu_class.run_is_cpu_class(cells) and (
+        cpu_class.all_cells_infra_failed(result_dicts)
+    ):
+        _msg = (
+            f"k8s_job_cell_runner: all {len(cells)} CPU-class cells infra-failed on "
+            "the K8s cluster path — falling back to local in-process "
+            "gpu_cell_runner.run_matrix"
+        )
+        logger.warning(_msg)
+        event_sink("run_warning", {"code": "cpu_cloud_fallback", "message": _msg})
+        from backend.agents.rlm import gpu_cell_runner as _gpu_cell_runner
+        return _gpu_cell_runner.run_matrix(
+            cells,
+            cell_script,
+            output_root=output_root,
+            gpus=gpus,
+            max_parallel=max_parallel,
+            max_oom_retries=max_oom_retries,
+            per_cell_timeout_s=per_cell_timeout_s,
+            overall_timeout_s=overall_timeout_s,
+            gpus_per_cell=gpus_per_cell,
+            fingerprints=fingerprints,
+            force_cells=force_cells,
+            now_iso=now_iso,
+        )
+
+    return result_dicts
 
 
 # ---------------------------------------------------------------------------
