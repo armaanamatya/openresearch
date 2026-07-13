@@ -4,9 +4,9 @@
 
 ## Summary
 
-- **Total distinct flags:** 480
+- **Total distinct flags:** 486
 - **Managed by `config.py` Settings (typed, default known):** 140
-- **Ad-hoc `os.environ` reads (no central default):** 340
+- **Ad-hoc `os.environ` reads (no central default):** 346
 - **Mentioned in `CLAUDE.md`:** 3 (0%)
 
 Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **sites** = ad-hoc read count; **default** = literal default at first read site (best effort).
@@ -267,6 +267,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | `OPENRESEARCH_CELL_CHECKPOINT_GC` |  |  | 1 | `""` |
 | `OPENRESEARCH_CELL_CHECKPOINT_INTERVAL_S` |  |  | 1 | `"600"` |
 | `OPENRESEARCH_CELL_ENV_PASSTHROUGH` |  |  | 3 | `""` |
+| `OPENRESEARCH_CELL_FENCE_EPOCH` |  |  | 1 | `""` |
 | `OPENRESEARCH_CELL_FINGERPRINT` |  |  |  | |
 | `OPENRESEARCH_CELL_GPU_COUNT` |  |  |  | |
 | `OPENRESEARCH_CELL_GRAD_CHECKPOINT` |  |  |  | |
@@ -336,6 +337,20 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_CONTEXT_MAP` |  |  | 2 | `""` |
 
+### `OPENRESEARCH_CONTROLLER_*`
+
+| Flag | cfg | doc | sites | default |
+|---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_CONTROLLER_BACKOFF_LIMIT` |  |  | 1 | `""` |
+| `OPENRESEARCH_CONTROLLER_READY_TIMEOUT_S` |  |  | 1 | `""` |
+
+### `OPENRESEARCH_CPU_*`
+
+| Flag | cfg | doc | sites | default |
+|---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_CPU_CLOUD_CELLS` |  |  |  | |
+| `OPENRESEARCH_CPU_POOL_LABEL` |  |  | 2 | `"reprolab/pool=cpu"` |
+
 ### `OPENRESEARCH_CUSTOM_*`
 
 | Flag | cfg | doc | sites | default |
@@ -390,6 +405,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_DEMO_SECRET` | ✅ | ✅ |  | `""` |
+| `OPENRESEARCH_DEMO_STATUS_TERMINAL_GUARD` |  |  | 1 | `""` |
 
 ### `OPENRESEARCH_DETERMINISTIC_*`
 

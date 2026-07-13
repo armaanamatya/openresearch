@@ -2624,6 +2624,45 @@ def _compute_cost_summary(project_dir: Path, iteration_count: int) -> dict:
     }
 
 
+# WS1-H1: statuses that mean the run is over. The cost-summary daemon must never
+# republish a stale non-terminal snapshot over one of these.
+_TERMINAL_STATUSES = frozenset(
+    {"completed", "failed", "stopped", "killed", "interrupted"}
+)
+
+
+def _demo_status_terminal_guard_enabled() -> bool:
+    """``OPENRESEARCH_DEMO_STATUS_TERMINAL_GUARD`` — default OFF, read at call time."""
+    return (
+        os.environ.get("OPENRESEARCH_DEMO_STATUS_TERMINAL_GUARD", "").strip().lower()
+        in ("1", "true", "yes")
+    )
+
+
+def _should_skip_stale_republish(status_path: Path) -> bool:
+    """WS1-H1: True iff the guard is on AND the live on-disk status is terminal.
+
+    The cost-summary daemon holds a snapshot ``existing`` read at the top of its
+    iteration; a concurrent terminal write from ``_finalize`` can land before the
+    daemon's ``os.replace``. Re-reading the live status here — immediately before
+    the replace — lets the daemon discard its stale non-terminal write instead of
+    clobbering the terminal one. Verdict-surface-protective (never touches
+    ``verdict``/``implementation_verdict``/``replication_verdict``); OFF ⇒ always
+    ``False`` (byte-identical). Fail-soft: any read error ⇒ ``False``.
+    """
+    if not _demo_status_terminal_guard_enabled():
+        return False
+    try:
+        if not status_path.exists():
+            return False
+        live = str(
+            json.loads(status_path.read_text(encoding="utf-8")).get("status") or ""
+        )
+    except Exception:  # noqa: BLE001 — never crash the daemon on a torn read
+        return False
+    return live in _TERMINAL_STATUSES
+
+
 def _update_cost_summary_loop(
     project_dir: Path,
     stop_event: threading.Event,
@@ -2660,6 +2699,11 @@ def _update_cost_summary_loop(
                 )
             tmp = status_path.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+            # WS1-H1: a terminal write may have landed since `existing` was read;
+            # never republish a stale non-terminal snapshot over it.
+            if _should_skip_stale_republish(status_path):
+                tmp.unlink(missing_ok=True)
+                continue
             os.replace(tmp, status_path)
         except Exception:  # noqa: BLE001 — cost surfacing must never crash the run
             logger.debug("cost_summary_loop: update failed (will retry)", exc_info=True)
