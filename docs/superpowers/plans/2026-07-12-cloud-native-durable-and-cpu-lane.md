@@ -289,22 +289,15 @@ def test_running_durable_run_with_controller_is_active(tmp_runs):
 - [ ] **Step 4: Run** → PASS.
 - [ ] **Step 5: Lead reviews + commits** — `git commit -m "Add ControllerHandle to LiveRunState; treat handle-bearing run as active (pid=None safe)"`
 
-### Task C2: Default-ON-for-gcp in `_should_use_durable_controller`
+### Task C2: DROPPED — "default and on" via deployment config, not a code default flip
 
-**Files:** Modify `backend/services/events/live_runs.py` (:953). Test: same file as C1.
-
-- [ ] **Step 1: Failing test**
-```python
-def test_should_use_durable_defaults_on_for_gcp(monkeypatch):
-    monkeypatch.delenv("OPENRESEARCH_DURABLE_CONTROLLER", raising=False)
-    lr = LiveRuns(tmp)
-    assert lr._should_use_durable_controller(req(sandbox="gcp")) is True
-    assert lr._should_use_durable_controller(req(sandbox="local")) is False
-```
-- [ ] **Step 2: Run → FAIL** (currently keys on `durable_controller_enabled()` default-false).
-- [ ] **Step 3: Implement** — replace body with `return run_controller.durable_controller_default_for_sandbox(request.sandbox)`.
-- [ ] **Step 4: Run → PASS.**
-- [ ] **Step 5: Lead reviews + commits** — `git commit -m "Default durable controller ON for sandbox=gcp (opt-out via =0)"`
+**Decision (user, 2026-07-12):** keep the code default-OFF to preserve the byte-identical-OFF
+invariant and both committed contract tests (`test_predicate_false_when_flag_unset_for_every_sandbox`,
+`test_start_python_run_flag_off_uses_popen_not_controller`). `_should_use_durable_controller` is
+**unchanged** (`durable_controller_enabled() and sandbox=="gcp"`). "On by default for gcp" is achieved
+by the **gcp deployment env / run-spec** setting `OPENRESEARCH_DURABLE_CONTROLLER=1` (documented in E1).
+Consequence: the `durable_controller_default_for_sandbox` helper added in Phase B is now dead code —
+**removed** (with its 3 tests + the now-unused `import os`) as part of Phase C cleanup.
 
 ### Task C3: Real `_submit_durable_controller` (takeover-safe) + `_ControllerCluster` seam
 

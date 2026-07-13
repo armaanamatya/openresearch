@@ -120,21 +120,108 @@ def test_predicate_true_only_for_gcp_when_flag_on(monkeypatch, tmp_path: Path) -
 
 
 # ---------------------------------------------------------------------------
-# Default submit hook — fail-loud stub, not a silent no-op.
+# Real submit hook — injected fake cluster (the real GCS/K8s cluster is
+# drill-exercised; here we drive the takeover-safe ordering + handle recording).
 # ---------------------------------------------------------------------------
 
 
+class _FakeToken:
+    def __init__(self, fence_epoch=2):
+        self.fence_epoch = fence_epoch
+        self.generation = 1
+        self.acquired_epoch = 100.0
+        self.owner_id = "owner"
+
+
+class _FakeCluster:
+    def __init__(self, *, token=None, ready=True, delete_ok=True):
+        self._token = token if token is not None else _FakeToken()
+        self._ready = ready
+        self._delete_ok = delete_ok
+
+    def now(self):
+        return 100.0
+
+    def acquire(self, project_id, owner_id, now_epoch):
+        return self._token
+
+    def is_current(self, token):
+        return True
+
+    def submit(self, manifest):
+        pass
+
+    def wait_ready(self, job_name, *, timeout_s):
+        return self._ready
+
+    def delete_confirmed(self, job_name):
+        return self._delete_ok
+
+    def reap(self, project_id, token):
+        return 0
+
+
 @pytest.mark.asyncio
-async def test_submit_durable_controller_default_stub_raises(tmp_path: Path) -> None:
-    service = FileLiveRunService(runs_root=tmp_path)
-    with pytest.raises(
-        NotImplementedError, match="durable controller submit is wired at drill time"
-    ):
-        await service._submit_durable_controller(
-            StartRunRequest(sandbox="gcp"),
-            project_id="prj_stub_test",
-            uploaded_paper=None,
+async def test_durable_submit_records_handle_via_start(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+    service = FileLiveRunService(
+        runs_root=tmp_path, repo_root=tmp_path, controller_cluster=_FakeCluster()
+    )
+    popen_calls: list[dict] = []
+    monkeypatch.setattr(lr_module.subprocess, "Popen", _recording_popen(popen_calls))
+
+    result = await service._start_python_run(
+        StartRunRequest(sandbox="gcp"), project_id="prj_dur", uploaded_paper=None,
+    )
+    assert popen_calls == []  # durable path, no local subprocess
+    assert result.controller is not None
+    assert result.controller.jobName == "controller-prj_dur-fe2"
+    assert result.controller.fenceEpoch == 2
+    assert result.pid is None
+
+
+@pytest.mark.asyncio
+async def test_durable_not_ready_confirmed_delete_falls_back_to_popen(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+    service = FileLiveRunService(
+        runs_root=tmp_path,
+        repo_root=tmp_path,
+        controller_cluster=_FakeCluster(ready=False, delete_ok=True),
+    )
+    popen_calls: list[dict] = []
+    monkeypatch.setattr(lr_module.subprocess, "Popen", _recording_popen(popen_calls))
+
+    project_id = "prj_notready"
+    try:
+        result = await service._start_python_run(
+            StartRunRequest(sandbox="gcp"), project_id=project_id, uploaded_paper=None,
         )
+    finally:
+        await _cancel_named_tasks(f"stderr-watchdog-{project_id}")
+    assert len(popen_calls) == 1  # confirmed-deleted → safe local fallback
+    assert result.pid == _FAKE_PID
+
+
+@pytest.mark.asyncio
+async def test_durable_stuck_fails_loud_no_fallback(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+    service = FileLiveRunService(
+        runs_root=tmp_path,
+        repo_root=tmp_path,
+        controller_cluster=_FakeCluster(ready=False, delete_ok=False),
+    )
+    popen_calls: list[dict] = []
+    monkeypatch.setattr(lr_module.subprocess, "Popen", _recording_popen(popen_calls))
+
+    from backend.agents.rlm.controller_cluster import ControllerStuck
+
+    with pytest.raises(ControllerStuck):
+        await service._start_python_run(
+            StartRunRequest(sandbox="gcp"), project_id="prj_stuck", uploaded_paper=None,
+        )
+    assert popen_calls == []  # never fall back while a remote Job may be live
 
 
 # ---------------------------------------------------------------------------

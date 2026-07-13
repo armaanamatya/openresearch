@@ -17,14 +17,12 @@ Gated on ``OPENRESEARCH_DURABLE_CONTROLLER`` (default OFF); see
 
 from __future__ import annotations
 
-import os
 from typing import Any, Protocol
 
 from backend.agents.rlm.feature_flags import env_truthy
 
 __all__ = [
     "durable_controller_enabled",
-    "durable_controller_default_for_sandbox",
     "build_controller_command",
     "classify_controller_exit",
     "acquire_drive_lease",
@@ -34,25 +32,12 @@ __all__ = [
 def durable_controller_enabled() -> bool:
     """``OPENRESEARCH_DURABLE_CONTROLLER`` -- default OFF, read at call time.
 
-    This global helper stays env-only/default-false: cell-fencing helpers key on
-    it, so it must NOT flip to default-on. The launch-boundary default lives in
-    :func:`durable_controller_default_for_sandbox` instead.
+    Stays env-only/default-false to keep the byte-identical-OFF invariant: cell
+    fencing and the ``_should_use_durable_controller`` predicate both key on it.
+    "On by default for gcp" is a DEPLOYMENT property — the gcp deployment env /
+    run-spec sets ``=1`` — not a code default flip.
     """
     return env_truthy("OPENRESEARCH_DURABLE_CONTROLLER")
-
-
-def durable_controller_default_for_sandbox(sandbox: str) -> bool:
-    """Launch-boundary default: durable controller ON for ``sandbox=="gcp"``.
-
-    ON by default for gcp (operational, fail-soft path); ``OPENRESEARCH_DURABLE
-    _CONTROLLER=0``/``false``/``no`` opts out. Non-gcp sandboxes are never
-    durable, regardless of the flag, so a local/docker/runpod run is
-    byte-identical to today.
-    """
-    if sandbox != "gcp":
-        return False
-    raw = os.environ.get("OPENRESEARCH_DURABLE_CONTROLLER", "").strip().lower()
-    return raw not in ("0", "false", "no")
 
 
 def build_controller_command(paper: str, project_id: str) -> list[str]:
