@@ -42,6 +42,22 @@
 - C. Plan — folding into per-workstream TDD (mega-spec §4-8 + §14 serve as the plan)
 - D. Build W1 — STARTING: W1-M1 rubric pinning, TDD, branch `feat/evidence-integrity-w1`
 
+- **iter 3 (mid-cycle, user-driven) → LOOP END (10:17, past 09:00 stop)**: TDD'd W1-M1 rubric
+  pinning to completion on branch `feat/evidence-integrity-w1`. Pure `rubric_fingerprint` +
+  disk-backed `write_rubric_pin` + fail-closed `verify_rubric_integrity` + flag-gated
+  `check_grading_input_integrity` (OPENRESEARCH_GRADER_INTEGRITY, default-OFF). 9 hermetic tests
+  incl. OFF/ON pair, all green; ruff clean. Committed c97f9564. **NOT yet wired into leaf_scorer /
+  evidence_gate** — that's the next (higher-risk) slice. Loop stopped: 09:00 passed.
+
+## RESUME HERE (next session — loop is over)
+1. Wire `check_grading_input_integrity` into the grading path: call `write_rubric_pin` at rubric-gen
+   (find rubric-gen site near `leaf_scorer`/rubric generator), and consult `check_grading_input_integrity`
+   in `verify_against_rubric` (primitives.py:8166) → on `ok=False`, route through `evidence_gate` as a
+   fail-closed `evidence_tampered` outcome mapped to `leaf_triage` `provenance_gap`. Ship OFF/ON wiring test.
+2. W1-M4 metric cross-check; W1-M2/M3 access-audit + leakage.
+3. W2: add `deterministic:state_contract` check_kind to `deterministic_leaf_checker.py`.
+4. W4 (cost) + W3 (scorecard) + W5 (sandbox) per spec §§6-8, §14.
+
 ## Key facts for implementation (verified)
 - New W1 module: `backend/evals/paperbench/grading_input_integrity.py` (sibling to deterministic_leaf_checker)
 - W2: extend `deterministic_leaf_checker.py` with `deterministic:state_contract` check_kind
