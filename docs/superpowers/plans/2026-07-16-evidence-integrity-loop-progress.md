@@ -109,7 +109,16 @@ eval_provenance (M4+M3), pricing.py Foundry-Claude entries. Codebase evidence la
 - rubric file: `runs/<id>/rubric_tree.json`; provenance: `code/provenance.json` or `code/outputs/*/provenance.json`
 - evidence bundle: `mint_bundle(project_dir)` / `resolve_bundle(project_dir)`, field `attempt_id`
 
-## Pre-existing suite pollution (NOT caused by this branch — flagged for a separate fix)
+## Pre-existing suite pollution — ROOT-CAUSED + FIXED (commit e27ab5dc)
+Full-suite failures were exactly 3 (of 9081): the polluter is `test_campaign_composition.py`, whose
+campaign applies its run-spec profile to `os.environ` via RAW assignment (real production behavior:
+`OPENRESEARCH_EXTERNAL_VALIDATOR=1` from the profile). The autouse fixture only delenv'd 3 vars, so
+the leaked flag broke `test_external_validator` / `test_report_validation_stamp` "disabled_by_default"
+assertions only in full-suite order. FIX: snapshot+restore `os.environ` in the autouse fixture (catches
+any leaked run-spec key). Reproduced (campaign_composition → the 3 tests fail) then verified fixed
+(58 passed). Full suite before fix: `3 failed, 9078 passed`; those 3 were the ONLY failures.
+
+## (original finding)
 Full `tests/rlm/` run (alone, WITHOUT any of my evals test files) reproduces 3 order-dependent failures:
 `test_external_validator.py::test_external_validator_disabled_by_default`,
 `::test_flag_off_panel_unavailable_with_none_client`,
