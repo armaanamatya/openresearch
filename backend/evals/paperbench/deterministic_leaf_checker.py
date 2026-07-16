@@ -92,6 +92,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -99,12 +100,24 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["check_leaf", "DETERMINISTIC_CHECK_KINDS"]
 
-# The three recognized check kinds. A leaf whose ``check_kind`` is not in this
-# set falls through to the LLM (returns None).
+# The three always-on recognized check kinds. A leaf whose ``check_kind`` is not
+# in this set falls through to the LLM (returns None).
 CHECK_HPARAM = "deterministic:hparam"
 CHECK_ARTIFACT = "deterministic:artifact"
 CHECK_NUMERIC = "deterministic:numeric"
 DETERMINISTIC_CHECK_KINDS = frozenset({CHECK_HPARAM, CHECK_ARTIFACT, CHECK_NUMERIC})
+
+# W2 (GroundEval): trace-coherence state contracts. A SEPARATE kind gated by its
+# own default-OFF flag — off ⇒ the kind is unrecognized ⇒ routed to the LLM,
+# byte-identical to an un-annotated leaf regardless of any annotation present.
+CHECK_STATE_CONTRACT = "deterministic:state_contract"
+
+
+def _state_contracts_enabled() -> bool:
+    """True iff ``OPENRESEARCH_STATE_CONTRACTS`` is in {'1','true','yes','on'}."""
+    return os.environ.get(
+        "OPENRESEARCH_STATE_CONTRACTS", ""
+    ).strip().lower() in ("1", "true", "yes", "on")
 
 # hparam comparison operators.
 _HPARAM_OPS = frozenset({"==", "!=", ">=", "<=", "~="})
@@ -567,6 +580,81 @@ def _grade_trend(
 
 
 # --------------------------------------------------------------------------- #
+# W2 state-contract checker (trace coherence over eval_provenance.json).
+# --------------------------------------------------------------------------- #
+def _eval_provenance_sidecars(run_dir: Path) -> list[dict]:
+    """Every parseable ``eval_provenance.json`` under ``run_dir/code``, fail-soft."""
+    code_dir = run_dir / "code"
+    if not code_dir.exists():
+        return []
+    out: list[dict] = []
+    try:
+        for p in code_dir.rglob("eval_provenance.json"):
+            d = _load_json(p)
+            if isinstance(d, dict):
+                out.append(d)
+    except Exception:  # noqa: BLE001 — a bad tree just yields no sidecars.
+        return out
+    return out
+
+
+def _sidecar_n_eval(sc: dict) -> int:
+    """Non-negative integer ``n_eval`` from a sidecar, else 0."""
+    v = sc.get("n_eval")
+    if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0:
+        return int(v)
+    return 0
+
+
+def _check_state_contract(
+    leaf_id: str, assertion: dict, run_dir: Path
+) -> dict[str, Any] | None:
+    """``deterministic:state_contract`` — trace-coherence predicates grounded in
+    ``eval_provenance.json``. Recognized predicate keys:
+
+    * ``min_eval_n`` (number) — the best cell's ``n_eval`` must be ≥ this (catches a
+      benchmark claim backed by a handful of eval examples).
+    * ``require_held_out`` (truthy) — no cell may report ``held_out == False``.
+
+    No recognized key → ``None`` (malformed → LLM). A well-formed assertion with
+    no ``eval_provenance.json`` on disk → graded ``0.0`` (missing evidence), the
+    module's existing missing-evidence contract.
+    """
+    has_min = "min_eval_n" in assertion
+    has_held = "require_held_out" in assertion
+    if not (has_min or has_held):
+        return None  # no recognized predicate → cannot interpret → LLM.
+
+    sidecars = _eval_provenance_sidecars(run_dir)
+    if not sidecars:
+        return _result(
+            leaf_id, CHECK_STATE_CONTRACT, 0.0,
+            "eval_provenance_missing: no eval_provenance.json to verify the state contract",
+        )
+
+    if has_min:
+        target = _coerce_number(assertion.get("min_eval_n"))
+        if target is None:
+            return None  # malformed numeric target → LLM.
+        best_n = max((_sidecar_n_eval(sc) for sc in sidecars), default=0)
+        if best_n < target:
+            return _result(
+                leaf_id, CHECK_STATE_CONTRACT, 0.0,
+                f"eval_coverage: n_eval={best_n} < min_eval_n={target:g} "
+                f"(insufficient held-out evaluation for the claimed result)",
+            )
+
+    if has_held and assertion.get("require_held_out"):
+        if any(sc.get("held_out") is False for sc in sidecars):
+            return _result(
+                leaf_id, CHECK_STATE_CONTRACT, 0.0,
+                "held_out: a cell reports held_out=False (in-sample, not held-out)",
+            )
+
+    return _result(leaf_id, CHECK_STATE_CONTRACT, 1.0, "state contract satisfied")
+
+
+# --------------------------------------------------------------------------- #
 # public entrypoint.
 # --------------------------------------------------------------------------- #
 def check_leaf(leaf: dict, run_dir: Path) -> dict[str, Any] | None:
@@ -585,6 +673,15 @@ def check_leaf(leaf: dict, run_dir: Path) -> dict[str, Any] | None:
         if not isinstance(leaf, dict):
             return None
         kind = leaf.get("check_kind")
+        # W2 state contracts: a separate, flag-gated kind. Off → unrecognized →
+        # LLM (byte-identical); on → evaluate the trace-coherence predicates.
+        if kind == CHECK_STATE_CONTRACT:
+            if not _state_contracts_enabled():
+                return None
+            assertion = leaf.get("assertion")
+            if not isinstance(assertion, dict) or not assertion:
+                return None
+            return _check_state_contract(leaf.get("id", ""), assertion, Path(run_dir))
         if kind not in DETERMINISTIC_CHECK_KINDS:
             return None  # no/unknown annotation → LLM (backwards-compat path).
         assertion = leaf.get("assertion")
