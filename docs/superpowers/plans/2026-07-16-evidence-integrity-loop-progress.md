@@ -49,14 +49,23 @@
   incl. OFF/ON pair, all green; ruff clean. Committed c97f9564. **NOT yet wired into leaf_scorer /
   evidence_gate** — that's the next (higher-risk) slice. Loop stopped: 09:00 passed.
 
-## RESUME HERE (next session — loop is over)
-1. Wire `check_grading_input_integrity` into the grading path: call `write_rubric_pin` at rubric-gen
-   (find rubric-gen site near `leaf_scorer`/rubric generator), and consult `check_grading_input_integrity`
-   in `verify_against_rubric` (primitives.py:8166) → on `ok=False`, route through `evidence_gate` as a
-   fail-closed `evidence_tampered` outcome mapped to `leaf_triage` `provenance_gap`. Ship OFF/ON wiring test.
-2. W1-M4 metric cross-check; W1-M2/M3 access-audit + leakage.
+## W1-M1 — DONE + WIRED (2026-07-16, commits c97f9564, d706dc5f, bc78dd02, 263d7f94)
+- Pure module `backend/evals/paperbench/grading_input_integrity.py`: `rubric_fingerprint` (byte-identical
+  to canonical `attempt_assessment.rubric_sha256`, consistency-tested), `write_rubric_pin` /
+  `maybe_write_rubric_pin` (flag-gated), `verify_rubric_integrity` (fail-closed), `check_grading_input_integrity`.
+- WIRED: pin at `run.py` after the spec-validator (rubric finalized); guard atop `verify_against_rubric`
+  (primitives.py) rejects a rubric ≠ pin as `evidence_tampered` (repairable) BEFORE spending an LLM grade.
+- Flag `OPENRESEARCH_GRADER_INTEGRITY` (default-OFF, registered in flags.md). OFF = byte-identical (tested).
+- Tests: 14 module + 2 integration (make_context OFF/ON); 43+114 green; ruff clean.
+- CAVEAT for default-flip: root may pass a benignly-different rubric object → real-run A/B needed before ON.
+  Discovered existing campaign-level rubric pin (`attempt_assessment.rubric_sha256`, cross-attempt) — reused
+  its hash semantics; W1-M1 covers the single-run (incl. non-campaign) gap it doesn't.
+
+## RESUME HERE (next slices)
+1. W1-M4 reported-vs-true metric cross-check (re-derive headline metric from raw outputs; `metric_mismatch`).
+2. W1-M2/M3 access-audit + leakage (needs sandbox entrypoint hook; see spec §4.2).
 3. W2: add `deterministic:state_contract` check_kind to `deterministic_leaf_checker.py`.
-4. W4 (cost) + W3 (scorecard) + W5 (sandbox) per spec §§6-8, §14.
+4. W4 (cost: pricing.py Foundry entries + idle-GPU) + W3 (scorecard) + W5 (sandbox) per spec §§6-8, §14.
 
 ## Key facts for implementation (verified)
 - New W1 module: `backend/evals/paperbench/grading_input_integrity.py` (sibling to deterministic_leaf_checker)
