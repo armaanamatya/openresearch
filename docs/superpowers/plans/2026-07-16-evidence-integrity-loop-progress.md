@@ -87,6 +87,20 @@ complement to W2's per-leaf `min_eval_n` state_contract (both kept: floor = glob
 run_experiment wiring; state_contract = per-leaf, needs rubric annotation). Default 0 = byte-identical
 (existing 57 eval-provenance tests unchanged). 4 hermetic tests. Registered in flags.md.
 
+## Code review — DONE (commit 98a48366)
+Ran a code-reviewer subagent on `git diff main..HEAD -- backend/`. Triaged (verify-each, not blind-apply):
+- FIXED #1 flag vocabulary: `OPENRESEARCH_STATE_CONTRACTS` now canonical `('1','true','yes')`.
+- FIXED #4 degenerate `require_held_out: false` → routes to LLM (None), not auto-1.0.
+- FIXED #5 `_sidecar_n_eval` rounds float n_eval (100.0 vs floor 100), not truncate.
+- DECLINED #2 inline-import-when-off: matches the codebase's established inline-import+internal-flag-check
+  pattern (e.g. the eval-provenance guard); "byte-identical" = observable behavior, not sys.modules.
+- ACK #3 W1-M1 false-positive: if the root passes a benignly-DERIVED rubric (not `context["rubric_spec"]`
+  verbatim) the guard fires spuriously. This is THE reason W1-M1 is default-OFF pending real-run A/B.
+  Reviewer's "check rubric_tree.json instead" doesn't help — that file IS the serialized argument.
+  Mitigation for the default-flip: add a system-prompt line requiring verbatim `context["rubric_spec"]`.
+Confirmed SOUND by review: fingerprint↔rubric_sha256 byte-identity; all three OFF paths byte-identical;
+guard-before-cache ordering; missing-pin/missing-evidence conservative dispositions.
+
 ## RESUME HERE (next slices)
 1. Rubric-gen: emit `deterministic:state_contract` annotations so W2's per-leaf path fires live (`rubric_gen.py`).
 2. W1-M2 file-access audit (the one genuinely-missing producer; needs sandbox entrypoint hook, spec §4.2).
