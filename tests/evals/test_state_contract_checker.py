@@ -83,3 +83,11 @@ def test_on_malformed_assertion_routes_to_llm(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OPENRESEARCH_STATE_CONTRACTS", "1")
     _write_provenance(tmp_path, "c0", {"n_eval": 500, "held_out": True})
     assert check_leaf(_leaf({"unknown_predicate": 1}), tmp_path) is None
+
+
+def test_on_degenerate_require_held_out_false_routes_to_llm(tmp_path: Path, monkeypatch):
+    """A no-op ``require_held_out: false`` as the ONLY predicate must not auto-pass
+    at 1.0 — it carries no active predicate, so route to the LLM (None)."""
+    monkeypatch.setenv("OPENRESEARCH_STATE_CONTRACTS", "1")
+    _write_provenance(tmp_path, "c0", {"n_eval": 500, "held_out": True})
+    assert check_leaf(_leaf({"require_held_out": False}), tmp_path) is None

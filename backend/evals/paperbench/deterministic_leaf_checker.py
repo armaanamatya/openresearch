@@ -114,10 +114,11 @@ CHECK_STATE_CONTRACT = "deterministic:state_contract"
 
 
 def _state_contracts_enabled() -> bool:
-    """True iff ``OPENRESEARCH_STATE_CONTRACTS`` is in {'1','true','yes','on'}."""
+    """True iff ``OPENRESEARCH_STATE_CONTRACTS`` is in {'1','true','yes'} (the
+    project-canonical flag vocabulary — matches grading_input_integrity._flag_on)."""
     return os.environ.get(
         "OPENRESEARCH_STATE_CONTRACTS", ""
-    ).strip().lower() in ("1", "true", "yes", "on")
+    ).strip().lower() in ("1", "true", "yes")
 
 # hparam comparison operators.
 _HPARAM_OPS = frozenset({"==", "!=", ">=", "<=", "~="})
@@ -599,10 +600,11 @@ def _eval_provenance_sidecars(run_dir: Path) -> list[dict]:
 
 
 def _sidecar_n_eval(sc: dict) -> int:
-    """Non-negative integer ``n_eval`` from a sidecar, else 0."""
+    """Non-negative ``n_eval`` from a sidecar, else 0. Rounds (not truncates) a
+    JSON float so ``n_eval: 100.0`` compares equal to an integer floor of 100."""
     v = sc.get("n_eval")
     if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0:
-        return int(v)
+        return round(v)
     return 0
 
 
@@ -621,7 +623,10 @@ def _check_state_contract(
     module's existing missing-evidence contract.
     """
     has_min = "min_eval_n" in assertion
-    has_held = "require_held_out" in assertion
+    # A falsy ``require_held_out`` (absent / false / 0) is a no-op predicate, not
+    # an active one — so it does not, on its own, make the leaf deterministically
+    # gradeable. Only a truthy value counts as a recognized predicate.
+    has_held = bool(assertion.get("require_held_out"))
     if not (has_min or has_held):
         return None  # no recognized predicate → cannot interpret → LLM.
 
@@ -644,7 +649,7 @@ def _check_state_contract(
                 f"(insufficient held-out evaluation for the claimed result)",
             )
 
-    if has_held and assertion.get("require_held_out"):
+    if has_held:  # truthy require_held_out (see has_held above)
         if any(sc.get("held_out") is False for sc in sidecars):
             return _result(
                 leaf_id, CHECK_STATE_CONTRACT, 0.0,
