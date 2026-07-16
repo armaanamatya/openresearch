@@ -17,6 +17,7 @@ from pathlib import Path
 
 from backend.evals.paperbench.grading_input_integrity import (
     check_grading_input_integrity,
+    maybe_write_rubric_pin,
     rubric_fingerprint,
     verify_rubric_integrity,
     write_rubric_pin,
@@ -132,3 +133,40 @@ def test_entrypoint_on_flags_tamper(tmp_path: Path, monkeypatch):
     assert verdict is not None
     assert verdict["ok"] is False
     assert verdict["reason"] == "rubric_mismatch"
+
+
+# --------------------------------------------------------------------------- #
+# flag-gated pin writer (OFF must not create the pin file → byte-identical)
+# --------------------------------------------------------------------------- #
+def test_maybe_write_pin_off_writes_nothing(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("OPENRESEARCH_GRADER_INTEGRITY", raising=False)
+    assert maybe_write_rubric_pin(tmp_path, RUBRIC) is None
+    assert not (tmp_path / "rlm_state" / "rubric_pin.json").exists()
+
+
+def test_maybe_write_pin_on_writes(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENRESEARCH_GRADER_INTEGRITY", "1")
+    p = maybe_write_rubric_pin(tmp_path, RUBRIC)
+    assert p is not None and p.exists()
+
+
+# --------------------------------------------------------------------------- #
+# rubric-arg path: check the incoming rubric object directly (before grading)
+# --------------------------------------------------------------------------- #
+def test_entrypoint_with_rubric_arg_detects_mismatch(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENRESEARCH_GRADER_INTEGRITY", "1")
+    write_rubric_pin(tmp_path, RUBRIC)
+    weakened = {"id": "root", "leaves": [{"id": "L1", "criteria": "test_error <= 99.0"}]}
+    verdict = check_grading_input_integrity(tmp_path, rubric=weakened)
+    assert verdict is not None
+    assert verdict["ok"] is False
+    assert verdict["reason"] == "rubric_mismatch"
+
+
+def test_entrypoint_with_rubric_arg_matches(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENRESEARCH_GRADER_INTEGRITY", "1")
+    write_rubric_pin(tmp_path, RUBRIC)
+    verdict = check_grading_input_integrity(tmp_path, rubric=RUBRIC)
+    assert verdict is not None
+    assert verdict["ok"] is True
+    assert verdict["reason"] == "match"

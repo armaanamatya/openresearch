@@ -8185,6 +8185,28 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
             "error": "verify_against_rubric: rubric must be a non-empty dict",
         }, PrimitiveOutcome.repairable)
 
+    # W1-M1 grading-input integrity (OPENRESEARCH_GRADER_INTEGRITY, default-OFF):
+    # if the rubric about to be graded differs from the harness-generated rubric
+    # pinned at run start, an agent weakened it — fail closed to repairable BEFORE
+    # spending an LLM grade. Off → check returns None → byte-identical. Fail-soft.
+    try:
+        from backend.evals.paperbench.grading_input_integrity import (
+            check_grading_input_integrity,
+        )
+        _integrity = check_grading_input_integrity(ctx.project_dir, rubric=rubric)
+    except Exception:  # noqa: BLE001 — an integrity bug must never break verify
+        _integrity = None
+    if _integrity is not None and _integrity.get("ok") is False:
+        return _with_outcome({
+            "success": False,
+            "error": (
+                "verify_against_rubric: grading-input integrity failed "
+                f"({_integrity.get('reason')}) — the rubric being graded does not match "
+                "the harness-generated rubric pinned at run start"
+            ),
+            "failure_class": "evidence_tampered",
+        }, PrimitiveOutcome.repairable)
+
     # Cache key: rubric + metrics + a content hash of the code dir + the
     # paper's metrics.json bytes if present. The leaf scorer reads code +
     # metrics from disk, so the cache MUST invalidate when either changes.

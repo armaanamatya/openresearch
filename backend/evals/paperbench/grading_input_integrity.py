@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "rubric_fingerprint",
     "write_rubric_pin",
+    "maybe_write_rubric_pin",
     "verify_rubric_integrity",
     "check_grading_input_integrity",
 ]
@@ -98,7 +99,21 @@ def write_rubric_pin(run_dir: Path | str, rubric: Any) -> Path:
     return pin
 
 
-def verify_rubric_integrity(run_dir: Path | str) -> dict[str, Any]:
+def maybe_write_rubric_pin(run_dir: Path | str, rubric: Any) -> Path | None:
+    """Flag-gated :func:`write_rubric_pin`. When ``OPENRESEARCH_GRADER_INTEGRITY``
+    is off this is a no-op returning ``None`` (no pin file is created →
+    byte-identical to the prior baseline). Fail-soft: never raises.
+    """
+    if not _flag_on():
+        return None
+    try:
+        return write_rubric_pin(run_dir, rubric)
+    except Exception:  # noqa: BLE001 — pinning is best-effort, never fatal.
+        logger.exception("grading_input_integrity: failed to pin rubric for %r", run_dir)
+        return None
+
+
+def verify_rubric_integrity(run_dir: Path | str, rubric: Any | None = None) -> dict[str, Any]:
     """Fail-closed check that the graded rubric matches the pinned fingerprint.
 
     Returns ``{"ok", "reason", "pinned_sha", "current_sha"}``. We veto only on
@@ -108,6 +123,10 @@ def verify_rubric_integrity(run_dir: Path | str) -> dict[str, Any]:
     * pinned, rubric present, match    → ``ok=True,  reason="match"``
     * pinned, rubric present, differ   → ``ok=False, reason="rubric_mismatch"``  (the attack)
     * pinned, rubric file gone         → ``ok=False, reason="rubric_missing"``
+
+    When ``rubric`` is given, the passed object is fingerprinted directly (the
+    grading path checks the rubric it is ABOUT to grade, before spending an LLM
+    grade); otherwise the on-disk ``rubric_tree.json`` is read.
     """
     run_dir = Path(run_dir)
     pin_obj = _load_json(_pin_path(run_dir))
@@ -115,7 +134,10 @@ def verify_rubric_integrity(run_dir: Path | str) -> dict[str, Any]:
     if not pinned_sha:
         return {"ok": True, "reason": "no_pin", "pinned_sha": None, "current_sha": None}
 
-    rubric_obj = _load_json(_rubric_path(run_dir))
+    if rubric is not None:
+        rubric_obj: Any | None = rubric
+    else:
+        rubric_obj = _load_json(_rubric_path(run_dir))
     if rubric_obj is None:
         return {"ok": False, "reason": "rubric_missing", "pinned_sha": pinned_sha, "current_sha": None}
 
@@ -125,9 +147,15 @@ def verify_rubric_integrity(run_dir: Path | str) -> dict[str, Any]:
     return {"ok": False, "reason": "rubric_mismatch", "pinned_sha": pinned_sha, "current_sha": current_sha}
 
 
-def check_grading_input_integrity(run_dir: Path | str) -> dict[str, Any] | None:
+def check_grading_input_integrity(
+    run_dir: Path | str, rubric: Any | None = None
+) -> dict[str, Any] | None:
     """Flag-gated entrypoint. Returns ``None`` when ``OPENRESEARCH_GRADER_INTEGRITY``
     is off (byte-identical no-op), else the :func:`verify_rubric_integrity` verdict.
+
+    ``rubric`` (when given) is checked directly — the grading path passes the
+    rubric it is about to grade so a tampered rubric is caught before an LLM
+    grade is spent.
 
     Never raises: an unexpected error fails soft to ``None`` so an integrity-check
     bug can never break grading of an otherwise-fine run.
@@ -135,7 +163,7 @@ def check_grading_input_integrity(run_dir: Path | str) -> dict[str, Any] | None:
     if not _flag_on():
         return None
     try:
-        return verify_rubric_integrity(run_dir)
+        return verify_rubric_integrity(run_dir, rubric=rubric)
     except Exception:  # noqa: BLE001 — an integrity bug must never break grading.
         logger.exception("grading_input_integrity: unexpected error on %r", run_dir)
         return None
