@@ -61,11 +61,27 @@
   Discovered existing campaign-level rubric pin (`attempt_assessment.rubric_sha256`, cross-attempt) — reused
   its hash semantics; W1-M1 covers the single-run (incl. non-campaign) gap it doesn't.
 
+## W1-M4 / W1-M3 — ALREADY EXIST (do NOT rebuild)
+`backend/agents/rlm/eval_provenance.py` (`OPENRESEARCH_EVAL_PROVENANCE_GUARD`) already does the
+reported-vs-true metric cross-check (`abs(reported − mean(records)) > 1e-3` → veto) AND leakage
+(eval_ids ∩ train_ids). W1-M4 and most of W1-M3 are COVERED. Spec §4.2 M4 withdrawn as duplicative.
+
+## W2 — DONE (core, 2026-07-16, commit 73381ccb)
+Added `deterministic:state_contract` check_kind to `deterministic_leaf_checker.py` (flag
+`OPENRESEARCH_STATE_CONTRACTS`, default-OFF, registered). Predicates grounded in existing
+`eval_provenance.json`: `min_eval_n` (eval-coverage) + `require_held_out`. 7 hermetic tests.
+- ACTIVATION CAVEAT: `check_leaf` fires only when `OPENRESEARCH_DETERMINISTIC_LEAVES` is on (its
+  caller in `score_reproduction`) AND a rubric leaf carries the `deterministic:state_contract`
+  annotation. Checker is complete+tested; full live activation needs rubric-gen to emit the
+  annotation (same shipped pattern as the existing hparam/artifact/numeric kinds).
+
 ## RESUME HERE (next slices)
-1. W1-M4 reported-vs-true metric cross-check (re-derive headline metric from raw outputs; `metric_mismatch`).
-2. W1-M2/M3 access-audit + leakage (needs sandbox entrypoint hook; see spec §4.2).
-3. W2: add `deterministic:state_contract` check_kind to `deterministic_leaf_checker.py`.
-4. W4 (cost: pricing.py Foundry entries + idle-GPU) + W3 (scorecard) + W5 (sandbox) per spec §§6-8, §14.
+1. Rubric-gen: emit `deterministic:state_contract` annotations so W2 fires live (`rubric_gen.py`).
+2. W1-M2 file-access audit (the one genuinely-missing producer; needs sandbox entrypoint hook, spec §4.2).
+3. W4 cost: the REAL fix is 2-part — make the Foundry client RECORD tokens (client code) THEN add
+   pricing.py entries (a pricing entry alone does nothing while tokens log 0/0). Plus idle-GPU accounting.
+4. W3 (PaperBench scorecard) + W5 (sandbox hardening) per spec §§6-8, §14.
+5. Consider opening a PR for the W1-M1 + W2 work (branch `feat/evidence-integrity-w1`).
 
 ## Key facts for implementation (verified)
 - New W1 module: `backend/evals/paperbench/grading_input_integrity.py` (sibling to deterministic_leaf_checker)
