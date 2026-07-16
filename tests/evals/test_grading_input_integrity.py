@@ -54,6 +54,20 @@ def test_rubric_fingerprint_is_hex_sha256():
     assert all(c in "0123456789abcdef" for c in fp)
 
 
+def test_rubric_fingerprint_matches_canonical_campaign_hash():
+    """W1-M1 must agree byte-for-byte with the campaign layer's canonical
+    ``attempt_assessment.rubric_sha256`` — including for the non-ASCII rubric
+    text (β, σ, λ) that is ubiquitous in ML papers. A second, subtly-different
+    hash would make single-run pinning and cross-attempt pinning disagree."""
+    from backend.agents.rlm.attempt_assessment import rubric_sha256
+
+    for tree in (
+        {"id": "root"},
+        {"id": "root", "leaves": [{"id": "L1", "criteria": "gate g_t=σ(β·Δ_t), β=10, λ=0.1"}]},
+    ):
+        assert rubric_fingerprint(tree) == rubric_sha256(tree)
+
+
 # --------------------------------------------------------------------------- #
 # disk-backed pin + fail-closed verify
 # --------------------------------------------------------------------------- #

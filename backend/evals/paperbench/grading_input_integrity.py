@@ -71,14 +71,14 @@ def rubric_fingerprint(rubric: Any) -> str:
     weight — yields a different digest. List order is significant (reordering
     siblings changes the digest); that is acceptable and conservative for a
     tamper check.
+
+    Serialization is byte-for-byte identical to the campaign layer's canonical
+    ``backend.agents.rlm.attempt_assessment.rubric_sha256`` (``sort_keys=True``,
+    compact separators, default ``ensure_ascii=True``) — pinned by
+    ``test_rubric_fingerprint_matches_canonical_campaign_hash`` — so single-run
+    pinning and cross-attempt campaign pinning never disagree on the same tree.
     """
-    canonical = json.dumps(
-        rubric,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        default=str,
-    )
+    canonical = json.dumps(rubric, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
