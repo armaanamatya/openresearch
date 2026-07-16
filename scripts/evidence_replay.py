@@ -14,7 +14,6 @@ Pure/offline: reads artifacts, makes no network calls, spends nothing.
 from __future__ import annotations
 
 import json
-import shutil
 import sys
 import tempfile
 from pathlib import Path
