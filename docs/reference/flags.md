@@ -4,9 +4,9 @@
 
 ## Summary
 
-- **Total distinct flags:** 469
+- **Total distinct flags:** 472
 - **Managed by `config.py` Settings (typed, default known):** 140
-- **Ad-hoc `os.environ` reads (no central default):** 329
+- **Ad-hoc `os.environ` reads (no central default):** 332
 - **Mentioned in `CLAUDE.md`:** 3 (0%)
 
 Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **sites** = ad-hoc read count; **default** = literal default at first read site (best effort).
@@ -526,6 +526,12 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_FAILURE_CAPSULES` |  |  |  | |
 
+### `OPENRESEARCH_FEASIBILITY_*`
+
+| Flag | cfg | doc | sites | default |
+|---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_FEASIBILITY_SCOPE` |  |  | 1 | `""` |
+
 ### `OPENRESEARCH_FIDELITY_*`
 
 | Flag | cfg | doc | sites | default |
@@ -629,6 +635,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | `OPENRESEARCH_GRADER_` |  |  |  | |
 | `OPENRESEARCH_GRADER_BACKEND` |  |  | 3 | `""` |
 | `OPENRESEARCH_GRADER_DIGEST` |  |  | 1 | `""` |
+| `OPENRESEARCH_GRADER_INTEGRITY` |  |  |  | |
 | `OPENRESEARCH_GRADER_MODEL` |  |  | 3 | `""` |
 | `OPENRESEARCH_GRADER_SAMPLES` |  |  | 2 | `"1"` |
 
@@ -661,6 +668,12 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_IMPL_ABANDON_GUARD` |  |  | 1 | `""` |
+
+### `OPENRESEARCH_INFEASIBLE_*`
+
+| Flag | cfg | doc | sites | default |
+|---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_INFEASIBLE_DATASETS` |  |  | 1 | `""` |
 
 ### `OPENRESEARCH_INJECT_*`
 
