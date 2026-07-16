@@ -4,9 +4,9 @@
 
 ## Summary
 
-- **Total distinct flags:** 473
+- **Total distinct flags:** 474
 - **Managed by `config.py` Settings (typed, default known):** 140
-- **Ad-hoc `os.environ` reads (no central default):** 333
+- **Ad-hoc `os.environ` reads (no central default):** 334
 - **Mentioned in `CLAUDE.md`:** 3 (0%)
 
 Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **sites** = ad-hoc read count; **default** = literal default at first read site (best effort).
@@ -764,6 +764,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_MIN_DISK_GB` |  |  | 1 | `"10"` |
+| `OPENRESEARCH_MIN_EVAL_N` |  |  | 1 | `"0"` |
 | `OPENRESEARCH_MIN_REAL_TRAIN_STEPS` |  |  | 1 | `"5"` |
 | `OPENRESEARCH_MIN_REPAIR_ITERATIONS` |  |  | 2 | `"2"` |
 | `OPENRESEARCH_MIN_RUBRIC_ITERATIONS` | ✅ |  | 1 | `Field(...)` |

@@ -75,13 +75,31 @@ Added `deterministic:state_contract` check_kind to `deterministic_leaf_checker.p
   annotation. Checker is complete+tested; full live activation needs rubric-gen to emit the
   annotation (same shipped pattern as the existing hparam/artifact/numeric kinds).
 
+## W4-F1 (Foundry-Claude pricing) — ALREADY DONE in the codebase
+`pricing.py` already has `claude-opus-4-8` + `claude-sonnet-5` entries; the ledger records those
+resolved bare ids for `opus-foundry`/`sonnet-foundry`, so they price correctly. Remaining W4 gaps:
+grok/azure-foundry (non-Claude) pricing (can't fabricate grok's rate) + idle-GPU accounting.
+
+## Eval-coverage floor — DONE (2026-07-16, commit 0aa5d227)
+`OPENRESEARCH_MIN_EVAL_N` (sub-knob of the eval-provenance guard): vetoes a success cell whose
+`n_eval` < floor — closes the "correct mean over 3 examples" gap nothing else catches. The live-firing
+complement to W2's per-leaf `min_eval_n` state_contract (both kept: floor = global/live via existing
+run_experiment wiring; state_contract = per-leaf, needs rubric annotation). Default 0 = byte-identical
+(existing 57 eval-provenance tests unchanged). 4 hermetic tests. Registered in flags.md.
+
 ## RESUME HERE (next slices)
-1. Rubric-gen: emit `deterministic:state_contract` annotations so W2 fires live (`rubric_gen.py`).
+1. Rubric-gen: emit `deterministic:state_contract` annotations so W2's per-leaf path fires live (`rubric_gen.py`).
 2. W1-M2 file-access audit (the one genuinely-missing producer; needs sandbox entrypoint hook, spec §4.2).
-3. W4 cost: the REAL fix is 2-part — make the Foundry client RECORD tokens (client code) THEN add
-   pricing.py entries (a pricing entry alone does nothing while tokens log 0/0). Plus idle-GPU accounting.
+3. W4 remainder: grok/azure-foundry pricing (needs real rates) + idle-GPU accounting.
 4. W3 (PaperBench scorecard) + W5 (sandbox hardening) per spec §§6-8, §14.
-5. Consider opening a PR for the W1-M1 + W2 work (branch `feat/evidence-integrity-w1`).
+5. Open a PR for the branch `feat/evidence-integrity-w1` (W1-M1 + W2 + eval-coverage floor).
+
+## Cumulative shipped this branch (all default-OFF, tested, byte-identical when off)
+- W1-M1 rubric pinning (WIRED) — `OPENRESEARCH_GRADER_INTEGRITY`
+- W2 state-contracts check_kind (checker complete) — `OPENRESEARCH_STATE_CONTRACTS`
+- Eval-coverage floor (WIRED, live) — `OPENRESEARCH_MIN_EVAL_N`
+Discoveries (pre-existing, NOT rebuilt): grader_digest, campaign rubric_sha256 pin, deterministic_leaf_checker,
+eval_provenance (M4+M3), pricing.py Foundry-Claude entries. Codebase evidence layer is very mature.
 
 ## Key facts for implementation (verified)
 - New W1 module: `backend/evals/paperbench/grading_input_integrity.py` (sibling to deterministic_leaf_checker)
