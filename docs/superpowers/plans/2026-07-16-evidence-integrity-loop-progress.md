@@ -27,7 +27,28 @@
 - **E. Handoff** (near 09:00): synthesis + review-ready summary.
 
 ## Iteration log
-- **iter 1 (02:51)**: created this tracker; writing mega-spec.
+- **iter 1 (02:51)**: created this tracker; wrote mega-spec; committed b9dd9acf.
+- **iter 2 (03:1x)**: Phase B verification (3 Explore agents) — all core claims confirmed + corrections.
+  KEY DISCOVERIES: (a) `grader_digest.py` = metrics-compaction (A6), NOT integrity → W1 must avoid
+  that name; (b) `deterministic_leaf_checker.py` already implements typed on-disk predicates via
+  `check_kind`+`assertion` → W2 becomes a new `deterministic:state_contract` kind, standalone
+  state_contracts.py WITHDRAWN; (c) W1 sharpened to *grading-input* integrity (rubric/provenance/
+  metrics artifacts), grader-code is out-of-sandbox. Spec §14 records all corrections. Now starting
+  TDD on W1-M1 rubric pinning (pure module).
+
+## Phase status
+- A. Spec — DONE (+ §14 revisions)
+- B. Verify — DONE
+- C. Plan — folding into per-workstream TDD (mega-spec §4-8 + §14 serve as the plan)
+- D. Build W1 — STARTING: W1-M1 rubric pinning, TDD, branch `feat/evidence-integrity-w1`
+
+## Key facts for implementation (verified)
+- New W1 module: `backend/evals/paperbench/grading_input_integrity.py` (sibling to deterministic_leaf_checker)
+- W2: extend `deterministic_leaf_checker.py` with `deterministic:state_contract` check_kind
+- Flag idiom: `os.environ.get("FLAG","").strip().lower() in ("1","true","yes")`
+- Test pattern to mirror: `tests/evals/test_leaf_scorer_feasibility_scope.py`
+- rubric file: `runs/<id>/rubric_tree.json`; provenance: `code/provenance.json` or `code/outputs/*/provenance.json`
+- evidence bundle: `mint_bundle(project_dir)` / `resolve_bundle(project_dir)`, field `attempt_id`
 
 ## Guardrails for autonomous edits
 - No code edits until spec + plan done AND verified against real code.

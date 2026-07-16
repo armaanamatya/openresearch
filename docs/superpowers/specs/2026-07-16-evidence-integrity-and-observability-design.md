@@ -310,3 +310,68 @@ W5 is the heaviest and backstops W1/W2).
 1. Access-audit implementation: `open`-hook vs mtime/atime snapshot vs LD_PRELOAD/strace-lite — pick per sandbox.
 2. W5 isolation tech: sandbox-runtime vs gVisor vs firecracker — evaluate against setup cost + macOS-dev parity.
 3. Whether M4's metric re-derivation is generic or per-leaf-type (start per-type; generalize later).
+
+---
+
+## 14. POST-VERIFICATION REVISIONS (2026-07-16, iter 2 — supersedes conflicting text above)
+
+A read-only Phase-B pass verified every `⟨verify⟩` symbol against source. Result: core claims
+confirmed; the following **corrections and reconciliations are authoritative** where they conflict
+with §§3–8.
+
+### 14.1 Symbol corrections (confirmed against code)
+- `evidence_bundle.py`: minter is `mint_bundle(project_dir)`, reader `resolve_bundle(project_dir)`;
+  field is `attempt_id` (not `attempt`); bundle also carries `coherent`/`status`/`incoherence_reason`.
+  Flag `OPENRESEARCH_CANONICAL_EVIDENCE_BUNDLE` confirmed.
+- `evidence_gate.py`: `gate_decision(*, score, claims_result, has_disk_evidence) -> (score, vetoed)`
+  confirmed. **Two distinct flags:** `OPENRESEARCH_LEAF_EVIDENCE_GATE` (per-leaf, default-OFF, this
+  module) vs `OPENRESEARCH_EVIDENCE_GATE` (verdict-level, default-ON, in `report.py`). Spec §3 must
+  reference both correctly.
+- `leaf_triage.py`: **6** categories, not 5 — the existing `cell_failure` joins render_artifact /
+  provenance_gap / aggregation_gap / protocol_gap / result_quality. New W1/W2 outcomes map onto these
+  6; do not invent a 7th unless required.
+- `CostLedgerEntry` (`backend/agents/resilience/cost.py`, frozen): also has `attempt_index`,
+  `cache_read_input_tokens`, `cache_creation_input_tokens`, `reasoning_tokens`. W4 adds a row-type tag.
+- `pricing.py` (`backend/agents/resilience/pricing.py`): `PRICING: dict[str, ModelPricing]`,
+  `estimate_cost_usd(model, usage)`. Foundry blind spot **confirmed** — no `opus-foundry`/
+  `sonnet-foundry`/`grok`/`azure-foundry` entries (the file even documents the $0 gap in a comment).
+- `demo_status.json` cost_summary is written by `backend/agents/rlm/run.py` (`_compute_cost_summary`
+  + `_update_cost_summary_loop`), **NOT** `live_runs.py`; it already includes `usd_per_iter_p50`.
+- `SandboxMode` enum lives in `backend/agents/execution.py` (members auto/azure/brev/docker/gcp/
+  local/runpod/simulate); **`gke` is an alias to `gcp` via `_missing_`**, not a member. W5 adds a
+  member/alias for the hardened backend the same way.
+- CLI (`backend/cli.py`): argparse subparsers, `sub.add_parser(...)` + `set_defaults(func=...)`;
+  `campaign` requires all three money-cap args. W3's `paperbench-scorecard` mirrors this exactly.
+- Test patterns to mirror: `tests/evals/test_leaf_scorer_feasibility_scope.py` (flag OFF-vs-ON A/B),
+  `tests/test_cli_sanity_mode.py` (fixture-dir + gate-fires).
+
+### 14.2 W1 reconciliation — *grading-input* integrity (not grader-code)
+The root writes Python in a **sandboxed** REPL; it cannot mutate the host's `leaf_scorer.py`. The real
+attack surface is the **grading-input artifacts the agent legitimately writes into the run dir**:
+`rubric_tree.json`, `provenance.json`, `metrics.json`. W1 is therefore renamed **grading-input
+integrity** and its mechanisms sharpen to:
+- **M1 — Rubric pinning.** At rubric-gen, mint `rubric_tree_sha256` into a sidecar / the evidence
+  bundle. At grade time, recompute; a post-gen change to `rubric_tree.json` → `evidence_tampered`.
+- **M4 — Reported-vs-true metric cross-check** (unchanged intent): re-derive the headline metric
+  from raw on-disk outputs; disagreement beyond tol → `metric_mismatch`. No-op when raw outputs absent.
+- **M2/M3 — Access-audit + leakage** (unchanged).
+- **Naming:** new module `backend/evals/paperbench/grading_input_integrity.py` (sibling to
+  `deterministic_leaf_checker.py`); **must not** be named `grader_digest*` (that name is taken by the
+  A6 metrics-compaction module). Flag `OPENRESEARCH_GRADER_INTEGRITY` unchanged.
+
+### 14.3 W2 reconciliation — extend `deterministic_leaf_checker.py`, don't fork it
+`deterministic_leaf_checker.py` already implements the exact pattern W2 wants: typed, pure, fail-soft
+predicates over on-disk evidence, annotated per-leaf (`check_kind` + `assertion`), routed via
+`check_leaf(leaf, run_dir)` with a backwards-compat fall-through to the LLM. **W2 adds one new
+`check_kind = "deterministic:state_contract"`** whose `assertion` declares the GroundEval-style trace
+predicates (checkpoint_exists / checkpoint_after_train_start / eval_loaded_checkpoint /
+eval_covered_full_testset / metric_provenance_present), evaluated over `experiment_runs.jsonl` +
+W1's access log + artifact mtimes. This inherits the module's fail-soft + backwards-compat guarantees
+for free. The standalone `state_contracts.py` in §5 is **withdrawn** in favor of this extension.
+Flag `OPENRESEARCH_STATE_CONTRACTS` still gates whether the router honors the new kind.
+
+### 14.4 Revised first-implementation slice (TDD target)
+Start with **W1-M1 rubric pinning** as a pure, self-contained, unit-testable module — highest
+value-to-risk: it closes a concrete hole (agent weakening `rubric_tree.json` after gen), is a pure
+hash+compare (ideal for TDD), and touches no live verdict path when the flag is OFF.
+
