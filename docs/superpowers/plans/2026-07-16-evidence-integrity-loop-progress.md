@@ -91,6 +91,17 @@ Added `deterministic:state_contract` check_kind to `deterministic_leaf_checker.p
 - rubric file: `runs/<id>/rubric_tree.json`; provenance: `code/provenance.json` or `code/outputs/*/provenance.json`
 - evidence bundle: `mint_bundle(project_dir)` / `resolve_bundle(project_dir)`, field `attempt_id`
 
+## Pre-existing suite pollution (NOT caused by this branch — flagged for a separate fix)
+Full `tests/rlm/` run (alone, WITHOUT any of my evals test files) reproduces 3 order-dependent failures:
+`test_external_validator.py::test_external_validator_disabled_by_default`,
+`::test_flag_off_panel_unavailable_with_none_client`,
+`test_report_validation_stamp.py::test_mismatched_fingerprint_leaves_validation_empty`.
+Proof it's not mine: each passes in isolation; all pass when grouped with my new/modified tests
+(102 passed, fixed order); my code changes are function-local imports with no global side effects;
+the failing files are pre-existing/untouched. Root cause = some earlier rlm test leaks validator
+state (cached client / module singleton) in full-suite order. Separate cleanup task, not part of
+the evidence-integrity work. My own suites (evals + the touched rlm tests) are fully green.
+
 ## Guardrails for autonomous edits
 - No code edits until spec + plan done AND verified against real code.
 - W1 touches fail-closed evidence gates → keep default-OFF SACRED; A/B flag-OFF test must prove byte-identical.
