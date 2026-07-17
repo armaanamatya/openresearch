@@ -8196,6 +8196,23 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
         _integrity = check_grading_input_integrity(ctx.project_dir, rubric=rubric)
     except Exception:  # noqa: BLE001 — an integrity bug must never break verify
         _integrity = None
+    if _integrity is not None:
+        # Auditable evidence-decision log (OPENRESEARCH_EVIDENCE_DECISION_LOG,
+        # default-OFF → no-op). Records the decision whether it passed or fired.
+        try:
+            from backend.agents.rlm.evidence_log import record_evidence_decision
+            record_evidence_decision(
+                ctx.project_dir,
+                gate="grader_integrity",
+                outcome="ok" if _integrity.get("ok") else "evidence_tampered",
+                detail=_integrity.get("reason"),
+                extra={
+                    "pinned_sha": _integrity.get("pinned_sha"),
+                    "current_sha": _integrity.get("current_sha"),
+                },
+            )
+        except Exception:  # noqa: BLE001 — the audit log must never break verify
+            pass
     if _integrity is not None and _integrity.get("ok") is False:
         return _with_outcome({
             "success": False,

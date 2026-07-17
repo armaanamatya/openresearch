@@ -245,6 +245,22 @@ def test_verify_against_rubric_vetoes_tampered_rubric(make_context, tmp_path, mo
     assert not any(e.get("event") == "rubric_score" for e in _read_events(ctx))
 
 
+def test_verify_against_rubric_logs_evidence_decision(make_context, tmp_path, monkeypatch):
+    """W1-M1 + audit log ON: a caught tamper is recorded in evidence_decisions.jsonl."""
+    monkeypatch.setenv("OPENRESEARCH_GRADER_INTEGRITY", "1")
+    monkeypatch.setenv("OPENRESEARCH_EVIDENCE_DECISION_LOG", "1")
+    ctx = make_context(tmp_path, llm_responses=[_RUBRIC_SCORES])
+    from backend.agents.rlm.evidence_log import read_evidence_decisions
+    from backend.evals.paperbench.grading_input_integrity import write_rubric_pin
+    write_rubric_pin(ctx.project_dir, {"id": "root", "pinned": True})
+    tools = build_custom_tools(ctx)
+    tools["verify_against_rubric"]["tool"](
+        results={"success": True, "metrics": {"acc": 0.9}}, rubric=_LEAF_RUBRIC
+    )
+    rows = read_evidence_decisions(ctx.project_dir)
+    assert any(r["gate"] == "grader_integrity" and r["outcome"] == "evidence_tampered" for r in rows)
+
+
 def test_verify_against_rubric_off_ignores_pin_mismatch(make_context, tmp_path, monkeypatch):
     """W1-M1 OFF (default): even with a mismatched pin the integrity check is never
     consulted — grading proceeds exactly as before (byte-identical baseline)."""
