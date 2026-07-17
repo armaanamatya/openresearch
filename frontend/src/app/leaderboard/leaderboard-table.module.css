@@ -87,6 +87,60 @@
   font-size: var(--fs-sm, 13px);
 }
 
+/* Structured empty / error state — icon + title + message + CTA. */
+.emptyWrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 72px 24px;
+  text-align: center;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg, 14px);
+  background: var(--panel);
+}
+.emptyIcon {
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--chip);
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+.emptyTitle {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+.emptyMsg {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  max-width: 44ch;
+  line-height: 1.5;
+}
+.emptyCta {
+  margin-top: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 16px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 13px;
+  font-weight: 600;
+  transition: opacity 0.2s ease;
+}
+.emptyCta:hover {
+  opacity: 0.9;
+}
+
 .dash {
   color: var(--muted-2, #b0b0b0);
 }

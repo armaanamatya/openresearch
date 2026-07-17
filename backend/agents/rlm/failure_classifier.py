@@ -61,6 +61,7 @@ FAILURE_CLASSES: Final[tuple[str, ...]] = (
     "cell_smoke_failed",         # pre-grid smoke of the smallest cell failed before the grid ran
     "nccl_timeout",              # distributed collective (NCCL) hang — a rank desynced/died
     "cuda_shlib_load",           # a CUDA runtime lib (libcupti/libcudart/…) couldn't dlopen
+    "training_divergence",       # loss went NaN/Inf — unstable config (lr too high), not harness
     "unknown",                   # falls-through
 )
 
@@ -209,6 +210,12 @@ def _suggest(klass: str, *, extra: str = "") -> str:
             "install, leaving an incoherent CUDA stack. Remove the torch / torchvision / "
             "torchaudio pins from requirements.txt (let the harness own them) and do NOT "
             "set an exotic CUDA index — the harness installs a matching, loadable stack",
+        "training_divergence":
+            "training diverged to a non-finite loss (NaN/Inf) — an unstable config, not a "
+            "harness fault: lower the learning rate (e.g. 10×), add LR warmup and/or "
+            "gradient clipping (clip_grad_norm_), and verify input normalization + loss "
+            "scaling, then re-run the same cell. Keep the nan-guard abort so divergence "
+            "stays loud instead of training to garbage",
         "unknown":
             "classifier didn't recognise the failure shape; logs_tail will have the trace",
     }
@@ -307,6 +314,26 @@ def classify_failure(result: dict) -> tuple[str, str]:
             or "cublas_status_alloc_failed" in haystack
         ):
             return ("cuda_oom", _suggest("cuda_oom"))
+
+        # Training divergence — the loss went NaN/Inf and the trainer (correctly)
+        # aborted. prj_e2d9aebb05d4340f died here twice ("train_loss=nan at
+        # epoch=1, lr=0.100000") and classified `unknown`, so the root got no
+        # repair hint and gave up into a FINAL_VAR refusal loop. Anchored to a
+        # loss context (never a bare "nan" substring — "banana" must not match).
+        # Checked AFTER the CUDA blocks: an OOM/assert that also printed a nan
+        # keeps its more-specific hardware class.
+        import re as _re_div
+        if (
+            _re_div.search(r"loss[\w\.\)\]]*\s*(?:=|:)\s*[+-]?(?:nan|inf)\b", haystack)
+            or "loss is nan" in haystack
+            or "loss became nan" in haystack
+            or "loss went nan" in haystack
+            or "nan loss" in haystack
+            or "loss diverged" in haystack
+            or "non-finite loss" in haystack
+            or "nan detected in loss" in haystack
+        ):
+            return ("training_divergence", _suggest("training_divergence"))
 
         # Network flake during a torch wheel download — distinguish from generic
         # network because the fix is "strip torch from requirements" not "retry"

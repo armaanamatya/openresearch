@@ -374,6 +374,35 @@ class LiveRunState(BaseModel):
     log: str = ""
     telemetry: list[TelemetryRecordPublic] = Field(default_factory=list)
 
+    @field_validator("error", mode="before")
+    @classmethod
+    def _coerce_error_to_str(cls, v: Any) -> Any:
+        """Reading a run's status must never 500 (BUG-NEW-045 family).
+
+        The 2026-07-03 root_degenerate_loop fatal-abort path wrote a STRUCTURED
+        dict ({primitive, outcome, error, failure_class, suggested_fix, ...})
+        into demo_status.json's `error` field; strict str validation then broke
+        /runs/latest and /runs/{id} for that run. Coerce a dict to its
+        human-readable string (message + failure class + fix hint) and any
+        other non-string defensively via json/str.
+        """
+        if v is None or isinstance(v, str):
+            return v
+        if isinstance(v, dict):
+            parts = [str(v.get("error") or v.get("message") or "").strip()]
+            if v.get("failure_class"):
+                parts.append(f"[{v['failure_class']}]")
+            if v.get("suggested_fix"):
+                parts.append(f"fix: {v['suggested_fix']}")
+            joined = " ".join(p for p in parts if p)
+            if joined:
+                return joined
+            try:
+                return json.dumps(v, default=str)[:2000]
+            except (TypeError, ValueError):
+                return str(v)[:2000]
+        return str(v)[:2000]
+
 
 def sse_event(event: str, data: Any, *, event_id: str | None = None) -> str:
     prefix = f"id: {event_id}\n" if event_id else ""

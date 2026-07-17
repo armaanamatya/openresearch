@@ -67,6 +67,7 @@ _RUN_EXPERIMENT_REPAIRABLE_FAILURES = {
     "syntax_error",
     "scope_shape_violation",
     "dockerfile_invalid",
+    "training_divergence",     # loss went NaN/Inf — repair = lower lr / warmup / grad-clip
     "fabrication_suspected",   # GAP-1: VRAM-evidence fabrication → agent must re-implement
     "code_review_rejected",    # P1: pre-GPU code review found anti-fabrication bug
     "smoke_metrics_unreal",    # P2: pre-GPU smoke found non-real metrics
@@ -360,6 +361,80 @@ def _harvest_baseline_artifacts(
             missing_files=missing,
         )
     return _baseline_ok_envelope(path)
+
+
+# Entrypoints the pre-emit-stall salvage recognises, in preference order. The
+# generated baselines overwhelmingly use train.py; the rest cover the common
+# agent variations. run.sh covers shell-orchestrated projects.
+_SALVAGE_ENTRYPOINT_NAMES = ("train.py", "main.py", "run_all.py", "experiment.py", "run.sh")
+# A candidate below this size is a stub the sub-agent never finished — running
+# it would only cascade into run_experiment noise; let the retry path handle it.
+_SALVAGE_MIN_BYTES = 1024
+
+
+def _synthesize_commands_manifest(code_dir: "Any") -> str | None:
+    """Fix A (decided 2026-06-27): synthesize ``commands.json`` from an on-disk
+    entrypoint so a pre-emit SDK stall can salvage instead of discard.
+
+    The 2026-06-24 e2e failure shape: the implement_baseline sub-agent wrote a
+    complete 55 KB train.py, then the SDK stalled BEFORE emitting the final
+    result (and its ``commands_to_run``) — the old path returned an error
+    envelope, discarding the fully-written baseline, and the retry stalled the
+    same way. When the code demonstrably exists, the only missing artifact is
+    the one-line command manifest — synthesize it and let the post-emit
+    aclose-salvage machinery (``_harvest_baseline_artifacts``) validate.
+
+    Returns the entrypoint filename used, or ``None`` when there is nothing
+    trustworthy to salvage. NEVER overwrites an existing commands.json.
+    """
+    import json as _json
+    from pathlib import Path
+
+    path = Path(code_dir)
+    if not path.is_dir() or (path / "commands.json").exists():
+        return None
+
+    candidate = None
+    for name in _SALVAGE_ENTRYPOINT_NAMES:
+        f = path / name
+        if f.is_file() and f.stat().st_size >= _SALVAGE_MIN_BYTES:
+            candidate = f
+            break
+    if candidate is None:
+        # Fall back to the largest non-stub .py that looks runnable.
+        best_size = 0
+        for f in path.glob("*.py"):
+            try:
+                size = f.stat().st_size
+                if size < _SALVAGE_MIN_BYTES or size <= best_size:
+                    continue
+                text = f.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if "__main__" in text or "def main(" in text:
+                candidate, best_size = f, size
+    if candidate is None:
+        return None
+
+    runner = "bash" if candidate.suffix in {".sh", ".bash"} else "python"
+    try:
+        (path / "commands.json").write_text(
+            _json.dumps([f"{runner} {candidate.name}"]), encoding="utf-8"
+        )
+    except OSError:
+        return None
+    return candidate.name
+
+
+def _pre_emit_salvage_enabled() -> bool:
+    """Fix A gate — default ON; ``OPENRESEARCH_PRE_EMIT_SALVAGE=0`` restores the
+    pre-fix discard-on-stall envelope (the escape hatch, mirroring the
+    cells-route-retention convention for failure-path-only behavior)."""
+    return os.environ.get("OPENRESEARCH_PRE_EMIT_SALVAGE", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
 
 
 def _stash_cells_manifest(code_dir: "Any", ctx: "RunContext") -> bool:
@@ -2973,6 +3048,52 @@ def implement_baseline(plan: dict, *, ctx: "RunContext", _bes_inner: bool = Fals
                     continue
                 pre_emit_elapsed = _time.time() - _pre_emit_stall_start
                 if pre_emit_elapsed > _PRE_EMIT_STALL_S:
+                    # Fix A (2026-06-27 decision): before discarding, check
+                    # whether the sub-agent already wrote a runnable baseline —
+                    # the stall killed the RESULT emit, not the code. Synthesize
+                    # the missing commands.json from the on-disk entrypoint and
+                    # harvest, mirroring the post-emit aclose salvage below.
+                    if _pre_emit_salvage_enabled():
+                        _salvaged_entry = _synthesize_commands_manifest(code_dir)
+                        if _salvaged_entry:
+                            harvested = _harvest_baseline_artifacts(
+                                code_dir,
+                                error_code="sdk_pre_emit_stall",
+                                error_prefix=(
+                                    "implement_baseline SDK stalled pre-emit; "
+                                    "salvaged disk-written baseline"
+                                ),
+                            )
+                            harvested = _check_cells_manifest_retention(
+                                harvested, code_dir=code_dir,
+                                had_manifest=_had_cells_manifest,
+                                is_repair=repair_context is not None, ctx=ctx,
+                                repair_failure_class=str(
+                                    (repair_context or {}).get("failure_class") or ""
+                                ),
+                            )
+                            if harvested.get("ok") is True:
+                                harvested["salvaged"] = "pre_emit_stall"
+                                harvested["synthesized_commands_entrypoint"] = _salvaged_entry
+                                try:
+                                    _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                                        "code": "sdk_pre_emit_stall_salvaged",
+                                        "message": (
+                                            "implement_baseline: SDK stalled pre-emit but a "
+                                            f"runnable baseline was on disk — synthesized "
+                                            f"commands.json → {_salvaged_entry}; proceeding "
+                                            "with the disk-written baseline."
+                                        ),
+                                    })
+                                except Exception:  # noqa: BLE001
+                                    logger.debug(
+                                        "implement_baseline: failed to emit salvage warning"
+                                    )
+                                _cache.put(
+                                    ctx.project_dir, "implement_baseline",
+                                    payload=_payload, result=harvested,
+                                )
+                                return harvested
                     message = (
                         "implement_baseline: SDK pre-emit stall — no file activity "
                         f"in {_PRE_EMIT_STALL_S:.0f}s. Likely SDK aclose deadlock pre-result."

@@ -134,7 +134,7 @@ button {
   transition: background 0.12s ease;
 }
 .event:hover {
-  background: #fafafb;
+  background: var(--chip);
 }
 .event-time {
   font-size: 10.5px;

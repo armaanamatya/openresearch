@@ -33,7 +33,7 @@ export function RecentRunsPanel({ rows, error = null }: RecentRunsPanelProps) {
       </div>
 
       {error ? (
-        <p className={styles.empty} role="status">{error}</p>
+        <p className={styles.empty} role="status">Recent runs are unavailable right now.</p>
       ) : rows.length === 0 ? (
         <p className={styles.empty}>No runs yet — start one above.</p>
       ) : (

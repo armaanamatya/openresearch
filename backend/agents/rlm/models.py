@@ -699,6 +699,18 @@ def resolve_root_model(name: str | None) -> RootModel:
         name = os.environ.get(_ENV_ROOT_MODEL, "").strip() or None
 
     if not name:
+        # .env-file fallback: the CLI does not export .env into os.environ, so
+        # an OPENRESEARCH_RLM_ROOT_MODEL line in .env is only reachable via
+        # Settings. Consulted BEFORE the key-based layered default so a
+        # .env-only OAuth setup can't be hijacked into gpt-5 by a stale
+        # OPENAI_API_KEY.
+        try:
+            from backend.config import get_settings
+            name = (get_settings().rlm_root_model or "").strip() or None
+        except Exception:  # noqa: BLE001 — Settings unavailable in bare unit contexts
+            name = None
+
+    if not name:
         if os.environ.get("OPENAI_API_KEY"):
             name = "gpt-5"
         elif os.environ.get("FEATHERLESS_API_KEY"):
@@ -747,12 +759,26 @@ def resolve_root_model(name: str | None) -> RootModel:
                 f"model via {_ENV_ROOT_MODEL} / --model."
             )
         # Don't fall through to the env-var loop below for this branch.
-        # Optional root-model pin (2026-06-12): OPENRESEARCH_RLM_ROOT_MODEL_NAME
-        # overrides the OAuth root's model id (e.g. an Opus id for a ratcheted
-        # climb attempt where the sonnet root repeatedly lost the plot after
-        # context resets) without a registry edit. Unset/empty = registry
+        # Optional root-model pin (2026-06-12; canonicalized 2026-07-03):
+        # OPENRESEARCH_RLM_ROOT_MODEL_NAME (legacy REPROLAB_ prefix accepted)
+        # overrides the OAuth root's model id (e.g. claude-opus-4-8 when the
+        # Sonnet root repeatedly loses the plot / degenerates into a FINAL_VAR
+        # refusal loop) without a registry edit. Unset/empty = registry
         # default. OAuth serves any Claude id the subscription carries.
-        _root_pin = os.environ.get("OPENRESEARCH_RLM_ROOT_MODEL_NAME", "").strip()
+        # Process env wins; then Settings — the CLI does NOT export .env into
+        # os.environ (its dotenv_values call is only the shadow-warning), so
+        # the Settings fallback is what makes a .env-only pin reach
+        # `python -m backend.cli reproduce` runs.
+        _root_pin = (
+            os.environ.get("OPENRESEARCH_RLM_ROOT_MODEL_NAME", "").strip()
+            or os.environ.get("REPROLAB_RLM_ROOT_MODEL_NAME", "").strip()
+        )
+        if not _root_pin:
+            try:
+                from backend.config import get_settings
+                _root_pin = (get_settings().rlm_root_model_name or "").strip()
+            except Exception:  # noqa: BLE001 — Settings unavailable in bare unit contexts
+                _root_pin = ""
         _pinned_bk = dict(entry.backend_kwargs)
         if _root_pin:
             _pinned_bk["model_name"] = _root_pin

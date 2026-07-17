@@ -27,9 +27,9 @@ const instrumentSerif = Instrument_Serif({
 });
 
 export const metadata: Metadata = {
-  title: "OpenResearch — reproduce any ML paper, end to end",
+  title: "OpenResearch — verified research, not summaries",
   description:
-    "OpenResearch is a paper-reproduction agent built on the Recursive Language Model paradigm. It reads a paper, builds the environment, implements the method, runs the experiments, and grades itself against the paper's own claims."
+    "Other tools summarize papers. OpenResearch re-runs them: it reads the literature, rebuilds the experiments, and runs them — returning a cited brief where every number is checked against a result it produced, and every contradiction is flagged."
 };
 
 export default function RootLayout({

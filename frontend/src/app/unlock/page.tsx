@@ -34,13 +34,13 @@ export default function UnlockPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-stone-950 px-6 py-10 text-stone-100">
-      <div className="w-full max-w-sm rounded-[28px] border border-emerald-400/20 bg-[radial-gradient(circle_at_top_left,_rgba(16,185,129,0.12),_transparent_40%),linear-gradient(135deg,_rgba(12,10,9,0.97),_rgba(28,25,23,0.94))] p-8 shadow-[0_20px_80px_rgba(0,0,0,0.4)]">
-        <p className="mb-2 text-xs uppercase tracking-[0.35em] text-emerald-300">
+    <main className="flex min-h-screen items-center justify-center bg-[var(--bg)] px-6 py-10 text-ink">
+      <div className="w-full max-w-sm rounded-[28px] border border-line bg-[radial-gradient(circle_at_top_left,_rgba(232,162,74,0.10),_transparent_45%),var(--panel)] p-8 shadow-[0_24px_80px_-20px_rgba(0,0,0,0.7)]">
+        <p className="mb-2 text-xs uppercase tracking-[0.35em] text-accent">
           OpenResearch
         </p>
-        <h1 className="mb-1 text-xl font-semibold text-white">Demo access</h1>
-        <p className="mb-6 text-sm leading-6 text-stone-400">
+        <h1 className="mb-1 text-xl font-semibold text-ink">Demo access</h1>
+        <p className="mb-6 text-sm leading-6 text-muted">
           Enter the access code to continue.
         </p>
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
@@ -51,17 +51,17 @@ export default function UnlockPage() {
             onChange={(e) => setPassword(e.target.value)}
             disabled={submitting}
             autoFocus
-            className="w-full appearance-none rounded-xl border border-white/10 bg-stone-950 px-4 py-3 text-sm font-semibold text-white outline-none transition placeholder:text-stone-600 focus:border-emerald-300/70 disabled:cursor-not-allowed disabled:text-stone-500"
+            className="w-full appearance-none rounded-xl border border-line bg-[var(--bg)] px-4 py-3 text-sm font-semibold text-ink outline-none transition placeholder:text-muted-2 focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:text-muted"
           />
           {error && (
-            <p className="rounded-xl border border-rose-400/30 bg-rose-400/10 px-4 py-2 text-sm text-rose-100">
+            <p className="rounded-xl border border-err-soft bg-err-soft px-4 py-2 text-sm text-err">
               {error}
             </p>
           )}
           <button
             type="submit"
             disabled={submitting || !password}
-            className="inline-flex items-center justify-center rounded-full bg-emerald-400 px-5 py-3 text-sm font-semibold text-stone-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-stone-700 disabled:text-stone-300"
+            className="inline-flex items-center justify-center rounded-full bg-accent px-5 py-3 text-sm font-semibold text-accent-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {submitting ? "Verifying…" : "Unlock"}
           </button>

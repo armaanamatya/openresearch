@@ -152,6 +152,31 @@ class Settings(BaseSettings):
             "REPROLAB_OPENAI_ADMIN_KEY",
         ),
     )
+    # Optional root-model selection (registry key, e.g. "claude-oauth" /
+    # "gpt-5"): the .env-file counterpart of the OPENRESEARCH_RLM_ROOT_MODEL
+    # process env. models.py::resolve_root_model consults this when neither an
+    # explicit --model nor the process env names a root, BEFORE the layered
+    # key-based default — so a .env-only OAuth setup can't silently fall back
+    # to gpt-5 just because a (possibly dead) OPENAI_API_KEY is present.
+    rlm_root_model: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "OPENRESEARCH_RLM_ROOT_MODEL",
+            "REPROLAB_RLM_ROOT_MODEL",
+        ),
+    )
+    # Optional OAuth-root model pin: overrides the model id served by the
+    # `claude-oauth` root (registry default claude-sonnet-4-6) — e.g.
+    # claude-opus-4-8 for reliability on OAuth-only runs. Read by
+    # models.py::resolve_root_model as the .env-file fallback behind the
+    # process-env names of the same spelling.
+    rlm_root_model_name: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "OPENRESEARCH_RLM_ROOT_MODEL_NAME",
+            "REPROLAB_RLM_ROOT_MODEL_NAME",
+        ),
+    )
     # Azure OpenAI credentials. Mirrors the openai/anthropic key fields above:
     # read both the bare ``AZURE_OPENAI_*`` names the Azure SDK uses and the
     # Azure portal's "KEY 1" / "KEY 2" labels. Azure issues two interchangeable

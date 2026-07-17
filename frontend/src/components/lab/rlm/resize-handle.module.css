@@ -5,7 +5,7 @@
   width: var(--handle-width, 4px);
   flex-shrink: 0;
   cursor: col-resize;
-  background: var(--line-2, #e5e7eb);
+  background: var(--line-2, #2a2d36);
   /* Expand hit area beyond the visual 4px without affecting layout */
   margin: 0 -4px;
   padding: 0 4px;

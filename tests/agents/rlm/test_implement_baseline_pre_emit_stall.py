@@ -264,3 +264,164 @@ def test_pre_emit_env_override(
     assert "stall" in combined.lower() or "sdk_pre_emit" in combined.lower(), (
         f"Expected stall escalation, got: {result}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Fix A (decided 2026-06-27, implemented 2026-07-03): pre-emit stall SALVAGE.
+# The 2026-06-24 e2e run wrote a complete 55 KB train.py but the SDK stalled
+# before emitting commands.json — the old path discarded the baseline and
+# churned. When a runnable entrypoint is on disk, synthesize commands.json
+# from it and harvest (mirroring the post-emit aclose salvage) instead of
+# returning an error envelope.
+# ---------------------------------------------------------------------------
+
+import os
+import time
+
+
+def _write_real_train_py(code_dir: Path) -> Path:
+    body = (
+        "import json\n\ndef main():\n    print('training')\n"
+        + "# padding to exceed the stub-size floor\n" * 60
+        + "\nif __name__ == '__main__':\n    main()\n"
+    )
+    code_dir.mkdir(parents=True, exist_ok=True)
+    f = code_dir / "train.py"
+    f.write_text(body, encoding="utf-8")
+    return f
+
+
+def test_synthesize_commands_manifest_prefers_train_py(tmp_path: Path) -> None:
+    import json as _json
+
+    import backend.agents.rlm.primitives as prim_mod
+
+    code_dir = tmp_path / "code"
+    _write_real_train_py(code_dir)
+    entry = prim_mod._synthesize_commands_manifest(code_dir)
+    assert entry == "train.py"
+    cmds = _json.loads((code_dir / "commands.json").read_text(encoding="utf-8"))
+    assert cmds == ["python train.py"]
+
+
+def test_synthesize_commands_manifest_never_overwrites(tmp_path: Path) -> None:
+    import backend.agents.rlm.primitives as prim_mod
+
+    code_dir = tmp_path / "code"
+    _write_real_train_py(code_dir)
+    (code_dir / "commands.json").write_text('["python custom.py"]', encoding="utf-8")
+    assert prim_mod._synthesize_commands_manifest(code_dir) is None
+    assert (code_dir / "commands.json").read_text(encoding="utf-8") == '["python custom.py"]'
+
+
+def test_synthesize_commands_manifest_empty_dir_returns_none(tmp_path: Path) -> None:
+    import backend.agents.rlm.primitives as prim_mod
+
+    code_dir = tmp_path / "code"
+    code_dir.mkdir()
+    assert prim_mod._synthesize_commands_manifest(code_dir) is None
+    assert not (code_dir / "commands.json").exists()
+
+
+def test_synthesize_commands_manifest_ignores_stub_files(tmp_path: Path) -> None:
+    import backend.agents.rlm.primitives as prim_mod
+
+    code_dir = tmp_path / "code"
+    code_dir.mkdir()
+    (code_dir / "train.py").write_text("# stub\n", encoding="utf-8")
+    assert prim_mod._synthesize_commands_manifest(code_dir) is None
+
+
+def test_pre_emit_stall_salvages_disk_written_baseline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stall with a real train.py on disk must harvest, not discard."""
+    monkeypatch.setenv("OPENRESEARCH_PRE_EMIT_STALL_S", "1")
+
+    ctx = _make_ctx(tmp_path)
+    plan = _make_plan(ctx)
+
+    blocking_future = _make_blocking_future()
+    monkeypatch.setattr(
+        concurrent.futures.ThreadPoolExecutor,
+        "submit",
+        lambda self, fn, *a, **k: blocking_future,
+    )
+
+    import backend.agents.rlm.primitives as prim_mod
+    monkeypatch.setattr(prim_mod, "_pre_emit_stall_s", lambda: 1.0)
+
+    code_dir = ctx.project_dir / "code"
+    train = _write_real_train_py(code_dir)
+    # Backdate mtime so the on-disk file doesn't keep resetting the stall timer.
+    old = time.time() - 3600
+    os.utime(train, (old, old))
+
+    mock_cache = _make_mock_cache()
+    with patch.dict("sys.modules", {"backend.agents.rlm.primitive_cache": mock_cache}):
+        result_holder: list[Any] = []
+        exc_holder: list[BaseException] = []
+
+        def _run():
+            try:
+                result_holder.append(prim_mod.implement_baseline(plan, ctx=ctx))
+            except Exception as e:  # noqa: BLE001
+                exc_holder.append(e)
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(timeout=60)
+
+    assert not exc_holder, f"implement_baseline raised: {exc_holder[0] if exc_holder else None}"
+    assert result_holder, "implement_baseline did not return within 60 s"
+    result = result_holder[0]
+    assert result.get("ok") is True, f"expected salvaged ok=True result: {result}"
+    assert result.get("salvaged") == "pre_emit_stall", f"missing salvage marker: {result}"
+    assert (code_dir / "commands.json").exists()
+
+
+def test_pre_emit_stall_salvage_optout_restores_envelope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OPENRESEARCH_PRE_EMIT_SALVAGE=0 restores the pre-fix error envelope."""
+    monkeypatch.setenv("OPENRESEARCH_PRE_EMIT_STALL_S", "1")
+    monkeypatch.setenv("OPENRESEARCH_PRE_EMIT_SALVAGE", "0")
+
+    ctx = _make_ctx(tmp_path)
+    plan = _make_plan(ctx)
+
+    blocking_future = _make_blocking_future()
+    monkeypatch.setattr(
+        concurrent.futures.ThreadPoolExecutor,
+        "submit",
+        lambda self, fn, *a, **k: blocking_future,
+    )
+
+    import backend.agents.rlm.primitives as prim_mod
+    monkeypatch.setattr(prim_mod, "_pre_emit_stall_s", lambda: 1.0)
+
+    code_dir = ctx.project_dir / "code"
+    train = _write_real_train_py(code_dir)
+    old = time.time() - 3600
+    os.utime(train, (old, old))
+
+    mock_cache = _make_mock_cache()
+    with patch.dict("sys.modules", {"backend.agents.rlm.primitive_cache": mock_cache}):
+        result_holder: list[Any] = []
+
+        def _run():
+            try:
+                result_holder.append(prim_mod.implement_baseline(plan, ctx=ctx))
+            except Exception as e:  # noqa: BLE001
+                result_holder.append({"_exc": str(e)})
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(timeout=60)
+
+    assert result_holder, "implement_baseline did not return within 60 s"
+    result = result_holder[0]
+    assert result.get("success") is False
+    assert result.get("error_code") == "sdk_pre_emit_stall"

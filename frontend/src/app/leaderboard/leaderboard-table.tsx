@@ -48,6 +48,29 @@ function Dash() {
   return <span className={styles.dash} data-dash="true">—</span>;
 }
 
+function EmptyState({
+  glyph,
+  title,
+  message,
+  role,
+}: {
+  glyph: string;
+  title: string;
+  message: string;
+  role?: "status";
+}) {
+  return (
+    <div className={styles.emptyWrap} role={role}>
+      <span className={styles.emptyIcon} aria-hidden="true">{glyph}</span>
+      <p className={styles.emptyTitle}>{title}</p>
+      <p className={styles.emptyMsg}>{message}</p>
+      <a className={styles.emptyCta} href="/lab">
+        Open the lab <span aria-hidden="true">→</span>
+      </a>
+    </div>
+  );
+}
+
 interface LeaderboardTableProps {
   rows: LeaderboardRow[];
   error?: string | null;
@@ -76,17 +99,22 @@ export function LeaderboardTable({ rows, error = null }: LeaderboardTableProps) 
 
   if (error) {
     return (
-      <div className={styles.emptyState} role="status">
-        {error}
-      </div>
+      <EmptyState
+        role="status"
+        glyph="!"
+        title="Leaderboard unavailable"
+        message="We couldn't load completed runs right now. The backend may be offline — try again shortly, or start a run from the lab."
+      />
     );
   }
 
   if (rows.length === 0) {
     return (
-      <div className={styles.emptyState}>
-        No completed runs yet — start one from the lab.
-      </div>
+      <EmptyState
+        glyph="§"
+        title="No completed runs yet"
+        message="Runs you finish in the lab are ranked here by reproduction score. Start your first one to populate the board."
+      />
     );
   }
 

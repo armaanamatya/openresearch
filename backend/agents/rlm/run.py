@@ -255,6 +255,34 @@ def _accelerator_grader_offloaded(scope: str | None) -> bool:
     return (scope or "navigation").strip().lower() == "all"
 
 
+def _planner_stamp_for(root_model: RootModel) -> str | None:
+    """Honest planner stamp for a pinned OAuth root.
+
+    ``final_report.models.planner`` historically stamps ``llm_model`` — the
+    PRIMITIVE client label ("claude-oauth"), which is not necessarily the model
+    that drove the root loop: OPENRESEARCH_RLM_ROOT_MODEL_NAME can pin the OAuth
+    root to e.g. claude-opus-4-8 while the primitive/verifier client stays on
+    the Sonnet default. When (and only when) such a pin made the root differ
+    from the registry default, return ``key:model`` (the RoleSpec stamp
+    vocabulary) so A/B comparisons and the leaderboard see what actually ran;
+    return ``None`` otherwise — unpinned reports stay byte-identical.
+    """
+    try:
+        if root_model.rlm_backend != "anthropic-oauth":
+            return None
+        from backend.agents.rlm.models import ROOT_MODELS
+
+        resolved = str(root_model.backend_kwargs.get("model_name") or "")
+        registry_default = str(
+            ROOT_MODELS[root_model.key].backend_kwargs.get("model_name") or ""
+        )
+        if resolved and resolved != registry_default:
+            return f"{root_model.key}:{resolved}"
+    except Exception:  # noqa: BLE001 — stamping must never break finalize
+        return None
+    return None
+
+
 def _build_llm_client(provider: str | None, root_model: RootModel) -> tuple[Any, str]:
     """Build the ``LlmClient`` for ``RunContext.llm_client`` and its model label.
 
@@ -5055,6 +5083,7 @@ async def run_pipeline_rlm(
             corpus_sentinels=corpus_sentinels,
             tools_label=tools_label,  # T21 / review I8
             llm_model=llm_model,
+            planner_model=_planner_stamp_for(root_model),
         )
     finally:
         try:
@@ -5074,6 +5103,7 @@ def _finalize(
     corpus_sentinels: list[str] | None = None,
     tools_label: str = "real",  # T21 / review I8
     llm_model: str | None = None,
+    planner_model: str | None = None,
 ) -> RLMRunResult:
     """Convert the RLM result into a written report + an :class:`RLMRunResult`."""
     if result_obj is not None:
@@ -5140,7 +5170,10 @@ def _finalize(
     _sel_verifier = getattr(_role_selection, "verifier", None)
     _sel_grader = getattr(_role_selection, "grader", None)
     report.models = {
-        "planner": llm_model,
+        # planner_model carries the pinned OAuth root's key:model stamp when a
+        # OPENRESEARCH_RLM_ROOT_MODEL_NAME pin drove the loop on a non-default
+        # model (see _planner_stamp_for); None → llm_model, byte-for-byte today.
+        "planner": planner_model or llm_model,
         "executor": (
             _sel_executor.stamp
             if _sel_executor is not None

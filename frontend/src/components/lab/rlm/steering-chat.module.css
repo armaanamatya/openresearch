@@ -118,7 +118,7 @@
   font-family: var(--font-sans);
   font-size: var(--fs-sm);
   font-weight: 500;
-  color: var(--accent-ink);
+  color: var(--accent);
   background: var(--accent-soft);
   border: 1px solid var(--accent);
   border-radius: var(--r-xs);
@@ -130,7 +130,7 @@
 
 .sendBtn:hover:not(:disabled) {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
 }
 
 .sendBtn:disabled {

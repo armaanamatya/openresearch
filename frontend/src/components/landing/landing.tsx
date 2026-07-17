@@ -7,28 +7,32 @@ import { EnvironmentMock } from "./figures/EnvironmentMock";
 import { ImplementationMock } from "./figures/ImplementationMock";
 import { ExperimentsMock } from "./figures/ExperimentsMock";
 import { VerificationMock } from "./figures/VerificationMock";
-import { NavScrollMount, RevealMount } from "./client-bits";
+import { NavScrollMount } from "./client-bits";
 
 const GITHUB_URL = "https://github.com/armaanamatya/openresearch";
+
+const NAV_LINKS: ReadonlyArray<{ href: string; label: string; external?: boolean }> = [
+  { href: "#different", label: "Why it's different" },
+  { href: "#pipeline", label: "How it works" },
+  { href: "#trust", label: "Open source" }
+];
 
 export function LandingPage(): React.JSX.Element {
   return (
     <div className={styles.shell}>
       <NavScrollMount targetId="nav" scrolledClass={styles.scrolled} />
-      <RevealMount />
       <Nav />
       <Hero />
-      <ComprehensionSection />
-      <EnvironmentSection />
-      <ImplementationSection />
-      <ExperimentsSection />
-      <VerificationSection />
-      <BenchmarkSection />
+      <DifferentSection />
+      <PipelineSection />
+      <TrustSection />
       <CTAFooter />
       <Footer />
     </div>
   );
 }
+
+/* ─────────────────────────────  NAV  ───────────────────────────── */
 
 function Nav(): React.JSX.Element {
   return (
@@ -40,75 +44,111 @@ function Nav(): React.JSX.Element {
             OpenResearch<span className={styles.dot}>.</span>
           </span>
         </Link>
+
         <div className={styles["nav-links"]}>
-          <a href="#pipeline">How it works</a>
-          <a href="#benchmarks">Benchmarks</a>
-          <Link href="/leaderboard">Leaderboard</Link>
-          <a href={GITHUB_URL} target="_blank" rel="noreferrer">GitHub</a>
+          {NAV_LINKS.map((l) => (
+            <a key={l.href} href={l.href}>
+              {l.label}
+            </a>
+          ))}
+          <Link href="/leaderboard">Runs</Link>
+          <a href={GITHUB_URL} target="_blank" rel="noreferrer">
+            GitHub
+          </a>
         </div>
-        <Link href="/lab" className={styles["nav-cta"]}>
-          <span>Open lab</span>
-          <span className={styles.ar}>→</span>
-        </Link>
+
+        <div className={styles["nav-right"]}>
+          <Link href="/lab" className={styles["nav-cta"]}>
+            <span>Open lab</span>
+            <span className={styles.ar} aria-hidden>
+              →
+            </span>
+          </Link>
+
+          {/* CSS-only mobile menu — desktop nav-links hide ≤720px, this shows */}
+          <details className={styles["nav-mobile"]}>
+            <summary className={styles["nav-burger"]} aria-label="Menu">
+              <span aria-hidden />
+              <span aria-hidden />
+              <span aria-hidden />
+            </summary>
+            <div className={styles["nav-menu"]}>
+              {NAV_LINKS.map((l) => (
+                <a key={l.href} href={l.href}>
+                  {l.label}
+                </a>
+              ))}
+              <Link href="/leaderboard">Runs</Link>
+              <a href={GITHUB_URL} target="_blank" rel="noreferrer">
+                GitHub
+              </a>
+            </div>
+          </details>
+        </div>
       </div>
     </nav>
   );
 }
 
+/* ─────────────────────────────  HERO  ──────────────────────────── */
+
+const DELIVERABLES = ["Cited brief", "Source map", "Contradiction log", "Reproducible code"] as const;
+
 function Hero(): React.JSX.Element {
   return (
     <header className={styles.hero} id="top">
       <div className={styles.wrap}>
-
-        <div className={`${styles["hero-eyebrow"]} ${styles.mono} ${styles.reveal}`}>
+        <div className={`${styles["hero-eyebrow"]} ${styles.mono}`}>
           <span className={styles.pip} aria-hidden />
-          <span>RLM&nbsp;&nbsp;·&nbsp;&nbsp;§ 0.0 — Reproducibility, automated.</span>
+          <span>Verified research — not summaries.</span>
         </div>
 
         <div className={styles["hero-grid"]}>
-          <h1 className={`${styles.display} ${styles.reveal}`}>
-            Reproduce any ML paper, <span className={styles["accent-soft"]}>end&nbsp;to&nbsp;end.</span>
+          <h1 className={styles.display}>
+            Other tools summarize papers.{" "}
+            <span className={styles.accent}>We re&#8209;run&nbsp;them.</span>
           </h1>
-          <div className={styles.reveal}>
-            <p className={styles.lede} style={{ margin: "0 0 24px" }}>
-              OpenResearch is a paper-reproduction agent built on the Recursive Language Model paradigm.
-              It reads a paper, builds the environment, implements the method, runs the experiments,
-              and grades itself against the paper&apos;s own claims.
+          <div>
+            <p className={styles.lede} style={{ margin: "0 0 26px" }}>
+              OpenResearch reads the literature, rebuilds the experiments, and runs them — then hands
+              you a cited brief where every number is checked against a result it produced, and every
+              contradiction is flagged.
             </p>
-            <dl className={styles["hero-meta"]}>
-              <div>
-                <dt>Paradigm</dt>
-                <dd>Recursive Language Models (RLM)</dd>
+            <div className={styles["hero-deliverables"]}>
+              <span className={styles["deliv-label"]}>What comes back</span>
+              <div className={styles["deliv-chips"]}>
+                {DELIVERABLES.map((d) => (
+                  <span key={d} className={styles.chip}>
+                    {d}
+                  </span>
+                ))}
               </div>
-              <div>
-                <dt>Stages</dt>
-                <dd>§ 1.0&nbsp;→&nbsp;5.0&nbsp;&nbsp;·&nbsp;&nbsp;closed-loop</dd>
-              </div>
-              <div>
-                <dt>Modality</dt>
-                <dd>Code, configs, container, claims</dd>
-              </div>
-              <div>
-                <dt>Status</dt>
-                <dd>Research preview · <span className={styles.tok}>{"{{REPRODUCTION_SCORE}}"}</span></dd>
-              </div>
-            </dl>
+            </div>
           </div>
         </div>
 
-        <div className={`${styles["hero-actions"]} ${styles.reveal}`}>
+        <div className={styles["hero-actions"]}>
           <Link href="/lab" className={`${styles.btn} ${styles["btn-primary"]}`}>
             <span>Open the lab</span>
             <span aria-hidden>→</span>
           </Link>
-          <a href={GITHUB_URL} target="_blank" rel="noreferrer" className={`${styles.btn} ${styles["btn-ghost"]}`}>
+          <Link href="/leaderboard" className={`${styles.btn} ${styles["btn-ghost"]}`}>
+            <span>Browse live runs</span>
+            <span aria-hidden>→</span>
+          </Link>
+          <a
+            href={GITHUB_URL}
+            target="_blank"
+            rel="noreferrer"
+            className={`${styles.btn} ${styles["btn-ghost"]}`}
+          >
             <GitHubIcon />
-            <span>View on GitHub</span>
+            <span>View source</span>
           </a>
         </div>
 
-        <figure className={`${styles["hero-figure"]} ${styles.reveal}`}>
-          <span className={styles["fig-label"]}>FIG&nbsp;§ 0.1&nbsp;&nbsp;—&nbsp;&nbsp;Lab UI / exploration tree</span>
+        <figure className={styles["hero-figure"]}>
+          <span className={styles["fig-label"]}>FIG 0.1 — The lab, mid-run (illustrative)</span>
           <div className={styles.frame}>
             <div className={styles["mock-chrome"]}>
               <span className={styles.dots}>
@@ -117,9 +157,9 @@ function Hero(): React.JSX.Element {
                 <span className={styles.dot} />
               </span>
               <span className={styles.crumbs}>
-                lab&nbsp;/&nbsp;<b>arxiv:2410.04265 — Recursive Language Models</b>
+                lab&nbsp;/&nbsp;<b>reproduction · exploration tree</b>
               </span>
-              <span className={styles.right}>run · rlm-7e3a · 02:14:08</span>
+              <span className={styles.right}>live run</span>
             </div>
             <div style={{ padding: "22px 24px 28px" }}>
               <HeroTree />
@@ -131,93 +171,256 @@ function Hero(): React.JSX.Element {
   );
 }
 
-function ComprehensionSection(): React.JSX.Element {
+/* ───────────────────────  WHY IT'S DIFFERENT  ──────────────────── */
+
+const COMPARE_ROWS: ReadonlyArray<{ them: string; us: string }> = [
+  { them: "Summarize the abstract", us: "Rebuild and run the method" },
+  { them: "Quote the reported number", us: "Re-run it and measure the real one" },
+  { them: "Tell you what the paper says", us: "Flag where reported ≠ reproduced" },
+  { them: "Ask you to trust the text", us: "Link every claim to an executed run" }
+];
+
+function DifferentSection(): React.JSX.Element {
   return (
-    <section className={styles.spec} id="pipeline">
+    <section className={styles.different} id="different">
       <div className={styles.wrap}>
-        <div className={`${styles["spec-header"]} ${styles.reveal}`}>
-          <div className={styles["spec-num"]}>
-            <span className={styles.glyph}>§</span>
-            <span className={styles.n}>1.0</span>
-          </div>
-          <div className={styles["spec-title"]}>
-            <div className={styles.name}>
-              <span className={styles.word}>Comprehension</span>
-              <span className={styles.rule} aria-hidden />
-              <span className={styles.stage}>stage 01 / 05</span>
-            </div>
-            <h2 className={styles.head}>Read the paper like an author would.</h2>
-          </div>
-          <div>
-            <p className={styles["spec-blurb"]}>
-              The agent ingests the PDF and source repo, extracts every quantitative claim,
-              and builds a citation graph linking each claim to the table, figure, or
-              equation that supports it.
-            </p>
-            <div className={styles["spec-substeps"]}>
-              <span><span className={styles.num}>§ 1.1</span><span>Parsing</span></span>
-              <span><span className={styles.num}>§ 1.2</span><span>Claim extraction</span></span>
-              <span><span className={styles.num}>§ 1.3</span><span>Citation graph</span></span>
-              <span><span className={styles.num}>§ 1.4</span><span>Rubric induction</span></span>
-            </div>
-          </div>
+        <div className={styles["section-lead"]}>
+          <span className={styles["h-eyebrow"]}>Why it&apos;s different</span>
+          <h2 className={styles.headline}>
+            Summarizers read the paper.
+            <br />
+            <span className={styles.accent}>OpenResearch runs it.</span>
+          </h2>
+          <p className={styles.lede}>
+            Elicit, Consensus, Perplexity and the rest tell you what a paper claims. None of them
+            check whether the claim holds. OpenResearch rebuilds the experiment, executes it, and
+            grades every number against what actually came out.
+          </p>
         </div>
 
-        <figure className={`${styles["spec-visual"]} ${styles.reveal}`}>
-          <span className={styles["fig-label"]}>FIG&nbsp;§ 1.2&nbsp;&nbsp;—&nbsp;&nbsp;Claim extraction · rubric induction</span>
-          <div className={`${styles.frame} ${styles["frame-bleed-r"]}`}>
-            <div className={styles["mock-chrome"]}>
-              <span className={styles.crumbs}>comprehension&nbsp;/&nbsp;<b>arxiv:2410.04265</b></span>
-              <span className={styles.right}>47 claims · 23 figures · 9 tables</span>
+        <div className={styles.compare}>
+          <div className={`${styles["compare-col"]} ${styles.them}`}>
+            <div className={styles["compare-head"]}>
+              <span className={styles["compare-tag"]}>Read-only research tools</span>
             </div>
-            <ComprehensionMock />
+            {COMPARE_ROWS.map((r) => (
+              <div key={r.them} className={styles["compare-row"]}>
+                <span className={styles["compare-mark"]} aria-hidden>
+                  ·
+                </span>
+                <span>{r.them}</span>
+              </div>
+            ))}
           </div>
-        </figure>
+
+          <div className={`${styles["compare-col"]} ${styles.us}`}>
+            <div className={styles["compare-head"]}>
+              <span className={`${styles["compare-tag"]} ${styles.accent}`}>OpenResearch</span>
+            </div>
+            {COMPARE_ROWS.map((r) => (
+              <div key={r.us} className={styles["compare-row"]}>
+                <span className={`${styles["compare-mark"]} ${styles.ok}`} aria-hidden>
+                  ✓
+                </span>
+                <span>{r.us}</span>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </section>
   );
 }
 
-function EnvironmentSection(): React.JSX.Element {
+/* ─────────────────────────  PIPELINE  ──────────────────────────── */
+
+type Stage = {
+  n: string;
+  word: string;
+  stage: string;
+  head: string;
+  blurb: string;
+  subs: ReadonlyArray<[string, string]>;
+  figLabel: string;
+  crumbs: string;
+  crumbsBold: string;
+  crumbsRight: string;
+  Figure: () => React.JSX.Element;
+  bleed?: "l" | "r";
+};
+
+const STAGES: ReadonlyArray<Stage> = [
+  {
+    n: "1.0",
+    word: "Comprehension",
+    stage: "stage 01 / 05",
+    head: "Read the paper like an author would.",
+    blurb:
+      "It ingests the PDF and source repo, extracts every quantitative claim, and links each one to the table, figure, or equation that supports it.",
+    subs: [
+      ["1.1", "Parsing"],
+      ["1.2", "Claim extraction"],
+      ["1.3", "Citation graph"],
+      ["1.4", "Rubric induction"]
+    ],
+    figLabel: "FIG 1.2 — Claim extraction · rubric induction",
+    crumbs: "comprehension",
+    crumbsBold: "claims + citation graph",
+    crumbsRight: "illustrative",
+    Figure: ComprehensionMock,
+    bleed: "r"
+  },
+  {
+    n: "2.0",
+    word: "Environment",
+    stage: "stage 02 / 05",
+    head: "Stand up exactly the machine the paper ran on.",
+    blurb:
+      "Pinned CUDA, pinned wheels, pinned data hashes. A reproducible container is built and locked before a single training step runs.",
+    subs: [
+      ["2.1", "Toolchain"],
+      ["2.2", "Lockfile"],
+      ["2.3", "Dataset hashes"],
+      ["2.4", "GPU provisioning"]
+    ],
+    figLabel: "FIG 2.2 — Lockfile · GPU provisioning",
+    crumbs: "env",
+    crumbsBold: "container",
+    crumbsRight: "illustrative",
+    Figure: EnvironmentMock
+  },
+  {
+    n: "3.0",
+    word: "Implementation",
+    stage: "stage 03 / 05",
+    head: "Write the method, then improve it.",
+    blurb:
+      "A baseline is generated from the paper's pseudocode and figures. The agent then explores bounded variations against the induced rubric — every edit attributed, every diff reviewable.",
+    subs: [
+      ["3.1", "Baseline"],
+      ["3.2", "Improvement search"],
+      ["3.3", "Diff review"],
+      ["3.4", "Attribution"]
+    ],
+    figLabel: "FIG 3.2 — Baseline vs. improvement · diff view",
+    crumbs: "implementation",
+    crumbsBold: "recurse.py",
+    crumbsRight: "illustrative",
+    Figure: ImplementationMock,
+    bleed: "l"
+  },
+  {
+    n: "4.0",
+    word: "Experiments",
+    stage: "stage 04 / 05",
+    head: "Run the table the paper claims.",
+    blurb:
+      "Every row, every column, every seed. Runs are scheduled across the rubric, results stream into the lab live, and intermediate state is logged so a failed run is debuggable, not opaque.",
+    subs: [
+      ["4.1", "Run scheduler"],
+      ["4.2", "Seed sweeps"],
+      ["4.3", "Live metrics"],
+      ["4.4", "Run registry"]
+    ],
+    figLabel: "FIG 4.3 — Live metrics · run registry",
+    crumbs: "experiments",
+    crumbsBold: "results matrix",
+    crumbsRight: "illustrative",
+    Figure: ExperimentsMock
+  },
+  {
+    n: "5.0",
+    word: "Verification",
+    stage: "stage 05 / 05",
+    head: "Score the result against the paper's own claims.",
+    blurb:
+      "Each observed metric is graded against the rubric — match, deviation, or contradiction — with the supporting table cell surfaced for every line. This is the brief you take away.",
+    subs: [
+      ["5.1", "Rubric scoring"],
+      ["5.2", "Deltas + intervals"],
+      ["5.3", "Cited brief"],
+      ["5.4", "Audit trail"]
+    ],
+    figLabel: "FIG 5.1 — Reproduction scorecard · the cited brief",
+    crumbs: "verification",
+    crumbsBold: "scorecard",
+    crumbsRight: "illustrative",
+    Figure: VerificationMock,
+    bleed: "r"
+  }
+];
+
+function PipelineSection(): React.JSX.Element {
+  return (
+    <div id="pipeline">
+      <section className={`${styles.spec} ${styles["pipeline-lead"]}`}>
+        <div className={styles.wrap}>
+          <div className={styles["section-lead"]}>
+            <span className={styles["h-eyebrow"]}>How it works</span>
+            <h2 className={styles.headline}>From question to verified brief.</h2>
+            <p className={styles.lede}>
+              Five stages, one closed loop. Point it at an arXiv ID; it works through comprehension to
+              a sealed scorecard — and if a claim doesn&apos;t reproduce, you see exactly which one.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      {STAGES.map((s) => (
+        <PipelineStage key={s.n} stage={s} />
+      ))}
+    </div>
+  );
+}
+
+function PipelineStage({ stage: s }: { stage: Stage }): React.JSX.Element {
+  const Figure = s.Figure;
+  const frameClass =
+    s.bleed === "r"
+      ? `${styles.frame} ${styles["frame-bleed-r"]}`
+      : s.bleed === "l"
+        ? `${styles.frame} ${styles["frame-bleed-l"]}`
+        : styles.frame;
+
   return (
     <section className={styles.spec}>
       <div className={styles.wrap}>
-        <div className={`${styles["spec-header"]} ${styles.reveal}`}>
+        <div className={styles["spec-header"]}>
           <div className={styles["spec-num"]}>
             <span className={styles.glyph}>§</span>
-            <span className={styles.n}>2.0</span>
+            <span className={styles.n}>{s.n}</span>
           </div>
           <div className={styles["spec-title"]}>
             <div className={styles.name}>
-              <span className={styles.word}>Environment</span>
+              <span className={styles.word}>{s.word}</span>
               <span className={styles.rule} aria-hidden />
-              <span className={styles.stage}>stage 02 / 05</span>
+              <span className={styles.stage}>{s.stage}</span>
             </div>
-            <h2 className={styles.head}>Stand up exactly the machine the paper ran on.</h2>
+            <h3 className={styles.head}>{s.head}</h3>
           </div>
           <div>
-            <p className={styles["spec-blurb"]}>
-              Pinned CUDA, pinned wheels, pinned data hashes. A reproducible container is
-              built, verified against the paper&apos;s dependencies, and locked before a
-              single training step runs.
-            </p>
+            <p className={styles["spec-blurb"]}>{s.blurb}</p>
             <div className={styles["spec-substeps"]}>
-              <span><span className={styles.num}>§ 2.1</span><span>Toolchain</span></span>
-              <span><span className={styles.num}>§ 2.2</span><span>Lockfile</span></span>
-              <span><span className={styles.num}>§ 2.3</span><span>Dataset hashes</span></span>
-              <span><span className={styles.num}>§ 2.4</span><span>GPU provisioning</span></span>
+              {s.subs.map(([num, label]) => (
+                <span key={num}>
+                  <span className={styles.num}>§ {num}</span>
+                  <span>{label}</span>
+                </span>
+              ))}
             </div>
           </div>
         </div>
 
-        <figure className={`${styles["spec-visual"]} ${styles.reveal}`}>
-          <span className={styles["fig-label"]}>FIG&nbsp;§ 2.2&nbsp;&nbsp;—&nbsp;&nbsp;Lockfile · GPU provisioning</span>
-          <div className={styles.frame}>
+        <figure className={styles["spec-visual"]}>
+          <span className={styles["fig-label"]}>{s.figLabel}</span>
+          <div className={frameClass}>
             <div className={styles["mock-chrome"]}>
-              <span className={styles.crumbs}>env&nbsp;/&nbsp;<b>rlm-7e3a / container</b></span>
-              <span className={styles.right}>image · sha256:9a4f…02e1</span>
+              <span className={styles.crumbs}>
+                {s.crumbs}&nbsp;/&nbsp;<b>{s.crumbsBold}</b>
+              </span>
+              <span className={styles.right}>{s.crumbsRight}</span>
             </div>
-            <EnvironmentMock />
+            <Figure />
           </div>
         </figure>
       </div>
@@ -225,229 +428,87 @@ function EnvironmentSection(): React.JSX.Element {
   );
 }
 
-function ImplementationSection(): React.JSX.Element {
+/* ──────────────────────────  TRUST BAND  ───────────────────────── */
+
+const TRUST_CELLS: ReadonlyArray<{ lbl: string; v: string; sub: string }> = [
+  { lbl: "Open source", v: "On GitHub", sub: "Read every line of the agent — no black box." },
+  { lbl: "Audit trail", v: "Per-claim", sub: "Every score links to the run and the source it checked." },
+  { lbl: "Reproducible", v: "Pinned + seeded", sub: "Same environment, same seeds — re-run any result yourself." },
+  { lbl: "Research preview", v: "Watch it work", sub: "Stream the agent reasoning and executing, step by step." }
+];
+
+function TrustSection(): React.JSX.Element {
   return (
-    <section className={styles.spec}>
+    <section className={styles.trust} id="trust">
       <div className={styles.wrap}>
-        <div className={`${styles["spec-header"]} ${styles.reveal}`}>
-          <div className={styles["spec-num"]}>
-            <span className={styles.glyph}>§</span>
-            <span className={styles.n}>3.0</span>
-          </div>
-          <div className={styles["spec-title"]}>
-            <div className={styles.name}>
-              <span className={styles.word}>Implementation</span>
-              <span className={styles.rule} aria-hidden />
-              <span className={styles.stage}>stage 03 / 05</span>
-            </div>
-            <h2 className={styles.head}>Write the method, then improve it.</h2>
-          </div>
-          <div>
-            <p className={styles["spec-blurb"]}>
-              A baseline implementation is generated from the paper&apos;s pseudocode and
-              figures. The RLM then explores bounded variations against the induced
-              rubric — every edit attributed, every diff reviewable.
-            </p>
-            <div className={styles["spec-substeps"]}>
-              <span><span className={styles.num}>§ 3.1</span><span>Baseline</span></span>
-              <span><span className={styles.num}>§ 3.2</span><span>Improvement exploration</span></span>
-              <span><span className={styles.num}>§ 3.3</span><span>Diff review</span></span>
-              <span><span className={styles.num}>§ 3.4</span><span>Attribution</span></span>
-            </div>
-          </div>
-        </div>
-
-        <figure className={`${styles["spec-visual"]} ${styles.reveal}`}>
-          <span className={styles["fig-label"]}>FIG&nbsp;§ 3.2&nbsp;&nbsp;—&nbsp;&nbsp;Baseline vs. improvement · diff view</span>
-          <div className={`${styles.frame} ${styles["frame-bleed-l"]}`}>
-            <div className={styles["mock-chrome"]}>
-              <span className={styles.crumbs}>implementation&nbsp;/&nbsp;<b>recurse.py</b></span>
-              <span className={styles.right}>branch 3.2a · +18 / −6</span>
-            </div>
-            <ImplementationMock />
-          </div>
-        </figure>
-      </div>
-    </section>
-  );
-}
-
-function ExperimentsSection(): React.JSX.Element {
-  return (
-    <section className={styles.spec}>
-      <div className={styles.wrap}>
-        <div className={`${styles["spec-header"]} ${styles.reveal}`}>
-          <div className={styles["spec-num"]}>
-            <span className={styles.glyph}>§</span>
-            <span className={styles.n}>4.0</span>
-          </div>
-          <div className={styles["spec-title"]}>
-            <div className={styles.name}>
-              <span className={styles.word}>Experiments</span>
-              <span className={styles.rule} aria-hidden />
-              <span className={styles.stage}>stage 04 / 05</span>
-            </div>
-            <h2 className={styles.head}>Run the table the paper claims.</h2>
-          </div>
-          <div>
-            <p className={styles["spec-blurb"]}>
-              Every row, every column, every seed. Experiments are scheduled across the
-              rubric, results stream into the lab UI, and intermediate state is logged
-              so a failed run is debuggable, not opaque.
-            </p>
-            <div className={styles["spec-substeps"]}>
-              <span><span className={styles.num}>§ 4.1</span><span>Run scheduler</span></span>
-              <span><span className={styles.num}>§ 4.2</span><span>Seed sweeps</span></span>
-              <span><span className={styles.num}>§ 4.3</span><span>Live metrics</span></span>
-              <span><span className={styles.num}>§ 4.4</span><span>Run registry</span></span>
-            </div>
-          </div>
-        </div>
-
-        <figure className={`${styles["spec-visual"]} ${styles.reveal}`}>
-          <span className={styles["fig-label"]}>FIG&nbsp;§ 4.3&nbsp;&nbsp;—&nbsp;&nbsp;Live metrics · run registry</span>
-          <div className={styles.frame}>
-            <div className={styles["mock-chrome"]}>
-              <span className={styles.crumbs}>experiments&nbsp;/&nbsp;<b>GSM8K · pass@1</b></span>
-              <span className={styles.right}>5 seeds · 32 runs · 4h 12m</span>
-            </div>
-            <ExperimentsMock />
-          </div>
-        </figure>
-      </div>
-    </section>
-  );
-}
-
-function VerificationSection(): React.JSX.Element {
-  return (
-    <section className={styles.spec}>
-      <div className={styles.wrap}>
-        <div className={`${styles["spec-header"]} ${styles.reveal}`}>
-          <div className={styles["spec-num"]}>
-            <span className={styles.glyph}>§</span>
-            <span className={styles.n}>5.0</span>
-          </div>
-          <div className={styles["spec-title"]}>
-            <div className={styles.name}>
-              <span className={styles.word}>Verification</span>
-              <span className={styles.rule} aria-hidden />
-              <span className={styles.stage}>stage 05 / 05</span>
-            </div>
-            <h2 className={styles.head}>Score the result against the paper&apos;s own claims.</h2>
-          </div>
-          <div>
-            <p className={styles["spec-blurb"]}>
-              Each observed metric is graded against the rubric induced in §1.4 —
-              match, deviation, or contradiction — with the supporting table cell
-              and confidence interval surfaced for every cell.
-            </p>
-            <div className={styles["spec-substeps"]}>
-              <span><span className={styles.num}>§ 5.1</span><span>Rubric scoring</span></span>
-              <span><span className={styles.num}>§ 5.2</span><span>Confidence intervals</span></span>
-              <span><span className={styles.num}>§ 5.3</span><span>Report artifact</span></span>
-              <span><span className={styles.num}>§ 5.4</span><span>Audit trail</span></span>
-            </div>
-          </div>
-        </div>
-
-        <figure className={`${styles["spec-visual"]} ${styles.reveal}`}>
-          <span className={styles["fig-label"]}>FIG&nbsp;§ 5.1&nbsp;&nbsp;—&nbsp;&nbsp;Reproduction scorecard</span>
-          <div className={`${styles.frame} ${styles["frame-bleed-r"]}`}>
-            <div className={styles["mock-chrome"]}>
-              <span className={styles.crumbs}>verification&nbsp;/&nbsp;<b>scorecard · rlm-7e3a</b></span>
-              <span className={styles.right}>artifact · report.md · 14 KB</span>
-            </div>
-            <VerificationMock />
-          </div>
-        </figure>
-      </div>
-    </section>
-  );
-}
-
-function BenchmarkSection(): React.JSX.Element {
-  return (
-    <section className={styles.bench} id="benchmarks">
-      <div className={styles.wrap}>
-        <div className={`${styles.row} ${styles.reveal}`}>
+        <div className={styles["bench-row"]}>
           <div className={styles["spec-num"]}>
             <span className={styles.glyph}>§</span>
             <span className={styles.n}>6.0</span>
           </div>
           <div className={styles["spec-title"]}>
             <div className={styles.name}>
-              <span className={styles.word}>Benchmarks</span>
+              <span className={styles.word}>Trust</span>
               <span className={styles.rule} aria-hidden />
-              <span className={styles.stage}>measured · not promised</span>
+              <span className={styles.stage}>shown, not claimed</span>
             </div>
-            <h2 className={styles.head}>Numbers go here once real runs say so.</h2>
+            <h2 className={styles.head}>Open-source. Every result is re-runnable.</h2>
           </div>
           <div>
             <p className={styles["spec-blurb"]}>
-              OpenResearch reports a reproduction score per paper on the PaperBench v0
-              protocol. Every figure on this page is a placeholder until a sealed,
-              seed-pinned run confirms it. We will not ship a number we cannot rerun.
+              We&apos;re in research preview, so the page carries no scoreboard we can&apos;t stand
+              behind. Instead, the proof is the product: read the code, watch a run stream live, and
+              re-execute any result on the same pinned environment.
             </p>
           </div>
         </div>
 
-        <div className={`${styles["bench-numbers"]} ${styles.reveal}`}>
-          <div className={styles["bench-cell"]}>
-            <div className={styles.lbl}>PaperBench v0 · score</div>
-            <div className={`${styles.v} ${styles.placeholder}`}>
-              <span className={styles.tok}>{"{{REPRODUCTION_SCORE}}"}</span>
+        <div className={styles["trust-grid"]}>
+          {TRUST_CELLS.map((c) => (
+            <div key={c.lbl} className={styles["trust-cell"]}>
+              <div className={styles.lbl}>{c.lbl}</div>
+              <div className={styles.v}>{c.v}</div>
+              <div className={styles.sub}>{c.sub}</div>
             </div>
-            <div className={styles.sub} style={{ marginTop: 6, fontFamily: "var(--font-jetbrains-mono), monospace", fontSize: 10.5, letterSpacing: ".06em", color: "var(--landing-ink-4)", textTransform: "uppercase" }}>
-              ↗ target <span className={styles.tok} style={{ fontSize: "0.95em" }}>{"{{TARGET_SCORE}}"}</span>
-            </div>
-            <div className={styles.sub}>Median per-cell rubric match across the suite.</div>
-          </div>
-          <div className={styles["bench-cell"]}>
-            <div className={styles.lbl}>Papers reproduced</div>
-            <div className={`${styles.v} ${styles.placeholder}`}>
-              <span className={styles.tok}>{"{{N_PAPERS}}"}</span>
-            </div>
-            <div className={styles.sub}>End-to-end. Comprehension through sealed scorecard.</div>
-          </div>
-          <div className={styles["bench-cell"]}>
-            <div className={styles.lbl}>Median drift</div>
-            <div className={`${styles.v} ${styles.placeholder}`} style={{ whiteSpace: "nowrap" }}>
-              <span style={{ marginRight: 4 }}>±</span><span className={styles.tok}>{"{{MEDIAN_DRIFT}}"}</span>
-            </div>
-            <div className={styles.sub}>Absolute deviation between observed and paper-reported metrics.</div>
-          </div>
-          <div className={styles["bench-cell"]}>
-            <div className={styles.lbl}>Wall-clock per paper</div>
-            <div className={`${styles.v} ${styles.placeholder}`}>
-              <span className={styles.tok}>{"{{HOURS_PER_PAPER}}"}</span>
-            </div>
-            <div className={styles.sub}>Median, includes environment build and verification.</div>
-          </div>
+          ))}
         </div>
       </div>
     </section>
   );
 }
 
+/* ────────────────────────────  CTA  ────────────────────────────── */
+
 function CTAFooter(): React.JSX.Element {
   return (
     <section className={styles["cta-foot"]} id="github">
-      <div className={`${styles.wrap} ${styles.reveal}`}>
-        <div className={styles["h-eyebrow"]} style={{ marginBottom: 22 }}>§ 7.0 — Try it</div>
-        <h2>An end-to-end reproduction,<br />in one command.</h2>
+      <div className={styles.wrap}>
+        <div className={styles["h-eyebrow"]} style={{ marginBottom: 22 }}>
+          § 7.0 — Try it
+        </div>
+        <h2>
+          Point it at a paper.
+          <br />
+          Get back a brief you can check.
+        </h2>
         <p className={styles.lede}>
-          Point OpenResearch at an arXiv ID. Get back a sealed environment, an implementation,
-          a scorecard, and an audit trail. If a claim doesn&apos;t reproduce, you&apos;ll see exactly which one.
+          Drop in an arXiv ID. OpenResearch returns a sealed environment, an implementation, a
+          scorecard, and an audit trail — and tells you exactly which claims held and which
+          didn&apos;t.
         </p>
         <div className={styles.actions}>
           <Link href="/lab" className={`${styles.btn} ${styles["btn-primary"]}`}>
             <span>Open the lab</span>
             <span aria-hidden>→</span>
           </Link>
-          <a href={GITHUB_URL} target="_blank" rel="noreferrer" className={`${styles.btn} ${styles["btn-ghost"]}`}>
+          <a
+            href={GITHUB_URL}
+            target="_blank"
+            rel="noreferrer"
+            className={`${styles.btn} ${styles["btn-ghost"]}`}
+          >
             <GitHubIcon />
-            <span>github.com/armaanamatya/openresearch</span>
+            <span>View source on GitHub</span>
           </a>
         </div>
       </div>
@@ -464,9 +525,12 @@ function Footer(): React.JSX.Element {
           <span>OpenResearch · 2026</span>
         </div>
         <div className={styles.links}>
+          <a href="#different">Why it&apos;s different</a>
           <a href="#pipeline">How it works</a>
-          <a href="#benchmarks">Benchmarks</a>
-          <a href={GITHUB_URL} target="_blank" rel="noreferrer">GitHub</a>
+          <Link href="/leaderboard">Runs</Link>
+          <a href={GITHUB_URL} target="_blank" rel="noreferrer">
+            GitHub
+          </a>
         </div>
         <div className={styles.mono}>§ end · v0.1.0</div>
       </div>

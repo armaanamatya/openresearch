@@ -13,8 +13,8 @@
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  background: var(--bg, #fff);
-  color: var(--ink, #111);
+  background: var(--bg, #121319);
+  color: var(--ink, #f5f4f2);
 }
 
 /* ── Band 3: workspace ──────────────────────────────────────────────────── */
