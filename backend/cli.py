@@ -2960,6 +2960,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Opt-in structured logging: only reconfigure when the operator sets a log
+    # env var, so default behavior is byte-identical (no new handler / level).
+    if os.environ.get("OPENRESEARCH_LOG_FORMAT") or os.environ.get("OPENRESEARCH_LOG_LEVEL"):
+        from backend.logging_config import configure_logging
+        configure_logging()
     parser = _build_parser()
     args = parser.parse_args(argv)
     # --no-cache: disable primitive_cache as early as possible so no module
