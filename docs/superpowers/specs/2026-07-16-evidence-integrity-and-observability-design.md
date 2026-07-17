@@ -1,7 +1,11 @@
 # Evidence-Integrity & Observability — Design Spec
 
 - **Date:** 2026-07-16
-- **Status:** Draft (autonomous-loop authored; pending user review + code-verification pass)
+- **Status:** Partially implemented on branch `feat/evidence-integrity-w1` (W1-M1, W2, eval-coverage
+  floor + observability shipped, default-OFF/tested; W1-M2 access-audit + W3/W5 not yet built).
+  Live implementation status + verified pre-existing-mechanism findings:
+  `docs/superpowers/plans/2026-07-16-evidence-integrity-loop-progress.md`. Flag catalog:
+  `backend/agents/rlm/CLAUDE.md` → "Evidence-integrity + observability". Every flag in `docs/reference/flags.md`.
 - **Author:** Aayush Baniya (via Claude)
 - **Scope:** 5 workstreams (W1–W5). Single mega-spec by request; each workstream ships independently.
 - **Related:** `backend/agents/rlm/CLAUDE.md` (evidence gate, fabrication guards), `learn.md`,
