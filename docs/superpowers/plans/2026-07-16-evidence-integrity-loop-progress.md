@@ -87,6 +87,22 @@ complement to W2's per-leaf `min_eval_n` state_contract (both kept: floor = glob
 run_experiment wiring; state_contract = per-leaf, needs rubric annotation). Default 0 = byte-identical
 (existing 57 eval-provenance tests unchanged). 4 hermetic tests. Registered in flags.md.
 
+## Session 2 — end-to-end validation + logging (2026-07-16/17)
+FREE validation (scripts/evidence_replay.py over 9 real runs, $0): W1-M1 shows MATCH on every
+graded run — ZERO false-positives; coverage/state-contract guards inert (ep-sidecars=0, runs predate
+record_eval); controlled injection demo → all 3 gates fire. Verdicts ranged failed→reproduced (0.188→0.900).
+GKE ResNet run (arXiv 1512.03385) — BLOCKED: cluster API 34.27.107.69 unreachable (master-authorized-
+networks / VPN / project perms — operator infra, NOT a code issue). Did NOT spend into a broken endpoint.
+Logging — all 4 asks shipped (default-OFF/opt-in, byte-identical off; ~common flag idiom):
+  1. Cost visibility: backend/agents/resilience/cost_visibility.py — audit_cost_ledger surfaces UNPRICED
+     (Foundry/grok) rows+tokens instead of the misleading $0 total. Real runs audit: all conf=complete.
+  2. Structured/queryable: backend/logging_config.py — JsonFormatter + ProjectIdFilter + configure_logging
+     (OPENRESEARCH_LOG_FORMAT/LEVEL), wired opt-in into cli.main.
+  3. Evidence-decision logging: backend/agents/rlm/evidence_log.py — rlm_state/evidence_decisions.jsonl,
+     wired into the W1-M1 guard (OPENRESEARCH_EVIDENCE_DECISION_LOG).
+  4. Levels/noise: OPENRESEARCH_LOG_LEVEL via resolve_level.
+253 tests green across all new work; full suite (session 1) 9081 passed.
+
 ## Code review — DONE (commit 98a48366)
 Ran a code-reviewer subagent on `git diff main..HEAD -- backend/`. Triaged (verify-each, not blind-apply):
 - FIXED #1 flag vocabulary: `OPENRESEARCH_STATE_CONTRACTS` now canonical `('1','true','yes')`.
