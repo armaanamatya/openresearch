@@ -3198,9 +3198,14 @@ def _backend_for_sandbox_mode(
     if mode is SandboxMode.runpod:
         import backend.services.runtime as _runtime
         from backend.services.runtime.runpod_backend import RunpodBackend
+        from backend.config import get_settings as _get_settings
 
         _runtime.ensure_runpod_available()
-        return RunpodBackend(run_budget=run_budget, gpu_plan=gpu_plan)
+        return RunpodBackend(
+            api_key=_get_settings().runpod_api_key or None,
+            run_budget=run_budget,
+            gpu_plan=gpu_plan,
+        )
 
     if mode is SandboxMode.azure:
         import backend.services.runtime as _runtime
