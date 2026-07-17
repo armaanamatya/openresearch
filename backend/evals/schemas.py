@@ -7,6 +7,7 @@ innovation evaluation (judgment-based).
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
@@ -23,6 +24,24 @@ class EvalMode(str, Enum):
 # --- Reproduction Evaluation ---
 
 
+@dataclass(frozen=True)
+class CompositeWeights:
+    """Weights for ``ReproductionScore.composite_score`` — a report/rank-only
+    blend that must stay deterministic-dominated (spec §6.2). ``fidelity`` is the
+    only LLM-derived term; the default zeroes it so a hallucinated grade can never
+    lift the offline composite. Overridable per call for A/B weight tuning (spec
+    §10 Q1) — the composite never reaches the verdict surface regardless of weights.
+    """
+
+    build: float = 0.15
+    run: float = 0.25
+    metric_match: float = 0.60
+    fidelity: float = 0.0
+
+
+DEFAULT_COMPOSITE_WEIGHTS = CompositeWeights()
+
+
 class ReproductionScore(BaseModel):
     """Scores a single reproduction attempt against paper ground truth."""
 
@@ -31,7 +50,7 @@ class ReproductionScore(BaseModel):
     build_success: bool = False
     run_success: bool = False
     metric_match: float = 0.0  # 0-1: how close reproduced metrics are to paper's
-    fidelity_score: float = 0.0  # 0-1: composite reproduction fidelity
+    fidelity_score: float = 0.0  # 0-1: LLM-judged reproduction fidelity (display term)
     assumption_accuracy: float = 0.0  # 0-1: fraction of assumptions that were valid
     step_count: int = 0  # number of agent steps/tool calls
     cost_usd: float = 0.0  # total LLM API cost
@@ -39,13 +58,22 @@ class ReproductionScore(BaseModel):
     timestamp: float = Field(default_factory=time.time)
     details: dict[str, Any] = Field(default_factory=dict)
 
-    def composite_score(self) -> float:
-        """Weighted composite: build(0.1) + run(0.2) + metric_match(0.4) + fidelity(0.3)."""
+    def composite_score(self, weights: CompositeWeights | None = None) -> float:
+        """Deterministic-dominated weighted composite (report/rank-only).
+
+        Default weights (``DEFAULT_COMPOSITE_WEIGHTS``) put all mass on the
+        measured components — build/run/metric_match — and ZERO on the LLM
+        ``fidelity_score``, so the offline composite keys on evidence, not the
+        grade (spec §6.2, north-star invariant). This value lives only in the
+        ``backend/evals/`` leaderboard store and never reaches
+        ``final_report.verdict``. Pass ``weights`` to re-blend for A/B tuning.
+        """
+        w = weights or DEFAULT_COMPOSITE_WEIGHTS
         return (
-            0.1 * float(self.build_success)
-            + 0.2 * float(self.run_success)
-            + 0.4 * self.metric_match
-            + 0.3 * self.fidelity_score
+            w.build * float(self.build_success)
+            + w.run * float(self.run_success)
+            + w.metric_match * self.metric_match
+            + w.fidelity * self.fidelity_score
         )
 
 

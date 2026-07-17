@@ -335,6 +335,16 @@ class BenchmarkSummary(BaseModel):
     baselineRubricAreas: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class ControllerHandle(BaseModel):
+    """A durable-controller run's cluster handle, recorded in place of a local
+    ``pid``. ``fenceEpoch`` is the stable lease fence the controller and its cell
+    Jobs carry; a run with a live handle is active even though ``pid`` is None."""
+
+    jobName: str
+    fenceEpoch: int
+    submittedEpoch: float
+
+
 class LiveRunState(BaseModel):
     projectId: str
     outputDir: str
@@ -356,6 +366,7 @@ class LiveRunState(BaseModel):
     completedAt: str | None = None
     error: str | None = None
     pid: int | None = None
+    controller: ControllerHandle | None = None
     payload: Any | None = None
     log: str = ""
     telemetry: list[TelemetryRecordPublic] = Field(default_factory=list)
@@ -627,10 +638,14 @@ class FileLiveRunService:
         runs_root: Path | None = None,
         repo_root: Path | None = None,
         python_bin: str | None = None,
+        controller_cluster: Any | None = None,
     ) -> None:
         self.repo_root = (repo_root or Path(__file__).resolve().parents[3]).resolve()
         self.runs_root = (runs_root or self.repo_root / "runs").resolve()
         self.python_bin = python_bin or sys.executable
+        # WS3 durable controller: injected under test; None ⇒ lazily build the
+        # real GCS/K8s-backed cluster at submit time (fail-soft to local Popen).
+        self._controller_cluster = controller_cluster
 
     def _subprocess_env(self, request: StartRunRequest) -> dict[str, str]:
         """Build the environment dict for the run subprocess.
@@ -951,6 +966,107 @@ class FileLiveRunService:
             if counter % 15 == 0:
                 yield sse_event("heartbeat", {"projectId": project_id, "status": state.status})
 
+    def _should_use_durable_controller(self, request: StartRunRequest) -> bool:
+        """Pure decision: durable-controller cluster submit vs. local Popen.
+
+        WS3 seam (docs/superpowers/specs/2026-07-10-durable-cloud-native-
+        orchestration-ws3-design.md §4.4). True only when
+        ``OPENRESEARCH_DURABLE_CONTROLLER`` is enabled AND
+        ``request.sandbox == "gcp"``. ``request.sandbox`` (post the override
+        chain in ``_start_python_run``) is the only place "sandbox" lives at
+        this scope — ``apply_autonomous_profile_override`` forces the literal
+        ``"gcp"``, never ``"gke"`` (that alias only exists in the unrelated
+        ``backend.agents.execution.SandboxMode`` enum).
+
+        Flag OFF (default) is always ``False`` for every request, regardless
+        of sandbox, so the existing ``subprocess.Popen`` reproduce path stays
+        byte-identical. No side effects — safe to call unconditionally.
+        """
+        from backend.agents.rlm import run_controller
+
+        return run_controller.durable_controller_enabled() and request.sandbox == "gcp"
+
+    async def _submit_durable_controller(
+        self,
+        request: StartRunRequest,
+        *,
+        project_id: str,
+        uploaded_paper: dict[str, str] | None,
+    ) -> LiveRunState:
+        """Takeover-safe WS3 durable-controller submit.
+
+        Delegates the correctness-critical ordering to
+        ``controller_cluster.submit_controller`` (acquire → is_current → submit →
+        ready → reap → handle) over the injected cluster (real GCS/K8s at
+        runtime, a fake under test). On success the controller handle replaces
+        the local ``pid`` in ``demo_status.json``; a contended run adopts the
+        existing state; ``ControllerNotReady``/``ControllerStuck``/pre-submit
+        errors propagate to ``_start_python_run``'s fallback (§3.2/§3.3).
+        """
+        from backend.agents.rlm import controller_cluster as _cc
+        from backend.agents.rlm import controller_launch as _cl
+        from backend.agents.rlm import run_controller as _rc
+
+        cluster = self._controller_cluster or _cc.build_default_cluster()
+        settings = get_settings()
+        paper = request.paper_id or project_id
+        ready_timeout_s = float(
+            os.environ.get("OPENRESEARCH_CONTROLLER_READY_TIMEOUT_S", "").strip() or 180
+        )
+        cpu_pool = (
+            os.environ.get("OPENRESEARCH_CPU_POOL_LABEL", "").strip() or "reprolab/pool=cpu"
+        )
+        backoff = int(os.environ.get("OPENRESEARCH_CONTROLLER_BACKOFF_LIMIT", "").strip() or 3)
+        # The controller Pod needs the run's config/credentials + the durable +
+        # fence flags; pass OPENRESEARCH_/REPROLAB_ + credential keys only (not
+        # the host PATH and unrelated shell env) into the Job spec.
+        full_env = self._subprocess_env(request)
+        base_env = {
+            k: v
+            for k, v in full_env.items()
+            if k.startswith(("OPENRESEARCH_", "REPROLAB_"))
+            or "API_KEY" in k
+            or "TOKEN" in k
+        }
+        base_env["OPENRESEARCH_DURABLE_CONTROLLER"] = "1"
+
+        def _build_manifest(fence: int) -> dict:
+            env = {**base_env, "OPENRESEARCH_CELL_FENCE_EPOCH": str(fence)}
+            return _cl.build_controller_job_manifest(
+                paper=paper,
+                project_id=project_id,
+                fence_epoch=fence,
+                image=settings.gcp_base_image,
+                cpu_pool_label=cpu_pool,
+                namespace=settings.gcp_namespace,
+                service_account=settings.gcp_service_account,
+                env=env,
+                command=_rc.build_controller_command(paper, project_id),
+                backoff_limit=backoff,
+            )
+
+        handle = await asyncio.to_thread(
+            _cc.submit_controller,
+            cluster,
+            build_manifest=_build_manifest,
+            project_id=project_id,
+            owner_id=project_id,
+            ready_timeout_s=ready_timeout_s,
+        )
+        if handle is None:
+            # Contended: another driver already owns this run. Adopt its state —
+            # never start a second (local or remote) driver on the same run dir.
+            adopted = await self.get_run(project_id)
+            if adopted is not None:
+                return adopted
+            raise _cc.ControllerStuck(
+                f"durable run {project_id} contended with no adoptable state"
+            )
+        meta = self._read_status(project_id) or {}
+        meta.update({"controller": handle, "pid": None, "updatedAt": _now()})
+        await asyncio.to_thread(self._write_status, project_id, meta)
+        return (await self.get_run(project_id)) or LiveRunState(**meta)
+
     async def _start_python_run(
         self,
         request: StartRunRequest,
@@ -972,7 +1088,11 @@ class FileLiveRunService:
         # default, so it applies last.
         request = apply_autonomous_profile_override(request)
         existing = await self.get_run(project_id)
-        if existing and existing.status in {"queued", "running"} and _pid_exists(existing.pid):
+        if existing and existing.status in {"queued", "running"} and (
+            _pid_exists(existing.pid) or existing.controller is not None
+        ):
+            # A live local run OR a durable run (pid=None + a controller handle)
+            # is active — never re-archive/re-submit it out from under itself.
             return existing
 
         if _archive:
@@ -1006,6 +1126,28 @@ class FileLiveRunService:
             benchmark=benchmark,
         )
         await asyncio.to_thread(self._write_status, project_id, meta)
+
+        # WS3 seam: a durable-controller-eligible request (flag on + sandbox
+        # "gcp") diverts here, before any local log file / subprocess is
+        # opened. Flag off (default) ⇒ _should_use_durable_controller is
+        # always False ⇒ this branch is never taken and the Popen path below
+        # runs exactly as before, byte-identical.
+        if self._should_use_durable_controller(request):
+            from backend.agents.rlm import controller_cluster as _cc_mod
+            try:
+                return await self._submit_durable_controller(
+                    request, project_id=project_id, uploaded_paper=uploaded_paper,
+                )
+            except _cc_mod.ControllerStuck:
+                # A submitted controller Job could not be confirmed deleted — a
+                # remote controller may be live. Falling back to a local run
+                # would create a split-brain on this run dir; fail loud instead.
+                raise
+            except Exception as exc:
+                # Pre-submit failure, or a not-ready Job that WAS confirmed
+                # deleted: no remote controller is live, so degrade to the local
+                # Popen path (byte-identical to a non-durable run) + a warning.
+                logger.warning("durable_controller_fallback for %s: %s", project_id, exc)
 
         stderr = (output_dir / "runner.stderr.log").open("a", encoding="utf-8")
         stdout = (output_dir / "runner.stdout.log").open("a", encoding="utf-8")

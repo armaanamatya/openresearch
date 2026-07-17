@@ -746,6 +746,18 @@ class ReproductionCampaign:
         if state.state == "paused":
             # U9: real operator-approval semantics land later; --resume IS the
             # approval for now.
+            # Track E §6.5: the operator resuming a paused campaign is a recorded
+            # resume-approval intervention (display-only autonomy telemetry; no-op
+            # + byte-identical when OPENRESEARCH_HUMAN_INTERVENTION_LOG is off).
+            # Recorded BEFORE pending_approval is cleared so `why` keeps the reason.
+            from backend.agents.rlm.human_intervention import record_intervention
+
+            record_intervention(
+                self.run_dir,
+                kind="resume-approval",
+                what="operator resumed a paused campaign",
+                why=str((state.pending_approval or {}).get("reason", "")),
+            )
             state.pending_approval = None
             state.state = "attempt_loop"
             state.updated_at = time.time()
@@ -855,6 +867,18 @@ class ReproductionCampaign:
                     state.updated_at = time.time()
                     self.ledger.write_state(state)
                     self._safe_emit(state, "campaign_awaiting_operator", {"reason": refusal})
+                    # Track E §6.5: the run hit a blocking gate requiring the operator
+                    # (a downgrade-to-checkpoint plan refusal, usually a budget/
+                    # enforceability limit) — a blocking compute-approval gate.
+                    from backend.agents.rlm.human_intervention import record_intervention
+
+                    record_intervention(
+                        self.run_dir,
+                        kind="compute-approval",
+                        what="campaign paused awaiting operator (plan refusal)",
+                        why=str(refusal),
+                        blocking=True,
+                    )
                     return {"kind": "PAUSED", "pending_approval": dict(state.pending_approval)}
                 return self._finish_synthetic_terminal(
                     state, kind="EXHAUSTED", rule="plan_refusal", stop_reason=refusal,
@@ -967,6 +991,16 @@ class ReproductionCampaign:
                 state.updated_at = time.time()
                 self.ledger.write_state(state)
                 self._safe_emit(state, "campaign_awaiting_operator", {"decision": decision})
+                # Track E §6.5: checkpoint mode pauses for operator sign-off before
+                # the next attempt — a blocking config-choice gate.
+                from backend.agents.rlm.human_intervention import record_intervention
+
+                record_intervention(
+                    self.run_dir,
+                    kind="config-choice",
+                    what="campaign paused for checkpoint sign-off",
+                    blocking=True,
+                )
                 return {"kind": "PAUSED", "pending_approval": dict(state.pending_approval)}
             return None
 

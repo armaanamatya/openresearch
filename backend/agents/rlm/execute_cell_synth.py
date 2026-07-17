@@ -35,11 +35,29 @@ _VERL_METRICS_ADAPTER_SRC = Path(__file__).resolve().parent / "verl_metrics_adap
 
 
 def _flag_enabled() -> bool:
-    return os.environ.get("OPENRESEARCH_EXECUTE_SYNTH", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    # Canonical truthy set (matches feature_flags.env_truthy — incl. "on") so the
+    # inner synth gate and the outer E4 gate (primitives._execute_synth_flag_enabled)
+    # never disagree on OPENRESEARCH_EXECUTE_SYNTH=on.
+    from backend.agents.rlm.feature_flags import env_truthy
+
+    return env_truthy("OPENRESEARCH_EXECUTE_SYNTH")
+
+
+def _synth_vram_gb(default: float) -> float:
+    """``OPENRESEARCH_EXECUTE_SYNTH_VRAM_GB`` overrides the synthesized cell's
+    ``est_vram_gb`` (mirror of ``gke_cell_synth``'s ``OPENRESEARCH_SYNTH_CELL_VRAM_GB``).
+    Lets an operator tune the estimated footprint for a larger model / smaller GPU
+    without a code change — the value feeds the pre-dispatch ``capacity_gate``."""
+    raw = os.environ.get("OPENRESEARCH_EXECUTE_SYNTH_VRAM_GB", "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(
+            "bad OPENRESEARCH_EXECUTE_SYNTH_VRAM_GB=%r; using %.1f", raw, default
+        )
+        return default
 
 
 # The generated pod-side shim. ``__EXECUTE_SPEC_JSON__`` is replaced with
@@ -176,6 +194,31 @@ def main():
         if not rewritten:
             tokens.append(f"data.train_files={slice_parquet}")
 
+    # (2a) Optional val slice: shrink the authors' HELD-OUT val set to a tiny
+    # fast-proof size so verl's validation (test_freq>0) logs a real val/* score
+    # cheaply. The data_source column is preserved so verl's
+    # val/test_score/<data_source> key survives. Never touches a hyperparameter.
+    val_rel = data_slice.get("val_file") if data_slice else None
+    if val_rel:
+        val_rows = int(data_slice.get("val_rows", 8))
+        val_full = CODE_DIR / val_rel
+        if not val_full.exists():
+            return fail(f"data_slice val_file missing: {val_rel}")
+        val_slice_parquet = out_dir / "val_slice.parquet"
+        try:
+            import pandas as pd
+            pd.read_parquet(val_full).head(val_rows).to_parquet(val_slice_parquet)
+        except Exception as exc:  # noqa: BLE001
+            return fail(f"could not build val slice: {exc}")
+        rewritten_val = False
+        for i, tok in enumerate(tokens):
+            if tok.startswith("data.val_files="):
+                tokens[i] = f"data.val_files={val_slice_parquet}"
+                rewritten_val = True
+                break
+        if not rewritten_val:
+            tokens.append(f"data.val_files={val_slice_parquet}")
+
     # (2b) Pin the checkpoint dir under out_dir so the run never writes to the
     # authors' ../checkpoint_ds/... (which escapes code/). save_freq=-1 already
     # suppresses writes; this just makes the path hermetic. Mirrors the proven
@@ -207,26 +250,48 @@ def main():
         return fail(f"verl_metrics_adapter import failed: {exc}", {"train_rc": train_rc})
 
     reward_spec = SPEC.get("reward") or {}
-    reward_keys = reward_spec.get("keys") or []
+    eval_keys = reward_spec.get("eval_keys") or []
+    train_keys = reward_spec.get("keys") or []
     log_glob = reward_spec.get("log_glob", "$OUTPUT_DIR/*.log")
     framework = SPEC.get("framework", "execute")
 
     metrics = {"status": "failed"}
-    for key in reward_keys:
+    chosen_key = None
+    metric_source = None
+    # (5a) HELD-OUT validation score first -> success_rate (the paper's actual
+    # claimed result, e.g. math-benchmark accuracy) with aggregate provenance,
+    # so the eval-provenance guard CREDITS it as a real held-out measurement.
+    for key in eval_keys:
         metrics = write_cell_metrics_from_verl(
             out_dir, model_key="default", env=framework, baseline="execute",
-            log_glob=log_glob, success_rate_key=key,
+            log_glob=log_glob, success_rate_key=key, metric_name="success_rate",
         )
         if metrics.get("status") == "success":
-            metrics["reward_key"] = key
+            chosen_key = key
+            metric_source = "held_out_eval"
             break
+    # (5b) Fall back to the TRAIN reward -> reward_mean (honest: a training
+    # signal, NOT a held-out success rate -> the guard treats the cell as
+    # RL-reward-only and never vetoes a mislabeled rate metric).
+    if metrics.get("status") != "success":
+        for key in train_keys:
+            metrics = write_cell_metrics_from_verl(
+                out_dir, model_key="default", env=framework, baseline="execute",
+                log_glob=log_glob, success_rate_key=key, metric_name="reward_mean",
+            )
+            if metrics.get("status") == "success":
+                chosen_key = key
+                metric_source = "train_reward"
+                break
 
-    if metrics.get("status") == "success" and "success_rate" in metrics:
-        val = metrics["success_rate"]
-        # headline + non-degenerate signals the harness guards read
+    if metrics.get("status") == "success":
+        val = metrics.get("success_rate", metrics.get("reward_mean"))
+        metrics["reward_key"] = chosen_key
+        metrics["metric_source"] = metric_source
+        # headline + non-degenerate signals the harness guards read (NOT rate keys)
         metrics["metric"] = val
         metrics["reward"] = val
-        metrics["reward_mean"] = val
+        metrics.setdefault("reward_mean", val)
         try:
             train_bs = int((launch.get("overrides") or {}).get("data.train_batch_size", 1))
         except (TypeError, ValueError):
@@ -246,7 +311,8 @@ def main():
         pass
     return fail(
         f"{framework} launch produced no readable reward key (see train.log)",
-        {"train_rc": train_rc, "tried_keys": list(reward_keys), "log_tail": tail},
+        {"train_rc": train_rc, "tried_eval_keys": list(eval_keys),
+         "tried_train_keys": list(train_keys), "log_tail": tail},
     )
 
 
@@ -294,7 +360,7 @@ def maybe_synthesize_execute_cells(
         "baseline": "execute",
         "framework": spec.framework,
         "image_key": spec.image_key,
-        "est_vram_gb": spec.est_vram_gb,
+        "est_vram_gb": _synth_vram_gb(spec.est_vram_gb),
     }
     manifest = {
         "_comment": "synthesized by OPENRESEARCH_EXECUTE_SYNTH",

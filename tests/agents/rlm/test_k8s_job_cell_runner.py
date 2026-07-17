@@ -91,10 +91,12 @@ class _FakeJobStatus:
         conditions: list[_FakeJobCondition] | None = None,
         succeeded: int = 0,
         failed: int = 0,
+        active: int = 0,
     ) -> None:
         self.conditions = conditions or []
         self.succeeded = succeeded
         self.failed = failed
+        self.active = active
 
 
 class _FakeJob:
@@ -102,19 +104,47 @@ class _FakeJob:
         self.status = status
 
 
+class FakeApiException(Exception):
+    """Duck-typed stand-in for ``kubernetes.client.exceptions.ApiException``.
+
+    Production code only ever checks ``getattr(exc, "status", None)`` (no
+    eager ``import kubernetes`` — module docstring: "kubernetes is NOT
+    installed in the dev venv"), so tests never need the real SDK exception
+    type to exercise the adopt-on-409 path.
+    """
+
+    def __init__(self, status: int) -> None:
+        super().__init__(f"fake k8s api error, status={status}")
+        self.status = status
+
+
 class FakeK8sBatch:
     """Fake BatchV1Api with configurable Job responses."""
 
-    def __init__(self, job_sequence: list[_FakeJob]) -> None:
-        """``job_sequence`` is polled in order on successive read_namespaced_job_status calls."""
+    def __init__(
+        self, job_sequence: list[_FakeJob], *, raise_409_on_create: bool = False
+    ) -> None:
+        """``job_sequence`` is polled in order on successive read_namespaced_job_status calls.
+
+        ``raise_409_on_create`` (WS3 adopt-on-409 tests): when True, the FIRST
+        ``create_namespaced_job`` call raises a duck-typed ``status == 409``
+        ``FakeApiException`` instead of recording the Job; every call after
+        that creates normally (mirrors "the fenced name already exists").
+        """
         self._jobs = job_sequence
         self._call_count = 0
         self.created_jobs: list[dict] = []
+        self._raise_409_on_create = raise_409_on_create
+        self.read_status_calls: list[str] = []
 
     def create_namespaced_job(self, namespace: str, body: dict) -> None:
+        if self._raise_409_on_create:
+            self._raise_409_on_create = False
+            raise FakeApiException(409)
         self.created_jobs.append(body)
 
     def read_namespaced_job_status(self, name: str, namespace: str) -> _FakeJob:
+        self.read_status_calls.append(name)
         if self._call_count < len(self._jobs):
             job = self._jobs[self._call_count]
         else:
@@ -149,8 +179,9 @@ def _make_k8s(
     job_sequence: list[_FakeJob],
     pods: list[_FakePod] | None = None,
     log_text: str = "training ok\n",
+    raise_409_on_create: bool = False,
 ) -> _K8sClients:
-    batch = FakeK8sBatch(job_sequence)
+    batch = FakeK8sBatch(job_sequence, raise_409_on_create=raise_409_on_create)
     core = FakeK8sCore(pods=pods, log_text=log_text)
     return _K8sClients(batch=batch, core=core, watch_cls=None)
 
@@ -231,6 +262,12 @@ def _failed_job(exit_code: int | None = 1) -> tuple[list[_FakeJob], list[_FakePo
     jobs = [_FakeJob(_FakeJobStatus(conditions=[_FakeJobCondition("Failed")]))]
     pods = [_FakePod(exit_code=exit_code)]
     return jobs, pods
+
+
+def _active_job() -> _FakeJob:
+    """A live (Running) Job: no terminal condition, ``active`` counter set —
+    WS3 adopt-on-409's ``existing_phase`` derivation reads exactly this."""
+    return _FakeJob(_FakeJobStatus(active=1))
 
 
 def _pending_jobs(n: int = 200) -> tuple[list[_FakeJob], list[_FakePod]]:
@@ -3235,3 +3272,894 @@ class TestParallelism:
         )
         assert obs == 4
         self._reset_settings_cache()
+
+
+# ---------------------------------------------------------------------------
+# 29. WS3 durable-controller fencing (naming/addressing) — Owner 1A
+#
+# Flag: OPENRESEARCH_DURABLE_CONTROLLER, read via
+# run_controller.durable_controller_enabled() (default OFF). Threads a lease
+# "generation" into the cell Job's name, result-blob prefix, and labels so a
+# superseded controller generation can never collide with the current one.
+# OFF, or no generation bound, is byte-identical to the pre-fencing behaviour.
+# ---------------------------------------------------------------------------
+
+class TestBindRunContextFenceGeneration:
+    """bind_run_context(fence_generation=...) round-trips via _get_fence_generation()."""
+
+    def test_default_is_none(self):
+        with bind_run_context():
+            assert kjcr._get_fence_generation() is None
+
+    def test_explicit_none_returns_none(self):
+        with bind_run_context(fence_generation=None):
+            assert kjcr._get_fence_generation() is None
+
+    def test_bound_value_round_trips(self):
+        with bind_run_context(fence_generation=7):
+            assert kjcr._get_fence_generation() == 7
+
+    def test_concurrent_isolation(self):
+        """Two concurrent threads must each see their own fence_generation."""
+        seen: dict[str, Any] = {}
+        barrier = threading.Barrier(2, timeout=5)
+
+        def _thread_a() -> None:
+            with bind_run_context(fence_generation=1):
+                barrier.wait()
+                seen["a"] = kjcr._get_fence_generation()
+
+        def _thread_b() -> None:
+            with bind_run_context(fence_generation=2):
+                barrier.wait()
+                seen["b"] = kjcr._get_fence_generation()
+
+        ta = threading.Thread(target=_thread_a)
+        tb = threading.Thread(target=_thread_b)
+        ta.start(); tb.start()
+        ta.join(timeout=10); tb.join(timeout=10)
+
+        assert seen["a"] == 1
+        assert seen["b"] == 2
+
+    def test_all_context_vars_coexist_with_fence_generation(self):
+        """fence_generation coexists with run_budget/event_sink/gpu_plan (existing slots)."""
+        plan = _FakeGpuPlan(short_name="azure_a100_80")
+        with bind_run_context(gpu_plan=plan, fence_generation=4):
+            assert kjcr._get_gpu_plan() is plan
+            assert kjcr._get_fence_generation() == 4
+
+
+class TestSanitizeLabelToken:
+    """_sanitize_label_token — DNS-1123-safe K8s label VALUE for a run token."""
+
+    def test_lowercases_and_replaces_unsafe_chars(self):
+        assert kjcr._sanitize_label_token("Run_ABC!123") == "run-abc-123"
+
+    def test_strips_leading_trailing_dashes(self):
+        assert kjcr._sanitize_label_token("--abc--") == "abc"
+
+    def test_empty_input_falls_back_to_unknown(self):
+        assert kjcr._sanitize_label_token("") == "unknown"
+
+    def test_caps_at_63_chars(self):
+        result = kjcr._sanitize_label_token("a" * 100)
+        assert len(result) <= 63
+
+
+class TestFencedJobName:
+    """_job_name(cell_id, run_id, gen=...) — OFF/no-gen legacy; ON+gen fenced."""
+
+    def test_flag_off_with_gen_stays_legacy(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("OPENRESEARCH_DURABLE_CONTROLLER", raising=False)
+        legacy = kjcr._job_name("cell-0", "run-abc")
+        assert kjcr._job_name("cell-0", "run-abc", gen=3) == legacy
+
+    def test_flag_off_default_is_falsy(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("OPENRESEARCH_DURABLE_CONTROLLER", raising=False)
+        assert kjcr._job_name("c0") == "reprolab-cell-c0"
+
+    def test_flag_on_without_gen_stays_legacy(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        legacy = kjcr._job_name("cell-0", "run-abc")
+        assert kjcr._job_name("cell-0", "run-abc", gen=None) == legacy
+
+    def test_flag_on_with_gen_delegates_to_fenced_job_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        got = kjcr._job_name("cell-0", "run-abc", gen=3)
+        assert got == kjcr.fenced_job_name("run-abc", "cell-0", 3)
+
+    def test_flag_on_with_gen_differs_from_legacy_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        legacy = kjcr._job_name("cell-0", "run-abc")
+        fenced_name = kjcr._job_name("cell-0", "run-abc", gen=3)
+        assert fenced_name != legacy
+
+    def test_flag_on_with_gen_is_deterministic(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        a = kjcr._job_name("cell-0", "run-abc", gen=3)
+        b = kjcr._job_name("cell-0", "run-abc", gen=3)
+        assert a == b
+
+    def test_flag_on_different_gen_differs(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        a = kjcr._job_name("cell-0", "run-abc", gen=1)
+        b = kjcr._job_name("cell-0", "run-abc", gen=2)
+        assert a != b
+
+    def test_two_arg_callers_unaffected(self):
+        """Pre-existing positional 2-arg call shape (TestJobName) stays legal."""
+        assert kjcr._job_name("cell-0", "run-abc") == kjcr._job_name(
+            "cell-0", "run-abc", gen=None
+        )
+
+
+# Base kwargs shared by every direct _build_job_manifest() call below — mirrors
+# TestEmptyBaseImageError's minimal required set (no gpu_plan/run_id/fence_generation).
+_MANIFEST_BASE_KWARGS: dict[str, Any] = dict(
+    job_name="test-job",
+    namespace="reprolab",
+    service_account="reprolab-sa",
+    node_pool_name="gpunodes",
+    base_image="myregistry.io/image:v1",
+    storage_account="myacct",
+    blob_container="myctr",
+    files_share="share",
+    cell_id="c0",
+    cell_params_json="{}",
+    output_blob_prefix="runs/r1/cells",
+    code_blob_prefix="runs/r1/code",
+    active_deadline_seconds=3600,
+    max_oom_retries=2,
+    fingerprint=None,
+    now_iso=None,
+)
+
+
+class TestFencedJobManifestLabels:
+    """_build_job_manifest's Job metadata.labels — direct unit coverage.
+
+    OFF (or no gen) ⇒ labels unchanged ({"app": "reprolab-cell"} only, byte-
+    identical to before fence_generation/run_id existed). ON+gen ⇒ the two
+    new WS3 labels are merged in, without dropping "app".
+    """
+
+    def test_off_state_labels_unchanged(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("OPENRESEARCH_DURABLE_CONTROLLER", raising=False)
+        manifest = kjcr._build_job_manifest(
+            **_MANIFEST_BASE_KWARGS, run_id="run-abc", fence_generation=5,
+        )
+        assert manifest["metadata"]["labels"] == {"app": "reprolab-cell"}
+
+    def test_flag_on_no_gen_labels_unchanged(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        manifest = kjcr._build_job_manifest(
+            **_MANIFEST_BASE_KWARGS, run_id="run-abc", fence_generation=None,
+        )
+        assert manifest["metadata"]["labels"] == {"app": "reprolab-cell"}
+
+    def test_defaults_omit_fence_labels(self, monkeypatch: pytest.MonkeyPatch):
+        """Callers that never pass run_id/fence_generation at all (every caller
+        before this change) get the exact legacy labels dict."""
+        monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        manifest = kjcr._build_job_manifest(**_MANIFEST_BASE_KWARGS)
+        assert manifest["metadata"]["labels"] == {"app": "reprolab-cell"}
+
+    def test_flag_on_with_gen_adds_fence_labels(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        manifest = kjcr._build_job_manifest(
+            **_MANIFEST_BASE_KWARGS, run_id="run-abc", fence_generation=5,
+        )
+        labels = manifest["metadata"]["labels"]
+        assert labels["app"] == "reprolab-cell"  # existing label preserved
+        assert labels["reprolab-run-id"] == kjcr._sanitize_label_token("run-abc")
+        assert labels["reprolab-generation"] == "5"
+
+
+class TestFencedOutputBlobPrefix:
+    """run_matrix's output_blob_prefix — OFF ⇒ legacy runs/<run>/cells; ON+gen ⇒
+    runs/<run>/gen-<gen>/cells (verified via the created Job's
+    OPENRESEARCH_BLOB_OUTPUT_PREFIX env var — no real cluster/blob needed)."""
+
+    def _run_and_get_output_prefix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        *, fence_generation: int | None, durable: bool,
+    ) -> str:
+        cells = [{"id": "fen0"}]
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.1})
+
+        if durable:
+            monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        else:
+            monkeypatch.delenv("OPENRESEARCH_DURABLE_CONTROLLER", raising=False)
+
+        with bind_run_context(fence_generation=fence_generation):
+            run_matrix(cells, tmp_path / "train_cell.py", output_root=tmp_path / "out")
+
+        env_list = k8s.batch.created_jobs[0]["spec"]["template"]["spec"]["containers"][0]["env"]
+        return next(
+            e["value"] for e in env_list if e["name"] == "OPENRESEARCH_BLOB_OUTPUT_PREFIX"
+        )
+
+    def test_off_state_legacy_prefix(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        prefix = self._run_and_get_output_prefix(
+            tmp_path, monkeypatch, fence_generation=None, durable=False
+        )
+        assert prefix == "runs/out/cells"
+
+    def test_flag_on_no_gen_legacy_prefix(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        prefix = self._run_and_get_output_prefix(
+            tmp_path, monkeypatch, fence_generation=None, durable=True
+        )
+        assert prefix == "runs/out/cells"
+
+    def test_flag_off_with_gen_bound_legacy_prefix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """durable_controller_enabled() gates it — a bound gen alone is not enough."""
+        prefix = self._run_and_get_output_prefix(
+            tmp_path, monkeypatch, fence_generation=5, durable=False
+        )
+        assert prefix == "runs/out/cells"
+
+    def test_flag_on_with_gen_fenced_prefix(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        prefix = self._run_and_get_output_prefix(
+            tmp_path, monkeypatch, fence_generation=5, durable=True
+        )
+        assert prefix == "runs/out/gen-5/cells"
+        assert prefix == kjcr.fenced_blob_prefix("out", 5).rstrip("/") + "/cells"
+
+
+class TestFencedJobLabelsEndToEnd:
+    """run_matrix → _build_job_manifest wiring — the created Job's own labels,
+    exercised through the full run_matrix path (complements the direct
+    TestFencedJobManifestLabels unit coverage above)."""
+
+    def _run_and_get_labels(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        *, fence_generation: int | None, durable: bool,
+    ) -> dict[str, str]:
+        cells = [{"id": "lbl0"}]
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.1})
+
+        if durable:
+            monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        else:
+            monkeypatch.delenv("OPENRESEARCH_DURABLE_CONTROLLER", raising=False)
+
+        with bind_run_context(fence_generation=fence_generation):
+            run_matrix(cells, tmp_path / "train_cell.py", output_root=tmp_path / "out")
+
+        return k8s.batch.created_jobs[0]["metadata"]["labels"]
+
+    def test_off_state_labels_unchanged(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        labels = self._run_and_get_labels(
+            tmp_path, monkeypatch, fence_generation=None, durable=False
+        )
+        assert labels == {"app": "reprolab-cell"}
+
+    def test_flag_on_no_gen_labels_unchanged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        labels = self._run_and_get_labels(
+            tmp_path, monkeypatch, fence_generation=None, durable=True
+        )
+        assert labels == {"app": "reprolab-cell"}
+
+    def test_flag_on_with_gen_adds_fence_labels(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        labels = self._run_and_get_labels(
+            tmp_path, monkeypatch, fence_generation=5, durable=True
+        )
+        assert labels["app"] == "reprolab-cell"
+        assert labels["reprolab-run-id"] == kjcr._sanitize_label_token("out")
+        assert labels["reprolab-generation"] == "5"
+
+
+class TestFenceOffStateByteIdentical:
+    """Flag entirely unset, no bind_run_context fence_generation at all — the
+    Job name, blob prefix, and labels must be identical to the pre-fencing
+    behaviour (the exact scenario every non-WS3 caller runs through today)."""
+
+    def test_unset_flag_full_run_byte_identical(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.delenv("OPENRESEARCH_DURABLE_CONTROLLER", raising=False)
+        cells = [{"id": "byte0"}]
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.1})
+
+        # No bind_run_context at all — mirrors every caller untouched by WS3.
+        run_matrix(cells, tmp_path / "train_cell.py", output_root=tmp_path / "out")
+
+        job = k8s.batch.created_jobs[0]
+        assert job["metadata"]["name"] == kjcr._job_name("byte0", "out")
+        assert job["metadata"]["labels"] == {"app": "reprolab-cell"}
+
+        env_list = job["spec"]["template"]["spec"]["containers"][0]["env"]
+        output_prefix = next(
+            e["value"] for e in env_list if e["name"] == "OPENRESEARCH_BLOB_OUTPUT_PREFIX"
+        )
+        assert output_prefix == "runs/out/cells"
+
+
+# ---------------------------------------------------------------------------
+# 30. WS3 adopt-on-409 + persisted-epoch deadline — Owner 1B
+#
+# A controller-restart resubmit of the SAME fenced Job name (Owner 1A's
+# `_job_name(cell_id, run_id, gen=...)`) hits a 409 from create_namespaced_job.
+# OFF, no gen bound, or a non-409 failure ⇒ byte-identical STATUS_ERROR (today).
+# ON+gen+409 ⇒ adopt a live Job (attach + watch, inheriting the REMAINING
+# persisted-epoch budget) / skip an already-succeeded one (reconciled STATUS_OK)
+# / conservative STATUS_ERROR for anything else (never blindly recreate).
+# ---------------------------------------------------------------------------
+
+class TestAdoptOn409:
+    """WS3 Edit 1 — create_namespaced_job 409 on a fenced Job name."""
+
+    def test_off_state_409_is_still_status_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Flag OFF: a 409 (even with a gen bound) is byte-identical to today —
+        the adopt-check probe never runs at all."""
+        monkeypatch.delenv("OPENRESEARCH_DURABLE_CONTROLLER", raising=False)
+        k8s = _make_k8s(
+            job_sequence=[_active_job()], pods=[_FakePod(exit_code=0)],
+            raise_409_on_create=True,
+        )
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.1})
+
+        with bind_run_context(fence_generation=5):
+            results = run_matrix(
+                [{"id": "c0"}], tmp_path / "train_cell.py", output_root=tmp_path / "out"
+            )
+
+        assert results["c0"]["status"] == "error"
+        assert "job submission failed" in results["c0"]["error"]
+        assert len(k8s.batch.created_jobs) == 0
+        assert k8s.batch.read_status_calls == []  # no adopt-check probe at all
+
+    def test_flag_on_no_gen_409_is_still_status_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Flag ON but no fence_generation bound ⇒ still byte-identical."""
+        monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        k8s = _make_k8s(
+            job_sequence=[_active_job()], pods=[_FakePod(exit_code=0)],
+            raise_409_on_create=True,
+        )
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.1})
+
+        # No bind_run_context at all ⇒ fence_generation is None.
+        results = run_matrix(
+            [{"id": "c0"}], tmp_path / "train_cell.py", output_root=tmp_path / "out"
+        )
+
+        assert results["c0"]["status"] == "error"
+        assert len(k8s.batch.created_jobs) == 0
+        assert k8s.batch.read_status_calls == []
+
+    def test_flag_on_gen_bound_non_409_is_still_status_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A non-409 submission failure never engages the adopt path, even
+        when durable+gen (duck-typed status check, not "any exception")."""
+        monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        k8s = _make_k8s(job_sequence=[_active_job()], pods=[_FakePod(exit_code=0)])
+
+        def _raise_generic(namespace: str, body: dict) -> None:
+            raise RuntimeError("internal server error")
+
+        k8s.batch.create_namespaced_job = _raise_generic
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.1})
+
+        with bind_run_context(fence_generation=5):
+            results = run_matrix(
+                [{"id": "c0"}], tmp_path / "train_cell.py", output_root=tmp_path / "out"
+            )
+
+        assert results["c0"]["status"] == "error"
+        assert "job submission failed" in results["c0"]["error"]
+        assert k8s.batch.read_status_calls == []
+
+    def test_adopt_on_409_active_job_is_adopted_not_duplicated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """409 + a live existing Job ⇒ adopt (attach + watch to completion),
+        never a second create_namespaced_job call."""
+        monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        # First read (the adopt-check) sees the live/active Job; the next read
+        # (the subsequent _watch_job poll) sees it succeeded — keeps the test
+        # fast without needing a real sleep.
+        k8s = _make_k8s(
+            job_sequence=[_active_job(), *_succeeded_job()],
+            pods=[_FakePod(exit_code=0)],
+            raise_409_on_create=True,
+        )
+        kjcr._k8s_clients_override = k8s
+        # metrics present, but no status.json (the default fake always raises
+        # FileNotFoundError for it) ⇒ already_succeeded is False ⇒ "adopt".
+        _patch_blob(monkeypatch, metrics={"metric": 0.42})
+
+        with bind_run_context(fence_generation=5):
+            results = run_matrix(
+                [{"id": "c0"}], tmp_path / "train_cell.py", output_root=tmp_path / "out"
+            )
+
+        assert len(k8s.batch.created_jobs) == 0, "adopt must never duplicate-create"
+        assert results["c0"]["status"] == "ok"
+        assert results["c0"]["metrics"] == {"metric": 0.42}
+        # Proves _watch_job really ran: the adopt-check read PLUS >=1 watch poll.
+        assert len(k8s.batch.read_status_calls) >= 2
+
+    def test_adopt_on_409_already_succeeded_marker_skips(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """409 + a persisted success marker (status.json outcome=="ok") ⇒
+        skip — STATUS_OK reconciled from Blob, _watch_job never invoked."""
+        monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        # Deliberately a non-terminal Job (no conditions/counters) — if
+        # _watch_job were wrongly invoked it would never reach "succeeded" via
+        # this sequence; the read_status_calls assertion below catches that
+        # regardless of how long a wrongly-reached watch would poll.
+        k8s = _make_k8s(
+            job_sequence=[_FakeJob(_FakeJobStatus())],
+            raise_409_on_create=True,
+        )
+        kjcr._k8s_clients_override = k8s
+
+        def fake_download_bytes(
+            blob_name: str, *, account_name: str, container_name: str, client: Any = None
+        ) -> bytes:
+            if "metrics.json" in blob_name:
+                return json.dumps({"metric": 0.9}).encode()
+            if "status.json" in blob_name:
+                return json.dumps({"outcome": "ok", "exit_code": 0, "retries": 1}).encode()
+            raise FileNotFoundError(blob_name)
+
+        monkeypatch.setattr(kjcr, "_blob_download_bytes", fake_download_bytes)
+        monkeypatch.setattr(kjcr, "_blob_upload_prefix", lambda *a, **k: ["a.py"])
+        monkeypatch.setattr(
+            kjcr, "_blob_download_artifact", lambda blob_name, dest, **k: Path(dest)
+        )
+
+        with bind_run_context(fence_generation=5):
+            results = run_matrix(
+                [{"id": "c0"}], tmp_path / "train_cell.py", output_root=tmp_path / "out"
+            )
+
+        assert len(k8s.batch.created_jobs) == 0
+        assert results["c0"]["status"] == "ok"
+        assert results["c0"]["metrics"] == {"metric": 0.9}
+        assert results["c0"]["retries"] == 1
+        # Exactly one read — the adopt-check — _watch_job was never reached.
+        assert len(k8s.batch.read_status_calls) == 1
+
+    def test_adopt_on_409_neither_live_nor_succeeded_is_conservative_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """409 + an existing Job that is neither live nor marked succeeded is
+        an odd state — conservative STATUS_ERROR, no blind recreate."""
+        monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        # succeeded=0, active=0, no conditions ⇒ existing_phase=None; no
+        # status.json ⇒ already_succeeded=False ⇒ adopt_or_submit == "submit".
+        k8s = _make_k8s(
+            job_sequence=[_FakeJob(_FakeJobStatus())],
+            raise_409_on_create=True,
+        )
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics=None)
+
+        with bind_run_context(fence_generation=5):
+            results = run_matrix(
+                [{"id": "c0"}], tmp_path / "train_cell.py", output_root=tmp_path / "out"
+            )
+
+        assert results["c0"]["status"] == "error"
+        assert len(k8s.batch.created_jobs) == 0
+        assert len(k8s.batch.read_status_calls) == 1
+
+    def test_adopt_on_409_read_failure_falls_back_to_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A read_namespaced_job_status failure during the adopt probe itself
+        never crashes — falls back to STATUS_ERROR."""
+        monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        k8s = _make_k8s(job_sequence=[_active_job()], raise_409_on_create=True)
+
+        def _raise_read(name: str, namespace: str) -> None:
+            raise RuntimeError("transient read failure")
+
+        k8s.batch.read_namespaced_job_status = _raise_read
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics=None)
+
+        with bind_run_context(fence_generation=5):
+            results = run_matrix(
+                [{"id": "c0"}], tmp_path / "train_cell.py", output_root=tmp_path / "out"
+            )
+
+        assert results["c0"]["status"] == "error"
+        assert len(k8s.batch.created_jobs) == 0
+
+
+class TestPersistedFencedDeadline:
+    """WS3 Edit 2 — an absolute-epoch deadline persisted at a fenced submit,
+    re-read on adopt to inherit the REMAINING budget instead of a fresh one."""
+
+    def test_off_state_no_deadline_blob_written(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.delenv("OPENRESEARCH_DURABLE_CONTROLLER", raising=False)
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.1})
+
+        uploads: list[dict[str, Any]] = []
+
+        def fake_gcs_upload(data: bytes, *, blob_name: str, **kwargs: Any) -> int:
+            uploads.append({"blob_name": blob_name, "data": data})
+            return 1
+
+        monkeypatch.setattr(kjcr, "_gcs_upload_bytes", fake_gcs_upload)
+
+        with bind_run_context(fence_generation=5):
+            run_matrix(
+                [{"id": "c0"}], tmp_path / "train_cell.py", output_root=tmp_path / "out"
+            )
+
+        assert uploads == []
+
+    def test_flag_on_no_gen_no_deadline_blob_written(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.1})
+
+        uploads: list[dict[str, Any]] = []
+
+        def fake_gcs_upload(data: bytes, *, blob_name: str, **kwargs: Any) -> int:
+            uploads.append({"blob_name": blob_name, "data": data})
+            return 1
+
+        monkeypatch.setattr(kjcr, "_gcs_upload_bytes", fake_gcs_upload)
+
+        # No bind_run_context at all ⇒ fence_generation is None.
+        run_matrix([{"id": "c0"}], tmp_path / "train_cell.py", output_root=tmp_path / "out")
+
+        assert uploads == []
+
+    def test_flag_on_gen_bound_persists_deadline_at_submit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.1})
+
+        fixed_now = 1_000_000.0
+        monkeypatch.setattr(kjcr.time, "time", lambda: fixed_now)
+
+        uploads: list[dict[str, Any]] = []
+
+        def fake_gcs_upload(data: bytes, *, blob_name: str, **kwargs: Any) -> int:
+            uploads.append({"blob_name": blob_name, "data": data})
+            return 1
+
+        monkeypatch.setattr(kjcr, "_gcs_upload_bytes", fake_gcs_upload)
+
+        with bind_run_context(fence_generation=5):
+            # No overall_timeout_s ⇒ overall_deadline None ⇒ active_deadline_seconds
+            # == per_cell_timeout_s exactly (established pattern in this file).
+            run_matrix(
+                [{"id": "c0"}], tmp_path / "train_cell.py", output_root=tmp_path / "out",
+                per_cell_timeout_s=3600.0,
+            )
+
+        assert len(uploads) == 1
+        expected_blob_name = kjcr.fenced_blob_prefix("out", 5, cell_id="c0") + "deadline.json"
+        assert uploads[0]["blob_name"] == expected_blob_name
+
+        record = kjcr.deadline.parse(uploads[0]["data"])
+        assert record["created_epoch"] == fixed_now
+        assert record["budget_s"] == 3600.0
+        assert record["deadline_epoch"] == fixed_now + 3600.0
+
+    def test_persist_failure_is_fail_soft(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A raising upload never turns an otherwise-successful submit into a
+        failure."""
+        monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.1})
+
+        def _raise(*args: Any, **kwargs: Any) -> int:
+            raise RuntimeError("gcs unavailable")
+
+        monkeypatch.setattr(kjcr, "_gcs_upload_bytes", _raise)
+
+        with bind_run_context(fence_generation=5):
+            results = run_matrix(
+                [{"id": "c0"}], tmp_path / "train_cell.py", output_root=tmp_path / "out"
+            )
+
+        assert results["c0"]["status"] == "ok"
+        assert len(k8s.batch.created_jobs) == 1
+
+    def test_adopt_inherits_remaining_budget(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """On adopt, _watch_job receives the REMAINING budget recovered from
+        the persisted deadline.json — not a fresh full one."""
+        monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        k8s = _make_k8s(
+            job_sequence=[_active_job(), *_succeeded_job()],
+            pods=[_FakePod(exit_code=0)],
+            raise_409_on_create=True,
+        )
+        kjcr._k8s_clients_override = k8s
+
+        fixed_now = 2_000_000.0
+        monkeypatch.setattr(kjcr.time, "time", lambda: fixed_now)
+        # created 100s ago with a 220s budget ⇒ exactly 120s remaining.
+        seeded_record = kjcr.deadline.make_deadline(fixed_now - 100.0, 220.0)
+        assert kjcr.deadline.remaining_s(seeded_record, fixed_now) == 120.0
+
+        def fake_download_bytes(
+            blob_name: str, *, account_name: str, container_name: str, client: Any = None
+        ) -> bytes:
+            if "deadline.json" in blob_name:
+                return kjcr.deadline.serialize(seeded_record)
+            if "metrics.json" in blob_name:
+                return json.dumps({"metric": 0.5}).encode()
+            raise FileNotFoundError(blob_name)
+
+        monkeypatch.setattr(kjcr, "_blob_download_bytes", fake_download_bytes)
+        monkeypatch.setattr(kjcr, "_blob_upload_prefix", lambda *a, **k: ["a.py"])
+        monkeypatch.setattr(
+            kjcr, "_blob_download_artifact", lambda blob_name, dest, **k: Path(dest)
+        )
+
+        captured: dict[str, Any] = {}
+        real_watch_job = kjcr._watch_job
+
+        def spy_watch_job(**kwargs: Any) -> dict[str, Any]:
+            captured["active_deadline_seconds"] = kwargs["active_deadline_seconds"]
+            return real_watch_job(**kwargs)
+
+        monkeypatch.setattr(kjcr, "_watch_job", spy_watch_job)
+
+        with bind_run_context(fence_generation=5):
+            results = run_matrix(
+                [{"id": "c0"}], tmp_path / "train_cell.py", output_root=tmp_path / "out",
+                per_cell_timeout_s=3600.0,
+            )
+
+        assert results["c0"]["status"] == "ok"
+        assert captured["active_deadline_seconds"] == 120  # remaining, not fresh 3600
+
+    def test_adopt_missing_deadline_blob_falls_back_to_fresh(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """No persisted deadline.json (e.g. a predecessor crashed before ever
+        persisting one) ⇒ adopt falls back to the fresh active_deadline_seconds
+        — never crashes."""
+        monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        k8s = _make_k8s(
+            job_sequence=[_active_job(), *_succeeded_job()],
+            pods=[_FakePod(exit_code=0)],
+            raise_409_on_create=True,
+        )
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.5})  # no deadline.json seeded
+
+        captured: dict[str, Any] = {}
+        real_watch_job = kjcr._watch_job
+
+        def spy_watch_job(**kwargs: Any) -> dict[str, Any]:
+            captured["active_deadline_seconds"] = kwargs["active_deadline_seconds"]
+            return real_watch_job(**kwargs)
+
+        monkeypatch.setattr(kjcr, "_watch_job", spy_watch_job)
+
+        with bind_run_context(fence_generation=5):
+            results = run_matrix(
+                [{"id": "c0"}], tmp_path / "train_cell.py", output_root=tmp_path / "out",
+                per_cell_timeout_s=3600.0,
+            )
+
+        assert results["c0"]["status"] == "ok"
+        assert captured["active_deadline_seconds"] == 3600  # fresh fallback, not a crash
+
+
+# ---------------------------------------------------------------------------
+# Phase D: CPU cloud lane — _build_job_manifest(accelerator=...) golden +
+# CPU-branch coverage (OPENRESEARCH_CPU_CLOUD_CELLS design)
+# ---------------------------------------------------------------------------
+
+class TestBuildJobManifestAcceleratorGolden:
+    """Default accelerator="gpu" must leave the manifest byte-identical to
+    before the ``accelerator`` param existed."""
+
+    def test_default_matches_explicit_gpu(self, monkeypatch: pytest.MonkeyPatch):
+        manifest_default = kjcr._build_job_manifest(**_MANIFEST_BASE_KWARGS)
+        manifest_explicit_gpu = kjcr._build_job_manifest(
+            **_MANIFEST_BASE_KWARGS, accelerator="gpu",
+        )
+        assert manifest_default == manifest_explicit_gpu
+
+
+class TestBuildJobManifestCpuBranch:
+    """accelerator="cpu" swaps the GPU-specific manifest bits for a CPU pool."""
+
+    def test_cpu_manifest_has_no_gpu_traces(self, monkeypatch: pytest.MonkeyPatch):
+        manifest = kjcr._build_job_manifest(
+            **_MANIFEST_BASE_KWARGS, accelerator="cpu",
+        )
+        manifest_str = str(manifest)
+        assert "nvidia.com/gpu" not in manifest_str
+        assert "OPENRESEARCH_CELL_GPU_COUNT" not in manifest_str
+
+    def test_cpu_manifest_node_selector_is_cpu_pool_label(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.delenv("OPENRESEARCH_CPU_POOL_LABEL", raising=False)
+        manifest = kjcr._build_job_manifest(
+            **_MANIFEST_BASE_KWARGS, accelerator="cpu",
+        )
+        pod_spec = manifest["spec"]["template"]["spec"]
+        assert pod_spec["nodeSelector"] == {"reprolab/pool": "cpu"}
+
+    def test_cpu_manifest_node_selector_reads_env_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("OPENRESEARCH_CPU_POOL_LABEL", "custom/pool=cheap")
+        manifest = kjcr._build_job_manifest(
+            **_MANIFEST_BASE_KWARGS, accelerator="cpu",
+        )
+        pod_spec = manifest["spec"]["template"]["spec"]
+        assert pod_spec["nodeSelector"] == {"custom/pool": "cheap"}
+
+    def test_cpu_manifest_has_cpu_request_no_gpu_resources(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        manifest = kjcr._build_job_manifest(
+            **_MANIFEST_BASE_KWARGS, accelerator="cpu",
+        )
+        container = manifest["spec"]["template"]["spec"]["containers"][0]
+        assert container["resources"] == {"requests": {"cpu": "2", "memory": "8Gi"}}
+
+    def test_cpu_manifest_has_no_tolerations(self, monkeypatch: pytest.MonkeyPatch):
+        manifest = kjcr._build_job_manifest(
+            **_MANIFEST_BASE_KWARGS, accelerator="cpu",
+        )
+        pod_spec = manifest["spec"]["template"]["spec"]
+        assert pod_spec["tolerations"] == []
+
+
+# ---------------------------------------------------------------------------
+# Phase D: run_matrix routing + all-infra-failure local fallback
+# (OPENRESEARCH_CPU_CLOUD_CELLS, default OFF)
+# ---------------------------------------------------------------------------
+
+class TestCpuCloudCellsFlagOff:
+    """Flag OFF (default/unset) must be byte-identical: a cell declaring
+    accelerator="cpu" still takes the GPU manifest path."""
+
+    def test_cpu_declared_cell_still_takes_gpu_manifest_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.delenv("OPENRESEARCH_CPU_CLOUD_CELLS", raising=False)
+        cells = [{"id": "cpu0", "accelerator": "cpu"}]
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.5})
+
+        results = run_matrix(
+            cells, tmp_path / "train_cell.py", output_root=tmp_path / "out"
+        )
+
+        assert results["cpu0"]["status"] == "ok"
+        created = k8s.batch.created_jobs[0]
+        pod_spec = created["spec"]["template"]["spec"]
+        # GPU path: reprolab/sku (never reprolab/pool), nvidia.com/gpu present.
+        assert "reprolab/sku" in pod_spec["nodeSelector"]
+        assert "reprolab/pool" not in pod_spec["nodeSelector"]
+        container = pod_spec["containers"][0]
+        assert "nvidia.com/gpu" in container["resources"]["requests"]
+        env_names = {e["name"] for e in container["env"]}
+        assert "OPENRESEARCH_CELL_GPU_COUNT" in env_names
+
+
+class TestCpuCloudCellsFlagOnFallback:
+    """Flag ON: an all-CPU-class matrix that infra-fails entirely on the
+    cluster path falls back to the local in-process gpu_cell_runner."""
+
+    def test_all_infra_failed_cpu_class_falls_back_locally(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("OPENRESEARCH_CPU_CLOUD_CELLS", "1")
+        cells = [
+            {"id": "cpu0", "accelerator": "cpu"},
+            {"id": "cpu1", "accelerator": "cpu"},
+        ]
+        jobs, pods = _failed_job(exit_code=1)
+        k8s = _make_k8s(job_sequence=jobs, pods=pods)
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics=None)
+
+        recorded: dict[str, Any] = {}
+
+        def fake_local_run_matrix(
+            cells_arg: list[dict[str, Any]], cell_script_arg: Any, **kwargs: Any
+        ) -> dict[str, dict[str, Any]]:
+            recorded["cells"] = cells_arg
+            recorded["kwargs"] = kwargs
+            return {
+                c["id"]: {
+                    "status": "ok",
+                    "metrics": {"m": 1.0},
+                    "gpu": "local:cpu",
+                    "retries": 0,
+                    "error": None,
+                }
+                for c in cells_arg
+            }
+
+        monkeypatch.setattr(gcr, "run_matrix", fake_local_run_matrix)
+
+        events: list[tuple[str, dict]] = []
+        with bind_run_context(event_sink=lambda t, p: events.append((t, p))):
+            results = run_matrix(
+                cells, tmp_path / "train_cell.py", output_root=tmp_path / "out"
+            )
+
+        assert recorded.get("cells") == cells
+        assert results["cpu0"]["status"] == "ok"
+        assert results["cpu1"]["status"] == "ok"
+        fallback_events = [
+            e for e in events
+            if e[0] == "run_warning" and e[1].get("code") == "cpu_cloud_fallback"
+        ]
+        assert len(fallback_events) == 1
+
+    def test_one_ok_cell_suppresses_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("OPENRESEARCH_CPU_CLOUD_CELLS", "1")
+        cells = [{"id": "cpu_ok", "accelerator": "cpu"}]
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.9})
+
+        called = {"n": 0}
+
+        def fake_local_run_matrix(*a: Any, **k: Any) -> dict[str, dict[str, Any]]:
+            called["n"] += 1
+            return {}
+
+        monkeypatch.setattr(gcr, "run_matrix", fake_local_run_matrix)
+
+        results = run_matrix(
+            cells, tmp_path / "train_cell.py", output_root=tmp_path / "out"
+        )
+
+        assert results["cpu_ok"]["status"] == "ok"
+        assert called["n"] == 0

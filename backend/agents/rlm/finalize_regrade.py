@@ -446,7 +446,18 @@ def regrade_and_emit(ctx: Any, report: Any, emit: Any) -> dict | None:
                 # failed. Now that the complete grid is graded, set the verdict from the
                 # recovered score band (reconcile_verdict_with_score caps DOWNWARD, so
                 # starting from 'reproduced' yields reproduced/partial/failed by score).
-                if report.verdict == "failed":
+                #
+                # SEVERED (Track A §4.3): this is a grade-derived verdict mint —
+                # exactly the pattern the sever retires. When VerdictAuthority is
+                # active, `report.rubric` was already refreshed above (the
+                # diagnostic this function exists to recover); the verdict itself
+                # is decided later, once, by `verdict_authority.decide()` at the
+                # write_final_report_rlm chokepoint (from result_fidelity +
+                # evidence_gate, never the grade) — so this block is skipped
+                # rather than minting a stale/superseded value. Either flag off
+                # => byte-identical legacy behaviour.
+                from backend.agents.rlm import verdict_authority as _va
+                if not _va.is_enabled() and report.verdict == "failed":
                     _sc = fresh.get("overall_score")
                     if _sc is not None:
                         _apply_regrade_verdict(ctx, report, float(_sc), emit)

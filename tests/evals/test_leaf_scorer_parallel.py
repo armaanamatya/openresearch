@@ -226,15 +226,28 @@ class _PartiallyFailingClient:
         return json.dumps(response)
 
 
-def test_failing_batch_does_not_kill_other_batches():
-    """When one batch raises, its leaves default to 0.0/batch_error, but the
-    other batches' real scores must still be present in the result.
+def test_failing_batch_does_not_kill_other_batches(monkeypatch):
+    """When one batch fails on EVERY transport (primary + the whole fallback
+    chain), its leaves are marked ``ungraded`` (score None, EXCLUDED from the
+    rollup) — never a phantom 0.0 — while the other batches' real scores are
+    still present (no batch kills all). This is the T5 grader-hardening
+    contract (spec §4.5): a leaf the grader could not score is excluded from
+    the diagnostic, never silently zeroed.
 
-    6 leaves, batch_size=2 → 3 batches.  Batch 2 fails.
+    6 leaves, batch_size=2 → 3 batches.  Batch 2 fails on all transports.
     Batches 1 and 3 return real scores.  After merging:
-    - 4 leaves must have their deterministic scores.
-    - 2 leaves (batch 2) must have score 0.0 and justification "batch_error".
+    - 4 leaves must carry their deterministic scores.
+    - 2 leaves (batch 2) must be ungraded: score None, state "ungraded".
     """
+    # Isolate the "batch fully failed -> ungraded" contract from real fallback
+    # transports: with an empty fallback chain the primary is the ONLY
+    # candidate, so a batch whose primary call raises is genuinely ungradable.
+    # (The cross-provider fallback ladder itself is covered by
+    # test_leaf_scorer_fallback.py; a real transport here can return a
+    # degenerate non-raising response that masks the ungraded path.)
+    monkeypatch.setattr(
+        "backend.agents.rlm.grader_transport.build_fallback_chain", lambda: []
+    )
     client = _PartiallyFailingClient()
     with tempfile.TemporaryDirectory() as tmp:
         run_dir = Path(tmp)
@@ -246,14 +259,23 @@ def test_failing_batch_does_not_kill_other_batches():
     records = {rec["id"]: rec for rec in result["leaf_scores"]}
     assert len(records) == 6, f"expected 6 leaf records, got {len(records)}"
 
-    # Exactly 2 leaves should have defaulted to batch_error.
-    batch_errors = [lid for lid, rec in records.items() if rec["justification"] == "batch_error"]
-    assert len(batch_errors) == 2, (
-        f"expected 2 batch_error leaves (one batch failed), got {batch_errors!r}"
+    # Exactly 2 leaves (the batch that failed every transport) must be
+    # ungraded — score None, NEVER a phantom 0.0.
+    ungraded = [lid for lid, rec in records.items() if rec.get("state") == "ungraded"]
+    assert len(ungraded) == 2, (
+        f"expected 2 ungraded leaves (one batch failed every transport), got {ungraded!r}"
     )
+    for lid in ungraded:
+        assert records[lid]["score"] is None, (
+            f"ungraded leaf {lid} must be score=None, never a phantom 0.0"
+        )
+        assert records[lid]["justification"].startswith("grader_unavailable"), (
+            f"ungraded leaf {lid} justification={records[lid]['justification']!r}"
+        )
 
     # The other 4 leaves must carry real scores.
-    good_leaves = [lid for lid in records if records[lid]["justification"] != "batch_error"]
+    good_leaves = [lid for lid in records if records[lid].get("state") != "ungraded"]
+    assert len(good_leaves) == 4, f"expected 4 graded leaves, got {good_leaves!r}"
     for lid in good_leaves:
         assert records[lid]["score"] == _LEAF_SCORES[lid], (
             f"leaf {lid}: expected {_LEAF_SCORES[lid]}, got {records[lid]['score']}"

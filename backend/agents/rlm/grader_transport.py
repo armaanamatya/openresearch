@@ -322,6 +322,55 @@ def build_transport_client(
         return fallback_client, fallback_label
 
 
+# T5 grader hardening (2026-07-10, spec 2026-07-09-eval-integrity-track-a):
+# fixed order of INDEPENDENT transports composed into the in-run fallback
+# chain -- Foundry-hosted Sonnet first (the reliable-root fix's primary),
+# then the Azure-AI Foundry "grok" OpenAI-compatible endpoint, then the
+# Claude OAuth subscription last (the most widely-available transport -- no
+# API credit needed). Every entry is an EXISTING build_transport_client
+# backend name; no new provider wiring is introduced here.
+_FALLBACK_CHAIN_BACKENDS: tuple[str, ...] = ("anthropic-foundry", "grok", "oauth")
+
+
+def build_fallback_chain() -> list[Any]:
+    """Ordered list of INDEPENDENT grader transports to retry on failure.
+
+    Composed from the existing single-swap ``build_transport_client`` backend
+    dispatch (Foundry-Sonnet -> grok -> Claude OAuth) so a single
+    misconfigured/rate-limited/down provider can never take grading down with
+    it -- A5's "survives a root/CLI wedge" intent, extended to "survives a
+    provider outage" (T5). This is the FALLBACK ladder: it is independent of
+    ``OPENRESEARCH_GRADER_BACKEND``/``OPENRESEARCH_GRADER_MODEL`` (those select the
+    PRIMARY grader transport) -- callers try their existing primary client
+    first and only fall through to this chain when that call fails.
+
+    A backend with missing credentials, a missing SDK, or any construction
+    error is silently skipped: ``build_transport_client``'s identity-sentinel
+    fail-soft contract means a failed construction returns the exact sentinel
+    back (never raises), so it is simply never appended -- the returned list
+    only ever contains transports that actually built. Order is fixed. This
+    function itself never raises (a candidate-construction exception is
+    caught per-backend so one bad candidate cannot break the rest of the
+    chain).
+    """
+    chain: list[Any] = []
+    sentinel = object()
+    for backend in _FALLBACK_CHAIN_BACKENDS:
+        try:
+            client, _label = build_transport_client(
+                backend=backend,
+                model=None,
+                fallback_client=sentinel,
+                fallback_label="",
+                role_label="grader_fallback",
+            )
+        except Exception:  # noqa: BLE001 — one bad candidate must never break the chain
+            continue
+        if client is not sentinel:
+            chain.append(client)
+    return chain
+
+
 def build_grader_client(
     fallback_client: Any, fallback_label: str = ""
 ) -> tuple[Any, str]:
@@ -487,5 +536,6 @@ __all__ = [
     "build_validator_client",
     "build_spec_validator_client",
     "build_transport_client",
+    "build_fallback_chain",
     "resolve_anthropic_subrole_backend",
 ]

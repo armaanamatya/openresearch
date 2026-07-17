@@ -56,6 +56,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 import threading
 import time
@@ -83,6 +84,16 @@ from backend.agents.rlm.cell_scheduler import (  # noqa: E402
     load_cell_manifest,
     should_skip_cell,
     write_cell_manifest,
+)
+from backend.agents.rlm import cpu_class  # noqa: E402
+from backend.agents.rlm.feature_flags import env_truthy  # noqa: E402
+from backend.agents.rlm.run_controller import durable_controller_enabled  # noqa: E402
+from backend.services.runtime import deadline  # noqa: E402
+from backend.services.runtime.gcs_blob import upload_bytes as _gcs_upload_bytes  # noqa: E402
+from backend.services.runtime.job_fence import (  # noqa: E402
+    adopt_or_submit,
+    fenced_blob_prefix,
+    fenced_job_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -231,6 +242,7 @@ def bind_run_context(
     event_sink: Callable[[str, dict[str, Any]], None] | None = None,
     gpu_plan: Any | None = None,
     settings_prefix: str | None = None,
+    fence_generation: int | None = None,
 ) -> Iterator[None]:
     """Bind a ``RunBudget``, event sink, and/or a ``GpuPlan`` for the duration of the
     ``with`` block.
@@ -256,6 +268,14 @@ def bind_run_context(
                           resolves to ``"gcp"`` instead of being clobbered back to the
                           azure default.  Pass an explicit value only when binding the
                           prefix directly through this context manager.
+        fence_generation: WS3 durable-controller lease generation (``LeaseToken
+                          .generation``), or ``None`` (the default) when no durable
+                          controller drives this run.  This is the ONLY channel that
+                          threads a controller-restart fence token into ``run_matrix``
+                          without adding a kwarg to its signature (pinned byte-for-byte
+                          against ``gpu_cell_runner.run_matrix`` by ``TestSignatureParity``).
+                          Consumed only when ``run_controller.durable_controller_enabled()``
+                          is also true — otherwise inert.
 
     Example::
 
@@ -270,6 +290,7 @@ def bind_run_context(
         "run_budget": run_budget,
         "event_sink": event_sink,
         "gpu_plan": gpu_plan,
+        "fence_generation": fence_generation,
     })
     # Only (re)bind the cloud prefix when one is explicitly passed; a None prefix
     # preserves whatever _bind_settings_prefix already set. This is what makes the
@@ -298,6 +319,36 @@ def _get_event_sink() -> Callable[[str, dict[str, Any]], None]:
 def _get_gpu_plan() -> Any | None:
     """Return the bound GpuPlan (or None when none was bound)."""
     return _RUN_CONTEXT.get({}).get("gpu_plan")
+
+
+def _get_fence_generation() -> int | None:
+    """Return the bound WS3 controller-generation fence token (or None when unbound).
+
+    Mirrors ``_get_gpu_plan`` — same ``ContextVar`` pattern, same default-None
+    behaviour. ``run_matrix`` reads this ONCE at the top of the call (like
+    ``gpu_plan``) and threads the resolved value down as an explicit parameter;
+    a raw ``threading.Thread``/``ContextVar`` does NOT propagate into the
+    worker threads ``run_matrix`` spawns, so re-reading this accessor from
+    inside a worker thread would silently see ``None`` even when a generation
+    is bound — always thread the value explicitly instead of calling this a
+    second time deeper in the stack.
+
+    Env fallback: inside the durable controller Pod nothing binds the
+    ContextVar, so when it is unbound this reads the stable fence epoch the
+    submit stamped into the Pod env (``OPENRESEARCH_CELL_FENCE_EPOCH``). An
+    explicit ContextVar binding wins; a missing/non-integer env yields ``None``
+    (byte-identical to before for every non-controller caller).
+    """
+    bound = _RUN_CONTEXT.get({}).get("fence_generation")
+    if bound is not None:
+        return bound
+    raw = os.environ.get("OPENRESEARCH_CELL_FENCE_EPOCH", "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
 
 
 def _get_settings_prefix() -> str:
@@ -548,8 +599,18 @@ _JOB_NAME_PREFIX = "reprolab-cell-"
 _JOB_NAME_MAX = 63
 
 
-def _job_name(cell_id: str, run_id: str = "") -> str:
-    """Return a deterministic DNS-safe K8s Job name for ``cell_id``."""
+def _job_name(cell_id: str, run_id: str = "", gen: int | None = None) -> str:
+    """Return a deterministic DNS-safe K8s Job name for ``cell_id``.
+
+    WS3 fencing: when the durable controller is enabled
+    (``run_controller.durable_controller_enabled()``) AND a fence ``gen`` is
+    supplied, delegates to ``job_fence.fenced_job_name`` so a superseded
+    controller generation's Job name can never collide with the current
+    one's. OFF, or no ``gen`` bound (the default), preserves the legacy name
+    exactly — byte-identical to before ``gen`` existed.
+    """
+    if durable_controller_enabled() and gen is not None:
+        return fenced_job_name(run_id, cell_id, gen)
     safe_run = _DNS_SAFE_RE.sub("-", run_id.lower())[:16] if run_id else ""
     safe_cell = _DNS_SAFE_RE.sub("-", cell_id.lower())
     suffix = f"{safe_run}-{safe_cell}" if safe_run else safe_cell
@@ -557,6 +618,20 @@ def _job_name(cell_id: str, run_id: str = "") -> str:
     max_suffix = _JOB_NAME_MAX - len(_JOB_NAME_PREFIX)
     suffix = suffix[:max_suffix].strip("-")
     return f"{_JOB_NAME_PREFIX}{suffix}"
+
+
+def _sanitize_label_token(value: str) -> str:
+    """DNS-1123-safe K8s label VALUE derived from ``value`` (a run token).
+
+    Reuses this module's ``_DNS_SAFE_RE`` — the same character class
+    ``_job_name`` applies to its run/cell segments — but (unlike
+    ``_job_name``'s 16-char-capped run segment) keeps the full 63-char K8s
+    label-value budget, since a standalone label value isn't sharing space
+    with a name prefix + cell segment. Falls back to ``"unknown"`` on an
+    empty/all-unsafe input so a fenced Job never gets an invalid empty label.
+    """
+    safe = _DNS_SAFE_RE.sub("-", value.lower())[:63].strip("-")
+    return safe or "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -670,6 +745,13 @@ def _build_job_manifest(
     fingerprint: str | None,
     now_iso: str | None,
     gpu_plan: Any | None = None,
+    # WS3 durable-controller fencing: the run token + lease generation stamped
+    # onto the Job's metadata.labels (only when durable_controller_enabled()
+    # AND fence_generation is not None — see body). run_id here is whatever
+    # token the caller used to build this specific Job's name (may carry the
+    # pre-existing escalation "-eN" suffix); unrelated to gpu_plan/escalation.
+    run_id: str = "",
+    fence_generation: int | None = None,
     # P1-fix-8: configurable knobs injected by the caller from settings.
     ttl_seconds_after_finished: int = 3600,
     backoff_limit: int = 0,
@@ -687,6 +769,11 @@ def _build_job_manifest(
     # Spec 2026-06-14 §4.1: blob-only fallback. When False (or files_share is
     # empty) the cache volume is an ephemeral emptyDir, not the Azure Files PVC.
     files_cache_enabled: bool = True,
+    # Phase D (CPU cloud lane, OPENRESEARCH_CPU_CLOUD_CELLS): "gpu" (default)
+    # preserves every byte of the manifest below; "cpu" swaps the GPU node
+    # selector/toleration/resources for a CPU pool. See the accelerator=="cpu"
+    # branch below for the exact substitutions.
+    accelerator: str = "gpu",
 ) -> dict[str, Any]:
     """Build the K8s Job manifest dict for a single training cell.
 
@@ -703,6 +790,15 @@ def _build_job_manifest(
         (the default) the Azure Workload Identity label is applied, preserving
         byte-for-byte compatibility for existing callers.  Pass ``{}`` explicitly
         for GCP (or any cloud that does not need WI labels).
+
+    ``accelerator``:
+        ``"gpu"`` (the default) leaves every line below byte-identical to the
+        pre-Phase-D manifest. ``"cpu"`` targets the CPU pool label parsed from
+        ``OPENRESEARCH_CPU_POOL_LABEL`` (default ``"reprolab/pool=cpu"``),
+        drops all GPU tolerations (including the spot toleration — a CPU pool
+        is never the spot GPU pool), swaps the container's ``nvidia.com/gpu``
+        resources for a plain CPU/memory request, and omits
+        ``OPENRESEARCH_CELL_GPU_COUNT`` (meaningless without a GPU).
     """
     # P1-fix-5: refuse to submit with an empty image tag rather than silently
     # using whatever :latest resolves to at runtime.
@@ -785,45 +881,57 @@ def _build_job_manifest(
     # torchrun-wrap a >1-GPU distributed cell
     # (gke_cell_entrypoint.resolve_cell_gpu_count). Additive + default 1 → every
     # single-GPU cell (incl. the AKS path) is byte-for-byte unchanged where unread.
-    env_vars.append({"name": "OPENRESEARCH_CELL_GPU_COUNT", "value": gpu_count_str})
+    # Phase D: a CPU-class cell has no GPU to count — the entrypoint never reads
+    # this var on that path, so it is simply omitted rather than stamped "1".
+    if accelerator != "cpu":
+        env_vars.append({"name": "OPENRESEARCH_CELL_GPU_COUNT", "value": gpu_count_str})
 
     # Dataset/asset credentials (HF_TOKEN etc.) -- resolved via CredentialBroker,
     # the canonical secret resolver. Only injects what is actually configured;
     # byte-identical env when nothing resolves (the common case today).
     env_vars.extend(_credential_env_vars())
 
-    # P0-fix-3: node selector uses the infra pool label reprolab/sku in ALL paths.
-    # With gpu_plan → target that SKU's pool; without → fall back to the default SKU.
-    if gpu_plan is not None:
-        node_selector: dict[str, str] = {
-            "reprolab/sku": str(getattr(gpu_plan, "short_name", default_sku))
-        }
+    if accelerator == "cpu":
+        # Phase D (OPENRESEARCH_CPU_CLOUD_CELLS): target the CPU pool label
+        # instead of the GPU reprolab/sku pool. "key=value" → {key: value}.
+        _cpu_label = os.environ.get("OPENRESEARCH_CPU_POOL_LABEL", "reprolab/pool=cpu")
+        _cpu_key, _, _cpu_value = _cpu_label.partition("=")
+        node_selector = {_cpu_key: _cpu_value}
+        # No GPU taint to tolerate on a CPU pool — never the spot GPU pool either.
+        _tolerations = []
     else:
-        node_selector = {"reprolab/sku": default_sku}
-
-    # Toleration for the nvidia.com/gpu taint (always present; required by AKS GPU nodes).
-    gpu_toleration = {
-        "key": "nvidia.com/gpu",
-        "operator": "Exists",
-        "effect": "NoSchedule",
-    }
-
-    # Spot toleration (opt-in via <prefix>_use_spot): a spot/preemptible GPU pool gets a
-    # cloud-specific taint, so the cell Pod must tolerate it or it never schedules onto a
-    # spot node. Cloud-specific key (GKE vs AKS). Default (use_spot off) → tolerations is
-    # exactly [gpu_toleration], byte-identical to the on-demand path.
-    _tolerations: list[dict[str, Any]] = [gpu_toleration]
-    if _cloud_setting("use_spot", False):
-        if _get_settings_prefix() == "gcp":
-            _tolerations.append({
-                "key": "cloud.google.com/gke-spot",
-                "operator": "Equal", "value": "true", "effect": "NoSchedule",
-            })
+        # P0-fix-3: node selector uses the infra pool label reprolab/sku in ALL paths.
+        # With gpu_plan → target that SKU's pool; without → fall back to the default SKU.
+        if gpu_plan is not None:
+            node_selector = {
+                "reprolab/sku": str(getattr(gpu_plan, "short_name", default_sku))
+            }
         else:
-            _tolerations.append({
-                "key": "kubernetes.azure.com/scalesetpriority",
-                "operator": "Equal", "value": "spot", "effect": "NoSchedule",
-            })
+            node_selector = {"reprolab/sku": default_sku}
+
+        # Toleration for the nvidia.com/gpu taint (always present; required by AKS GPU nodes).
+        gpu_toleration = {
+            "key": "nvidia.com/gpu",
+            "operator": "Exists",
+            "effect": "NoSchedule",
+        }
+
+        # Spot toleration (opt-in via <prefix>_use_spot): a spot/preemptible GPU pool gets a
+        # cloud-specific taint, so the cell Pod must tolerate it or it never schedules onto a
+        # spot node. Cloud-specific key (GKE vs AKS). Default (use_spot off) → tolerations is
+        # exactly [gpu_toleration], byte-identical to the on-demand path.
+        _tolerations = [gpu_toleration]
+        if _cloud_setting("use_spot", False):
+            if _get_settings_prefix() == "gcp":
+                _tolerations.append({
+                    "key": "cloud.google.com/gke-spot",
+                    "operator": "Equal", "value": "true", "effect": "NoSchedule",
+                })
+            else:
+                _tolerations.append({
+                    "key": "kubernetes.azure.com/scalesetpriority",
+                    "operator": "Equal", "value": "spot", "effect": "NoSchedule",
+                })
 
     # Pod template labels: base labels + cloud-specific extras.
     # Default to Azure Workload Identity label when pod_template_extra_labels is
@@ -864,10 +972,15 @@ def _build_job_manifest(
                     "name": "cell",
                     "image": base_image,
                     "env": env_vars,
-                    "resources": {
-                        "requests": {"nvidia.com/gpu": gpu_count_str},
-                        "limits": {"nvidia.com/gpu": gpu_count_str},
-                    },
+                    "resources": (
+                        # Phase D: plain CPU/memory request, no nvidia.com/gpu anywhere.
+                        {"requests": {"cpu": "2", "memory": "8Gi"}}
+                        if accelerator == "cpu"
+                        else {
+                            "requests": {"nvidia.com/gpu": gpu_count_str},
+                            "limits": {"nvidia.com/gpu": gpu_count_str},
+                        }
+                    ),
                     "volumeMounts": [
                         {
                             "name": "reprolab-cache",
@@ -892,13 +1005,24 @@ def _build_job_manifest(
         }
     ]
 
+    # WS3 fencing labels: merged into the base Job labels (never dropping
+    # "app") only when the durable controller is enabled AND a generation is
+    # bound — these let a future reaper find every Job for a run via
+    # `list_namespaced_job(label_selector="reprolab-run-id=<run>")` and
+    # compare `reprolab-generation` against the live lease token. OFF/no-gen
+    # ⇒ labels unchanged (byte-identical to before this field existed).
+    _job_labels: dict[str, str] = {"app": "reprolab-cell"}
+    if durable_controller_enabled() and fence_generation is not None:
+        _job_labels["reprolab-run-id"] = _sanitize_label_token(run_id)
+        _job_labels["reprolab-generation"] = str(fence_generation)
+
     manifest: dict[str, Any] = {
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": {
             "name": job_name,
             "namespace": namespace,
-            "labels": {"app": "reprolab-cell"},
+            "labels": _job_labels,
         },
         "spec": {
             # P1-fix-8: configurable knobs from settings.
@@ -1237,6 +1361,88 @@ def _try_reconcile_status(
 
 
 # ---------------------------------------------------------------------------
+# WS3 fencing: persisted absolute-epoch deadline (adopt-on-409 companion)
+# ---------------------------------------------------------------------------
+
+def _persist_fenced_deadline(
+    *, run_id: str, gen: int, cell_id: str, active_deadline_seconds: int
+) -> None:
+    """Best-effort persist an absolute-epoch deadline record for a fenced cell.
+
+    Keyed by ``fenced_blob_prefix(run_id, gen, cell_id=...) + "deadline.json"``
+    — the SAME ``(run_id, gen, cell_id)`` triple that determines this cell's
+    fenced Job name, so a controller-restart resubmit of the identical Job
+    (the adopt-on-409 branch in ``_run_cell_job``) can re-read exactly this
+    record and inherit the REMAINING wall-clock budget instead of a fresh
+    full one — otherwise every restart would double the GPU wall-clock spend.
+
+    ``time.time()`` (absolute epoch) is used deliberately, NOT
+    ``time.monotonic()`` — monotonic has no fixed reference across process
+    restarts, so persisting it would be meaningless (mirrors ``blob_lease``'s
+    clock discipline: the caller supplies "now", the module never guesses).
+
+    Fail-soft: any error (unset bucket setting, transient network blip, ...)
+    is logged and swallowed — a deadline-persist failure must never fail an
+    otherwise-successful Job submit.
+    """
+    try:
+        record = deadline.make_deadline(time.time(), float(active_deadline_seconds))
+        blob_name = fenced_blob_prefix(run_id, gen, cell_id=cell_id) + "deadline.json"
+        _gcs_upload_bytes(
+            deadline.serialize(record),
+            blob_name=blob_name,
+            bucket=_cloud_setting("gcs_bucket", "") or "",
+            project=_setting("gcp_project", None) or None,
+        )
+    except Exception as exc:
+        logger.warning(
+            "k8s_job_cell_runner: failed to persist fenced deadline cell=%s gen=%s: %s",
+            cell_id, gen, exc,
+        )
+
+
+def _adopted_active_deadline_seconds(
+    *,
+    run_id: str,
+    gen: int,
+    cell_id: str,
+    storage_account: str,
+    blob_container: str,
+    blob_client: Any | None,
+    fallback_active_deadline_seconds: int,
+) -> int:
+    """Recompute the REMAINING ``active_deadline_seconds`` for an adopted Job.
+
+    Re-reads the deadline record ``_persist_fenced_deadline`` wrote at the
+    original submit (via the existing ``_blob_download_bytes`` seam, same as
+    every other per-cell Blob read in this module) and returns
+    ``max(1, deadline.remaining_s(record, time.time()))``.
+
+    Falls back to ``fallback_active_deadline_seconds`` (the caller's freshly
+    computed value) whenever the blob is missing, unreadable, or corrupt —
+    never raises, never blocks an adopt on a persistence hiccup.
+    """
+    blob_name = fenced_blob_prefix(run_id, gen, cell_id=cell_id) + "deadline.json"
+    try:
+        data = _blob_download_bytes(
+            blob_name,
+            account_name=storage_account,
+            container_name=blob_container,
+            client=blob_client,
+        )
+        record = deadline.parse(data)
+        remaining = deadline.remaining_s(record, time.time())
+        return max(1, int(remaining))
+    except Exception as exc:
+        logger.info(
+            "k8s_job_cell_runner: no persisted deadline for cell=%s gen=%s (%s); "
+            "adopting with a fresh active_deadline_seconds=%d",
+            cell_id, gen, exc, fallback_active_deadline_seconds,
+        )
+        return fallback_active_deadline_seconds
+
+
+# ---------------------------------------------------------------------------
 # Map watch result → CellResult status
 # ---------------------------------------------------------------------------
 
@@ -1306,9 +1512,14 @@ def _run_cell_job(
     now_iso: str | None,
     run_id: str,
     gpu_plan: Any | None = None,
+    fence_generation: int | None = None,
     blob_client: Any | None = None,
     pod_template_extra_labels: dict | None = None,
     files_cache_enabled_override: bool | None = None,
+    # Phase D (OPENRESEARCH_CPU_CLOUD_CELLS): "gpu" (default) is byte-identical
+    # to before this param existed; "cpu" threads through to
+    # _build_job_manifest's accelerator="cpu" branch.
+    accelerator: str = "gpu",
 ) -> CellResult:
     """Submit a K8s Job for ``cell`` and block until terminal, then return a CellResult.
 
@@ -1324,7 +1535,7 @@ def _run_cell_job(
     read (pre-existing behaviour, no live check).
     """
     cell_id: str = cell.get("id", f"cell_{id(cell)}")
-    job_name = _job_name(cell_id, run_id)
+    job_name = _job_name(cell_id, run_id, gen=fence_generation)
     output_dir = output_root / cell_id
     log_path = output_root / f"{cell_id}.log"
 
@@ -1363,6 +1574,9 @@ def _run_cell_job(
             fingerprint=fingerprint,
             now_iso=now_iso,
             gpu_plan=gpu_plan,
+            # WS3 fencing: threaded through to the manifest's metadata.labels.
+            run_id=run_id,
+            fence_generation=fence_generation,
             # P1-fix-8: configurable knobs from settings.
             ttl_seconds_after_finished=int(_cloud_setting("ttl_seconds_after_finished", 3600)),
             backoff_limit=_backoff_limit,
@@ -1383,6 +1597,7 @@ def _run_cell_job(
                 (_cloud_setting("gpu_skus", []) or ["azure_a100_80"])[0]
             ),
             pod_template_extra_labels=pod_template_extra_labels,
+            accelerator=accelerator,
         )
     except ValueError as exc:
         # P1-fix-5: manifest builder raises ValueError on empty base_image.
@@ -1407,6 +1622,13 @@ def _run_cell_job(
 
     # Submit the Job.
     _cs = "gke" if _get_settings_prefix() == "gcp" else "aks"
+    # WS3: resolved ONCE per submit attempt — gates both the persisted-deadline
+    # write (success path, just below) and the adopt-on-409 branch (except,
+    # just below). Uses the `fence_generation` PARAMETER (threaded explicitly
+    # from run_matrix's main thread), never `_get_fence_generation()` here —
+    # `_run_cell_job` runs on a worker thread, where that ContextVar accessor
+    # would silently read back None (see `_get_fence_generation`'s docstring).
+    _durable_fenced = durable_controller_enabled() and fence_generation is not None
     try:
         k8s.batch.create_namespaced_job(namespace, manifest)
         logger.info(
@@ -1414,20 +1636,180 @@ def _run_cell_job(
             job_name, cell_id, active_deadline_seconds,
             getattr(gpu_plan, "short_name", "default") if gpu_plan else "default",
         )
+        if _durable_fenced:
+            # Edit 2: persist the absolute-epoch deadline for this fenced
+            # submit so a later controller-restart adopt (below) inherits the
+            # REMAINING budget instead of a fresh full one. Fail-soft internally
+            # — can never turn a successful submit into a failure.
+            _persist_fenced_deadline(
+                run_id=run_id,
+                gen=fence_generation,
+                cell_id=cell_id,
+                active_deadline_seconds=active_deadline_seconds,
+            )
     except Exception as exc:
         # Redact: the submitted manifest may carry injected credentials, and some
         # API-server validation errors echo back request fields — never let a
         # secret value survive into a log line or this CellResult.error field.
         from backend.services.runtime.credential_broker import CredentialBroker  # type: ignore[import]
+
         _safe_exc = CredentialBroker.redact_text(str(exc)) or "error (redacted)"
-        logger.error("k8s_job_cell_runner: create_namespaced_job failed cell=%s: %s", cell_id, _safe_exc)
-        return CellResult(
+        if not _durable_fenced or getattr(exc, "status", None) != 409:
+            logger.error(
+                "k8s_job_cell_runner: create_namespaced_job failed cell=%s: %s",
+                cell_id,
+                _safe_exc,
+            )
+            return CellResult(
+                cell_id=cell_id,
+                status=STATUS_ERROR,
+                metrics=None,
+                gpu=f"{_cs}:unassigned",
+                retries=0,
+                error=f"job submission failed: {_safe_exc}",
+            )
+
+        # WS3 Edit 1 — adopt-on-409: the fenced Job name already exists, most
+        # likely a controller restart resubmitting the SAME (run_id, cell_id,
+        # gen) triple. Duck-typed 409 (no eager `import kubernetes`).
+        logger.warning(
+            "k8s_job_cell_runner: create_namespaced_job 409 for fenced Job=%s "
+            "cell=%s — probing adopt vs skip vs submit", job_name, cell_id,
+        )
+        try:
+            existing_job = k8s.batch.read_namespaced_job_status(
+                name=job_name, namespace=namespace
+            )
+        except Exception as read_exc:
+            _safe_read_exc = CredentialBroker.redact_text(str(read_exc)) or "error (redacted)"
+            logger.error(
+                "k8s_job_cell_runner: adopt-on-409 read_namespaced_job_status "
+                "failed cell=%s: %s — falling back to error",
+                cell_id,
+                _safe_read_exc,
+            )
+            return CellResult(
+                cell_id=cell_id,
+                status=STATUS_ERROR,
+                metrics=None,
+                gpu=f"{_cs}:unassigned",
+                retries=0,
+                error=f"job submission failed: {_safe_exc}",
+            )
+
+        existing_status = getattr(existing_job, "status", None)
+        if getattr(existing_status, "succeeded", 0):
+            existing_phase = "done"
+        elif getattr(existing_status, "active", 0):
+            existing_phase = "Running"
+        else:
+            existing_phase = None
+
+        # Cheap probe of the persisted per-cell status (same Blob status.json
+        # `_try_reconcile_status` already reconciles elsewhere in this file);
+        # mirrors the exact "prior success" check `_process_cell`'s Blob-resume
+        # path already uses (`exit_code==0 or outcome=="ok"` — the real
+        # in-Job entrypoint sentinel has no top-level "status" key, only
+        # "outcome"/"exit_code", so this is the check that actually matches
+        # production data, not a literal `result["status"]`).
+        #
+        # DEVIATION FROM BRIEF — flagged for explicit lead sign-off, not
+        # silent: `.superpowers/sdd/phase3-owner1b-cell_runner-adopt-deadline.md`
+        # Edit 1 step 3 literally specifies
+        # `result and result.get("status") == STATUS_OK`. Real per-cell
+        # status.json sentinels never carry a top-level "status" key (only
+        # outcome/exit_code — see `_process_cell`'s own Blob-resume check a
+        # few hundred lines below, `_blob_status.get("exit_code") == 0 or
+        # _blob_status.get("outcome") == "ok"`), so the literal brief check
+        # would make `already_succeeded` permanently False and the "skip"
+        # branch of `adopt_or_submit` permanently dead code. This is a
+        # unilateral, load-bearing reinterpretation of explicit brief text —
+        # per `phase3-contract.md`'s STOP-and-flag principle for brief/
+        # implementation mismatches, the lead should explicitly confirm this
+        # reading (rather than have it land silently) before treating Edit 1
+        # as fully to-spec.
+        reconciled = _try_reconcile_status(
             cell_id=cell_id,
-            status=STATUS_ERROR,
-            metrics=None,
-            gpu=f"{_cs}:unassigned",
-            retries=0,
-            error=f"job submission failed: {_safe_exc}",
+            output_blob_prefix=output_blob_prefix,
+            account_name=storage_account,
+            container_name=blob_container,
+            client=blob_client,
+        )
+        already_succeeded = bool(
+            reconciled
+            and (reconciled.get("outcome") == STATUS_OK or reconciled.get("exit_code") == 0)
+        )
+
+        decision = adopt_or_submit(existing_phase, already_succeeded=already_succeeded)
+
+        if decision == "skip":
+            # The work is already done — reconcile like the existing
+            # post-watch path does for an already-ok cell (download metrics,
+            # write the resume manifest, return STATUS_OK).
+            metrics = _try_download_metrics(
+                cell_id=cell_id,
+                output_blob_prefix=output_blob_prefix,
+                account_name=storage_account,
+                container_name=blob_container,
+                output_dir=output_dir,
+                client=blob_client,
+            )
+            retries = (reconciled or {}).get("retries") or 0
+            write_cell_manifest(
+                output_dir,
+                caller="k8s_job_cell_runner",
+                cell_id=cell_id,
+                status=STATUS_OK,
+                fingerprint=fingerprint,
+                metrics=metrics,
+                retries=retries,
+                now_iso=now_iso,
+            )
+            logger.info(
+                "k8s_job_cell_runner: cell=%s adopt-on-409: already succeeded — skip",
+                cell_id,
+            )
+            return CellResult(
+                cell_id=cell_id,
+                status=STATUS_OK,
+                metrics=metrics,
+                gpu=f"{_cs}:unassigned",
+                retries=retries,
+                error=None,
+            )
+
+        if decision == "submit":
+            # Conservative: a 409 with neither a live nor a succeeded Job is an
+            # odd state (e.g. racing deletion) — do not blindly recreate.
+            logger.error(
+                "k8s_job_cell_runner: adopt-on-409 cell=%s: existing Job neither "
+                "live nor succeeded — treating as submission failure", cell_id,
+            )
+            return CellResult(
+                cell_id=cell_id,
+                status=STATUS_ERROR,
+                metrics=None,
+                gpu=f"{_cs}:unassigned",
+                retries=0,
+                error=f"job submission failed: {_safe_exc}",
+            )
+
+        # decision == "adopt": do NOT create — attach to the existing Job and
+        # inherit the REMAINING budget (Edit 2) instead of a fresh full one,
+        # then fall through to the SAME _watch_job call below (its internal
+        # monotonic loop is untouched — only the VALUE it receives changes).
+        logger.info(
+            "k8s_job_cell_runner: cell=%s adopt-on-409: attaching to live Job=%s",
+            cell_id, job_name,
+        )
+        active_deadline_seconds = _adopted_active_deadline_seconds(
+            run_id=run_id,
+            gen=fence_generation,
+            cell_id=cell_id,
+            storage_account=storage_account,
+            blob_container=blob_container,
+            blob_client=blob_client,
+            fallback_active_deadline_seconds=active_deadline_seconds,
         )
 
     # Watch Job until terminal.
@@ -1534,6 +1916,50 @@ def _lookup_sku_by_short_name(short_name: str) -> Any | None:
     return None
 
 
+def _resolve_framework_image(
+    cells: list[dict[str, Any]], base_image: str, mapping: dict[str, str]
+) -> str:
+    """Pure: resolve the framework->image floor for a cell matrix.
+
+    A cell declares its framework via ``image_key`` (preferred) then
+    ``framework`` (fallback); the first that maps to a non-empty image in
+    ``mapping`` selects that image. Returns the mapped image ONLY when every
+    matching cell agrees on exactly ONE distinct image (the deterministic
+    single-framework synth case). Zero matches, an empty mapping, or an
+    ambiguous mix of two+ distinct images all fall back to ``base_image`` —
+    never guess a run-level image for a heterogeneous matrix.
+    """
+    if not mapping:
+        return base_image
+    resolved: set[str] = set()
+    for cell in cells:
+        if not isinstance(cell, dict):
+            continue
+        for field in ("image_key", "framework"):
+            val = cell.get(field)
+            if isinstance(val, str) and val:
+                image = mapping.get(val)
+                if image:
+                    resolved.add(image)
+                    break
+    if len(resolved) == 1:
+        return next(iter(resolved))
+    return base_image
+
+
+def _maybe_framework_image(cells: list[dict[str, Any]], base_image: str) -> str:
+    """E1 gate: apply the framework->image floor when
+    ``OPENRESEARCH_FRAMEWORK_IMAGES`` is on. Off/unmapped => ``base_image``
+    unchanged (byte-identical). The mapping is the cloud-prefixed
+    ``<prefix>_framework_images`` setting (gcp_framework_images on GKE)."""
+    if not env_truthy("OPENRESEARCH_FRAMEWORK_IMAGES"):
+        return base_image
+    mapping = _cloud_setting("framework_images", {}) or {}
+    if not isinstance(mapping, dict):
+        return base_image
+    return _resolve_framework_image(cells, base_image, mapping)
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -1605,6 +2031,10 @@ def run_matrix(
     node_pool_name: str = _cloud_setting("node_pool_name", "gpunodes")
     # P1-fix-5: default is "" — _build_job_manifest raises clearly if still empty.
     base_image: str = _cloud_setting("base_image", "")
+    # E1: framework->validated-image floor (OPENRESEARCH_FRAMEWORK_IMAGES,
+    # default off). A verl cell auto-targets gke-cell-verl instead of the single
+    # gcp_base_image; off/unmapped => base_image unchanged.
+    base_image = _maybe_framework_image(cells, base_image)
     storage_account: str = _cloud_setting("storage_account", "") or ""
     blob_container: str = _cloud_setting("blob_container", "reprolab-artifacts") or "reprolab-artifacts"
     # P1-fix-5: align with config.py default of 4 (was incorrectly 8 here).
@@ -1626,9 +2056,22 @@ def run_matrix(
     _force_cells: set[str] = force_cells or set()
     _resume_armed: bool = is_resume_armed()
 
+    # Phase D (CPU cloud lane): read ONCE here, main thread — mirrors the
+    # gpu_plan/fence_generation precedent above (ContextVars/env reads that
+    # gate per-cell worker-thread behavior are always resolved up front, never
+    # re-read inside a worker thread). Off (default) ⇒ every cell below keeps
+    # accelerator="gpu" and the post-matrix fallback block never runs.
+    _cpu_cloud_enabled: bool = env_truthy("OPENRESEARCH_CPU_CLOUD_CELLS")
+
     run_budget = _get_run_budget()
     event_sink = _get_event_sink()
     gpu_plan = _get_gpu_plan()
+    # WS3 fencing: read ONCE here in the main thread (mirrors gpu_plan above) —
+    # ContextVars do NOT propagate into the worker threads this function spawns
+    # (see _get_fence_generation's docstring / the settings-prefix precedent
+    # below), so every downstream consumer receives this resolved value as an
+    # explicit parameter/closure capture, never by re-calling the accessor.
+    fence_generation = _get_fence_generation()
 
     # Derive a run_id from the output_root path (last two segments).
     output_root = Path(output_root)
@@ -1724,7 +2167,19 @@ def run_matrix(
     cell_script = Path(cell_script)
     code_dir = cell_script.parent
     code_blob_prefix = f"runs/{run_id}/{_BLOB_CODE_PREFIX}"
-    output_blob_prefix = f"runs/{run_id}/{_BLOB_CELLS_PREFIX}"
+    # WS3 fencing: scope this generation's cell evidence under its own
+    # gen-<gen>/ prefix so a superseded generation's writer can never clobber
+    # the current one's metrics.json. Computed ONCE here (run-level, exactly
+    # like code_blob_prefix above) — NOT re-derived per cell or per escalation
+    # attempt, and independent of the escalation "-eN" run_id suffix used only
+    # for Job naming. OFF/no-gen ⇒ legacy prefix, byte-identical.
+    if durable_controller_enabled() and fence_generation is not None:
+        output_blob_prefix = (
+            fenced_blob_prefix(run_id, fence_generation).rstrip("/")
+            + "/" + _BLOB_CELLS_PREFIX
+        )
+    else:
+        output_blob_prefix = f"runs/{run_id}/{_BLOB_CELLS_PREFIX}"
 
     try:
         uploaded = _blob_upload_prefix(
@@ -1830,6 +2285,14 @@ def run_matrix(
 
         cell_id: str = cell.get("id", f"cell_{id(cell)}")
         output_dir = output_root / cell_id
+
+        # Phase D: per-cell CPU-vs-GPU routing. Off (default), or any cell
+        # carrying a hard/soft GPU signal, keeps accelerator="gpu" — the
+        # manifest stays byte-identical. Only a CPU-class cell with the flag
+        # on gets accelerator="cpu".
+        _cell_accelerator: str = (
+            "cpu" if _cpu_cloud_enabled and not cpu_class.requires_gpu(cell) else "gpu"
+        )
 
         # --- Resume skip (Track B) ---
         if _resume_armed and should_skip_cell(cell_id, output_dir, _fingerprints, _force_cells):
@@ -1998,10 +2461,18 @@ def run_matrix(
                 # P0-fix-2: use the (possibly suffixed) run_id for Job naming.
                 run_id=current_run_id,
                 gpu_plan=current_plan,
+                # WS3 fencing: closure-captured from the main thread (see the
+                # fence_generation = _get_fence_generation() comment above) —
+                # never re-read via the ContextVar accessor inside this
+                # worker thread.
+                fence_generation=fence_generation,
                 # P0-scale-2: shared client avoids per-call MSI probe.
                 blob_client=shared_blob_client,
                 pod_template_extra_labels=_pod_extra_labels,
                 files_cache_enabled_override=_use_persistent_cache,
+                # Phase D: closure-captured per-cell routing decision (see
+                # _cell_accelerator above) — never re-derived here.
+                accelerator=_cell_accelerator,
             )
 
             # Escalation check: only if oom_failed + plan available + cap not hit.
@@ -2162,7 +2633,43 @@ def run_matrix(
                 error="worker exited without recording a result",
             )
 
-    return {cid: r.to_dict() for cid, r in results.items()}
+    result_dicts = {cid: r.to_dict() for cid, r in results.items()}
+
+    # Phase D (OPENRESEARCH_CPU_CLOUD_CELLS): when this ENTIRE matrix is
+    # CPU-class and EVERY cell came back infra-failed on the cluster path (a
+    # single real result — ok/oom_failed/skipped/anything but "error" —
+    # suppresses this branch so a genuine result is never discarded), fall
+    # back to running the identical cells locally in-process via
+    # gpu_cell_runner.run_matrix — the durable controller Pod always has CPU,
+    # so a CPU-class matrix should never be stuck behind a broken CPU node
+    # pool. Off (default) ⇒ this block never executes.
+    if _cpu_cloud_enabled and cpu_class.run_is_cpu_class(cells) and (
+        cpu_class.all_cells_infra_failed(result_dicts)
+    ):
+        _msg = (
+            f"k8s_job_cell_runner: all {len(cells)} CPU-class cells infra-failed on "
+            "the K8s cluster path — falling back to local in-process "
+            "gpu_cell_runner.run_matrix"
+        )
+        logger.warning(_msg)
+        event_sink("run_warning", {"code": "cpu_cloud_fallback", "message": _msg})
+        from backend.agents.rlm import gpu_cell_runner as _gpu_cell_runner
+        return _gpu_cell_runner.run_matrix(
+            cells,
+            cell_script,
+            output_root=output_root,
+            gpus=gpus,
+            max_parallel=max_parallel,
+            max_oom_retries=max_oom_retries,
+            per_cell_timeout_s=per_cell_timeout_s,
+            overall_timeout_s=overall_timeout_s,
+            gpus_per_cell=gpus_per_cell,
+            fingerprints=fingerprints,
+            force_cells=force_cells,
+            now_iso=now_iso,
+        )
+
+    return result_dicts
 
 
 # ---------------------------------------------------------------------------

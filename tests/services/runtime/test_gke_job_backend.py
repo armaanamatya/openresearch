@@ -1369,3 +1369,148 @@ async def test_create_sandbox_pool_api_permission_denied_degrades_to_warning(
 
     assert isinstance(sandbox, Sandbox)
     assert core_api.list_node_call_count == 1  # fell back to the heuristic
+# WS2 guard — fail-loud refusal of code-dependent commands on the unstaged
+# monolithic exec path (Phase-3 durable-controller fan-out). Flag-gated on
+# OPENRESEARCH_DURABLE_CONTROLLER (default OFF), gcp-only. See
+# `.superpowers/sdd/phase3-owner2-job_backend-ws2guard.md`.
+# ---------------------------------------------------------------------------
+
+from backend.services.runtime.k8s_job_backend import _command_needs_staged_code  # noqa: E402
+
+
+class TestCommandNeedsStagedCode:
+    """Pure predicate table — no fixtures, no mocks, no cloud dependency."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "python train.py --foo",
+            "python train.py",
+            "python3 train.py --seed 1",
+            "python3.11 /code/train.py",
+            "python -m project.train",
+            "python -m project.train --epochs 5",
+            "./train.py --seed 1",
+            "pip install -r requirements.txt && python train.py",
+        ],
+    )
+    def test_positive_project_code_commands(self, command: str) -> None:
+        assert _command_needs_staged_code(command) is True, command
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "nvidia-smi",
+            "pip install torch",
+            'python -c "print(1)"',
+            "ls",
+            "nvcc --version",
+            "python -m pip install -r requirements.txt",  # the real bootstrap shape
+            "echo hi",
+            "",
+            "   ",
+        ],
+    )
+    def test_negative_utility_commands(self, command: str) -> None:
+        assert _command_needs_staged_code(command) is False, command
+
+
+class TestCommandNeedsStagedCodeArgumentPositionGuard:
+    """Regression guard (Phase-3 review finding on the WS2 guard): a bare
+    ``*.py``-suffixed token must only trip the predicate when it is the
+    invoked program of a (sub)command, not merely an argument to some other
+    program. Before this fix, `_command_needs_staged_code`'s bare-``.py``
+    branch fired for ANY ``.py``-suffixed token anywhere in the command,
+    so e.g. ``cat code/train.py`` (reads a file, doesn't execute it) was
+    misidentified as code-dependent.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat code/train.py",
+            "echo train.py",
+            "wc -l code/*.py",
+            "black train.py",
+            "git diff -- train.py",
+        ],
+    )
+    def test_py_token_as_argument_is_not_flagged(self, command: str) -> None:
+        assert _command_needs_staged_code(command) is False, command
+
+    def test_py_token_as_invoked_program_after_chain_operator_still_flagged(self) -> None:
+        """A bare .py script IS the program being run in the second chained
+        sub-command -> still True (the fix must not overcorrect to False)."""
+        assert _command_needs_staged_code("cat notes.txt && ./train.py --seed 1") is True
+
+
+class TestExecMonolithicUnstagedGuard:
+    """Hermetic OFF/ON pair for the `exec()` fail-loud guard."""
+
+    @pytest.mark.asyncio
+    async def test_off_flag_unset_submits_exactly_as_today(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Byte-identical to pre-guard behavior: flag unset -> Job submitted
+        even for an obviously code-dependent command on gcp."""
+        monkeypatch.delenv("OPENRESEARCH_DURABLE_CONTROLLER", raising=False)
+        batch_api = FakeBatchApi(job_factory=lambda: FakeJob(complete=True))
+        backend = _make_backend(batch_api=batch_api)
+        sandbox = _make_sandbox(tmp_path)
+        backend._active_jobs[sandbox.sandbox_id] = []
+
+        result = await backend.exec(sandbox, "python train.py", timeout=30)
+
+        assert len(batch_api.created_jobs) == 1
+        assert result.exit_code == 0
+
+    @pytest.mark.asyncio
+    async def test_on_gcp_code_command_raises_and_submits_no_job(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ON + gcp + code-dependent command -> SandboxRuntimeError, no Job created."""
+        monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        batch_api = FakeBatchApi(job_factory=lambda: FakeJob(complete=True))
+        backend = _make_backend(batch_api=batch_api)
+        sandbox = _make_sandbox(tmp_path)
+        backend._active_jobs[sandbox.sandbox_id] = []
+
+        with pytest.raises(SandboxRuntimeError) as exc_info:
+            await backend.exec(sandbox, "python train.py", timeout=30)
+
+        assert exc_info.value.cause_kind == RuntimeCauseKind.backend_unavailable
+        assert "monolithic_exec_unstaged" in str(exc_info.value)
+        assert batch_api.created_jobs == []
+
+    @pytest.mark.asyncio
+    async def test_on_gcp_non_code_command_submits_normally(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ON + gcp + a plain utility command -> guard does not trip."""
+        monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+        batch_api = FakeBatchApi(job_factory=lambda: FakeJob(complete=True))
+        backend = _make_backend(batch_api=batch_api)
+        sandbox = _make_sandbox(tmp_path)
+        backend._active_jobs[sandbox.sandbox_id] = []
+
+        result = await backend.exec(sandbox, "nvidia-smi", timeout=10)
+
+        assert len(batch_api.created_jobs) == 1
+        assert result.exit_code == 0
+
+    @pytest.mark.asyncio
+    async def test_off_flag_unset_with_code_command_ignores_predicate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Flag OFF short-circuits before `_command_needs_staged_code` is ever
+        consulted — same code-dependent command as the ON-guard test above,
+        but here it must submit normally."""
+        monkeypatch.delenv("OPENRESEARCH_DURABLE_CONTROLLER", raising=False)
+        batch_api = FakeBatchApi(job_factory=lambda: FakeJob(complete=True))
+        backend = _make_backend(batch_api=batch_api)
+        sandbox = _make_sandbox(tmp_path)
+        backend._active_jobs[sandbox.sandbox_id] = []
+
+        await backend.exec(sandbox, "python -m project.train --epochs 5", timeout=30)
+
+        assert len(batch_api.created_jobs) == 1

@@ -201,3 +201,129 @@ class TestVerlMetricsAdapterRealVerlDictRepr:
         )
         assert result == {"status": "failed"}
         assert "success_rate" not in result
+
+
+# ---------------------------------------------------------------------------
+# Held-out eval keys: prefix match (verl per-data_source val), metric_name,
+# inline provenance
+# ---------------------------------------------------------------------------
+
+class TestHeldOutEvalKeys:
+    def test_prefix_key_resolves_single_data_source(self, tmp_path):
+        """verl logs one val key PER data_source (val/test_score/math) and no bare
+        aggregate; the 'val/test_score/' PREFIX resolves the single concrete
+        sub-key, written as success_rate with aggregate provenance."""
+        _write_log(
+            tmp_path / "train.log",
+            "step 4: 'val/test_score/math': np.float64(0.575)\n",
+        )
+        result = write_cell_metrics_from_verl(
+            tmp_path, model_key="m", env="verl", baseline="execute",
+            success_rate_key="val/test_score/", metric_name="success_rate",
+        )
+        assert result["status"] == "success"
+        assert result["success_rate"] == 0.575
+        assert result["eval_provenance"]["metric_value"] == 0.575
+        assert result["eval_provenance"]["provenance_kind"] == "aggregate"
+
+    def test_prefix_key_data_source_with_slash(self, tmp_path):
+        """A data_source that itself contains '/' (openai/gsm8k) is captured whole."""
+        _write_log(tmp_path / "train.log", "val/test_score/openai/gsm8k:0.61\n")
+        result = write_cell_metrics_from_verl(
+            tmp_path, success_rate_key="val/test_score/",
+            model_key="m", env="e", baseline="b",
+        )
+        assert result["status"] == "success"
+        assert result["success_rate"] == 0.61
+
+    def test_prefix_key_ambiguous_multi_source_falls_through(self, tmp_path):
+        """Two distinct data_sources under the prefix → ambiguous → no value
+        (never averages across sources — not value-preserving)."""
+        _write_log(
+            tmp_path / "train.log",
+            "val/test_score/math:0.5\nval/test_score/gsm8k:0.7\n",
+        )
+        result = write_cell_metrics_from_verl(
+            tmp_path, success_rate_key="val/test_score/",
+            model_key="m", env="e", baseline="b",
+        )
+        assert result == {"status": "failed"}
+        assert "success_rate" not in result
+
+    def test_prefix_key_last_value_wins(self, tmp_path):
+        """The LAST logged value of the single data_source key wins (final val)."""
+        _write_log(
+            tmp_path / "train.log",
+            "val/test_score/math:0.30\nval/test_score/math:0.575\n",
+        )
+        result = write_cell_metrics_from_verl(
+            tmp_path, success_rate_key="val/test_score/",
+            model_key="m", env="e", baseline="b",
+        )
+        assert result["success_rate"] == 0.575
+
+    def test_metric_name_reward_mean_not_success_rate(self, tmp_path):
+        """metric_name='reward_mean' writes the value under reward_mean, NOT
+        success_rate — a train reward is not a held-out rate metric."""
+        _write_log(tmp_path / "train.log", "critic/rewards/mean:0.141\n")
+        result = write_cell_metrics_from_verl(
+            tmp_path, success_rate_key="critic/rewards/mean",
+            metric_name="reward_mean", model_key="m", env="e", baseline="b",
+        )
+        assert result["status"] == "success"
+        assert result["reward_mean"] == 0.141
+        assert "success_rate" not in result
+
+    def test_inline_provenance_written_into_metrics_json(self, tmp_path):
+        """Provenance is embedded inline in metrics.json (GKE round-trip safe)."""
+        import json as _json
+        _write_log(tmp_path / "train.log", "val/success_rate:0.456\n")
+        write_cell_metrics_from_verl(tmp_path, model_key="m", env="e", baseline="b")
+        on_disk = _json.loads((tmp_path / "metrics.json").read_text(encoding="utf-8"))
+        assert on_disk["eval_provenance"]["metric_value"] == 0.456
+        assert on_disk["eval_provenance"]["metric_name"] == "success_rate"
+        assert on_disk["eval_provenance"]["provenance_kind"] == "aggregate"
+
+    def test_exact_key_still_rejects_per_dataset_subkey(self, tmp_path):
+        """Regression: the exact (non-prefix) val/success_rate still wins over a
+        per-dataset sub-key — prefix mode is only for keys ending in '/'."""
+        _write_log(
+            tmp_path / "train.log",
+            "val/success_rate/nq:0.418\nval/success_rate:0.456\n",
+        )
+        result = write_cell_metrics_from_verl(
+            tmp_path, success_rate_key="val/success_rate",
+            model_key="m", env="e", baseline="b",
+        )
+        assert result["success_rate"] == 0.456
+
+    def test_prefix_json_conflicting_values_across_files_falls_through(self, tmp_path):
+        """Two val/summary JSONs carrying the SAME prefix key with DIFFERENT
+        values → ambiguous → no value (never silently pick the first sorted
+        file's stale value; JSON files have no temporal 'last wins' order)."""
+        import json as _json
+        (tmp_path / "a_val.json").write_text(
+            _json.dumps({"val/test_score/math": 0.1}), encoding="utf-8"
+        )
+        (tmp_path / "z_val.json").write_text(
+            _json.dumps({"val/test_score/math": 0.9}), encoding="utf-8"
+        )
+        result = write_cell_metrics_from_verl(
+            tmp_path, success_rate_key="val/test_score/",
+            model_key="m", env="e", baseline="b",
+        )
+        assert result == {"status": "failed"}
+        assert "success_rate" not in result
+
+    def test_prefix_json_single_consistent_key_resolves(self, tmp_path):
+        """One distinct prefix key with a consistent value across files → used."""
+        import json as _json
+        (tmp_path / "summary.json").write_text(
+            _json.dumps({"val/test_score/math": 0.575}), encoding="utf-8"
+        )
+        result = write_cell_metrics_from_verl(
+            tmp_path, success_rate_key="val/test_score/",
+            model_key="m", env="e", baseline="b",
+        )
+        assert result["status"] == "success"
+        assert result["success_rate"] == 0.575

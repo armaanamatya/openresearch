@@ -2269,7 +2269,29 @@ def cmd_campaign(args: argparse.Namespace) -> int:
 
     source = _source_from_cli(args.source, "auto")
     print(f"[campaign ingest 1/6] Registering project for {args.source}", file=sys.stderr)
-    project_id = intake.register_project(RegisterProject(source=source))
+    # Mirrors cmd_reproduce's --project-id override (T15 / P1-I8): lets a
+    # durable controller Pod (or the REST API) resume the SAME campaign
+    # lineage across a restart/reschedule via --resume, instead of minting a
+    # fresh source-derived id every time it is rescheduled.
+    project_id = intake.register_project(
+        RegisterProject(source=source),
+        project_id_override=(getattr(args, "project_id", None) or None),
+    )
+    if getattr(args, "project_id", None):
+        # Mirrors cmd_reproduce's mismatch guard: the override may only
+        # mirror the source-derived id (register_project already ingests it
+        # verbatim), so an arbitrary value is rejected here with an
+        # actionable message rather than failing opaquely at fetch_paper.
+        if args.project_id != project_id:
+            print(
+                f"                       ERROR: --project-id={args.project_id!r} does not match "
+                f"the source-derived project id {project_id!r}. The override may only mirror the "
+                f"source-derived id; an arbitrary value breaks ingest (fetch_paper -> "
+                f"UnknownProject). Omit --project-id to use the source-derived id.",
+                file=sys.stderr,
+            )
+            return 1
+        project_id = args.project_id
     print(f"                       project_id={project_id}", file=sys.stderr)
 
     project_dir = runs_root / project_id
@@ -2950,6 +2972,17 @@ def _build_parser() -> argparse.ArgumentParser:
     campaign.add_argument(
         "--resume", action="store_true", default=False,
         help="Resume an existing campaign for this paper's project id.",
+    )
+    campaign.add_argument(
+        "--project-id",
+        dest="project_id",
+        default=None,
+        help=(
+            "Override the project id (writes to runs/<project-id>/). When unset, "
+            "an id is derived from the paper source. Lets a durable controller "
+            "(or the REST API) resume the SAME campaign lineage across a Pod "
+            "restart/reschedule via --resume (mirrors reproduce's --project-id)."
+        ),
     )
     campaign.set_defaults(func=cmd_campaign)
 

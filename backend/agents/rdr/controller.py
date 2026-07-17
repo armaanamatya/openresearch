@@ -1414,7 +1414,19 @@ async def run_rdr(
     # Step 9: Write final report
     # ------------------------------------------------------------------
     overall_score: float = float(scores.get("overall_score", 0.0))
-    verdict = reconcile_verdict_with_score("partial", overall_score)
+    # SEVERED (Track A §4.3): when VerdictAuthority is active, this grade-
+    # derived reconcile is only a placeholder for RLMFinalReport's required
+    # field — write_final_report_rlm below invokes verdict_authority.decide()
+    # unconditionally as its last step and overwrites it. The RDR path has no
+    # repro_spec/result_fidelity, so decide() naturally yields "inconclusive"
+    # from its empty-result_fidelity branch; no RDR-specific casing is added
+    # here (the placeholder's exact value never survives to the report).
+    # Either flag off => byte-identical legacy reconcile.
+    from backend.agents.rlm import verdict_authority as _va
+    if _va.is_enabled():
+        verdict = "partial"
+    else:
+        verdict = reconcile_verdict_with_score("partial", overall_score)
 
     # Deterministic summary — no LLM
     clusters_failed_count = sum(1 for art in done.values() if art.failed)

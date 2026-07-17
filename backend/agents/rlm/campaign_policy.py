@@ -652,15 +652,21 @@ def lineage_arms(
 def next_scope_rung(current_rung: int, latest: AttemptAssessment | None, *, ladder_len: int) -> int:
     """Advance one rung toward the full grid when ``latest`` (the attempt
     the CALLER has already confirmed ran at ``current_rung``) is
-    ``grade_usable_for_terminal`` AND measured ``meets_target``; else hold.
-    Never retreats below ``current_rung`` (the target never shrinks, locked
-    decision 2). Clamped to ``ladder_len - 1`` (the full-grid rung)."""
+    ``grade_usable_for_terminal`` AND measured ``meets_target`` AND carries
+    the authoritative ``verdict == "reproduced"``; else hold. The verdict
+    check is an AND on top of ``meets_target``, never a replacement (spec
+    §4.3): a grade-high attempt whose deterministic verdict is
+    ``inconclusive``/``contradicted``/``partial`` must not escalate scope
+    either. Never retreats below ``current_rung`` (the target never
+    shrinks, locked decision 2). Clamped to ``ladder_len - 1`` (the
+    full-grid rung)."""
     max_rung = max(0, ladder_len - 1)
     green = (
         latest is not None
         and latest.grade_usable_for_terminal
         and latest.final_report is not None
         and latest.final_report.meets_target is True
+        and latest.final_report.verdict == "reproduced"
     )
     return min(max((current_rung + 1) if green else current_rung, 0), max_rung)
 
@@ -835,13 +841,19 @@ def decide(
 
     # 1. REPRODUCED — a quarantined grade (hard OR soft) never satisfies
     # this, whatever its score (F4/F5); neither does an attempt the campaign
-    # itself killed (§10.3).
+    # itself killed (§10.3). ``verdict == "reproduced"`` is an
+    # AND on top of ``meets_target``, never a replacement (spec §4.3,
+    # "consumers must read the authority, not the grade"): a
+    # grade-high/meets_target=True attempt whose deterministic verdict is
+    # inconclusive/contradicted/partial must not terminate the campaign as
+    # reproduced.
     for a in assessments:
         if (
             a.grade_usable_for_terminal
             and not is_doomed_killed(a)
             and a.final_report is not None
             and a.final_report.meets_target is True
+            and a.final_report.verdict == "reproduced"
             and scope_rung_by_attempt.get(a.attempt_n) == full_rung
             and a.evidence_predicates.get("run_level_clean") is True
             and a.rubric_sha256_ok is not False
