@@ -117,12 +117,21 @@ Ran a code-reviewer subagent on `git diff main..HEAD -- backend/`. Triaged (veri
 Confirmed SOUND by review: fingerprint↔rubric_sha256 byte-identity; all three OFF paths byte-identical;
 guard-before-cache ordering; missing-pin/missing-evidence conservative dispositions.
 
+## Docs — DONE (2026-07-16)
+All docs updated and validated:
+- `backend/agents/rlm/CLAUDE.md` — evidence-integrity + observability section (6 flags, pre-existing mechanisms, replay tool)
+- `docs/superpowers/specs/2026-07-16-evidence-integrity-and-observability-design.md` — status: Partially implemented
+- `docs/reference/flags.md` — regenerated (477 flags, 6 new); validated `--check` clean
+- `learn.md` — two new cross-cutting rules (hash byte-identity, os.environ snapshot/restore)
+- Root `CLAUDE.md` — flags.md reference added to doc map
+- CLAUDE.md fidelity guard: **10 passed** (env vars grep-able, 19 primitives cited, all doc/ citations resolve)
+
 ## RESUME HERE (next slices)
 1. Rubric-gen: emit `deterministic:state_contract` annotations so W2's per-leaf path fires live (`rubric_gen.py`).
 2. W1-M2 file-access audit (the one genuinely-missing producer; needs sandbox entrypoint hook, spec §4.2).
 3. W4 remainder: grok/azure-foundry pricing (needs real rates) + idle-GPU accounting.
 4. W3 (PaperBench scorecard) + W5 (sandbox hardening) per spec §§6-8, §14.
-5. Open a PR for the branch `feat/evidence-integrity-w1` (W1-M1 + W2 + eval-coverage floor).
+5. Open a PR for the branch `feat/evidence-integrity-w1` (W1-M1 + W2 + eval-coverage floor + observability).
 
 ## Cumulative shipped this branch (all default-OFF, tested, byte-identical when off)
 - W1-M1 rubric pinning (WIRED) — `OPENRESEARCH_GRADER_INTEGRITY`
