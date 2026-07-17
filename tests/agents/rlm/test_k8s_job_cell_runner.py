@@ -4025,7 +4025,9 @@ class TestBuildJobManifestCpuBranch:
             **_MANIFEST_BASE_KWARGS, accelerator="cpu",
         )
         pod_spec = manifest["spec"]["template"]["spec"]
-        assert pod_spec["nodeSelector"] == {"reprolab/pool": "cpu"}
+        assert pod_spec["nodeSelector"] == {
+            "kubernetes.azure.com/mode": "system"
+        }
 
     def test_cpu_manifest_node_selector_reads_env_override(
         self, monkeypatch: pytest.MonkeyPatch
@@ -4036,6 +4038,27 @@ class TestBuildJobManifestCpuBranch:
         )
         pod_spec = manifest["spec"]["template"]["spec"]
         assert pod_spec["nodeSelector"] == {"custom/pool": "cheap"}
+
+    def test_gcp_cpu_manifest_defaults_to_real_system_pool_label(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.delenv("OPENRESEARCH_CPU_POOL_LABEL", raising=False)
+        with kjcr._bind_settings_prefix("gcp"):
+            manifest = kjcr._build_job_manifest(
+                **_MANIFEST_BASE_KWARGS, accelerator="cpu",
+            )
+        assert manifest["spec"]["template"]["spec"]["nodeSelector"] == {
+            "reprolab/node-type": "system"
+        }
+
+    def test_cpu_manifest_rejects_malformed_pool_label(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("OPENRESEARCH_CPU_POOL_LABEL", "missing-value")
+        with pytest.raises(ValueError, match="key=value"):
+            kjcr._build_job_manifest(
+                **_MANIFEST_BASE_KWARGS, accelerator="cpu",
+            )
 
     def test_cpu_manifest_has_cpu_request_no_gpu_resources(
         self, monkeypatch: pytest.MonkeyPatch

@@ -207,6 +207,17 @@ orchestrator:
   # "claude-oauth" — uses the Claude desktop credential; NOT available in a pod.
   model: azure
 
+  # Azure AI Foundry Claude routing used by the autonomous profile. The API
+  # key remains in Key Vault; these resource/model coordinates are non-secret.
+  # Enabling this also projects `azure-foundry-api-key` through CSI.
+  azureFoundry:
+    enabled: false
+    endpoint: ""
+    anthropicEndpoint: ""
+    deployment: ""
+    opusModel: ""
+    sonnetModel: ""
+
   # Key Vault name (Bicep output keyVaultNameOut).
   # Used by the SecretProviderClass to locate the vault.
   keyVaultName: ""

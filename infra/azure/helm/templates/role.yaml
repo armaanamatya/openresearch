@@ -34,6 +34,13 @@ rules:
     resources: ["pods/log"]
     verbs: ["get"]
 
+  # PersistentVolumeClaims — read-only. The cell runner confirms that the
+  # shared reprolab-cache PVC exists before mounting it; without this, a 403
+  # silently degrades every cell to an expensive emptyDir cache.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list"]
+
   # Events — read cluster events for richer error messages (OOM killer, image
   # pull failures, scheduling failures) surfaced as run_warning SSE events.
   - apiGroups: [""]

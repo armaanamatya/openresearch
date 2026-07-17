@@ -2356,6 +2356,10 @@ def cmd_campaign(args: argparse.Namespace) -> int:
         arxiv_id=arxiv_id,
         paper_class=args.paper_class,
         resume=bool(args.resume),
+        root_model=args.root_model,
+        execution_mode=args.execution_mode,
+        gpu_mode=args.gpu_mode,
+        minimize_compute=bool(args.minimize_compute),
     )
 
     campaign = build_campaign(project_id, opts)
@@ -2926,6 +2930,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Consecutive non-improving attempts before EXHAUSTED{plateau} (default 2).",
     )
     campaign.add_argument(
+        "--execution-mode", choices=("efficient", "max"), default="max",
+        help="Execution profile passed to every reproduce attempt.",
+    )
+    campaign.add_argument(
+        "--gpu-mode", choices=("off", "auto", "prefer", "max"), default="auto",
+        help="GPU policy passed to every reproduce attempt.",
+    )
+    campaign.add_argument(
+        "--minimize-compute", action="store_true", default=False,
+        help="Use claim-focused compute reductions for every reproduce attempt.",
+    )
+    campaign.add_argument(
         "--sandbox", dest="sandbox",
         choices=("auto", "local", "docker", "runpod", "azure", "gcp", "gke"),
         default="local", help="Experiment backend for attempts (default local).",
@@ -2968,6 +2984,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--require-cpu-tier", dest="require_cpu_tier", action="store_true",
         default=_campaign_bool_env("OPENRESEARCH_CAMPAIGN_REQUIRE_CPU_TIER"),
         help="Unattended attempts require a validated real-CPU-tier strategy (default off).",
+    )
+    campaign.add_argument(
+        "--root-model", dest="root_model", default=None,
+        help="Root model passed to every reproduce attempt in this campaign.",
     )
     campaign.add_argument(
         "--resume", action="store_true", default=False,

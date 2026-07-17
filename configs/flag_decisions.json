@@ -70,6 +70,11 @@
       "class": "verdict-gate", "cost": "stdlib", "false_block": "low", "default": "off",
       "rationale": "Forces replication_verdict=inconclusive when EVERY judgeable cell is flat (reward never rose AND loss never descended) or the curve tail is non-finite. Conservative: ANY learning leaf => not flagged. Deterministic (curves, never the grade). Both tiers; also backstops triage's NaN-on-curve case."
     },
+    "OPENRESEARCH_DEMO_STATUS_TERMINAL_GUARD": {
+      "triage_screen": "on", "verify_deep": "on",
+      "class": "reliability", "cost": "stdlib", "false_block": "none", "default": "off",
+      "rationale": "Prevents the cost-summary publisher from overwriting a terminal demo_status.json with stale running state. It changes no scientific verdict and protects durable status recovery, so it is on in both profiles."
+    },
     "OPENRESEARCH_ANTIFAB_GUARD": {
       "triage_screen": "on", "verify_deep": "on",
       "class": "fabrication-guard", "cost": "stdlib+nvidia-smi", "false_block": "low", "default": "on",
@@ -109,6 +114,11 @@
       "triage_screen": "off", "verify_deep": "on",
       "class": "verdict-shape", "cost": "stdlib", "false_block": "low", "default": "off",
       "rationale": "Attaches implementation_verdict/replication_verdict (schema 2) with a fail-closed upgrade-clamp. Tier-2-only: the two-axis certification shape belongs to the precision tier. Off on triage (the cheap screen reports a single capped verdict)."
+    },
+    "OPENRESEARCH_VERDICT_AUTHORITY": {
+      "triage_screen": "off", "verify_deep": "on",
+      "class": "verdict-authority", "cost": "stdlib", "false_block": "low", "default": "off",
+      "rationale": "Makes deterministic measured-claim fidelity the final single verdict writer under TWO_AXIS_VERDICT. Off on triage because its master is off and the screen is already capped at partial; on in verify_deep so grades cannot directly mint reproduced."
     },
     "OPENRESEARCH_EVIDENCE_AUDIT": {
       "triage_screen": "off", "verify_deep": "on",

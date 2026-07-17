@@ -4,9 +4,9 @@
 
 ## Summary
 
-- **Total distinct flags:** 489
-- **Managed by `config.py` Settings (typed, default known):** 140
-- **Ad-hoc `os.environ` reads (no central default):** 349
+- **Total distinct flags:** 505
+- **Managed by `config.py` Settings (typed, default known):** 141
+- **Ad-hoc `os.environ` reads (no central default):** 364
 - **Mentioned in `CLAUDE.md`:** 3 (0%)
 
 Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **sites** = ad-hoc read count; **default** = literal default at first read site (best effort).
@@ -136,6 +136,8 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | `OPENRESEARCH_AZURE_BOOT_TIMEOUT_SECONDS` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_AZURE_CACHE_MOUNT_PATH` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_AZURE_CELL_ROUTE` |  |  | 1 | `"1"` |
+| `OPENRESEARCH_AZURE_CONTROLLER_IMAGE` |  |  | 1 | `""` |
+| `OPENRESEARCH_AZURE_CPU_POOL_LABEL` |  |  | 1 | `""` |
 | `OPENRESEARCH_AZURE_DATASTORE_GB` |  |  | 1 | `"0"` |
 | `OPENRESEARCH_AZURE_DATASTORE_MOUNT` |  |  | 1 | `"/mnt/azureml"` |
 | `OPENRESEARCH_AZURE_DATA_DISK_GB` |  |  | 1 | `"100"` |
@@ -158,6 +160,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | `OPENRESEARCH_AZURE_OPENAI_API_VERSION` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_AZURE_OPENAI_DEPLOYMENT` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_AZURE_OPENAI_ENDPOINT` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_AZURE_ORCHESTRATOR_IMAGE` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_AZURE_PENDING_TIMEOUT_SECONDS` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_AZURE_PER_GPU_VRAM_GB` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_AZURE_REGION` | ✅ |  | 2 | `Field(...)` |
@@ -246,6 +249,9 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | `OPENRESEARCH_CAMPAIGN_DRIVER` |  |  | 1 | `"live"` |
 | `OPENRESEARCH_CAMPAIGN_MAX_` |  |  |  | |
 | `OPENRESEARCH_CAMPAIGN_MAX_ATTEMPTS` |  |  |  | |
+| `OPENRESEARCH_CAMPAIGN_MAX_GPU_HOURS` |  |  |  | |
+| `OPENRESEARCH_CAMPAIGN_MAX_GPU_USD` |  |  |  | |
+| `OPENRESEARCH_CAMPAIGN_MAX_LLM_USD` |  |  |  | |
 | `OPENRESEARCH_CAMPAIGN_MODE` |  |  | 1 | `"unattended"` |
 | `OPENRESEARCH_CAMPAIGN_PLATEAU_K` |  |  |  | |
 | `OPENRESEARCH_CAMPAIGN_REQUIRE_CPU_TIER` |  |  |  | |
@@ -342,14 +348,22 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_CONTROLLER_BACKOFF_LIMIT` |  |  | 1 | `""` |
+| `OPENRESEARCH_CONTROLLER_CLOUD` |  |  |  | |
+| `OPENRESEARCH_CONTROLLER_HEARTBEAT_S` |  |  |  | |
+| `OPENRESEARCH_CONTROLLER_IMAGE` |  |  | 2 | `""` |
+| `OPENRESEARCH_CONTROLLER_OWNER_ID` |  |  |  | |
+| `OPENRESEARCH_CONTROLLER_PAPER_BLOB` |  |  | 1 | `""` |
 | `OPENRESEARCH_CONTROLLER_READY_TIMEOUT_S` |  |  | 1 | `""` |
+| `OPENRESEARCH_CONTROLLER_RUNS_ROOT` |  |  | 1 | `""` |
+| `OPENRESEARCH_CONTROLLER_RUN_SPEC_BLOB` |  |  | 1 | `""` |
+| `OPENRESEARCH_CONTROLLER_SECRET_DIR` |  |  | 1 | `"/mnt/orchestrator-secrets"` |
 
 ### `OPENRESEARCH_CPU_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_CPU_CLOUD_CELLS` |  |  |  | |
-| `OPENRESEARCH_CPU_POOL_LABEL` |  |  | 2 | `"reprolab/pool=cpu"` |
+| `OPENRESEARCH_CPU_POOL_LABEL` |  |  | 1 | `_cpu_default` |
 
 ### `OPENRESEARCH_CREDENTIAL_*`
 
@@ -616,7 +630,9 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | `OPENRESEARCH_GCP_BOOT_TIMEOUT_SECONDS` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_CACHE_MOUNT_PATH` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_CELL_ROUTE` |  |  | 1 | `"1"` |
+| `OPENRESEARCH_GCP_CONTROLLER_IMAGE` |  |  | 1 | `""` |
 | `OPENRESEARCH_GCP_CPU_INSTANCE` |  |  |  | |
+| `OPENRESEARCH_GCP_CPU_POOL_LABEL` |  |  | 1 | `""` |
 | `OPENRESEARCH_GCP_CSI_MOUNT_PATH` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_FILESTORE_SHARE` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_FILES_CACHE_ENABLED` | ✅ |  |  | `Field(...)` |

@@ -221,6 +221,18 @@ orchestrator:
     # (DEFAULT_AZURE_OPENAI_API_VERSION) is used by the backend.
     apiVersion: ""
 
+  # Azure AI Foundry Claude routing used by the autonomous profile. The API
+  # key remains in Secret Manager; these resource/model coordinates are safe
+  # to expose as ordinary Pod configuration. Enabling this also projects the
+  # `azure-foundry-api-key` secret through the SecretProviderClass.
+  azureFoundry:
+    enabled: false
+    endpoint: ""
+    anthropicEndpoint: ""
+    deployment: ""
+    opusModel: ""
+    sonnetModel: ""
+
   # GCP project ID (or number) that owns the Secret Manager secrets.
   # Used by the SecretProviderClass to build secret resource names.
   # Obtain: gcloud config get-value project

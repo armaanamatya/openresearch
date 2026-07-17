@@ -56,6 +56,10 @@ def _directives(**overrides):
         scope_spec=None,
         extra_guidance="",
         envelope=None,
+        root_model=None,
+        execution_mode=None,
+        gpu_mode=None,
+        minimize_compute=None,
     )
     base.update(overrides)
     return types.SimpleNamespace(**base)
@@ -309,6 +313,10 @@ def test_argv_carries_enforcement_flags_and_scope():
         attempt_n=3,
         project_id="prj_argv",
         paper_ref="2605.15155",
+        root_model="opus-foundry",
+        execution_mode="efficient",
+        gpu_mode="prefer",
+        minimize_compute=True,
         run_spec_path="/tmp/campaign_run_spec.json",
         enforcement={
             "cli_args": [
@@ -325,6 +333,10 @@ def test_argv_carries_enforcement_flags_and_scope():
     assert argv == [
         "/usr/bin/python3", "-m", "backend.cli", "reproduce", "2605.15155",
         "--project-id", "prj_argv",
+        "--model", "opus-foundry",
+        "--execution-mode", "efficient",
+        "--gpu-mode", "prefer",
+        "--minimize-compute",
         "--run-spec", "/tmp/campaign_run_spec.json",
         "--max-usd", "5.0",
         "--max-wall-clock", "3600",

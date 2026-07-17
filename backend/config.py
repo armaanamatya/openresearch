@@ -353,6 +353,14 @@ class Settings(BaseSettings):
     # ACR tag (e.g. myregistry.azurecr.io/reprolab:20260603-abc1234). The runner
     # errors clearly on empty rather than defaulting to a floating :latest tag.
     azure_base_image: str = Field(default="", description="Pre-baked ACR base image (build_environment no-op); operator must set to a PINNED ACR tag — never :latest")
+    azure_orchestrator_image: str = Field(
+        default="",
+        description=(
+            "Pinned ACR image containing the full ReproLab orchestrator. Used "
+            "by in-cluster deployments and durable per-run controllers; never "
+            "falls back to the cell image."
+        ),
+    )
     azure_gpu_usd_per_hour: float = Field(default=3.67, ge=0.0, description="Per-GPU $/hr for budget tracking (default = Standard_NC24ads_A100_v4 on-demand list price; set your negotiated rate). 0 disables the run-USD cost cap.")
     azure_boot_timeout_seconds: int = Field(default=900, ge=1, description="Seconds to wait for a Job pod to leave Pending")
     azure_pending_timeout_seconds: int = Field(default=1500, ge=1, description="Seconds before a stuck-Pending cell is failed as capacity_exhausted (AKS GPU cold-start from zero can take 10-12 min; 900s killed legitimate scale-up)")
@@ -593,7 +601,8 @@ class Settings(BaseSettings):
             "Container image for the in-cluster GCP orchestrator (Deployment + CronJob). "
             "Must be a PINNED Artifact Registry tag; must include the claude CLI + Node. "
             "Operator sets this in the Helm --set or values override. "
-            "Read by helm/values.yaml, not directly by backend code."
+            "Also used by durable per-run controller Jobs; it never falls back "
+            "to the GPU cell image."
         ),
     )
     gcp_csi_mount_path: str = Field(
@@ -632,6 +641,12 @@ class Settings(BaseSettings):
             "instead (the interactive flow writes ~/.claude/.credentials.json)."
         ),
     )
+
+    # Campaign-wide durable-controller meters. No monetary default is safe:
+    # every remote campaign must opt into explicit caps before Job submission.
+    campaign_max_llm_usd: float | None = Field(default=None, gt=0)
+    campaign_max_gpu_usd: float | None = Field(default=None, gt=0)
+    campaign_max_gpu_hours: float | None = Field(default=None, gt=0)
 
     # --- Forced-iteration policy (Lane H, spec 2026-05-24) ---
     # When the root model calls FINAL_VAR but the latest rubric overall_score

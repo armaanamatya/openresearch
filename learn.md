@@ -14,6 +14,42 @@
 
 ---
 
+## 2026-07-17 — A cloud handoff must preserve both intent and authentication
+
+**Rule.** Treat every process/Job boundary as a typed protocol: explicitly
+forward the selected model and execution policy, then prove that the matching
+credential source exists without embedding its value in the manifest.
+
+**How.** Persist root model, execution mode, GPU mode, and compute-minimization
+in campaign directives; project provider keys through CSI; pass only non-secret
+endpoint/model coordinates as Job environment; test both the positive routing
+and the absence of the key value.
+
+**Why.** The first durable path successfully launched an autonomous Pod but
+dropped its requested root model and never mounted the Foundry key required by
+the forced `opus-foundry` profile. Infrastructure readiness hid a guaranteed
+model-initialization failure.
+
+---
+
+## 2026-07-17 — A submitted Job is not yet a durable controller
+
+**Rule.** Call a run durable only after the in-cluster process owns and renews
+the cloud CAS lease, its pod is actually Running, and its resumable state is on
+persistent storage.
+
+**How.** Give each launch a unique owner that survives only that Job's pod
+retries; require Running/Succeeded pod readiness; mount the RWX run directory;
+fail closed on ambiguous cluster/storage errors; and keep intentional money
+halts out of Kubernetes crash retries.
+
+**Why.** `Job.status.active` includes Pending pods, a project-id owner lets a
+second laptop impersonate a restart, and local fallback after a timed-out create
+can produce split-brain. All three failure modes existed in the first durable
+controller merge.
+
+---
+
 ## 2026-07-13 — A default-OFF flag with no forcing function is a fix that never ships; make "undecided" fail CI
 
 **Rule.** Every integrity/reliability flag must carry an EXPLICIT per-profile decision in

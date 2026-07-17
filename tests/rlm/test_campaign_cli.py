@@ -96,6 +96,9 @@ def test_campaign_parser_defaults():
     assert args.wall_clock_s is None
     assert args.mode == "unattended"
     assert args.driver == "live"
+    assert args.execution_mode == "max"
+    assert args.gpu_mode == "auto"
+    assert args.minimize_compute is False
     assert args.width == 1
     assert args.plateau_k == 2
     assert args.sandbox == "local"
@@ -106,6 +109,14 @@ def test_campaign_parser_defaults():
     assert args.paper_class == "generic"
     assert args.require_cpu_tier is False
     assert args.resume is False
+    assert args.root_model is None
+
+
+def test_campaign_accepts_root_model():
+    args = cli._build_parser().parse_args(
+        _campaign_argv("--root-model", "opus-foundry")
+    )
+    assert args.root_model == "opus-foundry"
 
 
 def test_campaign_env_defaults(monkeypatch):
@@ -255,6 +266,9 @@ def test_cmd_campaign_wires_options(tmp_path, monkeypatch):
             "--sandbox", "local", "--billing-sandbox", "gcp",
             "--gpu-usd-per-hr", "2.5", "--est-gpu-hours", "1.5",
             "--run-spec", str(spec_path), "--paper-class", "vision",
+            "--root-model", "opus-foundry",
+            "--execution-mode", "efficient", "--gpu-mode", "prefer",
+            "--minimize-compute",
             "--wall-clock-s", "3600", "--max-attempts", "4",
             runs_root=str(tmp_path / "runs"),
         )
@@ -282,6 +296,10 @@ def test_cmd_campaign_wires_options(tmp_path, monkeypatch):
     assert opts.paper_class == "vision"
     assert opts.require_cpu_tier is False
     assert opts.resume is False
+    assert opts.root_model == "opus-foundry"
+    assert opts.execution_mode == "efficient"
+    assert opts.gpu_mode == "prefer"
+    assert opts.minimize_compute is True
     # Full ingest chain ran, in order, on the fakes.
     assert len(intake.registered) == 1 and len(intake.fetched) == 1
     for step in (parser_svc, discovery, indexer, workspace):

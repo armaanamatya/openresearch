@@ -299,8 +299,9 @@ variable "state_bucket_name" {
 variable "secret_manager_enabled" {
   description = <<-EOT
     false (default): no Secret Manager resources created — existing deployments
-    unchanged.  true: provisions the three secret NAME resources
-    ('claude-code-oauth-token', 'anthropic-api-key', 'azure-openai-api-key') and
+    unchanged.  true: provisions the four secret NAME resources
+    ('claude-code-oauth-token', 'anthropic-api-key', 'azure-openai-api-key',
+    'azure-foundry-api-key') and
     grants the orchestrator GSA secretmanager.secretAccessor on each.  Secret
     VALUES must be set out-of-band by the operator:
       gcloud secrets versions add <name> --data-file=-

@@ -80,6 +80,7 @@ RUN pip install --upgrade pip wheel \
 # reproduce ...), so we COPY the backend + the runtime fixtures the CLI/ingest
 # path references, but set NO CMD that runs anything.
 COPY backend/ ./backend/
+COPY configs/ ./configs/
 COPY third_party/ ./third_party/
 COPY paperbench1.pdf ./paperbench1.pdf
 COPY demo_paper.pdf ./demo_paper.pdf

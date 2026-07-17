@@ -84,6 +84,33 @@ spec:
                   name: reprolab-orchestrator-secrets
                   key: ANTHROPIC_API_KEY
 
+            {{- if .Values.orchestrator.azureFoundry.enabled }}
+            # ── Azure AI Foundry Claude auth + non-secret routing ────────────
+            - name: AZURE_FOUNDRY_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: reprolab-orchestrator-secrets
+                  key: AZURE_FOUNDRY_API_KEY
+            - name: AZURE_FOUNDRY_ENDPOINT
+              value: {{ required "orchestrator.azureFoundry.endpoint is required when Foundry is enabled" .Values.orchestrator.azureFoundry.endpoint | quote }}
+            {{- if .Values.orchestrator.azureFoundry.anthropicEndpoint }}
+            - name: AZURE_FOUNDRY_ANTHROPIC_ENDPOINT
+              value: {{ .Values.orchestrator.azureFoundry.anthropicEndpoint | quote }}
+            {{- end }}
+            {{- if .Values.orchestrator.azureFoundry.deployment }}
+            - name: AZURE_FOUNDRY_DEPLOYMENT
+              value: {{ .Values.orchestrator.azureFoundry.deployment | quote }}
+            {{- end }}
+            {{- if .Values.orchestrator.azureFoundry.opusModel }}
+            - name: AZURE_FOUNDRY_ANTHROPIC_OPUS
+              value: {{ .Values.orchestrator.azureFoundry.opusModel | quote }}
+            {{- end }}
+            {{- if .Values.orchestrator.azureFoundry.sonnetModel }}
+            - name: AZURE_FOUNDRY_ANTHROPIC_SONNET
+              value: {{ .Values.orchestrator.azureFoundry.sonnetModel | quote }}
+            {{- end }}
+            {{- end }}
+
             # ── Long-lived Claude OAuth token (opt-in, Stream B) ──────────────
             # CRITICAL: gated on .Values.orchestrator.claudeOauthToken.enabled
             # (default false) so the DEFAULT render is byte-identical to HEAD.

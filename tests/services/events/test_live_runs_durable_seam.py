@@ -1,23 +1,14 @@
-"""Hermetic OFF+ON tests for the WS3 durable-controller submit seam.
-
-Phase-3 (owner 3) lands only the *seam* in `live_runs.py`: a pure decision
-predicate (`_should_use_durable_controller`) plus an injectable submit hook
-(`_submit_durable_controller`) whose default body is a fail-loud
-`NotImplementedError` stub. The real cluster submit (a GKE Deployment via
-`run_controller.build_controller_command` + `acquire_drive_lease`, recording
-the controller handle into `demo_status.json`) needs a live GKE cluster and
-is operator/drill-gated — explicitly out of scope here (see
-`.superpowers/sdd/phase3-owner3-live_runs-seam.md`).
+"""Hermetic OFF+ON tests for the cross-cloud durable-controller submit path.
 
 These tests prove:
   - the predicate is pure and flag-gated (`OPENRESEARCH_DURABLE_CONTROLLER`);
   - flag OFF (default) is byte-identical to today: `_start_python_run` always
     falls through to the existing `subprocess.Popen` reproduce path — even
     for `sandbox="gcp"` — and never calls the controller hook;
-  - flag ON + `sandbox="gcp"` short-circuits to the controller hook instead
+  - flag ON + a primary cloud short-circuits to the controller hook instead
     of spawning a local subprocess;
   - flag ON + any other sandbox still uses the local Popen path;
-  - the unpatched hook itself raises `NotImplementedError`.
+  - durable launch failures never fall back to a laptop process.
 """
 
 from __future__ import annotations
@@ -60,6 +51,15 @@ def _clean_flag(monkeypatch):
     monkeypatch.delenv("OPENRESEARCH_DURABLE_CONTROLLER", raising=False)
     monkeypatch.delenv("OPENRESEARCH_FORCE_SANDBOX", raising=False)
     monkeypatch.delenv("OPENRESEARCH_FORCE_LLM_PROVIDER", raising=False)
+    monkeypatch.setenv("OPENRESEARCH_GCP_CONTROLLER_IMAGE", "controller-gcp:test")
+    monkeypatch.setenv("OPENRESEARCH_AZURE_CONTROLLER_IMAGE", "controller-azure:test")
+    monkeypatch.setenv("OPENRESEARCH_CAMPAIGN_MAX_LLM_USD", "20")
+    monkeypatch.setenv("OPENRESEARCH_CAMPAIGN_MAX_GPU_USD", "40")
+    monkeypatch.setenv("OPENRESEARCH_CAMPAIGN_MAX_GPU_HOURS", "10")
+    from backend.services.runtime import azure_blob, gcs_blob
+
+    monkeypatch.setattr(gcs_blob, "upload_bytes", lambda *args, **kwargs: None)
+    monkeypatch.setattr(azure_blob, "upload_bytes", lambda *args, **kwargs: None)
     _reset_settings_cache()
     yield
     _reset_settings_cache()
@@ -115,14 +115,19 @@ def test_predicate_false_when_flag_unset_for_every_sandbox(tmp_path: Path) -> No
         assert service._should_use_durable_controller(request) is False, sandbox
 
 
-def test_predicate_true_only_for_gcp_when_flag_on(monkeypatch, tmp_path: Path) -> None:
+def test_predicate_true_for_both_primary_clouds_when_flag_on(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
     service = FileLiveRunService(runs_root=tmp_path)
 
     assert service._should_use_durable_controller(StartRunRequest(sandbox="gcp")) is True
-    for sandbox in ("local", "runpod", "azure", "docker", "auto"):
+    assert service._should_use_durable_controller(StartRunRequest(sandbox="azure")) is True
+    for sandbox in ("local", "runpod", "docker", "auto"):
         request = StartRunRequest(sandbox=sandbox)
         assert service._should_use_durable_controller(request) is False, sandbox
+
+    assert service._should_use_durable_controller(
+        StartRunRequest(sandbox="gcp", mode="rdr")
+    ) is False
 
 
 # ---------------------------------------------------------------------------
@@ -144,18 +149,21 @@ class _FakeCluster:
         self._token = token if token is not None else _FakeToken()
         self._ready = ready
         self._delete_ok = delete_ok
+        self.submitted_manifest = None
+        self.owner_ids: list[str] = []
 
     def now(self):
         return 100.0
 
     def acquire(self, project_id, owner_id, now_epoch):
+        self.owner_ids.append(owner_id)
         return self._token
 
     def is_current(self, token):
         return True
 
     def submit(self, manifest):
-        pass
+        self.submitted_manifest = manifest
 
     def wait_ready(self, job_name, *, timeout_s):
         return self._ready
@@ -168,26 +176,75 @@ class _FakeCluster:
 
 
 @pytest.mark.asyncio
-async def test_durable_submit_records_handle_via_start(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("cloud", ["gcp", "azure"])
+async def test_durable_submit_records_handle_via_start(
+    tmp_path: Path, monkeypatch, cloud: str
+) -> None:
     monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+    monkeypatch.setenv(
+        "AZURE_FOUNDRY_ENDPOINT", "https://models.example.ai.azure.com"
+    )
+    monkeypatch.setenv("AZURE_FOUNDRY_ANTHROPIC_OPUS", "claude-opus-test")
+    monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "must-not-enter-job-spec")
+    cluster = _FakeCluster()
     service = FileLiveRunService(
-        runs_root=tmp_path, repo_root=tmp_path, controller_cluster=_FakeCluster()
+        runs_root=tmp_path, repo_root=tmp_path, controller_cluster=cluster
     )
     popen_calls: list[dict] = []
     monkeypatch.setattr(lr_module.subprocess, "Popen", _recording_popen(popen_calls))
 
     result = await service._start_python_run(
-        StartRunRequest(sandbox="gcp"), project_id="prj_dur", uploaded_paper=None,
+        StartRunRequest(
+            sandbox=cloud,
+            model="opus-foundry",
+            executionMode="efficient",
+            gpuMode="prefer",
+            minimize_compute=True,
+        ),
+        project_id="prj_dur",
+        uploaded_paper=None,
     )
     assert popen_calls == []  # durable path, no local subprocess
     assert result.controller is not None
     assert result.controller.jobName == "controller-prj_dur-fe2"
     assert result.controller.fenceEpoch == 2
+    assert result.controller.cloud == cloud
     assert result.pid is None
+    manifest_text = str(cluster.submitted_manifest)
+    assert "API_KEY" not in manifest_text
+    assert "controller_entry" in manifest_text
+    command = cluster.submitted_manifest["spec"]["template"]["spec"][
+        "containers"
+    ][0]["command"]
+    assert command[command.index("--root-model") + 1] == "opus-foundry"
+    assert command[command.index("--execution-mode") + 1] == "efficient"
+    assert command[command.index("--gpu-mode") + 1] == "prefer"
+    assert "--minimize-compute" in command
+    pod_labels = cluster.submitted_manifest["spec"]["template"]["metadata"]["labels"]
+    assert ("azure.workload.identity/use" in pod_labels) is (cloud == "azure")
+    assert len(cluster.owner_ids) == 1
+    assert cluster.owner_ids[0].startswith("prj_dur-")
+    assert cluster.owner_ids[0] != "prj_dur"
+    pod_env = {
+        item["name"]: item["value"]
+        for item in cluster.submitted_manifest["spec"]["template"]["spec"][
+            "containers"
+        ][0]["env"]
+    }
+    assert pod_env["OPENRESEARCH_CONTROLLER_OWNER_ID"] == cluster.owner_ids[0]
+    assert pod_env["AZURE_FOUNDRY_ENDPOINT"] == (
+        "https://models.example.ai.azure.com"
+    )
+    assert pod_env["AZURE_FOUNDRY_ANTHROPIC_OPUS"] == "claude-opus-test"
+    assert "AZURE_FOUNDRY_API_KEY" not in pod_env
+    assert "must-not-enter-job-spec" not in manifest_text
+    assert pod_env["OPENRESEARCH_CONTROLLER_PAPER_BLOB"] == (
+        f"runs/prj_dur/controller-input/{cluster.owner_ids[0]}/paper.pdf"
+    )
 
 
 @pytest.mark.asyncio
-async def test_durable_not_ready_confirmed_delete_falls_back_to_popen(
+async def test_durable_not_ready_confirmed_delete_fails_remote_without_local_fallback(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
@@ -199,15 +256,76 @@ async def test_durable_not_ready_confirmed_delete_falls_back_to_popen(
     popen_calls: list[dict] = []
     monkeypatch.setattr(lr_module.subprocess, "Popen", _recording_popen(popen_calls))
 
+    from backend.agents.rlm.controller_cluster import ControllerNotReady
+
     project_id = "prj_notready"
-    try:
-        result = await service._start_python_run(
+    with pytest.raises(ControllerNotReady):
+        await service._start_python_run(
             StartRunRequest(sandbox="gcp"), project_id=project_id, uploaded_paper=None,
         )
-    finally:
-        await _cancel_named_tasks(f"stderr-watchdog-{project_id}")
-    assert len(popen_calls) == 1  # confirmed-deleted → safe local fallback
-    assert result.pid == _FAKE_PID
+    assert popen_calls == []
+
+
+@pytest.mark.asyncio
+async def test_durable_submit_stages_paper_and_custom_run_spec(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+    spec = tmp_path / "custom-spec.json"
+    spec.write_text('{"OPENRESEARCH_CONTEXT_MAP": "on"}', encoding="utf-8")
+    uploads: list[tuple[str, bytes]] = []
+    from backend.services.runtime import gcs_blob
+
+    def upload(data, *, blob_name, **kwargs):
+        uploads.append((blob_name, data))
+
+    monkeypatch.setattr(gcs_blob, "upload_bytes", upload)
+    cluster = _FakeCluster()
+    service = FileLiveRunService(
+        runs_root=tmp_path / "runs",
+        repo_root=tmp_path,
+        controller_cluster=cluster,
+    )
+
+    await service._start_python_run(
+        StartRunRequest(sandbox="gcp", run_spec=str(spec)),
+        project_id="prj_inputs",
+        uploaded_paper=None,
+    )
+
+    upload_names = [name for name, _ in uploads]
+    assert len(upload_names) == 2
+    owner_prefix = upload_names[0].removesuffix("/paper.pdf")
+    assert owner_prefix.startswith("runs/prj_inputs/controller-input/prj_inputs-")
+    assert upload_names == [
+        f"{owner_prefix}/paper.pdf",
+        f"{owner_prefix}/run-spec.json",
+    ]
+    assert uploads[0][1].startswith(b"%PDF")
+    assert uploads[1][1] == spec.read_bytes()
+
+
+@pytest.mark.asyncio
+async def test_durable_submit_rejects_missing_campaign_budget_without_local_fallback(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("OPENRESEARCH_DURABLE_CONTROLLER", "1")
+    monkeypatch.delenv("OPENRESEARCH_CAMPAIGN_MAX_LLM_USD")
+    service = FileLiveRunService(
+        runs_root=tmp_path,
+        repo_root=tmp_path,
+        controller_cluster=_FakeCluster(),
+    )
+    popen_calls: list[dict] = []
+    monkeypatch.setattr(lr_module.subprocess, "Popen", _recording_popen(popen_calls))
+
+    with pytest.raises(RuntimeError, match="CAMPAIGN_MAX_LLM_USD"):
+        await service._start_python_run(
+            StartRunRequest(sandbox="gcp"),
+            project_id="prj_no_budget",
+            uploaded_paper=None,
+        )
+    assert popen_calls == []
 
 
 @pytest.mark.asyncio

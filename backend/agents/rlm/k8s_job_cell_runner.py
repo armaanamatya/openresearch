@@ -794,7 +794,7 @@ def _build_job_manifest(
     ``accelerator``:
         ``"gpu"`` (the default) leaves every line below byte-identical to the
         pre-Phase-D manifest. ``"cpu"`` targets the CPU pool label parsed from
-        ``OPENRESEARCH_CPU_POOL_LABEL`` (default ``"reprolab/pool=cpu"``),
+        ``OPENRESEARCH_CPU_POOL_LABEL`` (cloud-specific system-pool default),
         drops all GPU tolerations (including the spot toleration — a CPU pool
         is never the spot GPU pool), swaps the container's ``nvidia.com/gpu``
         resources for a plain CPU/memory request, and omits
@@ -894,8 +894,17 @@ def _build_job_manifest(
     if accelerator == "cpu":
         # Phase D (OPENRESEARCH_CPU_CLOUD_CELLS): target the CPU pool label
         # instead of the GPU reprolab/sku pool. "key=value" → {key: value}.
-        _cpu_label = os.environ.get("OPENRESEARCH_CPU_POOL_LABEL", "reprolab/pool=cpu")
+        _cpu_default = (
+            "reprolab/node-type=system"
+            if _prefix == "gcp"
+            else "kubernetes.azure.com/mode=system"
+        )
+        _cpu_label = os.environ.get("OPENRESEARCH_CPU_POOL_LABEL", _cpu_default)
         _cpu_key, _, _cpu_value = _cpu_label.partition("=")
+        if not _cpu_key.strip() or not _cpu_value.strip():
+            raise ValueError(
+                "OPENRESEARCH_CPU_POOL_LABEL must use non-empty key=value form"
+            )
         node_selector = {_cpu_key: _cpu_value}
         # No GPU taint to tolerate on a CPU pool — never the spot GPU pool either.
         _tolerations = []

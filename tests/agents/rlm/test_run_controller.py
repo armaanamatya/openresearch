@@ -7,11 +7,15 @@ here is over pure function output or a fake injected lease double.
 
 from __future__ import annotations
 
+import pytest
+
 from backend.agents.rlm.run_controller import (
     acquire_drive_lease,
     build_controller_command,
     classify_controller_exit,
+    controller_job_exit_code,
     durable_controller_enabled,
+    validate_controller_image,
 )
 
 
@@ -42,18 +46,40 @@ class TestBuildControllerCommand:
         assert build_controller_command("2605.15155", "prj_abc123") == [
             "python",
             "-m",
-            "backend.cli",
-            "campaign",
+            "backend.agents.rlm.controller_entry",
+            "--cloud",
+            "gcp",
+            "--paper",
             "2605.15155",
             "--project-id",
             "prj_abc123",
-            "--resume",
+            "--runs-root",
+            "/mnt/reprolab/controller-runs",
+            "--execution-mode",
+            "max",
+            "--gpu-mode",
+            "auto",
         ]
 
-    def test_uses_campaign_not_reproduce(self) -> None:
-        argv = build_controller_command("1412.6980", "prj_xyz")
-        assert "campaign" in argv
-        assert "reproduce" not in argv
+    def test_threads_cloud_runs_root_run_spec_and_model(self) -> None:
+        argv = build_controller_command(
+            "1412.6980",
+            "prj_xyz",
+            cloud="azure",
+            runs_root="/state/runs",
+            run_spec="configs/verify_deep_run_spec.json",
+            root_model="opus-foundry",
+            execution_mode="efficient",
+            gpu_mode="prefer",
+            minimize_compute=True,
+        )
+        assert argv[argv.index("--cloud") + 1] == "azure"
+        assert argv[argv.index("--runs-root") + 1] == "/state/runs"
+        assert argv[argv.index("--run-spec") + 1] == "configs/verify_deep_run_spec.json"
+        assert argv[argv.index("--root-model") + 1] == "opus-foundry"
+        assert argv[argv.index("--execution-mode") + 1] == "efficient"
+        assert argv[argv.index("--gpu-mode") + 1] == "prefer"
+        assert "--minimize-compute" in argv
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +109,32 @@ class TestClassifyControllerExit:
         assert classify_controller_exit(0) == "complete"
         assert classify_controller_exit(2) == "paused"
         assert classify_controller_exit(137) == "crash"
+
+
+def test_controller_job_exit_code_does_not_retry_intentional_halts():
+    assert controller_job_exit_code(0) == 0
+    assert controller_job_exit_code(2) == 0
+    assert controller_job_exit_code(3) == 0
+    assert controller_job_exit_code(75) == 75
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        "registry.example/reprolab/controller:sha-abc123",
+        "registry.example/reprolab/controller@sha256:" + "a" * 64,
+    ],
+)
+def test_validate_controller_image_accepts_pinned_reference(image: str):
+    assert validate_controller_image(image, env_name="IMAGE") == image
+
+
+@pytest.mark.parametrize(
+    "image", ["", "registry.example/reprolab/controller", "controller:latest"]
+)
+def test_validate_controller_image_rejects_floating_reference(image: str):
+    with pytest.raises(RuntimeError, match="pinned image"):
+        validate_controller_image(image, env_name="IMAGE")
 
 
 # ---------------------------------------------------------------------------

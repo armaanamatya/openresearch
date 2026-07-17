@@ -68,6 +68,13 @@ def test_autonomous_true_forces_gcp_opus_foundry_and_run_spec():
     assert request.run_spec == _AUTONOMOUS_RUN_SPEC
 
 
+def test_autonomous_true_preserves_explicit_azure_target():
+    request = _compose(StartRunRequest(autonomous=True, sandbox="azure"))
+    assert request.sandbox == "azure"
+    assert request.model == "opus-foundry"
+    assert request.run_spec == _AUTONOMOUS_RUN_SPEC
+
+
 def test_autonomous_wins_over_deployment_forced_sandbox_and_provider():
     """apply_autonomous_profile_override applies LAST in _start_python_run,
     so it must win even when a deployment has forced a different

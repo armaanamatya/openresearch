@@ -25,6 +25,9 @@ Azure AKS GPU execution backend.  It is Layer 2 in the three-layer split
 | `rolebinding.yaml` | RoleBinding | Binds Role to the operator Entra group |
 | `nvidia-device-plugin.yaml` | DaemonSet | Exposes GPU devices to Kubernetes on GPU nodes |
 | `resourcequota.yaml` | ResourceQuota | Caps GPU requests/limits + Job count |
+| `orchestrator-serviceaccount.yaml` | ServiceAccount | Workload identity for durable CPU controllers |
+| `orchestrator-secretproviderclass.yaml` | SecretProviderClass | Projects provider credentials from Key Vault |
+| `orchestrator-{deployment,cronjob}.yaml` | Deployment/CronJob | Optional fixed-paper continuous/scheduled controllers |
 
 ---
 
@@ -158,12 +161,20 @@ Neither smoke manifest contains any credentials or static secrets.
 All Azure auth uses Workload Identity (projected OIDC token via
 `azure.workload.identity/use: "true"` pod label + annotated ServiceAccount).
 
+Dynamic per-run durable Jobs need `orchestrator.enabled=true`, but do not require
+the fixed-paper Deployment or CronJob. They also require the `reprolab-cache`
+PVC, a pinned full orchestrator image, and explicit campaign budgets. See
+`docs/runbooks/2026-07-17-cross-cloud-durable-controller.md`.
+Autonomous mode additionally requires `orchestrator.azureFoundry.enabled=true`,
+its non-secret endpoint, and `azure-foundry-api-key` in Key Vault.
+
 ---
 
 ## Security / correctness assertions
 
-- **No static secrets:** the StorageClass sets `storeAccountKey: "false"`.
-  No Kubernetes Secret of any kind is created by this chart.
+- **No static credentials in manifests:** the StorageClass sets
+  `storeAccountKey: "false"`; the CSI provider mounts Key Vault values and
+  maintains a synced Kubernetes Secret for the fixed orchestrators.
 - **Workload Identity:** every pod that calls Azure APIs (Job pods, both smoke
   jobs) carries `azure.workload.identity/use: "true"` on its pod template.
 - **Least-privilege RBAC:** the Role is namespaced (not ClusterRole) and grants

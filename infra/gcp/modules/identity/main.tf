@@ -57,7 +57,7 @@ resource "google_service_account" "orchestrator" {
   display_name = "${var.prefix} GKE orchestrator service account"
 }
 
-# ─── secretmanager.secretAccessor → three orchestrator secrets ─────────────────
+# ─── secretmanager.secretAccessor → orchestrator secrets ──────────────────────
 # Read-only access to secret VALUES — no list, no write, no create.
 # Scoped to individual secrets (least-privilege; not project-wide accessor).
 
@@ -81,6 +81,14 @@ resource "google_secret_manager_secret_iam_member" "orchestrator_azure_openai_ke
   count     = var.secret_manager_module_enabled ? 1 : 0
   project   = var.project_id
   secret_id = var.azure_openai_api_key_secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.orchestrator[0].email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "orchestrator_azure_foundry_key" {
+  count     = var.secret_manager_module_enabled ? 1 : 0
+  project   = var.project_id
+  secret_id = var.azure_foundry_api_key_secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.orchestrator[0].email}"
 }

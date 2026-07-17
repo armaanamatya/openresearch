@@ -3,6 +3,8 @@ CPU-only, fenced durable-controller Job manifest builder."""
 
 from __future__ import annotations
 
+import pytest
+
 from backend.agents.rlm.controller_launch import build_controller_job_manifest
 
 
@@ -48,6 +50,14 @@ def test_controller_manifest_uses_service_account_and_backoff():
     pod = m["spec"]["template"]["spec"]
     assert pod["serviceAccountName"] == "reprolab-sa"
     assert m["spec"]["backoffLimit"] == 3
+    assert pod["terminationGracePeriodSeconds"] == 30
+    assert pod["securityContext"] == {
+        "runAsNonRoot": True,
+        "runAsUser": 10001,
+        "runAsGroup": 10001,
+        "fsGroup": 10001,
+        "fsGroupChangePolicy": "OnRootMismatch",
+    }
 
 
 def test_controller_manifest_carries_env():
@@ -55,3 +65,47 @@ def test_controller_manifest_carries_env():
     names = {e["name"]: e["value"] for e in pod["containers"][0]["env"]}
     assert names["OPENRESEARCH_CELL_FENCE_EPOCH"] == "2"
     assert names["A"] == "B"
+
+
+def test_controller_manifest_mounts_persistent_state_and_csi_secrets():
+    pod = _build(
+        runs_pvc_name="reprolab-cache",
+        runs_mount_path="/mnt/reprolab",
+        secret_provider_class="reprolab-orchestrator-sm",
+    )["spec"]["template"]["spec"]
+    assert pod["volumes"] == [
+        {
+            "name": "controller-state",
+            "persistentVolumeClaim": {"claimName": "reprolab-cache"},
+        },
+        {
+            "name": "orchestrator-secrets",
+            "csi": {
+                "driver": "secrets-store.csi.k8s.io",
+                "readOnly": True,
+                "volumeAttributes": {
+                    "secretProviderClass": "reprolab-orchestrator-sm"
+                },
+            },
+        },
+    ]
+
+
+def test_controller_manifest_rejects_literal_credentials():
+    with pytest.raises(ValueError, match="must not embed credential"):
+        _build(env={"ANTHROPIC_API_KEY": "secret"})
+
+
+def test_controller_manifest_rejects_malformed_cpu_selector():
+    with pytest.raises(ValueError, match="key=value"):
+        _build(cpu_pool_label="cpu-only")
+
+
+def test_controller_manifest_carries_reaper_fence_and_workload_identity_label():
+    manifest = _build(pod_labels={"azure.workload.identity/use": "true"})
+    assert manifest["metadata"]["labels"]["reprolab-generation"] == "2"
+    assert (
+        manifest["spec"]["template"]["metadata"]["labels"]
+        ["azure.workload.identity/use"]
+        == "true"
+    )

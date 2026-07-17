@@ -136,6 +136,10 @@ class CampaignOptions:
     arxiv_id: str | None
     paper_class: str
     resume: bool
+    root_model: str | None = None
+    execution_mode: str = "max"
+    gpu_mode: str = "auto"
+    minimize_compute: bool = False
 
 
 # --- small stateless helpers ------------------------------------------------
@@ -550,6 +554,10 @@ def _synthesize_with_novelty(
             scope_spec=opts.scope_spec,
             target_floor=target_floor,
             out_dir=run_dir / "campaign",
+            root_model=opts.root_model,
+            execution_mode=opts.execution_mode,
+            gpu_mode=opts.gpu_mode,
+            minimize_compute=opts.minimize_compute,
         )
 
     directives = _make(base_plan)

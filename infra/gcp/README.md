@@ -12,7 +12,7 @@
 | **L0 — Bootstrap** (`infra/gcp/bootstrap/`) | GCS remote-state bucket + optional keyless CI/deploy service account | **Terraform** (local state, once) | One-time; stable |
 | **L1 — GCP infra** (this directory) | VPC + subnet (+ secondary ranges) + Cloud NAT, GKE cluster, GPU node pools, Artifact Registry, GCS bucket (+ optional Filestore), workload-identity GSA + IAM bindings, remote state | **Terraform** | Provisioned once; rarely changes |
 | **L2 — In-cluster scaffold** (`infra/gcp/helm/`) | Namespace, workload-identity ServiceAccount, optional Filestore StorageClass + RWX PVC, orchestrator RBAC, ResourceQuota | **Helm** (applied once per cluster) | Per-cluster; semi-static |
-| **L3 — Runtime** | Per-cell Kubernetes **Jobs** | **Orchestrator code** (`backend/services/runtime/gke_job_backend.py`) | Thousands; transient |
+| **L3 — Runtime** | Per-run CPU controller Jobs + per-cell Kubernetes Jobs | **Orchestrator code** | Thousands; transient |
 
 Terraform managing transient K8s Jobs is an anti-pattern (state churn, drift, apply contention during active runs). Only the durable substrate lives here.
 
@@ -152,6 +152,13 @@ docker push  $(terraform output -raw artifact_registry_url)/gke-cell-base:0.1.0
 ```
 (The `docker/gke-cell-base/` image is authored separately.)
 
+For laptop-independent campaigns, also build the full CPU orchestrator image
+with `scripts/build_orchestrator_image.sh`, enable the Helm chart's
+`orchestrator.enabled` resources, and set
+`OPENRESEARCH_GCP_ORCHESTRATOR_IMAGE` to its pinned tag. Filestore/RWX is
+mandatory for this path. See
+`docs/runbooks/2026-07-17-cross-cloud-durable-controller.md`.
+
 ### 9. Smoke test
 
 ```bash
@@ -181,7 +188,7 @@ These align with the `gcp_*` settings in `backend/config.py` (`gcp_project`, `gc
 
 ## Key design decisions
 
-- **Public control-plane endpoint + authorized networks:** in Phase 1 the orchestrator runs locally (outside the VPC), so the endpoint is public but IP-restricted to operator CIDRs. **Nodes are private** (no public IP; egress via Cloud NAT). Confirm DeepInvent's security policy permits this.
+- **Public control-plane endpoint + authorized networks:** the one-shot launcher may run outside the VPC, so the endpoint is public but IP-restricted to operator CIDRs. The durable controller itself runs in-cluster and remains active after the launcher disconnects. **Nodes are private** (no public IP; egress via Cloud NAT).
 - **Scale-to-zero GPU pools:** `min_node_count = 0`. Idle cost = $0. The cluster autoscaler scales 0→N as Jobs request `nvidia.com/gpu`.
 - **Zero static secrets:** NO service-account JSON key, NO GCS HMAC key. The orchestrator uses Application Default Credentials; Job pods use Workload Identity. GCS buckets use uniform bucket-level access + enforced public-access-prevention.
 - **GKE-managed device plugin:** the GPU driver + device plugin are installed by GKE via the node-pool `gpu_driver_installation_config` — no DaemonSet.

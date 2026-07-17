@@ -10,17 +10,14 @@ calls of its own; all reads/writes go through
 :mod:`backend.services.runtime.gcs_blob`'s generation-CAS primitives
 (``upload_bytes(if_generation_match=...)`` / ``read_bytes_with_generation``).
 
-The GCS object's *generation* IS the fence token: every successful
-acquire/renew stamps a new generation, and any driver holding an older
-generation is, by construction, superseded — it must stop writing evidence
-and stop keeping GPU Jobs alive (see design §4.2, fencing the work).
+The GCS object's generation is the heartbeat CAS token: every successful
+acquire/renew advances it, and an older token is superseded. The separate
+integer ``fence_epoch`` is stable across same-owner heartbeats and advances
+only on a different-owner takeover; Kubernetes Job names/labels use that
+stable fence so a heartbeat never makes a controller reap its own work.
 
-This is a **GCS-only implementation**. The public surface
-(``acquire``/``renew``/``is_current``/``reap_older_generations``) is written
-to be cloud-agnostic on purpose — an Azure Blob adapter would implement the
-same shape using ETag/``If-Match`` instead of GCS generations — but per the
-WS3 design's explicit non-goal, only the GCS backing is built here. Do not
-add an Azure implementation to this module.
+This module is the GCS implementation. Azure implements the same public shape
+with Blob ETags in ``azure_blob_lease.py``.
 
 Clock discipline
 -----------------
@@ -60,15 +57,15 @@ LEASE_TTL_S = _HEARTBEAT_INTERVAL_S * 3
 class LeaseToken:
     """An acquired/renewed lease's identity plus its fence token.
 
-    ``generation`` is the GCS object generation the lease currently holds —
-    this is the fence token. A write performed "under" this token is only
+    ``generation`` is the GCS object generation (or Azure ETag) the lease
+    currently holds. A write performed "under" this token is only
     safe while this generation is still the live one in the bucket; once a
     successor's acquire/renew advances it, this token is stale
     (``BlobLease.is_current`` returns ``False`` for it).
     """
 
     run_id: str
-    generation: int
+    generation: int | str
     owner_id: str
     acquired_epoch: float
     # A renew-invariant fence token, distinct from ``generation``: ``renew``

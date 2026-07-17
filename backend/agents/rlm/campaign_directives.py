@@ -114,12 +114,16 @@ class AttemptDirectives:
     extra_guidance: str
     run_spec_path: str | None
     fingerprint: str
+    root_model: str | None = None
+    execution_mode: str | None = None
+    gpu_mode: str | None = None
+    minimize_compute: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-safe representation -- the persisted ``directives/<n>.json``
         payload. Tuples become lists so a reload via ``json.loads`` compares
         equal to this dict."""
-        return {
+        payload = {
             "attempt_n": self.attempt_n,
             "project_id": self.project_id,
             "paper_ref": self.paper_ref,
@@ -146,6 +150,15 @@ class AttemptDirectives:
             "run_spec_path": self.run_spec_path,
             "fingerprint": self.fingerprint,
         }
+        if self.root_model:
+            payload["root_model"] = self.root_model
+        if self.execution_mode:
+            payload["execution_mode"] = self.execution_mode
+        if self.gpu_mode:
+            payload["gpu_mode"] = self.gpu_mode
+        if self.minimize_compute is not None:
+            payload["minimize_compute"] = self.minimize_compute
+        return payload
 
     def persist(self, path: Path) -> None:
         """Atomic same-directory write -- never a half-written directives
@@ -306,6 +319,10 @@ def synthesize_directives(
     scope_spec: str | None,
     target_floor: float | None,
     out_dir: Path,
+    root_model: str | None = None,
+    execution_mode: str | None = None,
+    gpu_mode: str | None = None,
+    minimize_compute: bool | None = None,
 ) -> AttemptDirectives:
     """Deterministically assemble attempt ``attempt_n``'s directives and
     persist them to ``out_dir/directives/<attempt_n>.json`` (spec §9).
@@ -377,6 +394,10 @@ def synthesize_directives(
         extra_guidance=extra_guidance,
         run_spec_path=run_spec_path,
         fingerprint=fingerprint,
+        root_model=root_model,
+        execution_mode=execution_mode,
+        gpu_mode=gpu_mode,
+        minimize_compute=minimize_compute,
     )
     directives.persist(Path(out_dir) / "directives" / f"{attempt_n}.json")
     return directives

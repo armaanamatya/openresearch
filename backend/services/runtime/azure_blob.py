@@ -1,8 +1,12 @@
 """Thin Azure Blob Storage helpers for the AKS GPU backend.
 
-Provides four path-safe, authenticated transfer helpers used by both the local
+Provides path-safe, authenticated transfer helpers used by both the local
 orchestrator (upload code, download artifacts) and the in-Job entrypoint
 wrapper (push metrics/logs, pull code).
+
+The CAS helpers at the bottom expose Azure Blob ETags as an object-version
+token. They are the Azure counterpart of ``gcs_blob`` generation preconditions
+and back the durable-controller lease.
 
 Auth model
 ----------
@@ -43,6 +47,10 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+class PreconditionFailedError(Exception):
+    """A create-only or ETag-guarded write lost its compare-and-swap race."""
 
 # Directory-name components that are always excluded from uploads.
 _EXCLUDED_DIR_PARTS: frozenset[str] = frozenset(
@@ -113,6 +121,44 @@ def _client_or_new(
     if client is not None:
         return client
     return _make_container_client(account_name, container_name)
+
+
+def _precondition_failed_exc_types() -> tuple[type[BaseException], ...]:
+    try:
+        from azure.core.exceptions import (  # type: ignore[import]
+            ResourceExistsError,
+            ResourceModifiedError,
+        )
+    except ImportError:
+        return ()
+    return (ResourceExistsError, ResourceModifiedError)
+
+
+def _not_found_exc_types() -> tuple[type[BaseException], ...]:
+    try:
+        from azure.core.exceptions import ResourceNotFoundError  # type: ignore[import]
+    except ImportError:
+        return ()
+    return (ResourceNotFoundError,)
+
+
+def _if_not_modified_condition() -> Any:
+    """Return Azure's enum lazily; the string fallback supports SDK-free fakes."""
+    try:
+        from azure.core import MatchConditions  # type: ignore[import]
+    except ImportError:
+        return "IfNotModified"
+    return MatchConditions.IfNotModified
+
+
+def _etag_of(value: Any) -> str | None:
+    if isinstance(value, dict):
+        raw = value.get("etag")
+    else:
+        raw = getattr(value, "etag", None)
+    if raw is None:
+        return None
+    return str(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +323,75 @@ def upload_bytes(
     container = _client_or_new(client, account_name, container_name)
     logger.debug("upload_bytes -> %s (%d bytes)", blob_name, len(data))
     container.upload_blob(blob_name, data, overwrite=True)
+
+
+def upload_bytes_cas(
+    data: bytes,
+    *,
+    blob_name: str,
+    account_name: str,
+    container_name: str,
+    if_etag_match: str | None,
+    client: Any | None = None,
+) -> str:
+    """Create or replace one blob under an atomic ETag precondition.
+
+    ``if_etag_match=None`` means create-only. A string means replace only while
+    the live blob still has that exact ETag. The successful response's ETag is
+    returned and becomes the next lease token.
+    """
+    _validate_blob_name(blob_name)
+    container = _client_or_new(client, account_name, container_name)
+    # ContainerClient.upload_blob returns a BlobClient, not the conditional
+    # write response. BlobClient.upload_blob returns the response ETag itself,
+    # which is the only race-free token for the next lease heartbeat. Keep the
+    # container-level fallback for small SDK-free test doubles.
+    blob_client = (
+        container.get_blob_client(blob_name)
+        if hasattr(container, "get_blob_client")
+        else None
+    )
+    kwargs: dict[str, Any]
+    if if_etag_match is None:
+        kwargs = {"overwrite": False}
+    else:
+        kwargs = {
+            "overwrite": True,
+            "etag": if_etag_match,
+            "match_condition": _if_not_modified_condition(),
+        }
+    try:
+        if blob_client is not None:
+            response = blob_client.upload_blob(data, **kwargs)
+        else:
+            response = container.upload_blob(blob_name, data, **kwargs)
+    except _precondition_failed_exc_types() as exc:
+        raise PreconditionFailedError(blob_name) from exc
+    etag = _etag_of(response)
+    if etag is None:
+        raise RuntimeError(f"Azure Blob CAS write returned no ETag for {blob_name!r}")
+    return etag
+
+
+def read_bytes_with_etag(
+    blob_name: str,
+    *,
+    account_name: str,
+    container_name: str,
+    client: Any | None = None,
+) -> tuple[bytes, str] | None:
+    """Read one blob and the ETag attached to that exact download response."""
+    _validate_blob_name(blob_name)
+    container = _client_or_new(client, account_name, container_name)
+    try:
+        stream = container.download_blob(blob_name)
+    except _not_found_exc_types():
+        return None
+    data = stream.readall()
+    etag = _etag_of(getattr(stream, "properties", None))
+    if etag is None:
+        raise RuntimeError(f"Azure Blob download returned no ETag for {blob_name!r}")
+    return data, etag
 
 
 def download_artifact(

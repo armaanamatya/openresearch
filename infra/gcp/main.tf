@@ -120,10 +120,11 @@ module "identity" {
   claude_code_oauth_token_secret_id   = var.secret_manager_enabled ? module.secret_manager[0].claude_code_oauth_token_secret_id : ""
   anthropic_api_key_secret_id         = var.secret_manager_enabled ? module.secret_manager[0].anthropic_api_key_secret_id : ""
   azure_openai_api_key_secret_id      = var.secret_manager_enabled ? module.secret_manager[0].azure_openai_api_key_secret_id : ""
+  azure_foundry_api_key_secret_id     = var.secret_manager_enabled ? module.secret_manager[0].azure_foundry_api_key_secret_id : ""
 }
 
 # ─── Secret Manager (orchestrator API-key store) ─────────────────────────────
-# Optional — set var.secret_manager_enabled = true to create the three secret
+# Optional — set var.secret_manager_enabled = true to create the four secret
 # NAME resources (values added out-of-band by the operator).  The orchestrator
 # GSA in the identity module receives secretmanager.secretAccessor on each.
 

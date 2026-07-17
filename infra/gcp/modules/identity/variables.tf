@@ -38,7 +38,7 @@ variable "labels" {
 # the initial bootstrap before the secret_manager module is applied).
 
 variable "secret_manager_module_enabled" {
-  description = "When true, create IAM bindings from the orchestrator GSA to the three Secret Manager secrets. Set false if the secret_manager module has not been applied yet."
+  description = "When true, create IAM bindings from the orchestrator GSA to the four Secret Manager secrets. Set false if the secret_manager module has not been applied yet."
   type        = bool
   default     = false
 }
@@ -57,6 +57,12 @@ variable "anthropic_api_key_secret_id" {
 
 variable "azure_openai_api_key_secret_id" {
   description = "Fully-qualified resource name of the 'azure-openai-api-key' secret (output of the secret_manager module). Only used when secret_manager_module_enabled = true."
+  type        = string
+  default     = ""
+}
+
+variable "azure_foundry_api_key_secret_id" {
+  description = "Fully-qualified resource name of the 'azure-foundry-api-key' secret (output of the secret_manager module). Only used when secret_manager_module_enabled = true."
   type        = string
   default     = ""
 }

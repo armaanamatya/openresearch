@@ -41,6 +41,7 @@ _AZURE_ENVVARS = [
     "OPENRESEARCH_AZURE_PER_GPU_VRAM_GB",
     "OPENRESEARCH_AZURE_MAX_NODES",
     "OPENRESEARCH_AZURE_BASE_IMAGE",
+    "OPENRESEARCH_AZURE_ORCHESTRATOR_IMAGE",
     "OPENRESEARCH_AZURE_GPU_USD_PER_HOUR",
     "OPENRESEARCH_AZURE_BOOT_TIMEOUT_SECONDS",
     "OPENRESEARCH_AZURE_PENDING_TIMEOUT_SECONDS",
@@ -81,6 +82,7 @@ def test_azure_fields_exist_with_defaults(clean_azure_env):
     # Canonical concurrency cap — the runner's _SETTINGS_DEFAULTS must match this
     assert s.azure_max_nodes == 4
     assert s.azure_base_image == ""
+    assert s.azure_orchestrator_image == ""
     assert s.azure_gpu_usd_per_hour == pytest.approx(3.67)
     assert s.azure_boot_timeout_seconds == 900
     # Cold-start from zero can take 10-12 min; 900s killed legitimate scale-up
@@ -123,6 +125,10 @@ def test_azure_env_var_overrides(monkeypatch):
     monkeypatch.setenv("OPENRESEARCH_AZURE_PER_GPU_VRAM_GB", "40.0")
     monkeypatch.setenv("OPENRESEARCH_AZURE_MAX_NODES", "8")
     monkeypatch.setenv("OPENRESEARCH_AZURE_BASE_IMAGE", "my.azurecr.io/reprolab:latest")
+    monkeypatch.setenv(
+        "OPENRESEARCH_AZURE_ORCHESTRATOR_IMAGE",
+        "my.azurecr.io/reprolab-orchestrator:sha-abc123",
+    )
     monkeypatch.setenv("OPENRESEARCH_AZURE_GPU_USD_PER_HOUR", "3.50")
     monkeypatch.setenv("OPENRESEARCH_AZURE_BOOT_TIMEOUT_SECONDS", "600")
     monkeypatch.setenv("OPENRESEARCH_AZURE_PENDING_TIMEOUT_SECONDS", "300")
@@ -140,6 +146,9 @@ def test_azure_env_var_overrides(monkeypatch):
     assert s.azure_per_gpu_vram_gb == pytest.approx(40.0)
     assert s.azure_max_nodes == 8
     assert s.azure_base_image == "my.azurecr.io/reprolab:latest"
+    assert s.azure_orchestrator_image == (
+        "my.azurecr.io/reprolab-orchestrator:sha-abc123"
+    )
     assert s.azure_gpu_usd_per_hour == pytest.approx(3.50)
     assert s.azure_boot_timeout_seconds == 600
     assert s.azure_pending_timeout_seconds == 300

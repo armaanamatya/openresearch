@@ -651,6 +651,27 @@ def test_returns_frozen_attempt_directives_instance(tmp_path: Path) -> None:
         directives.attempt_n = 2  # type: ignore[misc]
 
 
+def test_execution_controls_are_persisted_for_attempt_replay(tmp_path: Path) -> None:
+    directives = synthesize_directives(
+        **_base_kwargs(tmp_path),
+        root_model="opus-foundry",
+        execution_mode="efficient",
+        gpu_mode="prefer",
+        minimize_compute=True,
+    )
+    persisted = json.loads(
+        (tmp_path / "campaign" / "directives" / "1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert directives.root_model == "opus-foundry"
+    assert persisted["root_model"] == "opus-foundry"
+    assert persisted["execution_mode"] == "efficient"
+    assert persisted["gpu_mode"] == "prefer"
+    assert persisted["minimize_compute"] is True
+
+
 # ---------------------------------------------------------------------------
 # repair-mode directive (MLE-STAR-style localized refinement)
 # ---------------------------------------------------------------------------

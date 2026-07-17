@@ -343,6 +343,9 @@ class ControllerHandle(BaseModel):
     jobName: str
     fenceEpoch: int
     submittedEpoch: float
+    cloud: Literal["gcp", "azure"] | None = None
+    runsRoot: str | None = None
+    statePrefix: str | None = None
 
 
 class LiveRunState(BaseModel):
@@ -513,8 +516,8 @@ _AUTONOMOUS_RUN_SPEC = "configs/autonomous_reproduction_run_spec.json"
 
 
 def apply_autonomous_profile_override(request: StartRunRequest) -> StartRunRequest:
-    """Opt-in autonomous profile: force GKE dispatch + Opus-4.8-Foundry root +
-    the canonical run-spec, when ``request.autonomous`` is True.
+    """Opt-in autonomous profile: default to GKE, preserve explicit Azure,
+    select the Opus Foundry root, and apply the canonical run-spec.
 
     ``sandbox="gcp"`` (deliberately NOT the literal ``"gke"``) is the
     canonical in-Literal GKE selector: ``StartRunRequest.sandbox`` is typed
@@ -533,8 +536,9 @@ def apply_autonomous_profile_override(request: StartRunRequest) -> StartRunReque
     """
     if not getattr(request, "autonomous", False):
         return request
+    cloud = "azure" if request.sandbox == "azure" else "gcp"
     return request.model_copy(update={
-        "sandbox": "gcp",
+        "sandbox": cloud,
         "model": "opus-foundry",
         "run_spec": request.run_spec or _AUTONOMOUS_RUN_SPEC,
     })
@@ -644,7 +648,7 @@ class FileLiveRunService:
         self.runs_root = (runs_root or self.repo_root / "runs").resolve()
         self.python_bin = python_bin or sys.executable
         # WS3 durable controller: injected under test; None ⇒ lazily build the
-        # real GCS/K8s-backed cluster at submit time (fail-soft to local Popen).
+        # real cloud/K8s-backed cluster at submit time (durable failures stay remote).
         self._controller_cluster = controller_cluster
 
     def _subprocess_env(self, request: StartRunRequest) -> dict[str, str]:
@@ -971,11 +975,12 @@ class FileLiveRunService:
 
         WS3 seam (docs/superpowers/specs/2026-07-10-durable-cloud-native-
         orchestration-ws3-design.md §4.4). True only when
-        ``OPENRESEARCH_DURABLE_CONTROLLER`` is enabled AND
-        ``request.sandbox == "gcp"``. ``request.sandbox`` (post the override
+        ``OPENRESEARCH_DURABLE_CONTROLLER`` is enabled AND the request targets
+        GCP or Azure in the campaign-backed RLM mode. ``request.sandbox`` (post the override
         chain in ``_start_python_run``) is the only place "sandbox" lives at
-        this scope — ``apply_autonomous_profile_override`` forces the literal
-        ``"gcp"``, never ``"gke"`` (that alias only exists in the unrelated
+        this scope — ``apply_autonomous_profile_override`` defaults to the
+        literal ``"gcp"`` while preserving explicit ``"azure"``, and never
+        emits ``"gke"`` (that alias only exists in the unrelated
         ``backend.agents.execution.SandboxMode`` enum).
 
         Flag OFF (default) is always ``False`` for every request, regardless
@@ -984,7 +989,11 @@ class FileLiveRunService:
         """
         from backend.agents.rlm import run_controller
 
-        return run_controller.durable_controller_enabled() and request.sandbox == "gcp"
+        return (
+            run_controller.durable_controller_enabled()
+            and request.mode == "rlm"
+            and request.sandbox in {"gcp", "azure"}
+        )
 
     async def _submit_durable_controller(
         self,
@@ -1001,34 +1010,182 @@ class FileLiveRunService:
         runtime, a fake under test). On success the controller handle replaces
         the local ``pid`` in ``demo_status.json``; a contended run adopts the
         existing state; ``ControllerNotReady``/``ControllerStuck``/pre-submit
-        errors propagate to ``_start_python_run``'s fallback (§3.2/§3.3).
+        errors propagate to the API and never trigger a laptop fallback.
         """
         from backend.agents.rlm import controller_cluster as _cc
         from backend.agents.rlm import controller_launch as _cl
         from backend.agents.rlm import run_controller as _rc
 
-        cluster = self._controller_cluster or _cc.build_default_cluster()
+        cloud = request.sandbox
+        if cloud not in {"gcp", "azure"}:
+            raise ValueError(f"durable controller does not support sandbox={cloud!r}")
+        cluster = self._controller_cluster or _cc.build_default_cluster(cloud)
         settings = get_settings()
         paper = request.paper_id or project_id
         ready_timeout_s = float(
             os.environ.get("OPENRESEARCH_CONTROLLER_READY_TIMEOUT_S", "").strip() or 180
         )
-        cpu_pool = (
-            os.environ.get("OPENRESEARCH_CPU_POOL_LABEL", "").strip() or "reprolab/pool=cpu"
-        )
         backoff = int(os.environ.get("OPENRESEARCH_CONTROLLER_BACKOFF_LIMIT", "").strip() or 3)
-        # The controller Pod needs the run's config/credentials + the durable +
-        # fence flags; pass OPENRESEARCH_/REPROLAB_ + credential keys only (not
-        # the host PATH and unrelated shell env) into the Job spec.
+        runs_root = (
+            os.environ.get("OPENRESEARCH_CONTROLLER_RUNS_ROOT", "").strip()
+            or "/mnt/reprolab/controller-runs"
+        )
+        runs_mount = str(Path(runs_root).parent)
+        secret_mount = "/mnt/orchestrator-secrets"
+
+        cloud_prefix = cloud.upper()
+        if cloud == "gcp":
+            image = (
+                os.environ.get("OPENRESEARCH_GCP_CONTROLLER_IMAGE", "").strip()
+                or os.environ.get("OPENRESEARCH_CONTROLLER_IMAGE", "").strip()
+                or settings.gcp_orchestrator_image
+            )
+            cpu_pool = (
+                os.environ.get("OPENRESEARCH_GCP_CPU_POOL_LABEL", "").strip()
+                or "reprolab/node-type=system"
+            )
+            secret_provider = "reprolab-orchestrator-sm"
+            pod_labels: dict[str, str] = {}
+        else:
+            image = (
+                os.environ.get("OPENRESEARCH_AZURE_CONTROLLER_IMAGE", "").strip()
+                or os.environ.get("OPENRESEARCH_CONTROLLER_IMAGE", "").strip()
+                or settings.azure_orchestrator_image
+            )
+            cpu_pool = (
+                os.environ.get("OPENRESEARCH_AZURE_CPU_POOL_LABEL", "").strip()
+                or "kubernetes.azure.com/mode=system"
+            )
+            secret_provider = "reprolab-orchestrator-kv"
+            pod_labels = {"azure.workload.identity/use": "true"}
+        image = _rc.validate_controller_image(
+            image,
+            env_name=(
+                f"OPENRESEARCH_{cloud_prefix}_CONTROLLER_IMAGE or "
+                f"OPENRESEARCH_{cloud_prefix}_ORCHESTRATOR_IMAGE"
+            ),
+        )
+
+        controller_service_account = (
+            os.environ.get(
+                f"OPENRESEARCH_{cloud_prefix}_CONTROLLER_SERVICE_ACCOUNT", ""
+            ).strip()
+            or "reprolab-orchestrator"
+        )
+        namespace = getattr(settings, f"{cloud}_namespace", "reprolab") or "reprolab"
+
+        # The controller Pod gets non-secret run configuration in its Job spec.
+        # Provider credentials come only from the cloud CSI secret volume.
         full_env = self._subprocess_env(request)
+        managed_secrets = set(credential_vault.CREDENTIAL_ENV_VARS)
         base_env = {
             k: v
             for k, v in full_env.items()
             if k.startswith(("OPENRESEARCH_", "REPROLAB_"))
-            or "API_KEY" in k
-            or "TOKEN" in k
+            and k not in managed_secrets
+            and "API_KEY" not in k
+            and not k.endswith("_TOKEN")
+            and not k.endswith("_PASSWORD")
         }
         base_env["OPENRESEARCH_DURABLE_CONTROLLER"] = "1"
+        base_env["OPENRESEARCH_CONTROLLER_CLOUD"] = cloud
+        base_env["OPENRESEARCH_CONTROLLER_SECRET_DIR"] = secret_mount
+        owner_id = f"{project_id}-{uuid4().hex}"
+        base_env["OPENRESEARCH_CONTROLLER_OWNER_ID"] = owner_id
+
+        campaign_budgets = {
+            "OPENRESEARCH_CAMPAIGN_MAX_LLM_USD": settings.campaign_max_llm_usd,
+            "OPENRESEARCH_CAMPAIGN_MAX_GPU_USD": settings.campaign_max_gpu_usd,
+            "OPENRESEARCH_CAMPAIGN_MAX_GPU_HOURS": settings.campaign_max_gpu_hours,
+        }
+        for budget_name, configured in campaign_budgets.items():
+            raw = base_env.get(budget_name, "").strip()
+            if not raw and configured is not None:
+                raw = str(configured)
+            try:
+                value = float(raw)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"durable controller requires numeric {budget_name}"
+                ) from exc
+            if value <= 0:
+                raise RuntimeError(
+                    f"durable controller requires positive {budget_name}"
+                )
+            base_env[budget_name] = raw
+
+        for safe_name in (
+            "AZURE_OPENAI_ENDPOINT",
+            "AZURE_OPENAI_DEPLOYMENT",
+            "AZURE_OPENAI_API_VERSION",
+            "AZURE_FOUNDRY_ENDPOINT",
+            "AZURE_FOUNDRY_ANTHROPIC_ENDPOINT",
+            "AZURE_FOUNDRY_DEPLOYMENT",
+            "AZURE_FOUNDRY_ANTHROPIC_OPUS",
+            "AZURE_FOUNDRY_ANTHROPIC_SONNET",
+        ):
+            if full_env.get(safe_name):
+                base_env[safe_name] = full_env[safe_name]
+
+        state_prefix = f"runs/{project_id}/controller-state"
+        source_path = self.runs_root / project_id / "raw_paper.pdf"
+        if source_path.is_file():
+            paper_blob = (
+                f"runs/{project_id}/controller-input/{owner_id}/paper.pdf"
+            )
+            paper_bytes = await asyncio.to_thread(source_path.read_bytes)
+            if cloud == "gcp":
+                from backend.services.runtime import gcs_blob
+
+                await asyncio.to_thread(
+                    gcs_blob.upload_bytes,
+                    paper_bytes,
+                    blob_name=paper_blob,
+                    bucket=settings.gcp_gcs_bucket,
+                    project=settings.gcp_project or None,
+                )
+            else:
+                from backend.services.runtime import azure_blob
+
+                await asyncio.to_thread(
+                    azure_blob.upload_bytes,
+                    paper_bytes,
+                    blob_name=paper_blob,
+                    account_name=settings.azure_storage_account,
+                    container_name=settings.azure_blob_container,
+                )
+            base_env["OPENRESEARCH_CONTROLLER_PAPER_BLOB"] = paper_blob
+
+        if request.run_spec:
+            run_spec_path = Path(request.run_spec).expanduser()
+            if not run_spec_path.is_absolute():
+                run_spec_path = self.repo_root / run_spec_path
+            if run_spec_path.is_file():
+                run_spec_blob = (
+                    f"runs/{project_id}/controller-input/{owner_id}/run-spec.json"
+                )
+                run_spec_bytes = await asyncio.to_thread(run_spec_path.read_bytes)
+                if cloud == "gcp":
+                    from backend.services.runtime import gcs_blob
+
+                    await asyncio.to_thread(
+                        gcs_blob.upload_bytes,
+                        run_spec_bytes,
+                        blob_name=run_spec_blob,
+                        bucket=settings.gcp_gcs_bucket,
+                        project=settings.gcp_project or None,
+                    )
+                else:
+                    from backend.services.runtime import azure_blob
+
+                    await asyncio.to_thread(
+                        azure_blob.upload_bytes,
+                        run_spec_bytes,
+                        blob_name=run_spec_blob,
+                        account_name=settings.azure_storage_account,
+                        container_name=settings.azure_blob_container,
+                    )
+                base_env["OPENRESEARCH_CONTROLLER_RUN_SPEC_BLOB"] = run_spec_blob
 
         def _build_manifest(fence: int) -> dict:
             env = {**base_env, "OPENRESEARCH_CELL_FENCE_EPOCH": str(fence)}
@@ -1036,13 +1193,28 @@ class FileLiveRunService:
                 paper=paper,
                 project_id=project_id,
                 fence_epoch=fence,
-                image=settings.gcp_base_image,
+                image=image,
                 cpu_pool_label=cpu_pool,
-                namespace=settings.gcp_namespace,
-                service_account=settings.gcp_service_account,
+                namespace=namespace,
+                service_account=controller_service_account,
                 env=env,
-                command=_rc.build_controller_command(paper, project_id),
+                command=_rc.build_controller_command(
+                    paper,
+                    project_id,
+                    cloud=cloud,
+                    runs_root=runs_root,
+                    run_spec=request.run_spec,
+                    root_model=request.model,
+                    execution_mode=request.executionMode,
+                    gpu_mode=request.gpuMode,
+                    minimize_compute=bool(request.minimize_compute),
+                ),
                 backoff_limit=backoff,
+                pod_labels=pod_labels,
+                secret_provider_class=secret_provider,
+                secret_mount_path=secret_mount,
+                runs_pvc_name="reprolab-cache",
+                runs_mount_path=runs_mount,
             )
 
         handle = await asyncio.to_thread(
@@ -1050,7 +1222,7 @@ class FileLiveRunService:
             cluster,
             build_manifest=_build_manifest,
             project_id=project_id,
-            owner_id=project_id,
+            owner_id=owner_id,
             ready_timeout_s=ready_timeout_s,
         )
         if handle is None:
@@ -1062,6 +1234,13 @@ class FileLiveRunService:
             raise _cc.ControllerStuck(
                 f"durable run {project_id} contended with no adoptable state"
             )
+        handle.update(
+            {
+                "cloud": cloud,
+                "runsRoot": runs_root,
+                "statePrefix": state_prefix,
+            }
+        )
         meta = self._read_status(project_id) or {}
         meta.update({"controller": handle, "pid": None, "updatedAt": _now()})
         await asyncio.to_thread(self._write_status, project_id, meta)
@@ -1127,27 +1306,18 @@ class FileLiveRunService:
         )
         await asyncio.to_thread(self._write_status, project_id, meta)
 
-        # WS3 seam: a durable-controller-eligible request (flag on + sandbox
-        # "gcp") diverts here, before any local log file / subprocess is
+        # A durable-controller-eligible request diverts here before any local
+        # log file or subprocess is
         # opened. Flag off (default) ⇒ _should_use_durable_controller is
         # always False ⇒ this branch is never taken and the Popen path below
         # runs exactly as before, byte-identical.
         if self._should_use_durable_controller(request):
-            from backend.agents.rlm import controller_cluster as _cc_mod
-            try:
-                return await self._submit_durable_controller(
-                    request, project_id=project_id, uploaded_paper=uploaded_paper,
-                )
-            except _cc_mod.ControllerStuck:
-                # A submitted controller Job could not be confirmed deleted — a
-                # remote controller may be live. Falling back to a local run
-                # would create a split-brain on this run dir; fail loud instead.
-                raise
-            except Exception as exc:
-                # Pre-submit failure, or a not-ready Job that WAS confirmed
-                # deleted: no remote controller is live, so degrade to the local
-                # Popen path (byte-identical to a non-durable run) + a warning.
-                logger.warning("durable_controller_fallback for %s: %s", project_id, exc)
+            # Durable mode is an explicit remote-execution contract. Any lease,
+            # object-store, or cluster error fails closed so turning off the
+            # initiating laptop can never strand a surprise local fallback.
+            return await self._submit_durable_controller(
+                request, project_id=project_id, uploaded_paper=uploaded_paper,
+            )
 
         stderr = (output_dir / "runner.stderr.log").open("a", encoding="utf-8")
         stdout = (output_dir / "runner.stdout.log").open("a", encoding="utf-8")

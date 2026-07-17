@@ -269,7 +269,7 @@ module orchestratorIdentity 'modules/identity.bicep' = {
 
 // ── Key Vault ─────────────────────────────────────────────────────────────────
 //
-// Deployed only when deployKeyVault = true (default).  Holds azure-openai-api-key
+// Deployed only when deployKeyVault = true (default). Holds provider API keys
 // and anthropic-api-key; secret values are set out-of-band by an operator with
 // Key Vault Officer rights — never by this template.
 //

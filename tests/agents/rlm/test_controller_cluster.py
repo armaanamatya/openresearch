@@ -8,6 +8,8 @@ stuck, and the split-brain-safe sweeper (distinct owner, expired-only).
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from backend.agents.rlm import controller_cluster as cc
@@ -137,12 +139,20 @@ def test_not_ready_unconfirmed_delete_raises_stuck():
                              owner_id="prj_x", ready_timeout_s=180.0)
 
 
-def test_submit_error_propagates_pre_ready():
-    cluster = _FakeCluster(submit_raises=True)
-    with pytest.raises(RuntimeError):
+def test_submit_error_with_confirmed_delete_is_retryable_remote_failure():
+    cluster = _FakeCluster(submit_raises=True, delete_ok=True)
+    with pytest.raises(cc.ControllerNotReady):
         cc.submit_controller(cluster, build_manifest=_mf, project_id="prj_x",
                              owner_id="prj_x", ready_timeout_s=180.0)
     assert "wait_ready" not in cluster.calls
+    assert "delete" in cluster.calls
+
+
+def test_submit_error_without_confirmed_delete_fails_closed():
+    cluster = _FakeCluster(submit_raises=True, delete_ok=False)
+    with pytest.raises(cc.ControllerStuck):
+        cc.submit_controller(cluster, build_manifest=_mf, project_id="prj_x",
+                             owner_id="prj_x", ready_timeout_s=180.0)
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +164,7 @@ def test_sweeper_resubmits_when_lease_acquirable():
     done = cc.sweep_orphaned_controllers(
         cluster,
         list_durable_runs=lambda: ["prj_x"],
-        build_manifest_for=lambda pid: _mf,
+        build_manifest_for=lambda pid, owner_id: _mf,
         ready_timeout_s=180.0,
         sweeper_owner="sweeper",
     )
@@ -169,7 +179,7 @@ def test_sweeper_skips_live_controller_when_lease_held():
     done = cc.sweep_orphaned_controllers(
         cluster,
         list_durable_runs=lambda: ["prj_x"],
-        build_manifest_for=lambda pid: _mf,
+        build_manifest_for=lambda pid, owner_id: _mf,
         ready_timeout_s=180.0,
         sweeper_owner="sweeper",
     )
@@ -182,8 +192,124 @@ def test_sweeper_is_fail_soft_per_run():
     done = cc.sweep_orphaned_controllers(
         cluster,
         list_durable_runs=lambda: ["prj_a", "prj_b"],
-        build_manifest_for=lambda pid: _mf,
+        build_manifest_for=lambda pid, owner_id: _mf,
         ready_timeout_s=180.0,
         sweeper_owner="sweeper",
     )
     assert done == []   # both failed, but the sweep did not raise
+
+
+def test_sweeper_threads_a_fresh_owner_into_each_replacement_manifest():
+    owners: list[str] = []
+    cluster = _FakeCluster(token=_Token(fence_epoch=3))
+
+    def build(project_id, owner_id):
+        owners.append(owner_id)
+        return _mf
+
+    done = cc.sweep_orphaned_controllers(
+        cluster,
+        list_durable_runs=lambda: ["prj_a", "prj_b"],
+        build_manifest_for=build,
+        ready_timeout_s=180.0,
+        sweeper_owner="sweeper",
+    )
+    assert done == ["prj_a", "prj_b"]
+    assert len(set(owners)) == 2
+    assert all(owner.startswith("sweeper-") for owner in owners)
+
+
+def test_k8s_cluster_lazy_loads_shared_batch_api(monkeypatch):
+    from backend.services.runtime import k8s_job_backend
+
+    sentinel = object()
+    calls = []
+    monkeypatch.setattr(
+        k8s_job_backend,
+        "_load_kubernetes_batch_api",
+        lambda: calls.append("load") or sentinel,
+    )
+    cluster = cc.K8sControllerCluster(
+        lease=SimpleNamespace(), namespace="reprolab"
+    )
+
+    assert cluster._batch() is sentinel
+    assert cluster._batch() is sentinel
+    assert calls == ["load"]
+
+
+@pytest.mark.parametrize(
+    ("phase", "expected"),
+    [("Pending", False), ("Running", True), ("Succeeded", True)],
+)
+def test_k8s_controller_readiness_requires_started_pod(phase, expected):
+    class Batch:
+        def read_namespaced_job_status(self, **kwargs):
+            return SimpleNamespace(
+                status=SimpleNamespace(succeeded=0, conditions=[])
+            )
+
+    class Core:
+        def list_namespaced_pod(self, **kwargs):
+            return SimpleNamespace(
+                items=[SimpleNamespace(status=SimpleNamespace(phase=phase))]
+            )
+
+    ticks = iter([0.0, 0.0, 1.0])
+    cluster = cc.K8sControllerCluster(
+        lease=SimpleNamespace(),
+        namespace="reprolab",
+        batch_api=Batch(),
+        core_api=Core(),
+        clock=lambda: next(ticks),
+        sleep=lambda _: None,
+    )
+    assert cluster.wait_ready("controller-prj-fe1", timeout_s=0.5) is expected
+
+
+def test_k8s_reaper_accepts_controller_and_cell_fence_labels():
+    deleted: list[str] = []
+
+    class Lease:
+        def reap_stale_fence_epochs(
+            self, project_id, token, *, list_jobs, delete_job
+        ):
+            jobs = list_jobs(project_id)
+            for name, fence in jobs:
+                if fence < token.fence_epoch:
+                    delete_job(name)
+            return len(deleted)
+
+    jobs = SimpleNamespace(
+        items=[
+            SimpleNamespace(
+                metadata=SimpleNamespace(
+                    name="controller-old", labels={"reprolab-generation": "1"}
+                )
+            ),
+            SimpleNamespace(
+                metadata=SimpleNamespace(
+                    name="cell-old", labels={"reprolab/fence-epoch": "2"}
+                )
+            ),
+            SimpleNamespace(
+                metadata=SimpleNamespace(
+                    name="current", labels={"reprolab-generation": "3"}
+                )
+            ),
+        ]
+    )
+
+    class Batch:
+        def list_namespaced_job(self, **kwargs):
+            return jobs
+
+        def delete_namespaced_job(self, *, name, **kwargs):
+            deleted.append(name)
+
+    cluster = cc.K8sControllerCluster(
+        lease=Lease(), namespace="reprolab", batch_api=Batch()
+    )
+    count = cluster.reap("prj_x", SimpleNamespace(fence_epoch=3))
+    assert count == 2
+    assert deleted == ["controller-old", "cell-old"]

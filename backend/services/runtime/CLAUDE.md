@@ -8,6 +8,12 @@
 - `OPENRESEARCH_RUNPOD_CLOUD_TYPE` — `SECURE` (~$0.69/hr, **default** in `config.py`) vs `COMMUNITY` (~$0.34/hr RTX 4090; set this for the cheapest runs).
 - Full backend matrix + Docker-daemon prerequisite: see **Sandboxes** below.
 
+## Durable cloud controller
+- `OPENRESEARCH_DURABLE_CONTROLLER=1` routes campaign-backed HTTP RLM runs to a CPU controller Job on either GKE or AKS. It never falls back to a laptop process after selection.
+- Required: the cloud's pinned `*_ORCHESTRATOR_IMAGE`, all three `OPENRESEARCH_CAMPAIGN_MAX_{LLM_USD,GPU_USD,GPU_HOURS}` caps, object storage, `reprolab-cache` RWX PVC, `reprolab-orchestrator` KSA/RBAC, and the matching SecretProviderClass.
+- Autonomous `opus-foundry` runs additionally require the CSI-projected `azure-foundry-api-key` plus non-secret `AZURE_FOUNDRY_ENDPOINT` routing. Root model, execution/GPU modes, and compute minimization are explicitly carried through campaign directives.
+- The launcher waits for a Running pod; the pod reacquires its unique owner, heartbeats the GCS-generation/Azure-ETag lease, reaps older fences, and resumes from the PVC. See `docs/runbooks/2026-07-17-cross-cloud-durable-controller.md`.
+
 ## Docker
 ```bash
 cp .env.example .env   # set ANTHROPIC_API_KEY and/or OPENAI_API_KEY

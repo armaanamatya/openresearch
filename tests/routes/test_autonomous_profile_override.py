@@ -38,6 +38,15 @@ def test_override_forces_gcp_opus_runspec():
     assert r.run_spec == "configs/autonomous_reproduction_run_spec.json"
 
 
+def test_override_preserves_explicit_azure_cloud():
+    r = apply_autonomous_profile_override(
+        StartRunRequest(autonomous=True, sandbox="azure")
+    )
+    assert r.sandbox == "azure"
+    assert r.model == "opus-foundry"
+    assert r.run_spec == "configs/autonomous_reproduction_run_spec.json"
+
+
 def test_override_preserves_explicit_run_spec():
     """The `request.run_spec or _AUTONOMOUS_RUN_SPEC` fallback: a caller that
     already picked a run_spec keeps it — the override only fills the gap, it

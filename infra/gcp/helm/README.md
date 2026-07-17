@@ -22,6 +22,9 @@ L2 = this chart, L3 = runtime Jobs emitted by `gke_job_backend`).
 | `rolebinding.yaml` | RoleBinding | Binds Role to the operator IAM members (User/Group) |
 | `resourcequota.yaml` | ResourceQuota | Caps GPU requests/limits + Job count |
 | `nvidia-device-plugin.yaml` | DaemonSet | **Disabled by default** — GKE manages the device plugin; parity stub only |
+| `orchestrator-serviceaccount.yaml` | ServiceAccount | Keyless identity for durable CPU controllers |
+| `orchestrator-secretproviderclass.yaml` | SecretProviderClass | Projects provider credentials from Secret Manager |
+| `orchestrator-{deployment,cronjob}.yaml` | Deployment/CronJob | Optional fixed-paper continuous/scheduled controllers |
 
 ---
 
@@ -127,12 +130,21 @@ Neither smoke manifest contains any credentials or static secrets. All GCP auth
 uses Workload Identity (the KSA annotation + GKE metadata server) — there is NO
 per-pod label on GKE (unlike Azure's `azure.workload.identity/use`).
 
+Dynamic per-run durable Jobs need `orchestrator.enabled=true`, but do not require
+the fixed-paper Deployment or CronJob. They also require the `reprolab-cache`
+PVC, a pinned full orchestrator image, and explicit campaign budgets. See
+`docs/runbooks/2026-07-17-cross-cloud-durable-controller.md`.
+Autonomous mode additionally requires `orchestrator.azureFoundry.enabled=true`,
+its non-secret endpoint, and a populated `azure-foundry-api-key` Secret Manager
+version.
+
 ---
 
 ## Security / correctness assertions
 
-- **No static secrets:** no Secret of any kind is created by this chart; GCS is
-  reached via Workload Identity (KSA → GSA) and ADC.
+- **No static credentials in manifests:** the CSI provider mounts cloud secret
+  values and maintains a synced Kubernetes Secret for the fixed orchestrators;
+  GCS is reached via Workload Identity (KSA → GSA) and ADC.
 - **Workload Identity:** the KSA carries `iam.gke.io/gcp-service-account`; the
   Terraform identity module grants `roles/iam.workloadIdentityUser` on the GSA
   to `<project>.svc.id.goog[<namespace>/<ksa>]`.

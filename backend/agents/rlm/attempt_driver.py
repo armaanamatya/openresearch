@@ -126,17 +126,29 @@ class AttemptDriver(abc.ABC):
 
 def build_reproduce_argv(directives: Any, *, python_exe: str) -> list[str]:
     """``[python_exe, -m backend.cli reproduce <paper_ref> --project-id <id>,
-    (--run-spec <path>)?, *enforcement.cli_args, (--scope-spec <spec>)?]``.
+    (--model <root>)?, execution controls, (--run-spec <path>)?, *enforcement.cli_args,
+    (--scope-spec <spec>)?]``.
 
     Exact order per spec §7: positional + --project-id first, then
-    --run-spec (when set), then every enforcement ``cli_args`` pair verbatim,
-    then --scope-spec (when set). ``directives`` is duck-typed — no import of
-    ``campaign_directives`` (may not exist yet).
+    --model and --run-spec (when set), then every enforcement ``cli_args`` pair
+    verbatim, then --scope-spec (when set). ``directives`` is duck-typed — no
+    import of ``campaign_directives`` (may not exist yet).
     """
     argv = [
         python_exe, "-m", "backend.cli", "reproduce", str(directives.paper_ref),
         "--project-id", str(directives.project_id),
     ]
+    root_model = getattr(directives, "root_model", None)
+    if root_model:
+        argv += ["--model", str(root_model)]
+    execution_mode = getattr(directives, "execution_mode", None)
+    if execution_mode:
+        argv += ["--execution-mode", str(execution_mode)]
+    gpu_mode = getattr(directives, "gpu_mode", None)
+    if gpu_mode:
+        argv += ["--gpu-mode", str(gpu_mode)]
+    if getattr(directives, "minimize_compute", False):
+        argv.append("--minimize-compute")
     run_spec_path = getattr(directives, "run_spec_path", None)
     if run_spec_path:
         argv += ["--run-spec", str(run_spec_path)]

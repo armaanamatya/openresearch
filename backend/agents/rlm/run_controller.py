@@ -1,15 +1,11 @@
-"""Pure/injectable driver-controller logic for WS3 durable orchestration.
+"""Pure helpers for cross-cloud durable controller orchestration.
 
 WS3 design (durable cloud-native orchestration):
 ``docs/superpowers/specs/2026-07-10-durable-cloud-native-orchestration-ws3-design.md``.
 
-**Phase-1 scope only.** Everything in this module is either a pure
-computation or a thin wrapper around an injected dependency
-(:func:`acquire_drive_lease` duck-types its ``lease`` argument so it is
-unit-testable with a fake double, no cloud SDK required). The real GKE
-Deployment submit that runs a durable controller Pod, and the reaper that
-cleans up a superseded driver's Jobs, are wired in a LATER phase -- this
-module makes no cluster call of any kind.
+Everything here is a pure computation or a thin wrapper around an injected
+lease. Cluster submission, in-pod heartbeats, and reaping are wired by
+``controller_cluster``/``controller_entry`` for GKE and AKS.
 
 Gated on ``OPENRESEARCH_DURABLE_CONTROLLER`` (default OFF); see
 :func:`durable_controller_enabled`.
@@ -25,6 +21,8 @@ __all__ = [
     "durable_controller_enabled",
     "build_controller_command",
     "classify_controller_exit",
+    "controller_job_exit_code",
+    "validate_controller_image",
     "acquire_drive_lease",
 ]
 
@@ -40,25 +38,47 @@ def durable_controller_enabled() -> bool:
     return env_truthy("OPENRESEARCH_DURABLE_CONTROLLER")
 
 
-def build_controller_command(paper: str, project_id: str) -> list[str]:
+def build_controller_command(
+    paper: str,
+    project_id: str,
+    *,
+    cloud: str = "gcp",
+    runs_root: str = "/mnt/reprolab/controller-runs",
+    run_spec: str | None = None,
+    root_model: str | None = None,
+    execution_mode: str = "max",
+    gpu_mode: str = "auto",
+    minimize_compute: bool = False,
+) -> list[str]:
     """The argv a durable controller Pod runs to drive one reproduction.
 
-    Deliberately the ``campaign`` subcommand, not ``reproduce``: ``campaign``
-    is the ledger-resumable outer driver (``campaign/{campaign.json,
-    attempts.jsonl}``), so ``--resume`` lets a freshly (re)scheduled
-    controller Pod pick a run back up after a Pod restart/reschedule instead
-    of starting over.
+    The wrapper owns the cloud CAS lease and heartbeat, then launches the
+    ledger-resumable ``campaign --resume`` child on the mounted runs PVC.
     """
-    return [
+    command = [
         "python",
         "-m",
-        "backend.cli",
-        "campaign",
+        "backend.agents.rlm.controller_entry",
+        "--cloud",
+        cloud,
+        "--paper",
         paper,
         "--project-id",
         project_id,
-        "--resume",
+        "--runs-root",
+        runs_root,
+        "--execution-mode",
+        execution_mode,
+        "--gpu-mode",
+        gpu_mode,
     ]
+    if minimize_compute:
+        command.append("--minimize-compute")
+    if run_spec:
+        command.extend(["--run-spec", run_spec])
+    if root_model:
+        command.extend(["--root-model", root_model])
+    return command
 
 
 def classify_controller_exit(code: int) -> str:
@@ -82,6 +102,32 @@ def classify_controller_exit(code: int) -> str:
     if code == 3:
         return "money_halt"
     return "crash"
+
+
+def controller_job_exit_code(code: int) -> int:
+    """Map intentional campaign stops to Job success to suppress K8s retries.
+
+    ``paused`` requires operator input and ``money_halt`` is deliberately
+    fail-closed. Retrying either via ``backoffLimit`` would spend or loop
+    without changing the condition. Genuine crashes retain their non-zero
+    code and remain eligible for Kubernetes restart.
+    """
+    if classify_controller_exit(code) in {"paused", "money_halt"}:
+        return 0
+    return code
+
+
+def validate_controller_image(image: str, *, env_name: str) -> str:
+    """Require a non-floating image reference for a durable controller."""
+    image = image.strip()
+    final_component = image.rsplit("/", 1)[-1]
+    pinned = "@sha256:" in image or ":" in final_component
+    if not image or not pinned or final_component.endswith(":latest"):
+        raise RuntimeError(
+            f"durable controller requires {env_name} to be a pinned image "
+            "tag or sha256 digest (never :latest)"
+        )
+    return image
 
 
 class _AcquirableLease(Protocol):

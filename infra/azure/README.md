@@ -13,7 +13,7 @@
 | **L0 — Access bootstrap** (`infra/azure/bicep/`) | Subscription-scope RG creation + Contributor / User Access Administrator grants to the operator principal | **Bicep** (subscription admin, once) | One-time; stable |
 | **L1 — Azure infra** (this directory) | Resource group, VNet/subnet, AKS cluster, GPU node pool, ACR, storage (Blob + Files), managed identity + role assignments | **Bicep** (`infra/azure/bicep/infra.bicep`) | Provisioned once; rarely changes |
 | **L2 — In-cluster scaffold** (`infra/azure/helm/`) | Namespace, workload-identity ServiceAccount, Files PVC, orchestrator RBAC, NVIDIA device plugin, ResourceQuota | **Helm** (applied once per cluster) | Per-cluster; semi-static |
-| **L3 — Runtime** | Per-cell Kubernetes **Jobs** | **Orchestrator code** (`backend/agents/rlm/k8s_job_cell_runner.py`) | Thousands; transient |
+| **L3 — Runtime** | Per-run CPU controller Jobs + per-cell Kubernetes Jobs | **Orchestrator code** | Thousands; transient |
 
 **L0 note:** Step 0 below requires subscription **Owner** because L0 creates the RGs and grants the operator Contributor + User Access Administrator on them. After L0, day-to-day operators need only RG-scoped Contributor — no subscription-level Owner for `az stack group create`. See `infra/azure/bicep/README.md` for the full L0 deploy.
 
@@ -159,6 +159,12 @@ helm upgrade --install reprolab infra/azure/helm/ \
 scripts/azure_build_cell_image.sh   # wraps az acr build -r <acr-name>
 ```
 
+For laptop-independent campaigns, also build `docker/orchestrator/Dockerfile`
+to a pinned ACR tag, enable the Helm chart's `orchestrator.enabled` resources,
+and set `OPENRESEARCH_AZURE_ORCHESTRATOR_IMAGE`. Azure Files/RWX is mandatory
+for this path. See
+`docs/runbooks/2026-07-17-cross-cloud-durable-controller.md`.
+
 ### 8. Smoke test (hello-GPU Job)
 
 ```bash
@@ -172,7 +178,7 @@ The GPU node pool should scale 0→1, run `nvidia-smi`, write a result to Blob, 
 
 ## Key design decisions
 
-- **Public API server + authorized IP ranges:** In Phase 1 the orchestrator runs locally (outside the VNet), so a private API server would require a VPN or bastion. The API server is **public but IP-restricted** to operator CIDRs only. Confirm DeepInvent's security policy permits this. Becomes private in Phase 2 when the control plane moves in-cluster.
+- **Public API server + authorized IP ranges:** the one-shot launcher may run outside the VNet, so the API server remains public but IP-restricted to operator CIDRs. The durable controller itself runs in-cluster and continues after the launcher disconnects.
 - **Scale-to-zero GPU pool:** `minCount = 0`. Idle cost = $0. The Cluster Autoscaler scales 0→N as Jobs request `nvidia.com/gpu: 1`.
 - **Zero static secrets:** No storage account keys in outputs or Kubernetes Secrets. All auth flows through managed identity + workload identity. The one documented exception: manual one-off operations may temporarily use `az storage account keys list`; rotate the key immediately after.
 - **On-demand nodes only:** Spot nodes reduce cost but can be preempted mid-training. Deferred to Phase 2 with in-Job checkpoint/resume support.
