@@ -317,3 +317,199 @@ def test_hard_stop_regrade_skips_empty_grid(tmp_path, monkeypatch):
     )
     assert fr.regrade_for_hard_stop(p, llm_client=object()) is None
     assert called == []
+
+
+# ---------------------------------------------------------------------------
+# P0 (2026-07-13): the failed→reproduced UPGRADE CLAMP
+#
+# code/metrics.json is ROOT-WRITABLE and _converged_cell_count only proves NUMBERS
+# ARE IN THE FILE — not that a container ever ran. So the regrade used to hand a
+# run that never produced one clean success row a full-credit (degraded=False)
+# re-grade AND flip its verdict failed→reproduced. Both now require the same
+# unforgeable signal report.py's two-axis clamp uses: >=1 success-compatible
+# in-process run_experiment cost-ledger call. Downgrades stay free.
+# ---------------------------------------------------------------------------
+
+
+class _Entry:
+    def __init__(self, agent_id: str, outcome: str) -> None:
+        self.agent_id = agent_id
+        self.outcome = outcome
+
+
+class _Ledger:
+    """The in-process cost ledger shape report.py's canonical counters read.
+
+    Deliberately does NOT implement session_*_count, so the counters fall through to
+    their entry-scanning path — proving the clamp works against the real ledger
+    contract (agent_id + per-row `outcome` provenance stamp), not a stub of it.
+    """
+
+    def __init__(self, entries: list[_Entry]) -> None:
+        self.entries = entries
+
+
+def _ctx_with_ledger(project_dir, outcomes: list[str]):
+    """A ctx whose run_experiment ledger rows carry these outcome stamps."""
+    return SimpleNamespace(
+        project_dir=project_dir,
+        llm_client=object(),
+        paper_hint_invariants=[],
+        cost_ledger=_Ledger([_Entry("run_experiment", o) for o in outcomes]),
+    )
+
+
+def _fresh_grade(score: float = 0.82):
+    return lambda **kw: {"overall_score": score, "target_score": 0.60,
+                         "leaf_scores": [], "areas": []}
+
+
+def test_no_ledger_keeps_content_only_trust(tmp_path, monkeypatch):
+    """None (replay/postmortem — no ledger) → today's behaviour, exactly like
+    report._apply_evidence_gate's posture. This is what every pre-existing test hits."""
+    from backend.agents.rlm import finalize_regrade as _fr
+    assert _fr._experiment_backed(SimpleNamespace(project_dir=tmp_path)) is None
+    assert _fr._experiment_backed(None) is None
+
+
+def test_ledger_counts_only_success_compatible_rows(tmp_path):
+    from backend.agents.rlm import finalize_regrade as _fr
+    assert _fr._experiment_backed(_ctx_with_ledger(tmp_path, ["ok"])) is True
+    assert _fr._experiment_backed(_ctx_with_ledger(tmp_path, [""])) is True  # legacy/unknown
+    assert _fr._experiment_backed(_ctx_with_ledger(tmp_path, ["failed"])) is False
+    assert _fr._experiment_backed(_ctx_with_ledger(tmp_path, ["raised", "failed"])) is False
+    assert _fr._experiment_backed(_ctx_with_ledger(tmp_path, [])) is False
+    # A harness-finalized timeout partial IS real work (the harness loaded the metrics
+    # off disk itself) — the salvage tier this module exists for.
+    assert _fr._experiment_backed(_ctx_with_ledger(tmp_path, ["partial_timeout"])) is True
+
+
+def test_regrade_refused_when_no_backing_experiment_call(tmp_path, monkeypatch):
+    """THE P0: a run whose every run_experiment call FAILED, but which wrote a plausible
+    metrics.json, gets NO full-credit re-grade — and no LLM call is spent on it."""
+    monkeypatch.delenv(fr.ENV_FLAG, raising=False)
+    now = time.time()
+    p = _project(tmp_path, graded_at=now - 9 * 3600, metrics_at=now)
+    called = []
+    monkeypatch.setattr(
+        "backend.evals.paperbench.leaf_scorer.score_reproduction",
+        lambda **kw: called.append(1) or _fresh_grade()(**kw),
+    )
+    report = _report(verdict="failed")
+    assert fr.maybe_regrade(_ctx_with_ledger(p, ["failed"]), report) is None
+    assert called == [], "no LLM call may be spent grading unbacked numbers"
+    assert report.verdict == "failed"
+    assert report.rubric["overall_score"] == pytest.approx(0.5413)  # untouched
+
+
+def test_cannot_flip_failed_to_reproduced_without_a_ledger_row(tmp_path, monkeypatch):
+    """The flip site: even if a grade IS adopted, the verdict upgrade is clamped when no
+    success-compatible run_experiment call backs it — and the refusal is stamped."""
+    monkeypatch.delenv(fr.ENV_FLAG, raising=False)
+    now = time.time()
+    p = _project(tmp_path, graded_at=now - 9 * 3600, metrics_at=now)
+    monkeypatch.setattr(
+        "backend.evals.paperbench.leaf_scorer.score_reproduction", _fresh_grade(0.95)
+    )
+    ctx = _ctx_with_ledger(p, ["failed"])
+    report = _report(verdict="failed")
+    events: list[dict] = []
+    fr.regrade_and_emit(ctx, report, lambda e, pl: events.append(pl))
+
+    assert report.verdict == "failed", "a root-writable metrics.json cannot buy 'reproduced'"
+    assert report.rubric["overall_score"] == pytest.approx(0.5413)  # score not lifted either
+    # The refusal is STAMPED and EMITTED, never silent (report.py's verdict_clamped key).
+    assert "zero success-compatible run_experiment calls" in report.rubric["verdict_clamped"]
+    assert any(e.get("code") == "finalize_regrade_verdict_clamped" for e in events)
+    assert not any(e.get("code") == "finalize_regrade_adopted" for e in events)
+
+
+def test_clamp_stamps_verdict_clamped_directly(tmp_path):
+    """Unit-level: the clamp itself refuses the upgrade and stamps, mirroring
+    report.py::write_final_report_rlm's two-axis clamp convention."""
+    report = _report(verdict="failed")
+    fr._apply_regrade_verdict(_ctx_with_ledger(tmp_path, ["raised"]), report, 0.99, None)
+    assert report.verdict == "failed"
+    assert report.rubric["verdict_clamped"].startswith(
+        "upgrade from 'failed' to 'reproduced' refused"
+    )
+
+
+def test_genuine_success_row_still_regrades_and_upgrades(tmp_path, monkeypatch):
+    """NO REGRESSION: a real grid backed by a successful in-process run_experiment call
+    still gets its full-credit re-grade AND its earned verdict — the All-CNN v5 / Adam v10
+    recovery this module exists for."""
+    monkeypatch.delenv(fr.ENV_FLAG, raising=False)
+    now = time.time()
+    p = _project(tmp_path, graded_at=now - 9 * 3600, metrics_at=now)
+    captured: dict = {}
+
+    def _spy(**kw):
+        captured.update(kw)
+        return {"overall_score": 0.82, "target_score": 0.60, "leaf_scores": [], "areas": []}
+
+    monkeypatch.setattr("backend.evals.paperbench.leaf_scorer.score_reproduction", _spy)
+    ctx = _ctx_with_ledger(p, ["ok", "failed"])  # one real success among the calls
+    report = _report(target=0.60, verdict="failed")
+    events: list[dict] = []
+    fresh = fr.regrade_and_emit(ctx, report, lambda e, pl: events.append(pl))
+
+    assert fresh is not None
+    assert captured.get("degraded") is False       # the ceiling bypass is EARNED here
+    assert report.verdict == "reproduced"          # 0.82 >= the reproduced band
+    assert "verdict_clamped" not in report.rubric
+    assert any(e.get("code") == "finalize_regrade_adopted" for e in events)
+
+
+def test_partial_timeout_only_run_is_capped_at_partial(tmp_path, monkeypatch):
+    """The harness-finalized timeout tier: a container DID run and the HARNESS loaded its
+    metrics, so the salvage still lands — but seeded at 'partial', never 'reproduced'
+    (mirrors _apply_evidence_gate's partial-timeout cap)."""
+    monkeypatch.delenv(fr.ENV_FLAG, raising=False)
+    now = time.time()
+    p = _project(tmp_path, graded_at=now - 9 * 3600, metrics_at=now)
+    monkeypatch.setattr(
+        "backend.evals.paperbench.leaf_scorer.score_reproduction", _fresh_grade(0.95)
+    )
+    ctx = _ctx_with_ledger(p, ["partial_timeout"])
+    report = _report(verdict="failed")
+    fr.regrade_and_emit(ctx, report, lambda e, pl: None)
+    assert report.verdict == "partial"
+    assert "verdict_clamped" not in report.rubric
+
+
+def test_downgrade_stays_free(tmp_path, monkeypatch):
+    """Fail-closed: the clamp only blocks UPGRADES. A low adopted score still drags a
+    'reproduced' verdict down — a guard must never be able to raise a verdict."""
+    monkeypatch.delenv(fr.ENV_FLAG, raising=False)
+    now = time.time()
+    p = _project(tmp_path, graded_at=now - 9 * 3600, metrics_at=now)
+    report = _report(score=None, target=0.60, verdict="reproduced")
+    # A real backed call — so no clamp — but the fresh score only supports 'partial'.
+    fr._apply_regrade_verdict(_ctx_with_ledger(p, ["ok"]), report, 0.20, None)
+    assert report.verdict == "partial"
+
+    # And with NO backing call at all, the downgrade must STILL land — the clamp refuses
+    # to LIFT a verdict, it never freezes one in place.
+    report2 = _report(score=None, target=0.60, verdict="reproduced")
+    fr._apply_regrade_verdict(_ctx_with_ledger(p, ["failed"]), report2, 0.20, None)
+    assert report2.verdict == "partial"
+    assert "verdict_clamped" not in report2.rubric  # nothing was refused — it went down
+
+
+def test_hard_stop_regrade_refused_without_backing_call(tmp_path, monkeypatch):
+    """The no-ctx salvage path: when the ledger IS threaded through and shows no real
+    call, the degraded=False full-credit bypass is refused there too."""
+    monkeypatch.delenv(fr.ENV_FLAG, raising=False)
+    p = _project(tmp_path, graded_at=None, metrics_at=time.time())
+    called = []
+    monkeypatch.setattr(
+        "backend.evals.paperbench.leaf_scorer.score_reproduction",
+        lambda **kw: called.append(1) or {"overall_score": 0.9},
+    )
+    assert fr.regrade_for_hard_stop(
+        p, llm_client=object(), ctx=_ctx_with_ledger(p, ["failed"])
+    ) is None
+    assert called == []
+    # ...and byte-identical (today's caller passes no ctx → content-only trust).
+    assert fr.regrade_for_hard_stop(p, llm_client=object())["overall_score"] == pytest.approx(0.9)

@@ -135,7 +135,10 @@ helm upgrade --install reprolab-gke ./infra/gcp/helm \
   --set image.gkeCellBase=$(terraform -chdir=infra/gcp output -raw artifact_registry_url)/gke-cell-base:0.1.0 \
   --set rbac.operatorMembers='{user:your-operator@example.com}' \
   --namespace reprolab --create-namespace
-# Add (only when filestore_enabled=true):
+# filestore_enabled now DEFAULTS true, so add these two (omit only if you set
+# filestore_enabled=false in your tfvars) — without them the PVC never
+# renders, and cells fall back to a slower per-pod emptyDir cache with a loud
+# run_warning naming the cost impact:
 #   --set storage.filestoreShare=$(terraform -chdir=infra/gcp output -raw filestore_share) \
 #   --set storage.filestoreIp=$(terraform -chdir=infra/gcp output -raw filestore_ip)
 ```
@@ -169,7 +172,7 @@ kubectl apply -f infra/gcp/helm/smoke/hello-gpu-job.yaml
 | `workload_identity_gcp_service_account` | `workloadIdentity.gcpServiceAccount` (KSA annotation) | **Critical** — keyless pod auth |
 | `artifact_registry_url` | `image.gkeCellBase` (+ `/gke-cell-base:<tag>`), `OPENRESEARCH_GCP_ARTIFACT_REGISTRY` | Job image |
 | `gcs_bucket_name` | `storage.bucket`, `OPENRESEARCH_GCP_GCS_BUCKET` | Artifact bus |
-| `filestore_ip` / `filestore_share` | `storage.filestoreIp` / `storage.filestoreShare`, `OPENRESEARCH_GCP_FILESTORE_SHARE` | RWX cache (when enabled) |
+| `filestore_ip` / `filestore_share` | `storage.filestoreIp` / `storage.filestoreShare`, `OPENRESEARCH_GCP_FILESTORE_SHARE` | RWX cache (default enabled — set `filestore_enabled=false` to opt out) |
 | `gpu_pools` | smoke job nodeSelector | Map short_name → {sku_label, machine_type, gpu_count} |
 
 These align with the `gcp_*` settings in `backend/config.py` (`gcp_project`, `gcp_region`, `gcp_gcs_bucket`, `gcp_gke_cluster`, `gcp_artifact_registry`, `gcp_filestore_share`, `gcp_namespace`, `gcp_service_account`, `gcp_base_image`).

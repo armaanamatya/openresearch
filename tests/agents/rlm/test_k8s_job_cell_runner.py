@@ -1159,7 +1159,7 @@ class TestRunMatrixGcpPrefixWiring:
     hermetic seam (no new k8s mocking)."""
 
     # kjcr._setting is monkeypatched directly (like test_job_submitted_to_namespace
-    # and TestGcpFilesCacheDefaultEmptyDir above) rather than via
+    # and TestGcpFilesCachePersistentByDefault above) rather than via
     # OPENRESEARCH_GCP_GPU_SKUS: this directory's conftest.py autouse fixture
     # already patches kjcr._setting to azure-only defaults, so an env var would
     # never reach it — a test-local monkeypatch.setattr is the seam that wins.
@@ -1213,6 +1213,301 @@ class TestRunMatrixGcpPrefixWiring:
             f"worker thread), got {sku!r} — without the re-pin this regresses to "
             f"azure_a100_80 (the prj_618 unschedulable-pod bug)"
         )
+
+
+# ---------------------------------------------------------------------------
+# 12c. GPU SKU / node-pool preflight (the reprolab/sku config<->Terraform drift
+# guard) wired into run_matrix: ONE live check per call, before the first Job
+# is ever submitted — never per-cell, never on the azure path.
+# ---------------------------------------------------------------------------
+
+
+class _NodePoolFakeK8sCore(FakeK8sCore):
+    """FakeK8sCore + list_node(), for the GPU-pool-preflight wiring tests only."""
+
+    def __init__(
+        self,
+        *,
+        node_skus: list[str] | None = None,
+        raise_on_list_node: Exception | None = None,
+        **kw: Any,
+    ) -> None:
+        super().__init__(**kw)
+        self._node_skus = node_skus if node_skus is not None else []
+        self._raise_on_list_node = raise_on_list_node
+        self.list_node_call_count = 0
+
+    def list_node(self) -> Any:
+        self.list_node_call_count += 1
+        if self._raise_on_list_node is not None:
+            raise self._raise_on_list_node
+        from types import SimpleNamespace
+        nodes = [
+            SimpleNamespace(metadata=SimpleNamespace(labels={"reprolab/sku": s}))
+            for s in self._node_skus
+        ]
+        return SimpleNamespace(items=nodes)
+
+
+class TestRunMatrixGpuPoolPreflight:
+    """Mirrors TestRunMatrixGcpPrefixWiring's settings shape; only gcp_gpu_skus
+    and the injected core client vary per test."""
+
+    _BASE_GCP_SETTINGS: dict[str, Any] = dict(TestRunMatrixGcpPrefixWiring._GCP_SETTINGS)
+
+    def _gcp_settings(self, **overrides: Any) -> dict[str, Any]:
+        merged = dict(self._BASE_GCP_SETTINGS)
+        merged.update(overrides)
+        return merged
+
+    def test_hard_blocks_on_drifted_sku_naming_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The exact hazard: gcp_gpu_skus names a SKU (gcp_a100_80x2) with no
+        matching live node pool -> every cell errors, naming the SKU, and NO Job
+        is ever submitted (hard block happens before submission)."""
+        settings = self._gcp_settings(gcp_gpu_skus=["gcp_a100_80x2", "gcp_a100_80x8"])
+        monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: settings.get(name, default))
+        core = _NodePoolFakeK8sCore(node_skus=["gcp_a100_80", "gcp_a100_80x8"], pods=[_FakePod(exit_code=0)])
+        k8s = _K8sClients(batch=FakeK8sBatch(_succeeded_job()), core=core, watch_cls=None)
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.42})
+
+        with kjcr._bind_settings_prefix("gcp"):
+            results = run_matrix(
+                [{"id": "c0"}, {"id": "c1"}],
+                tmp_path / "train_cell.py",
+                output_root=tmp_path / "out",
+            )
+
+        assert results["c0"]["status"] == "error"
+        assert results["c1"]["status"] == "error"
+        assert "gcp_a100_80x2" in results["c0"]["error"]
+        assert k8s.batch.created_jobs == [], "no Job should be submitted once drift is detected"
+        assert core.list_node_call_count == 1
+
+    def test_passes_silently_when_all_skus_provisioned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        settings = self._gcp_settings(gcp_gpu_skus=["gcp_a100_80x8"])
+        monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: settings.get(name, default))
+        core = _NodePoolFakeK8sCore(node_skus=["gcp_a100_80x8"], pods=[_FakePod(exit_code=0)])
+        k8s = _K8sClients(batch=FakeK8sBatch(_succeeded_job()), core=core, watch_cls=None)
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.42})
+
+        with kjcr._bind_settings_prefix("gcp"):
+            results = run_matrix(
+                [{"id": "c0"}], tmp_path / "train_cell.py", output_root=tmp_path / "out"
+            )
+
+        assert results["c0"]["status"] == "ok"
+        assert len(k8s.batch.created_jobs) == 1
+
+    def test_cluster_unreachable_warns_and_proceeds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A transient query failure must not become a hard block: the cell
+        still gets submitted and can succeed normally."""
+        settings = self._gcp_settings(gcp_gpu_skus=["gcp_a100_80x8"])
+        monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: settings.get(name, default))
+        core = _NodePoolFakeK8sCore(raise_on_list_node=RuntimeError("token expired"), pods=[_FakePod(exit_code=0)])
+        k8s = _K8sClients(batch=FakeK8sBatch(_succeeded_job()), core=core, watch_cls=None)
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.42})
+
+        with kjcr._bind_settings_prefix("gcp"):
+            results = run_matrix(
+                [{"id": "c0"}], tmp_path / "train_cell.py", output_root=tmp_path / "out"
+            )
+
+        assert results["c0"]["status"] == "ok"  # proceeded, NOT hard-blocked
+        assert len(k8s.batch.created_jobs) == 1
+
+    def test_queries_cluster_once_not_per_cell(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        settings = self._gcp_settings(gcp_gpu_skus=["gcp_a100_80x8"])
+        monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: settings.get(name, default))
+        core = _NodePoolFakeK8sCore(node_skus=["gcp_a100_80x8"], pods=[_FakePod(exit_code=0)])
+        k8s = _K8sClients(batch=FakeK8sBatch(_succeeded_job()), core=core, watch_cls=None)
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.42})
+
+        with kjcr._bind_settings_prefix("gcp"):
+            results = run_matrix(
+                [{"id": "c0"}, {"id": "c1"}, {"id": "c2"}],
+                tmp_path / "train_cell.py",
+                output_root=tmp_path / "out",
+            )
+
+        assert all(r["status"] == "ok" for r in results.values())
+        assert core.list_node_call_count == 1, (
+            f"expected exactly 1 cluster query for 3 cells, got {core.list_node_call_count}"
+        )
+
+    def test_azure_prefix_never_queries_cluster_for_gpu_pool_preflight(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """No _bind_settings_prefix("gcp") => the default azure prefix (this
+        directory's conftest.py) => the GCP-only preflight must never touch
+        list_node — even though the conftest default azure_gpu_skus is
+        non-empty (["azure_a100_80"]), proving the gate is provider-based, not
+        merely "configured skus happen to be empty"."""
+        core = _NodePoolFakeK8sCore(
+            raise_on_list_node=AssertionError("list_node must never be called for azure"),
+            pods=[_FakePod(exit_code=0)],
+        )
+        k8s = _K8sClients(batch=FakeK8sBatch(_succeeded_job()), core=core, watch_cls=None)
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.1})
+
+        results = run_matrix(
+            [{"id": "az0"}], tmp_path / "train_cell.py", output_root=tmp_path / "out"
+        )
+
+        assert results["az0"]["status"] == "ok"
+        assert core.list_node_call_count == 0
+
+
+class TestRunMatrixGpuPoolPreflightColdCluster:
+    """The authoritative tier-1 (GKE node-pool API) reaching the CELL path — the
+    real GPU-training path, and the one a cold cluster made blind.
+
+    The run_matrix hook passes no explicit pool_lister, so enforce_* auto-builds
+    one from get_settings(). These tests patch `make_gke_pool_lister` (the seam
+    enforce_* resolves at call time), which keeps the production hook untouched
+    and the test hermetic — no settings/env plumbing, no network.
+    """
+
+    _BASE_GCP_SETTINGS: dict[str, Any] = dict(TestRunMatrixGcpPrefixWiring._GCP_SETTINGS)
+
+    def _gcp_settings(self, **overrides: Any) -> dict[str, Any]:
+        merged = dict(self._BASE_GCP_SETTINGS)
+        merged.update(overrides)
+        return merged
+
+    @staticmethod
+    def _patch_pool_lister(monkeypatch: pytest.MonkeyPatch, pools_or_exc: Any) -> None:
+        import backend.services.runtime.gpu_pool_preflight as gpp
+
+        def _lister():
+            if isinstance(pools_or_exc, Exception):
+                raise pools_or_exc
+            return pools_or_exc
+
+        monkeypatch.setattr(gpp, "make_gke_pool_lister", lambda _settings: _lister)
+
+    def test_cold_cluster_with_drift_hard_blocks_every_cell(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """THE GAP: zero live GPU nodes (scale-to-zero, the first-run-of-the-day
+        state) + a configured SKU with no pool. Previously this warned and burned
+        ~25 min to capacity_exhausted; now the pool API sees the pools at zero
+        nodes and blocks before a single Job is submitted."""
+        settings = self._gcp_settings(gcp_gpu_skus=["gcp_a100_80x2", "gcp_a100_80x8"])
+        monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: settings.get(name, default))
+        self._patch_pool_lister(monkeypatch, [
+            {"name": "default-pool", "config": {"labels": {}}},
+            {"name": "repro-a100x8", "config": {"labels": {"reprolab/sku": "gcp_a100_80x8"}}},
+        ])
+        core = _NodePoolFakeK8sCore(node_skus=[], pods=[_FakePod(exit_code=0)])  # COLD
+        k8s = _K8sClients(batch=FakeK8sBatch(_succeeded_job()), core=core, watch_cls=None)
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.42})
+
+        with kjcr._bind_settings_prefix("gcp"):
+            results = run_matrix(
+                [{"id": "c0"}, {"id": "c1"}],
+                tmp_path / "train_cell.py",
+                output_root=tmp_path / "out",
+            )
+
+        assert results["c0"]["status"] == "error"
+        assert results["c1"]["status"] == "error"
+        assert "gcp_a100_80x2" in results["c0"]["error"]
+        assert k8s.batch.created_jobs == [], "no Job may be submitted once drift is proven"
+        # Tier 1 was conclusive, so the blind live-node heuristic was never consulted.
+        assert core.list_node_call_count == 0
+
+    def test_cold_cluster_no_drift_runs_normally(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Cold cluster + every configured SKU actually provisioned -> cells run.
+        (The guard must not block the ordinary first-run-of-the-day case.)"""
+        settings = self._gcp_settings(gcp_gpu_skus=["gcp_a100_80x8"])
+        monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: settings.get(name, default))
+        self._patch_pool_lister(monkeypatch, [
+            {"name": "repro-a100x8", "config": {"labels": {"reprolab/sku": "gcp_a100_80x8"}}},
+        ])
+        core = _NodePoolFakeK8sCore(node_skus=[], pods=[_FakePod(exit_code=0)])
+        k8s = _K8sClients(batch=FakeK8sBatch(_succeeded_job()), core=core, watch_cls=None)
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.42})
+
+        with kjcr._bind_settings_prefix("gcp"):
+            results = run_matrix(
+                [{"id": "c0"}], tmp_path / "train_cell.py", output_root=tmp_path / "out"
+            )
+
+        assert results["c0"]["status"] == "ok"
+        assert len(k8s.batch.created_jobs) == 1
+
+    def test_pool_api_permission_denied_falls_back_and_does_not_block(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """403 (the orchestrator GSA's real state today) + cold cluster ->
+        cannot_verify: warn only, cells still run. Never error the run."""
+        settings = self._gcp_settings(gcp_gpu_skus=["gcp_a100_80x2"])
+        monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: settings.get(name, default))
+        self._patch_pool_lister(
+            monkeypatch,
+            RuntimeError("GKE nodePools API returned HTTP 403: permission denied"),
+        )
+        core = _NodePoolFakeK8sCore(node_skus=[], pods=[_FakePod(exit_code=0)])  # cold
+        k8s = _K8sClients(batch=FakeK8sBatch(_succeeded_job()), core=core, watch_cls=None)
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.42})
+
+        with kjcr._bind_settings_prefix("gcp"):
+            results = run_matrix(
+                [{"id": "c0"}], tmp_path / "train_cell.py", output_root=tmp_path / "out"
+            )
+
+        assert results["c0"]["status"] == "ok"  # proceeded, NOT hard-blocked
+        assert len(k8s.batch.created_jobs) == 1
+        assert core.list_node_call_count == 1  # degraded to the live-node heuristic
+
+    def test_pool_api_queried_once_not_per_cell(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        settings = self._gcp_settings(gcp_gpu_skus=["gcp_a100_80x8"])
+        monkeypatch.setattr(kjcr, "_setting", lambda name, default=None: settings.get(name, default))
+
+        import backend.services.runtime.gpu_pool_preflight as gpp
+        calls = {"n": 0}
+
+        def _counting_lister():
+            calls["n"] += 1
+            return [
+                {"name": "p", "config": {"labels": {"reprolab/sku": "gcp_a100_80x8"}}}
+            ]
+
+        monkeypatch.setattr(gpp, "make_gke_pool_lister", lambda _s: _counting_lister)
+        core = _NodePoolFakeK8sCore(node_skus=[], pods=[_FakePod(exit_code=0)])
+        k8s = _K8sClients(batch=FakeK8sBatch(_succeeded_job()), core=core, watch_cls=None)
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.42})
+
+        with kjcr._bind_settings_prefix("gcp"):
+            results = run_matrix(
+                [{"id": "c0"}, {"id": "c1"}, {"id": "c2"}, {"id": "c3"}],
+                tmp_path / "train_cell.py",
+                output_root=tmp_path / "out",
+            )
+
+        assert all(r["status"] == "ok" for r in results.values())
+        assert calls["n"] == 1, f"expected 1 pool-API query for 4 cells, got {calls['n']}"
 
 
 # ---------------------------------------------------------------------------

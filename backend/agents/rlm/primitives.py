@@ -7291,13 +7291,23 @@ def run_experiment(
             }
             break
 
+        # `approx_usd_per_hr` is the WHOLE-MACHINE rate (an a2-ultragpu-8g is
+        # $31.44/hr for all 8 A100s, not per-GPU), but `GpuPlan.sku_usd_per_hr` is
+        # defined PER-GPU. Writing the machine rate into the per-GPU field made the
+        # escalated plan report 31.44 * 8 = $251.52/hr — an 8x phantom that trips
+        # the run's GPU budget cap and kills a legitimate escalation. Same defect
+        # the gpu_resolver carried; use the one canonical divisor.
+        # Byte-identical for every gpu_count==1 SKU (the entire RunPod path).
+        from backend.services.runtime.gpu_catalog import usd_per_gpu_hr as _usd_per_gpu_hr
+
+        _next_per_gpu = _usd_per_gpu_hr(next_sku)
         new_plan = gpu_plan.model_copy(update={
             "runpod_id": next_sku.runpod_id,
             "short_name": next_sku.short_name,
             "vram_gb": next_sku.vram_gb,
             "cloud_type": next_sku.cloud_type,
-            "sku_usd_per_hr": next_sku.approx_usd_per_hr,
-            "total_usd_per_hr": round(next_sku.approx_usd_per_hr * gpu_plan.gpu_count, 4),
+            "sku_usd_per_hr": _next_per_gpu,
+            "total_usd_per_hr": round(_next_per_gpu * gpu_plan.gpu_count, 4),
             "container_disk_gb": max(50, next_sku.vram_gb),
             "volume_gb": max(20, next_sku.vram_gb // 4),
             "ladder_remaining": gpu_plan.ladder_remaining[1:],

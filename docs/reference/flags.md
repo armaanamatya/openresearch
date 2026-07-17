@@ -4,9 +4,9 @@
 
 ## Summary
 
-- **Total distinct flags:** 470
+- **Total distinct flags:** 473
 - **Managed by `config.py` Settings (typed, default known):** 140
-- **Ad-hoc `os.environ` reads (no central default):** 330
+- **Ad-hoc `os.environ` reads (no central default):** 333
 - **Mentioned in `CLAUDE.md`:** 3 (0%)
 
 Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **sites** = ad-hoc read count; **default** = literal default at first read site (best effort).
@@ -335,6 +335,13 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_CONTEXT_MAP` |  |  | 2 | `""` |
+
+### `OPENRESEARCH_CREDENTIAL_*`
+
+| Flag | cfg | doc | sites | default |
+|---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_CREDENTIAL_HANDOFF_FD` |  |  |  | |
+| `OPENRESEARCH_CREDENTIAL_VAULT` |  |  |  | |
 
 ### `OPENRESEARCH_CUSTOM_*`
 
@@ -731,6 +738,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | `OPENRESEARCH_MAX_RLM_ITERATIONS` |  |  | 2 | `""` |
 | `OPENRESEARCH_MAX_RUN_GPU_USD` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_MAX_SCOPE_FAILURE_REPEATS` |  |  | 1 | `"2"` |
+| `OPENRESEARCH_MAX_TERMINAL_VERDICT` |  |  |  | |
 | `OPENRESEARCH_MAX_WALL_CLOCK_S` |  |  |  | |
 
 ### `OPENRESEARCH_METRIC_*`

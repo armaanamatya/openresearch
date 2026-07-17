@@ -24,7 +24,21 @@ Three rails, each flag-gated and fail-soft:
 
 Leaf ids are stable across attempts of one paper (``generated_rubric.json`` is
 a paper-level artifact, never archived), so leaf-level joins are exact.
-Pure stdlib; never raises.
+
+**Quarantine THEN rank.** ``leaf_champions`` / ``best_attempt_guidance_block``
+select over the GUARD-FILTERED pool (:func:`_guard_clean_scored_attempts`),
+never over a raw LLM score. A fabrication-suspected attempt can score high
+precisely BECAUSE it fabricated, so ranking a raw score would let the
+implementer's guidance -- and the leaf-champion crossover targets -- anchor on
+the fabrication and propagate it forward. The filter is
+``campaign_policy.seeding_pool`` itself (imported, never reimplemented), the
+same hard-quarantine gate the campaign's own ``select_champion`` applies before
+it ranks: fabrication / all-models-failed / tripped-canary attempts are dropped,
+while a merely soft-quarantined one (e.g. no external validator configured --
+the default) stays eligible, per spec §8.1/F4. Evidence, not grade.
+
+Never raises: the guard filter fails CLOSED (an attempt it cannot assess is
+dropped from the pool, not admitted to it).
 """
 
 from __future__ import annotations
@@ -157,22 +171,6 @@ def find_best_attempt(project_dir: Path | str) -> dict[str, Any] | None:
         return None
 
 
-def _latest_scored_attempt(project_dir: Path) -> dict[str, Any] | None:
-    try:
-        attempts_root = Path(project_dir) / "attempts"
-        if not attempts_root.is_dir():
-            return None
-        for attempt in sorted(
-            (p for p in attempts_root.iterdir() if p.is_dir()), reverse=True
-        ):
-            report = _read_report(attempt / "final_report.json")
-            if _score_of(report) is not None:
-                return {"dir": attempt, "score": _score_of(report), "report": report}
-        return None
-    except Exception:  # noqa: BLE001
-        return None
-
-
 def _leaves(report: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
     rub = (report or {}).get("rubric") or {}
     out: dict[str, dict[str, Any]] = {}
@@ -229,9 +227,15 @@ def seed_reference_code(project_dir: Path | str) -> str | None:
     present, its ``source_code_dir`` is staged verbatim and the score-ranked
     scan below is never consulted (Codex F5 — campaign-owned, guard-filtered
     selection must never be second-guessed by a raw score). A marker whose
-    ``source_code_dir`` is missing fails CLOSED (returns None; no fallback to
-    the scan) rather than silently reverting to score-ranked seeding under a
-    campaign.
+    ``source_code_dir`` is missing — or which names a source holding nothing
+    seedable — fails CLOSED (returns None; no fallback to the scan) rather
+    than silently reverting to score-ranked seeding under a campaign, and
+    rather than leaving behind an empty ``code/_best_attempt/`` whose README
+    would claim to be "the COMPLETE working code" of a seed that never
+    materialized. The driver stages the marker at the seed's POST-archive
+    path (``attempt_driver._prepare_launch``), so under a healthy campaign
+    the source is the archived ``attempts/<ts>/code`` tree, not the live
+    ``code/`` the pre-launch archive just emptied.
 
     With no marker (flag still on), behavior is unchanged: reference
     material for the implementer (it copies what it wants) — heavy artifacts
@@ -256,6 +260,16 @@ def seed_reference_code(project_dir: Path | str) -> str | None:
                 return None
             dst = project_dir / "code" / REFERENCE_DIR_NAME
             copied = _copy_code_tree(src, dst)
+            if copied == 0:
+                # Fail CLOSED, same as a missing source: an empty seed is not
+                # a seed. (Pre-fix, a marker pointing at the freshly-emptied
+                # live code/ could land here and ship a README-only "seed".)
+                shutil.rmtree(dst, ignore_errors=True)
+                logger.warning(
+                    "best_attempt: seed marker source %s held nothing seedable "
+                    "— failing closed (no reference staged)", src,
+                )
+                return None
             (dst / "_BEST_ATTEMPT_README.txt").write_text(
                 f"Campaign-selected seed: attempt {marker.get('attempt_n')} "
                 f"({marker.get('lineage')}) — source {src}.\n"
@@ -298,6 +312,11 @@ def seed_reference_code(project_dir: Path | str) -> str | None:
 
 
 def _all_scored_attempts(project_dir: Path) -> list[dict[str, Any]]:
+    """Every scored prior attempt, chronologically (dir names are timestamps).
+
+    RAW — no trust filter. Only :func:`_guard_clean_scored_attempts` should
+    feed selection; this is its unfiltered input.
+    """
     try:
         attempts_root = Path(project_dir) / "attempts"
         if not attempts_root.is_dir():
@@ -312,16 +331,66 @@ def _all_scored_attempts(project_dir: Path) -> list[dict[str, Any]]:
         return []
 
 
-def leaf_champions(project_dir: Path | str) -> dict[str, dict[str, Any]]:
-    """Per-leaf CHAMPION across ALL scored attempts (forward-search crossover).
+def _guard_clean_scored_attempts(project_dir: Path) -> list[dict[str, Any]]:
+    """:func:`_all_scored_attempts` minus every HARD-quarantined attempt.
 
-    The best single attempt is not the ceiling — champions are scattered
-    across attempts (All-CNN: attempt 2 held the base/strided stars, attempt 3
-    the only converged convpool/all-conv cells). Joined on the stable leaf id;
-    returns ``{leaf_id: {score, evidence, attempt}}``.
+    The trust gate is ``campaign_policy.seeding_pool`` over assessments built
+    by ``attempt_assessment.assess_attempt`` — the campaign's own machinery,
+    imported rather than reimplemented so this rail can never drift from the
+    quarantine rules ``select_champion`` enforces. Hard quarantine =
+    fabrication guard tripped / all-models-failed / rubric canary tripped;
+    soft quarantine (validator missing or stale) deliberately stays SEEDABLE
+    (spec §8.1/F4 — with the external validator default-OFF, filtering on it
+    would starve the rail on every real run).
+
+    ``pinned_rubric_sha256=None``: the campaign owns rubric pinning, and
+    ``generated_rubric.json`` is paper-level (never archived), so it is
+    absent from an archived attempt dir — pinning here would mismatch every
+    attempt into hard quarantine.
+
+    Imports are local: this module is loaded on hot child-run paths and must
+    not pull the campaign import chain in at module scope. Fail-CLOSED — an
+    attempt whose assessment cannot be computed is DROPPED, never admitted.
     """
+    attempts = _all_scored_attempts(project_dir)
+    if not attempts:
+        return []
+    try:
+        from backend.agents.rlm.attempt_assessment import assess_attempt
+        from backend.agents.rlm.campaign_policy import seeding_pool
+    except Exception:  # noqa: BLE001 — no guard filter => no selection (fail closed)
+        logger.debug("best_attempt: guard filter unavailable; pool empty", exc_info=True)
+        return []
+
+    by_n: dict[int, dict[str, Any]] = {}
+    assessments = []
+    for i, att in enumerate(attempts, start=1):
+        try:
+            assessments.append(
+                assess_attempt(
+                    att["dir"],
+                    attempt_n=i,
+                    driver="",
+                    project_id="",
+                    directives_sha256="",
+                    pinned_rubric_sha256=None,
+                )
+            )
+        except Exception:  # noqa: BLE001 — unassessable => quarantined by default
+            logger.debug("best_attempt: assess failed for %s", att["dir"], exc_info=True)
+            continue
+        by_n[i] = att
+    return [by_n[a.attempt_n] for a in seeding_pool(assessments) if a.attempt_n in by_n]
+
+
+def _best_of(pool: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Highest-scoring attempt WITHIN an already guard-filtered pool."""
+    return max(pool, key=lambda a: a["score"]) if pool else None
+
+
+def _leaf_champions_from(pool: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     champs: dict[str, dict[str, Any]] = {}
-    for att in _all_scored_attempts(Path(project_dir)):
+    for att in pool:
         for lid, leaf in _leaves(att["report"]).items():
             try:
                 sc = float(leaf["score"])
@@ -337,29 +406,57 @@ def leaf_champions(project_dir: Path | str) -> dict[str, dict[str, Any]]:
     return champs
 
 
-def champion_ceiling(project_dir: Path | str) -> float | None:
-    """Unweighted mean of per-leaf champions — a ROUGH crossover ceiling.
-
-    'If one run reproduced every leaf at its best-ever level simultaneously.'
-    Indicative only (real roll-up is weighted); None when no champions exist.
-    """
-    champs = leaf_champions(project_dir)
+def _ceiling_of(champs: dict[str, dict[str, Any]]) -> float | None:
     if not champs:
         return None
     vals = [c["score"] for c in champs.values()]
     return sum(vals) / len(vals)
 
 
+def leaf_champions(project_dir: Path | str) -> dict[str, dict[str, Any]]:
+    """Per-leaf CHAMPION across every GUARD-CLEAN scored attempt (forward-search
+    crossover).
+
+    The best single attempt is not the ceiling — champions are scattered
+    across attempts (All-CNN: attempt 2 held the base/strided stars, attempt 3
+    the only converged convpool/all-conv cells). Joined on the stable leaf id;
+    returns ``{leaf_id: {score, evidence, attempt}}``.
+
+    Hard-quarantined attempts are excluded (see the module docstring): a
+    fabricated leaf routinely scores 1.0, and crediting it as the champion
+    would hand the implementer a fabrication to reproduce.
+    """
+    return _leaf_champions_from(_guard_clean_scored_attempts(Path(project_dir)))
+
+
+def champion_ceiling(project_dir: Path | str) -> float | None:
+    """Unweighted mean of per-leaf champions — a ROUGH crossover ceiling.
+
+    'If one run reproduced every leaf at its best-ever level simultaneously.'
+    Indicative only (real roll-up is weighted); None when no champions exist.
+    """
+    return _ceiling_of(leaf_champions(project_dir))
+
+
 def best_attempt_guidance_block(project_dir: Path | str, *, max_chars: int = 2400) -> str:
-    """Implementer-prompt block: best score + seeded-code pointer + regressions."""
+    """Implementer-prompt block: best score + seeded-code pointer + regressions.
+
+    Every attempt named here — the best, the latest it is compared against, and
+    the crossover champions — comes from the GUARD-FILTERED pool, never the raw
+    score-ranked scan. Anchoring the implementer on a fabrication-quarantined
+    attempt would launder the fabrication into the next attempt's code, and the
+    fitness signal is the deterministic evidence layer, never the LLM grade.
+    """
     if not _flag_on(ENV_SEED_FLAG):
         return ""
     try:
         project_dir = Path(project_dir)
-        best = find_best_attempt(project_dir)
+        # One scan+assessment pass; best/latest/champions all derive from it.
+        pool = _guard_clean_scored_attempts(project_dir)
+        best = _best_of(pool)
         if best is None:
             return ""
-        latest = _latest_scored_attempt(project_dir)
+        latest = pool[-1]  # pool is chronological (attempts/ dirs are timestamps)
         lines = [
             "",
             "",
@@ -371,7 +468,7 @@ def best_attempt_guidance_block(project_dir: Path | str, *, max_chars: int = 240
             "below this baseline. Protect already-earned rubric leaves before "
             "chasing new ones.",
         ]
-        if latest is not None and latest["dir"] != best["dir"]:
+        if latest["dir"] != best["dir"]:
             regs = leaf_regressions(best["report"], latest["report"])
             if regs:
                 lines.append(
@@ -385,7 +482,7 @@ def best_attempt_guidance_block(project_dir: Path | str, *, max_chars: int = 240
                     )
         # Forward-search crossover: leaves where some OTHER attempt beat the
         # best attempt — no single run is the ceiling; combine the champions.
-        champs = leaf_champions(project_dir)
+        champs = _leaf_champions_from(pool)
         best_leaves = _leaves(best["report"])
         cross = []
         for lid, ch in champs.items():
@@ -394,7 +491,7 @@ def best_attempt_guidance_block(project_dir: Path | str, *, max_chars: int = 240
             if ch["score"] - bscore >= 0.15 and ch["attempt"] != best["dir"].name:
                 cross.append((lid, ch, bscore))
         if cross:
-            ceiling = champion_ceiling(project_dir)
+            ceiling = _ceiling_of(champs)
             lines.append(
                 "CROSSOVER TARGETS — leaves where a DIFFERENT attempt beat the "
                 "best one (no single prior run is the ceiling; reproduce ALL "

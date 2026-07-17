@@ -126,6 +126,19 @@ def _extract_loss_invariants(loss_str: str) -> tuple[LossInvariant, ...]:
     return tuple(out)
 
 
+#: Keys inside ``algorithm_invariants`` that are NOT coefficients — they are
+#: structural declarations (booleans, prose, formulas, name lists). Everything
+#: else in that block whose value is a plain number IS a declared coefficient.
+#: A deny-list, not an allow-list, so a new paper can declare ``tau: 0.7`` and be
+#: picked up with no code change — the generalization of what this registry
+#: currently does by hand.
+_NON_COEFFICIENT_INVARIANT_KEYS: frozenset[str] = frozenset({
+    "stop_gradient_on_gate", "stop_gradient_variables", "real_model_required",
+    "rl_rollout_centric", "loss", "gate_formula", "divergence",
+    "gating_strategy", "notes",
+})
+
+
 @dataclass
 class AlgorithmInvariant:
     """Per-paper algorithmic invariants the agent's train.py must satisfy."""
@@ -134,6 +147,31 @@ class AlgorithmInvariant:
     """Variable names whose assignment RHS must be wrapped in ``.detach()``
     or inside a ``torch.no_grad()`` block. The pre-flight AST scan
     walks every ``target = expr`` statement and flags violations."""
+
+    coefficients: dict[str, float] = field(default_factory=dict)
+    """OPERATOR-DECLARED paper coefficients, canonicalized (``beta`` / ``lambda``
+    / ``tau`` …), read from the numeric entries of ``algorithm_invariants``.
+
+    This is NOT a source the implementer is told to emit, and it never becomes an
+    assertion. It exists for exactly ONE purpose: a **conflict veto** on the
+    automated coefficient path (``rubric_gen._coefficient_conflict``).
+
+    WHY. The rubric grounds its coefficient assertions in the PAPER TEXT — the
+    only source that generalizes to an arbitrary arXiv id. But an operator who has
+    read the authors' released code sometimes records a DIFFERENT value here, on
+    purpose. SDAR is exactly that case: ``docs/papers/2605.15155.yaml`` declares
+    ``beta: 5.0`` / ``lambda: 0.01`` ("authors' released scripts") while the paper
+    text prints β=10 / λ=0.1. A run that faithfully executes the authors' code
+    therefore emits ``coefficients.beta = 5.0`` — and a deterministic
+    ``beta ~= 10`` assertion would score that faithful run **0.0**.
+
+    So when this registry declares a value that DISAGREES with the paper-text
+    value, the coefficient is *contested* and no machine check on it is sound:
+    the annotation is dropped and the leaf goes to the LLM, which can read both
+    the code and the paper and judge. Recording a value here is thus how an
+    operator says "do not machine-check this symbol" — a purely one-directional,
+    coverage-reducing gate, in keeping with every other gate on this path.
+    """
 
     real_model_required: bool = False
     """When True, train.py must call ``AutoModelForCausalLM.from_pretrained(<canonical_path>)``
@@ -151,6 +189,117 @@ class AlgorithmInvariant:
     pre-flight check verifies at least ``min_matching_tokens`` appear
     in train.py source for each invariant; catches "agent dropped the
     paper's algorithm and used vanilla CE" regressions."""
+
+
+def _extract_coefficients(algo_block: dict) -> dict[str, float]:
+    """Pull the numeric (coefficient) entries out of an ``algorithm_invariants`` block.
+
+    ``{"beta": 5.0, "lambda": 0.01, "stop_gradient_on_gate": True, "loss": "..."}``
+    → ``{"beta": 5.0, "lambda": 0.01}``.
+
+    Booleans are excluded (a flag is not a constant); structural keys are excluded
+    by name. Keys are canonicalized through the SAME normalizer the manifest uses,
+    so ``β`` here and ``coefficients.beta`` on disk are the same symbol.
+    Fail-soft: any bad entry is skipped, never raised.
+    """
+    from backend.agents.rlm.provenance import canonical_coefficient_name
+
+    out: dict[str, float] = {}
+    if not isinstance(algo_block, dict):
+        return out
+    for raw_key, raw_val in algo_block.items():
+        if not isinstance(raw_key, str):
+            continue
+        if raw_key.strip().lower() in _NON_COEFFICIENT_INVARIANT_KEYS:
+            continue
+        if isinstance(raw_val, bool) or not isinstance(raw_val, (int, float)):
+            continue
+        name = canonical_coefficient_name(raw_key)
+        if not name:
+            continue
+        try:
+            out[name] = float(raw_val)
+        except (TypeError, ValueError):  # pragma: no cover — guarded above
+            continue
+    return out
+
+
+_ARXIV_ID_RE = None  # lazily compiled in resolve_arxiv_id
+
+
+def resolve_arxiv_id(project_dir: Path | str | None) -> str | None:
+    """Recover the bare arXiv id (``"2605.15155"``) from a run's on-disk artifacts.
+
+    Mirrors ``run._extract_arxiv_id_from_project_dir``'s resolution order —
+    ``artifact_index.json`` → ``paper.arxiv_id``, then ``demo_status.json`` →
+    ``sourceUrl``/``sourceLabel``, then the project-dir name — but lives HERE so
+    ``rubric_gen`` can reach the per-paper registry without importing the
+    orchestrator (``run.py`` imports ``rubric_gen``; the reverse would be a cycle).
+
+    Fail-soft: any missing/corrupt artifact yields ``None`` (→ no registry, → no
+    veto, → the paper-text-grounded path stands unchanged).
+    """
+    global _ARXIV_ID_RE
+    if _ARXIV_ID_RE is None:
+        import re as _re
+        _ARXIV_ID_RE = _re.compile(r"(\d{4,5}\.\d{4,5})")
+    if project_dir is None:
+        return None
+    try:
+        import json as _json
+        import re as _re
+
+        pdir = Path(project_dir)
+
+        ai = pdir / "artifact_index.json"
+        if ai.is_file():
+            data = _json.loads(ai.read_text(encoding="utf-8", errors="replace"))
+            aid = (data.get("paper") or {}).get("arxiv_id") if isinstance(data, dict) else None
+            if aid and _ARXIV_ID_RE.search(str(aid)):
+                return str(aid).strip()
+
+        ds = pdir / "demo_status.json"
+        if ds.is_file():
+            data = _json.loads(ds.read_text(encoding="utf-8", errors="replace"))
+            if isinstance(data, dict):
+                m = _re.search(
+                    r"arxiv\.org/(?:abs|pdf)/(\d{4,5}\.\d{4,5})",
+                    str(data.get("sourceUrl") or ""),
+                )
+                if m:
+                    return m.group(1)
+                m = _ARXIV_ID_RE.search(str(data.get("sourceLabel") or ""))
+                if m:
+                    return m.group(1)
+
+        m = _ARXIV_ID_RE.search(pdir.name)
+        if m:
+            return m.group(1)
+    except Exception:  # noqa: BLE001 — observability must never raise into rubric-gen
+        return None
+    return None
+
+
+def declared_coefficients(
+    project_dir: Path | str | None, *, repo_root: Path | None = None
+) -> dict[str, float]:
+    """Operator-declared coefficients for the paper this run reproduces, if any.
+
+    ``{}`` whenever the paper has no ``docs/papers/<id>.yaml``, no
+    ``algorithm_invariants``, or no numeric entries in it — which is the common
+    case, and means "no veto, the paper-text-grounded annotation stands."
+    Fail-soft; never raises.
+    """
+    try:
+        arxiv_id = resolve_arxiv_id(project_dir)
+        if not arxiv_id:
+            return {}
+        inv = load_paper_invariants(arxiv_id, repo_root=repo_root)
+        if inv is None or inv.algorithm is None:
+            return {}
+        return dict(inv.algorithm.coefficients)
+    except Exception:  # noqa: BLE001 — fail-soft
+        return {}
 
 
 @dataclass
@@ -278,6 +427,7 @@ def load_paper_invariants(arxiv_id: str, repo_root: Path | None = None) -> Paper
             real_model_required=bool(algo_block.get("real_model_required", False)),
             rl_rollout_centric=rl_rollout,
             loss_invariants=loss_invariants,
+            coefficients=_extract_coefficients(algo_block),
         )
 
     # --- models_in_paper ---
@@ -325,7 +475,11 @@ __all__ = [
     "_short_to_pyident",
     "canonical_model_key",
     "_extract_loss_invariants",
+    "_extract_coefficients",
+    "declared_coefficients",
+    "resolve_arxiv_id",
     "_ALGORITHM_TOKEN_PATTERNS",
     "_DEFAULT_GATE_VARIABLE_NAMES",
+    "_NON_COEFFICIENT_INVARIANT_KEYS",
     "_SURROGATE_MODEL_TOKENS",
 ]

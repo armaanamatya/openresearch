@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Callable
+from typing import Callable, Iterable
 
 from backend.agents.rlm.exclusion import AXIS_DATASET, KIND_ENV_SETUP_FAILED, Exclusion
 
@@ -130,6 +130,31 @@ class CredentialBroker:
     def available(self, name: str) -> bool:
         """``True`` iff :meth:`get` resolves ``name`` to a non-empty string."""
         return bool(self.get(name))
+
+    def resolve_env(self, names: Iterable[str]) -> list[tuple[str, str]]:
+        """Resolve each ``_SECRET_REGISTRY`` name to a ``(canonical_env_var, value)`` pair.
+
+        The canonical env var is the FIRST env-candidate registered for that
+        name (e.g. ``"HF_TOKEN"`` for ``"hf_token"``), so a value resolved via
+        an alternate alias or a Settings fallback still round-trips under the
+        name callers (and this broker's own ``get``) expect. Unknown names and
+        names that resolve to nothing are silently skipped — never emit an
+        empty placeholder. This is the single seam a caller should use to turn
+        a shortlist of logical secret names into injectable env-var pairs
+        (e.g. a K8s Job container env) instead of hand-rolling a second
+        env-candidate table.
+        """
+        out: list[tuple[str, str]] = []
+        for name in names:
+            entry = _SECRET_REGISTRY.get(name)
+            if entry is None:
+                continue
+            value = self.get(name)
+            if not value:
+                continue
+            canonical_env_var = entry[0][0]
+            out.append((canonical_env_var, value))
+        return out
 
     def require(self, name: str) -> str:
         """Return the secret or raise ``KeyError(name)``.

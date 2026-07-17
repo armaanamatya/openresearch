@@ -104,7 +104,9 @@ def test_existing_gcp_fields_unchanged(clean_new_gcp_env):
     assert s.gcp_per_gpu_vram_gb == pytest.approx(80.0)
     assert s.gcp_max_nodes == 4
     assert s.gcp_base_image == ""
-    assert s.gcp_gpu_skus == ["gcp_a100_80x8"]
+    # 1-GPU pool + 8-GPU pool: force_single_gpu defaults True, so a gpu_count==1
+    # pool must exist or every single-GPU paper fails to resolve.
+    assert s.gcp_gpu_skus == ["gcp_a100_80", "gcp_a100_80x8"]
     assert s.gcp_ttl_seconds_after_finished == 3600
     assert s.gcp_job_backoff_limit == 0
     assert s.gcp_cache_mount_path == "/mnt/reprolab-cache"

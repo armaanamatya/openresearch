@@ -21,6 +21,20 @@ shape (not every finalize). Default ON; ``OPENRESEARCH_FINALIZE_REGRADE=0``
 disables (env_pin precedent — a correctness rail). Fail-soft everywhere: any
 error keeps the recorded grade untouched. Paper-agnostic — keys off mtimes and
 the rubric on disk, nothing paper-specific.
+
+TRUST (fail-closed, P0 2026-07-13). Everything this module re-grades comes from
+``code/metrics.json``, which the root model can WRITE. Numbers in that file are
+therefore a CLAIM, not evidence — ``_converged_cell_count`` counts claims. Both
+credit-granting moves here consequently require the unforgeable half as well: at
+least one success-compatible IN-PROCESS ``run_experiment`` cost-ledger call
+(``_experiment_backed``, reusing report.py's canonical counters).
+  * the ``degraded=False`` full-credit grading (bypasses the 0.35 degraded leaf
+    ceiling) — refused outright when the ledger shows no real call;
+  * the failed→reproduced verdict flip — clamped, mirroring the two-axis upgrade
+    clamp in ``report.py::write_final_report_rlm`` and its ``verdict_clamped``
+    stamp. Downgrades stay free.
+Without this, a run that never produced a single clean success row could write a
+plausible grid to disk and be re-graded to a full-credit "reproduced".
 """
 
 from __future__ import annotations
@@ -105,11 +119,72 @@ def _metric_bearing_leaves(node: Any, _depth: int = 0) -> int:
 
 
 def _converged_cell_count(metrics: dict) -> int:
-    """How many measured leaves the on-disk grid carries (shape-robust)."""
+    """How many measured leaves the on-disk grid carries (shape-robust).
+
+    NOT a trust signal. ``code/metrics.json`` is ROOT-WRITABLE (the REPL keeps
+    ``open()`` live), so this counts NUMBERS PRESENT IN A FILE — it cannot tell a
+    measured grid from a plausible one the root typed. Everything that grants CREDIT
+    on the strength of these numbers (the ``degraded=False`` ceiling bypass, the
+    failed→reproduced verdict flip) must additionally require the unforgeable ledger
+    signal below.
+    """
     pm = metrics.get("per_model") if isinstance(metrics, dict) else None
     if not isinstance(pm, dict):
         return 0
     return sum(_metric_bearing_leaves(model) for model in pm.values())
+
+
+# ---------------------------------------------------------------------------
+# The unforgeable half: in-process run_experiment ledger provenance
+# ---------------------------------------------------------------------------
+
+def _experiment_ledger_counts(ctx: Any) -> tuple[int | None, int | None]:
+    """``(success_compatible_calls, partial_timeout_calls)`` for ``run_experiment``.
+
+    Reuses report.py's CANONICAL counters — ``run_experiment_success_count`` /
+    ``run_experiment_partial_timeout_count``, both backed by
+    ``RunCostLedger.session_*_count``, which only count rows appended IN THIS PROCESS
+    by ``binding.wrap_primitive`` (disk-seeded rows from a warm retry are excluded
+    precisely because the REPL can forge them). One source of truth: this module does
+    not re-derive the counts, it imports them.
+
+    ``(None, None)`` when no ledger is available (replay/postmortem, or ``ctx is
+    None``) — the caller then falls back to content-only trust, matching
+    ``report._apply_evidence_gate``'s posture exactly. Never raises.
+    """
+    if ctx is None:
+        return None, None
+    try:
+        from backend.agents.rlm.report import (  # noqa: PLC0415 — local: avoids an import cycle
+            run_experiment_partial_timeout_count,
+            run_experiment_success_count,
+        )
+        return (
+            run_experiment_success_count(ctx),
+            run_experiment_partial_timeout_count(ctx),
+        )
+    except Exception:  # noqa: BLE001 — a trust input must never crash finalization
+        logger.debug("finalize_regrade: ledger counts unavailable", exc_info=True)
+        return None, None
+
+
+def _experiment_backed(ctx: Any) -> bool | None:
+    """Did a real ``run_experiment`` container actually run in this attempt?
+
+    ``True``  — ≥1 success-compatible call, or ≥1 harness-finalized ``partial_timeout``
+                call (the harness itself loaded those metrics off disk after an
+                exec_timeout/exec_stalled — real completed work, not agent prose).
+    ``False`` — the ledger is available and AFFIRMATIVELY shows zero of both: whatever
+                is in ``code/metrics.json`` is not backed by any experiment this
+                attempt ran.
+    ``None``  — no ledger (replay/postmortem): unknown, so trust content as before.
+    """
+    ok, partial_timeout = _experiment_ledger_counts(ctx)
+    if ok is None and partial_timeout is None:
+        return None
+    if (ok or 0) >= 1 or (partial_timeout or 0) >= 1:
+        return True
+    return False
 
 
 def should_regrade(project_dir: Path, *, recorded_score: float | None,
@@ -204,6 +279,21 @@ def maybe_regrade(ctx: Any, report: Any) -> dict | None:
         if _converged_cell_count(metrics) <= 0:
             logger.info("finalize_regrade: on-disk metrics carry no converged cells — skip")
             return None
+        # FABRICATION FLOOR (fail-closed): _converged_cell_count proves only that
+        # NUMBERS EXIST in a root-writable file. Full-credit grading below turns those
+        # numbers into score — it passes degraded=False, deliberately bypassing the 0.35
+        # degraded ceiling — so it additionally requires the unforgeable half: a real
+        # run_experiment call in THIS process's cost ledger. Zero of them ⇒ a container
+        # never ran, ⇒ don't spend an LLM call and don't grant the ceiling bypass.
+        # ``None`` (no ledger) keeps content-only trust, exactly like the evidence gate.
+        if _experiment_backed(ctx) is False:
+            logger.warning(
+                "finalize_regrade: refusing to re-grade — code/metrics.json is not backed "
+                "by ANY successful (or harness-finalized partial-timeout) run_experiment "
+                "call in this attempt; grading it at degraded=False would credit numbers "
+                "that no container produced",
+            )
+            return None
 
         logger.info(
             "finalize_regrade: re-grading complete evidence (%s; recorded=%.4f target=%s)",
@@ -216,11 +306,14 @@ def maybe_regrade(ctx: Any, report: Any) -> dict | None:
             run_dir=project_dir,
             llm_client=llm_client,
             rubric_source=source,
-            # NOT degraded by construction: the _converged_cell_count gate above proved
-            # real converged cells. Without this explicit False, score_reproduction's
-            # degraded=None auto-detect reads a stale on-disk final_report.json and, on
-            # an empty-baseline_metrics / verdict="failed" report, caps EVERY leaf at 0.35
-            # — nuking the very complete-grid grade this regrade exists to recover.
+            # NOT degraded by construction: the two gates above proved BOTH halves —
+            # numbers on disk (_converged_cell_count) AND a real run_experiment call
+            # backing them (_experiment_backed). Without this explicit False,
+            # score_reproduction's degraded=None auto-detect reads a stale on-disk
+            # final_report.json and, on an empty-baseline_metrics / verdict="failed"
+            # report, caps EVERY leaf at 0.35 — nuking the very complete-grid grade this
+            # regrade exists to recover. It is ONLY safe because the ledger gate proved
+            # the evidence is real; never hoist this past that check.
             degraded=False,
             invariants=list(getattr(ctx, "paper_hint_invariants", None) or []),
             # Layer 4 (2026-06-16): exclude out-of-inclusion-scope leaves on the
@@ -289,8 +382,13 @@ def regrade_and_emit(ctx: Any, report: Any, emit: Any) -> dict | None:
     is unconditional: a skip emits ``finalize_regrade_skipped`` with the gate
     reason so a stale/zero final is never silent about WHY it wasn't recovered
     (the 2026-06-13 All-CNN v6 / Adam v10 debugging gap — both shipped 0 with a
-    complete grid and no trace of whether the regrade ran). Flips the report
-    verdict failed→reproduced when an adopted score meets target. Never raises.
+    complete grid and no trace of whether the regrade ran).
+
+    Flips the report verdict failed→reproduced when an adopted score supports it —
+    but ONLY when a real ``run_experiment`` call backs the on-disk grid (see
+    :func:`_apply_regrade_verdict`); an unbacked grid is refused outright, stamped
+    ``verdict_clamped``, and emitted as ``finalize_regrade_verdict_clamped``.
+    Never raises.
     """
     try:
         if not is_enabled():
@@ -308,6 +406,29 @@ def regrade_and_emit(ctx: Any, report: Any, emit: Any) -> dict | None:
         except (TypeError, ValueError):
             tgt_f = None
         fire, reason = should_regrade(project_dir, recorded_score=rec_f, target=tgt_f)
+
+        # FABRICATION FLOOR, stamped at the one entry point every finalize path calls.
+        # maybe_regrade will refuse to credit an unbacked grid — but a bare
+        # "finalize_regrade_skipped (evidence_grew_…)" would hide WHY, and this module's
+        # whole doctrine is that a run is never silent about why a score wasn't recovered.
+        # So say it in the report (verdict_clamped, report.py's convention) and on the
+        # stream, and stop here: no LLM call, no grade, no upgrade.
+        if fire and _experiment_backed(ctx) is False:
+            ok, partial_timeout = _experiment_ledger_counts(ctx)
+            clamp_reason = (
+                f"finalize re-grade refused: zero success-compatible run_experiment calls "
+                f"in this attempt (success_compatible={ok}, partial_timeout="
+                f"{partial_timeout}) — code/metrics.json is root-writable, so neither a "
+                f"full-credit grade nor a verdict upgrade can be granted on the strength "
+                f"of that file alone"
+            )
+            logger.warning("finalize_regrade: %s", clamp_reason)
+            _stamp_verdict_clamped(report, clamp_reason)
+            _safe_emit(emit, "run_warning", {
+                "code": "finalize_regrade_verdict_clamped",
+                "message": clamp_reason,
+            })
+            return None
 
         fresh = maybe_regrade(ctx, report) if fire else None
         if fresh is not None:
@@ -328,8 +449,7 @@ def regrade_and_emit(ctx: Any, report: Any, emit: Any) -> dict | None:
                 if report.verdict == "failed":
                     _sc = fresh.get("overall_score")
                     if _sc is not None:
-                        from backend.agents.rlm.report import reconcile_verdict_with_score
-                        report.verdict = reconcile_verdict_with_score("reproduced", float(_sc))
+                        _apply_regrade_verdict(ctx, report, float(_sc), emit)
             except Exception:  # noqa: BLE001
                 pass
             return fresh
@@ -346,6 +466,91 @@ def regrade_and_emit(ctx: Any, report: Any, emit: Any) -> dict | None:
         return None
 
 
+_VERDICT_RANK: dict[str, int] = {"failed": 0, "partial": 1, "reproduced": 2}
+
+
+def _apply_regrade_verdict(ctx: Any, report: Any, score: float, emit: Any) -> None:
+    """Set the post-regrade verdict from ``score`` — with a fail-closed UPGRADE CLAMP.
+
+    The regrade re-scores ``code/metrics.json``, which is ROOT-WRITABLE. Lifting the
+    verdict on the strength of that file alone would let a run that never produced a
+    single clean success row ship "reproduced" just for writing a plausible grid. So an
+    upgrade of the verdict RANK requires the same unforgeable trust signal the two-axis
+    clamp demands at the report chokepoint (``report.py::write_final_report_rlm``,
+    ~L2177-2193: "an upgrade therefore requires the same unforgeable trust signal the
+    gate uses: >=1 success-compatible in-process run_experiment call"). Same three
+    postures, same ``verdict_clamped`` stamping convention:
+
+      * ledger unknown (``None`` — replay/postmortem) → content-only trust, upgrade as before;
+      * ≥1 success-compatible in-process ``run_experiment`` call → upgrade as before;
+      * 0 success-compatible but ≥1 harness-finalized ``partial_timeout`` call → a
+        container DID run and the HARNESS (not the agent) loaded its metrics, so the
+        salvage this module exists for still lands — but seeded at "partial", never
+        "reproduced" (mirrors ``_apply_evidence_gate``'s partial-timeout tier, which caps
+        at partial by design);
+      * 0 of both → REFUSE the upgrade, keep the verdict, stamp ``verdict_clamped``.
+
+    DOWNGRADES ARE ALWAYS FREE: ``reconcile_verdict_with_score`` only caps downward, and
+    a refusal never raises a verdict. Never raises.
+    """
+    from backend.agents.rlm.report import (  # noqa: PLC0415 — local: avoids an import cycle
+        reconcile_verdict_with_score,
+    )
+
+    current = str(getattr(report, "verdict", "") or "")
+    ok, partial_timeout = _experiment_ledger_counts(ctx)
+
+    if _experiment_backed(ctx) is False:
+        # Refuse the UPGRADE — but never freeze the verdict: re-seeding from the CURRENT
+        # verdict lets reconcile_verdict_with_score still cap it DOWNWARD (downgrades are
+        # always free; it is structurally incapable of raising one).
+        would_be = reconcile_verdict_with_score("reproduced", score)
+        if _VERDICT_RANK.get(would_be, 0) > _VERDICT_RANK.get(current, 0):
+            reason = (
+                f"upgrade from {current!r} to {would_be!r} refused: zero "
+                f"success-compatible run_experiment calls in this attempt "
+                f"(success_compatible={ok}, partial_timeout={partial_timeout}) — "
+                f"code/metrics.json is root-writable, so a re-grade of it cannot license "
+                f"a verdict that no measured experiment backs"
+            )
+            logger.warning("finalize_regrade: verdict upgrade clamped — %s", reason)
+            _stamp_verdict_clamped(report, reason)
+            _safe_emit(emit, "run_warning", {
+                "code": "finalize_regrade_verdict_clamped",
+                "message": f"finalize re-grade did NOT lift the verdict: {reason}.",
+            })
+        report.verdict = reconcile_verdict_with_score(current, score)
+        return
+
+    # A partial-timeout-only attempt is real work, but never full credit.
+    seed = "reproduced" if (ok is None or ok >= 1) else "partial"
+    new_verdict = reconcile_verdict_with_score(seed, score)
+    if _VERDICT_RANK.get(new_verdict, 0) > _VERDICT_RANK.get(current, 0):
+        logger.info(
+            "finalize_regrade: verdict %r -> %r (score=%.4f, seed=%r, "
+            "success_compatible_run_experiment_calls=%s)",
+            current, new_verdict, score, seed, ok,
+        )
+    report.verdict = new_verdict
+
+
+def _stamp_verdict_clamped(report: Any, reason: str) -> None:
+    """Record a refused upgrade on the report, under report.py's ``verdict_clamped`` key.
+
+    ``RLMFinalReport`` has no ``reproducibility`` field (the two-axis block is spliced
+    into the serialized dict at write time), so the stamp lands on the ``rubric`` dict —
+    a real model field that ``write_final_report_rlm`` serializes verbatim — keeping the
+    refusal visible in ``final_report.json`` rather than only in the logs. Best-effort:
+    a frozen/exotic report object never breaks finalize.
+    """
+    try:
+        rubric = dict(getattr(report, "rubric", None) or {})
+        rubric["verdict_clamped"] = reason
+        report.rubric = rubric
+    except Exception:  # noqa: BLE001
+        logger.debug("finalize_regrade: verdict_clamped stamp failed", exc_info=True)
+
+
 def _safe_emit(emit: Any, event: str, payload: dict) -> None:
     try:
         if callable(emit):
@@ -354,16 +559,24 @@ def _safe_emit(emit: Any, event: str, payload: dict) -> None:
         logger.debug("finalize_regrade: emit failed", exc_info=True)
 
 
-def regrade_for_hard_stop(project_dir: Path | str, llm_client: Any) -> dict | None:
-    """Re-grade the completed grid on the hard-stop path (no ctx available).
+def regrade_for_hard_stop(
+    project_dir: Path | str, llm_client: Any, *, ctx: Any = None
+) -> dict | None:
+    """Re-grade the completed grid on the hard-stop path (no ctx by default).
 
-    The watchdog/SIGTERM salvage finalizer (``_hard_stop_with_report``) has no
-    RunContext — only project_dir and a captured llm_client. It salvages the
-    best RECORDED score, which is ZERO for a run that completed its grid but
-    never verified (Adam's long runs that hit the wall-clock). This grades the
-    on-disk grid directly so salvage can floor to it. Returns the fresh grade
-    dict (with overall_score) when the grid carries real evidence, else None.
-    Never raises.
+    The watchdog/SIGTERM salvage finalizer (``_hard_stop_with_report``) passes only
+    project_dir and a captured llm_client. It salvages the best RECORDED score, which
+    is ZERO for a run that completed its grid but never verified (Adam's long runs that
+    hit the wall-clock). This grades the on-disk grid directly so salvage can floor to
+    it. Returns the fresh grade dict (with overall_score) when the grid carries real
+    evidence, else None. Never raises.
+
+    ``ctx`` (optional) carries the authoritative in-process cost ledger. When supplied
+    and it shows ZERO real ``run_experiment`` calls, the ``degraded=False`` full-credit
+    bypass is refused — the same fabrication floor ``maybe_regrade`` applies. Omitted
+    (today's caller) ⇒ ``None`` ⇒ content-only trust ⇒ byte-identical behaviour; the
+    verdict on this path is still gated downstream by ``report._apply_evidence_gate``,
+    which the hard-stop writer feeds with the real ledger counts.
     """
     try:
         if not is_enabled() or llm_client is None:
@@ -377,6 +590,12 @@ def regrade_for_hard_stop(project_dir: Path | str, llm_client: Any) -> dict | No
             return None
         if _converged_cell_count(metrics) <= 0:
             return None
+        if _experiment_backed(ctx) is False:
+            logger.warning(
+                "finalize_regrade: hard-stop re-grade refused — code/metrics.json is not "
+                "backed by any real run_experiment call in this attempt",
+            )
+            return None
         rubric, source = _load_rubric(project_dir)
         if rubric is None:
             return None
@@ -385,7 +604,7 @@ def regrade_for_hard_stop(project_dir: Path | str, llm_client: Any) -> dict | No
         fresh = score_reproduction(
             rubric_tree=rubric, run_dir=project_dir, llm_client=llm_client,
             rubric_source=source,
-            degraded=False,  # converged cells proven above; see maybe_regrade for the 0.35-cap rationale
+            degraded=False,  # both halves proven above; see maybe_regrade for the 0.35-cap rationale
         )
         if fresh.get("overall_score") is None:
             return None

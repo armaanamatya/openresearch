@@ -33,6 +33,7 @@ import logging
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
+from backend.agents.runtime import credential_vault
 from backend.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -1015,6 +1016,32 @@ class FileLiveRunService:
             if sys.platform == "win32"
             else 0
         )
+
+        # ── THE SPAWN SECURITY BOUNDARY (pivot brief §7) ───────────────────────
+        # This child is the orchestrator: root-MODEL-written Python is `exec`'d in
+        # IT (environment="local" is mandatory), rlm's _SAFE_BUILTINS keeps
+        # `__import__` and `open`, and the paper steering the root is an arbitrary
+        # uploaded PDF — attacker-influenceable. So the credentials must not be in
+        # this child's `env`: execve freezes envp into a kernel snapshot that
+        # /proc/self/environ reads straight back, and NO in-process os.environ scrub
+        # (credential_vault.arm) can remove them from it. Instead the env goes over
+        # credential-free and the keys ride an inherited pipe on stdin, which the
+        # child's `_credential_handoff_preamble` drains into memory before it imports
+        # anything. The vault then governs them exactly as before.
+        #
+        # `_subprocess_env` is unchanged and still resolves the full credential set
+        # (shell + .env + per-run BYO keys) — the split happens here, at the last
+        # possible moment, so there is one place to audit.
+        spawn_env = self._subprocess_env(request)
+        credential_blob: dict[str, str] = {}
+        stdin_target: int = subprocess.DEVNULL
+        if credential_vault.is_enabled():
+            spawn_env, credential_blob = credential_vault.split_spawn_env(spawn_env)
+            spawn_env[credential_vault.HANDOFF_FD_ENV] = str(credential_vault.HANDOFF_FD)
+            stdin_target = subprocess.PIPE
+        # else: the documented operator escape hatch (OPENRESEARCH_CREDENTIAL_VAULT=0)
+        # — byte-identical to the pre-vault spawn, keys in env, stdin on DEVNULL.
+
         try:
             process = subprocess.Popen(
                 [
@@ -1031,13 +1058,19 @@ class FileLiveRunService:
                 cwd=self.repo_root,
                 stdout=stdout,
                 stderr=stderr,
-                stdin=subprocess.DEVNULL,
+                stdin=stdin_target,
                 creationflags=creation_flags,
-                env=self._subprocess_env(request),
+                env=spawn_env,
             )
         finally:
             stderr.close()
             stdout.close()
+
+        if process.stdin is not None:
+            # Off the event loop: the child drains this immediately, but a crashed
+            # child (or a >pipe-buffer blob on Windows) must never stall the API.
+            # write_handoff always closes the pipe — the child blocks until EOF.
+            await asyncio.to_thread(credential_vault.write_handoff, process.stdin, credential_blob)
 
         meta.update({"pid": process.pid, "pidHost": socket.gethostname(), "updatedAt": _now()})
         await asyncio.to_thread(self._write_status, project_id, meta)
@@ -1932,6 +1965,51 @@ def _initial_status(
     return status
 
 
+def _credential_handoff_preamble(vault_path: str | None = None) -> str:
+    """The first statements of the run subprocess: take the out-of-band credentials.
+
+    The run subprocess is spawned with a credential-FREE environment (see
+    ``_start_python_run``) because ``execve`` freezes ``envp`` into a kernel snapshot
+    that ``/proc/self/environ`` hands straight back to root-written REPL code — and no
+    in-process ``os.environ`` scrub can touch it. The keys instead arrive on an
+    inherited pipe, which this preamble drains into memory before anything else runs.
+
+    Two ordering rules are load-bearing:
+
+    * **Before any ``backend`` import.** ``backend.config`` bridges the legacy
+      ``REPROLAB_*`` ⇄ ``OPENRESEARCH_*`` spellings *at import time* from whatever is in
+      ``os.environ`` right then. A handoff landing after that import would leave a
+      ``.env``-sourced legacy-spelled key un-bridged — silently breaking, e.g., RunPod
+      auth. Hence the ``importlib`` load of the vault module by path: a plain
+      ``from backend.agents.runtime import credential_vault`` drags in
+      ``backend.config`` through the package ``__init__`` chain. The bootstrap copy is
+      stateless (it only writes ``os.environ``), so the real module imported later is
+      free to be a separate instance.
+    * **Inert without the handoff.** Guarded on the fd env var, which only
+      ``_start_python_run`` sets — so the operator escape hatch
+      (``OPENRESEARCH_CREDENTIAL_VAULT=0``) and any other entry point (the CLI) run a
+      byte-identical script.
+
+    ``assert_proc_environ_clean()`` then *proves* the exec snapshot is credential-free
+    rather than trusting this docstring; it is fail-closed, so re-adding a key to the
+    child's ``env=`` dict crashes the run at startup instead of leaking quietly.
+    """
+    path = vault_path or credential_vault.__file__
+    return f"""import os as _cred_boot_os
+if _cred_boot_os.environ.get({credential_vault.HANDOFF_FD_ENV!r}):
+    import importlib.util as _cred_boot_ilu
+    _cred_boot_spec = _cred_boot_ilu.spec_from_file_location(
+        "_openresearch_credential_bootstrap", {path!r}
+    )
+    _cred_boot_mod = _cred_boot_ilu.module_from_spec(_cred_boot_spec)
+    _cred_boot_spec.loader.exec_module(_cred_boot_mod)
+    _cred_boot_mod.receive_handoff()
+    _cred_boot_mod.assert_proc_environ_clean()
+    del _cred_boot_ilu, _cred_boot_spec, _cred_boot_mod
+del _cred_boot_os
+"""
+
+
 def _python_script(
     request: StartRunRequest,
     *,
@@ -2004,7 +2082,7 @@ def _python_script(
         # so cmd_reproduce's getattr(args, "run_spec", None) picks it up.
         "run_spec": request.run_spec,
     }
-    return f"""
+    return _credential_handoff_preamble() + f"""
 import asyncio
 import json
 from argparse import Namespace

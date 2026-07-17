@@ -14,6 +14,92 @@
 
 ---
 
+## 2026-07-13 — A default-OFF flag with no forcing function is a fix that never ships; make "undecided" fail CI
+
+**Rule.** Every integrity/reliability flag must carry an EXPLICIT per-profile decision in
+`configs/flag_decisions.json`, enforced by `tests/config/test_flag_decision_manifest.py`. `off`
+is a valid decision *with a stated reason*; `off` by accident is the bug. A new
+`*_GUARD/_GATE/_KILL/_VERDICT/_VALIDATOR/_CHECK/_DETECTION` flag cannot merge without a decision,
+and the gate asserts manifest⇄profile consistency both ways so a "should-be-on" lever can never
+silently be dark.
+
+**How.** The repo's flag policy (new flags default-OFF + byte-identical; default-flip needs ≥3
+paired A/B) is individually sound but produced 471 flags with no promotion pipeline, so fixes
+ship dark. It is NOT fixable by care: on the day this rule was written, the lead diagnosed the
+disease, quoted it, built the run-spec profiles to route around it — and still shipped four new
+integrity flags dark, incl. a verdict-ceiling whose whole job was blocking a false "reproduced".
+The manifest gate immediately found a fifth: both profiles set `EVIDENCE_GATE=1` believing they
+had enabled the per-leaf veto `LEAF_EVIDENCE_GATE` (a DIFFERENT var) — the corpus's
+"highest-value correctness lever" was dark in both tiers.
+
+**Why.** `learn.md` had already recorded "fixes ship default-OFF and protect NOTHING until
+enabled in the run-spec." A postmortem is not a control; a failing test is. See
+[[flag-decision-discipline]] and the two-var `EVIDENCE_GATE` vs `LEAF_EVIDENCE_GATE` untangling.
+
+---
+
+## 2026-07-13 — Closing os.environ does not close /proc; only sandboxing closes a REPL that execs on the host
+
+**Rule.** Do not treat credential-scrubbing mitigations as closing the leak class when the root
+model `exec`s in the orchestrator process. Scrub `os.environ` and hand credentials over an
+inherited pipe (not `env=`, which freezes into `/proc/self/environ`) as defense-in-depth — but
+the class is only closed by running the reproduction in a disposable sandbox.
+
+**How.** The credential vault takes the child's `os.environ` and `/proc/self/environ` from 3/3
+harvestable sentinels to 0 (proven with the real exploit). But `/proc/<ppid>/environ` still holds
+the uvicorn parent's keys, and — verified on this host at `kernel.yama.ptrace_scope=1`, the
+*protective* value — a same-UID child CAN read it (`ptrace_scope` gates `ptrace()` memory
+attach, not `/proc/<pid>/environ` reads). `__import__("os").system(...)` RCE is wholly
+unaddressed. The paper is attacker-influenceable (arbitrary uploaded PDF), so a prompt injection
+reaches all of this.
+
+**Why.** Once the attacker has `exec` in your process the game is lost from inside it; each
+mitigation only raises cost. Operational control until the sandbox lands: do NOT expose public
+PDF upload — trusted arXiv IDs / operator papers only. Full analysis: the capability spec §5;
+[[openresearch-audit-2026-07-13]].
+
+---
+
+## 2026-07-13 — An equality-based veto is structurally blind to NaN; a filter that DROPS non-finite readings turns "diverged" into "no data"
+
+**Rule.** Any guard that detects degenerate values must test `math.isfinite` FIRST, before any `==` comparison — and must never silently drop non-finite readings. A non-finite result-claiming metric is an automatic veto: strictly worse than zero, never exempt (there is no honest reading of a NaN result, so not even the provenance exemption applies).
+
+**How.** `zero_metrics_detection`'s predicates were `v == 0.0` and `v == values[0]`. Under IEEE-754 self-inequality both are `False` for NaN, so a run that diverged to NaN sailed past the veto built to catch degenerate results. `no_learning_signal` / `dead_training_guard` compounded it by *filtering out* non-finite points — a curve that goes NaN and stays NaN read as "no data" rather than "diverged." `dead_training_guard`'s number regex could not even *match* `nan`/`inf`, so its `isfinite` filter sat downstream of a parser that was already blind. Fix: non-finite checked first and vetoed unconditionally; the trend guards key divergence on the curve's **tail**, so a transient fp16 spike that recovers is deliberately NOT flagged (see the 2026-07-07 false-block history).
+
+**Why.** The fabrication guards are the fitness signal. A veto that cannot see the single most common way training dies is not a backstop.
+
+---
+
+## 2026-07-13 — A trust predicate must exist EXACTLY ONCE; every other site delegates
+
+**Rule.** A guard/veto predicate gets one canonical implementation. Any second copy is a second place for it to be wrong — and it will be, silently, in the tier that matters most.
+
+**How.** `external_validator.check_not_all_constant` re-derived the degenerate-metrics test inline (`all(v == 0.0 ...)` + `len(set(values)) == 1`) instead of calling `looks_like_zero_metrics`. When the canonical predicate was made NaN-aware, the copy stayed blind — so the Tier-2 adversarial panel, the one gate whose entire job is precision, reported a NaN-diverged run as *healthy*. It now delegates.
+
+**Why.** Defence-in-depth only works if the depth is real. Duplicated logic converts N gates into 1 gate plus N-1 places to rot.
+
+---
+
+## 2026-07-13 — The test suite must be ENV-hermetic, not just socket-hermetic
+
+**Rule.** Tests must never read the developer's real `.env`. A test asserting a Settings-backed DEFAULT must inject what it depends on explicitly; ambient environment is not a fixture.
+
+**How.** `backend/config.py`'s `SettingsConfigDict(env_file=".env")` makes pydantic-settings read `.env` **from disk on every `Settings()` construction**, regardless of `os.environ` — deliberate in production, wrong under test. `delenv` alone cannot fix it (the disk read bypasses `os.environ`, and `factory.py` separately copies `.env` secrets *into* `os.environ`). `tests/conftest.py` now scrubs the leaking namespaces and sets `Settings.model_config["env_file"] = None`; a guard test plants a fake `.env` and fails loudly if hermeticity ever regresses.
+
+**Why.** 18 suite failures were this ONE root cause — four separate agents each independently filed them as "pre-existing, unrelated." A live `AZURE_FOUNDRY_API_KEY` was printed in full into pytest assertion output (rotate on exposure). Worst of all: every "default-OFF / byte-identical-when-off" assertion was silently unprovable, because the suite was asserting against a developer's `.env`, not the code default.
+
+---
+
+## 2026-07-13 — Stage-after-archive: capture the archive's RETURN path, never the pre-archive path
+
+**Rule.** When a step relocates a directory, any pointer staged afterwards must be built from the mover's returned destination — never from the path captured at plan time.
+
+**How.** `attempt_driver.launch` called `force_archive_incomplete` (which `shutil.move`s `code/` into `attempts/<ts>/`), discarded its return value, and *then* staged a seed marker whose `source_code_dir` was the plan-time `run_dir/code` — the directory the archive had just emptied. `seed_reference_code` fails closed on a missing source, so seeding silently never happened. `_stage_seed_marker` now takes `source_code_dir` as a REQUIRED keyword, so no future caller can reintroduce the ordering.
+
+**Why.** Cross-attempt learning had never once fired. Receipt: campaign `prj_09047604e591d969` ($24.23 LLM, 4.5h, EXHAUSTED) staged `seed_staging.json → runs/.../code`; `_BEST_ATTEMPT_README.txt` exists nowhere on disk, repo-wide. All three attempts cold-started, and the terminal recorded `champion_attempt_n: 1` while attempt 2 fell back to `runner_up` — the champion arm skipped for want of a pointer. The campaign was a retry loop wearing a learning loop's clothes.
+
+---
+
 ## 2026-07-07 — A hyperparameter guard must key on the variable's ROLE, not an ambiguous name
 
 **Rule.** A preflight/sanity guard that range-checks a hyperparameter (learning rate, dropout, …) must scope to names that unambiguously denote that role — never a Greek-letter/coefficient name (`alpha`, `beta`, `lambda`, `tau`, `eta`) shared with RL/regularization coefficients, where values outside the "sane LR range" (`0.0` ablation, `>1.0` weight) are legitimate.

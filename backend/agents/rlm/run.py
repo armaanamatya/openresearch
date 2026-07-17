@@ -21,6 +21,7 @@ Design contract: ``docs/superpowers/specs/2026-05-21-rlm-phase3-orchestrator-des
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -664,6 +665,16 @@ def _resolve_and_clone_repo(
     error returns ``(None, None)`` and the run proceeds scratch. Byte-identical
     off-state: when OPENRESEARCH_USE_AUTHOR_REPO is unset this returns immediately
     without resolving, cloning, or writing repo_spec.json.
+
+    ``OPENRESEARCH_REPRODUCTION_MODE`` is the REQUEST; the ``mode`` persisted to
+    ``rlm_state/repo_spec.json`` is the RESOLVED mode — ground truth for what
+    actually ran, and what every downstream consumer reads (the implementer
+    contract via ``_repo_artifact_index``, ``_execute_owns_deps``, the report's
+    ``reproduction`` block). ``auto`` resolves PER-PAPER: a usable cloned repo →
+    ``execute``; no repo / clone failed → a from-scratch attempt, loudly disclosed
+    via the ``execute_mode_no_repo`` warning (never a hard failure — a triage
+    funnel's expensive error is a false negative, so a paper that published no
+    code must still get a real attempt).
     """
     import json as _json
 
@@ -676,7 +687,15 @@ def _resolve_and_clone_repo(
         from backend.services.ingestion.repo.resolver import RepoResolver
 
         mode_override = os.environ.get("OPENRESEARCH_REPRODUCTION_MODE", "adapt") or "adapt"
+        _auto = mode_override.strip().lower() == "auto"
+        # Set (to the disclosure reason) only when an `auto` request could not get a
+        # usable author repo and honestly resolved to from-scratch instead.
+        _fallback_reason: "str | None" = None
         spec = RepoResolver.resolve(repo_url, discovered, set(blacklist), mode_override)
+        if _auto and not spec.url:
+            # No repo resolved at all: the resolver already stamped mode="scratch".
+            # This is the common no-published-code paper — disclose, never raise.
+            _fallback_reason = spec.reason
         if emit is not None:
             try:
                 from backend.agents.rlm.sse_bridge import build_repo_resolved_event
@@ -702,6 +721,20 @@ def _resolve_and_clone_repo(
                         ))
                     except Exception:  # noqa: BLE001
                         pass
+            elif _auto:
+                # AUTO + clone failed => no usable author repo after all. Unlike an
+                # EXPLICIT execute request (below, which refuses to run in adapt
+                # disguise), auto's whole contract is to resolve per-paper: fall back
+                # to a REAL from-scratch attempt and DISCLOSE it. Disclosed != silent.
+                from backend.services.ingestion.repo.resolver import RepoSpec
+                _reason = (
+                    f"clone failed for {spec.url}; no usable author repo, "
+                    "auto mode fell back to from-scratch"
+                )
+                spec = RepoSpec(
+                    url=spec.url, source=spec.source, mode="scratch", reason=_reason,
+                )
+                _fallback_reason = _reason
             elif mode_override == "execute":
                 # Execute mode has no from-scratch fallback path worth taking: the
                 # implementer contract is "run the authors' pipeline verbatim",
@@ -741,6 +774,26 @@ def _resolve_and_clone_repo(
                         ))
                     except Exception:  # noqa: BLE001
                         pass
+        # AUTO fell back to from-scratch: fail LOUD, not silent. This is a legitimate,
+        # disclosed outcome (not the silent downgrade assert_execute_mode_stamped
+        # guards), but the evidence quality of a from-scratch attempt is NOT that of
+        # running the authors' verified code — a downstream patent-triage consumer
+        # must be able to tell them apart. report.py folds this code into the
+        # `degradations_taken[]` ledger.
+        if _fallback_reason and emit is not None:
+            try:
+                from backend.agents.rlm.sse_bridge import build_run_warning_event
+                emit(build_run_warning_event(
+                    code="execute_mode_no_repo",
+                    message=(
+                        "execute mode was requested (REPRODUCTION_MODE=auto) but this "
+                        f"paper has no usable author repo ({_fallback_reason}); the run "
+                        "fell back to a from-scratch reimplementation — its results are "
+                        "NOT execute-mode evidence (the authors' code did not run)"
+                    ),
+                ))
+            except Exception:  # noqa: BLE001
+                pass
         # Persist the deterministic source of truth (atomic write).
         rlm_state = project_dir / "rlm_state"
         rlm_state.mkdir(parents=True, exist_ok=True)
@@ -750,6 +803,13 @@ def _resolve_and_clone_repo(
             "path": str(project_dir / "repo") if repo_files else None,
             "clone_succeeded": bool(repo_files),
         }
+        if _auto:
+            # Disclosure keys, written ONLY under `auto` so repo_spec.json stays
+            # byte-identical for unset/adapt/reference/execute. `mode` above is
+            # already the RESOLVED mode (execute | scratch); these record what was
+            # ASKED for and whether the honest downgrade happened.
+            payload["requested_mode"] = "auto"
+            payload["fallback_from_execute"] = bool(_fallback_reason)
         tmp = rlm_state / "repo_spec.json.tmp"
         tmp.write_text(_json.dumps(payload, indent=2), encoding="utf-8")
         os.replace(tmp, rlm_state / "repo_spec.json")
@@ -774,6 +834,18 @@ def assert_execute_mode_stamped(repro_mode_env: str, repo_spec: "dict[str, Any] 
     when it was requested and genuinely honored (``repo_spec["mode"] ==
     "execute"``).
 
+    **``auto`` is deliberately EXEMPT** — and must stay that way. This backstop
+    exists to catch a *lie* (the operator asked for the authors' code to run; a
+    from-scratch reimplementation ran instead, and nothing said so), not an honest
+    fallback. ``auto`` asks the harness to DECIDE per-paper, and when it resolves
+    to from-scratch it says so loudly: an ``execute_mode_no_repo`` run_warning,
+    ``repo_spec["fallback_from_execute"]``, and a ``degradations_taken[]`` entry +
+    the resolved ``reproduction.mode`` in ``final_report``. A disclosed downgrade
+    is not a silent one. Raising on it would hard-fail every paper that published
+    no code — for a triage funnel, discarding a paper that would in fact have
+    reproduced (a FALSE NEGATIVE) is the single most expensive error there is.
+    Do NOT add ``auto`` to the check below.
+
     Deliberately called from the OUTER caller (``_build_context``, right
     after ``_resolve_and_clone_repo`` returns) rather than from inside
     ``_resolve_and_clone_repo`` itself: that function's body is wrapped in a
@@ -781,13 +853,19 @@ def assert_execute_mode_stamped(repro_mode_env: str, repo_spec: "dict[str, Any] 
     itself), which would silently swallow this assertion's ``RuntimeError``
     and defeat the entire point of failing loud.
     """
+    # Only an EXPLICIT `execute` request is guarded. `auto` (and adapt/reference)
+    # fall out here — see the docstring: auto's from-scratch resolution is disclosed,
+    # not silent, so it is not the failure this backstop is for.
     if (repro_mode_env or "").strip().lower() != "execute":
         return
     stamped = (repo_spec or {}).get("mode")
     if stamped != "execute":
         raise RuntimeError(
             f"REPRODUCTION_MODE=execute was requested but repo_spec stamped mode={stamped!r} "
-            "— the repo did not clone/seed in execute mode; refusing to run in adapt disguise."
+            "— the repo did not clone/seed in execute mode; refusing to run in adapt disguise. "
+            "(If this paper may have no published code, use REPRODUCTION_MODE=auto: it resolves "
+            "to execute when a repo exists and falls back to a disclosed from-scratch attempt "
+            "when it does not.)"
         )
 
 
@@ -1667,6 +1745,50 @@ def _make_degenerate_loop_callback(
     return _on_degenerate
 
 
+def _credential_scoped_tools(custom_tools: dict) -> dict:
+    """Wrap every primitive so credentials are exposed ONLY while it runs.
+
+    The security boundary this serves (``docs/design/rlm-pivot-brief.md`` §7):
+    ``RLM(environment="local")`` is mandatory, so root-written Python is ``exec``'d
+    in THIS process, and ``rlm``'s ``_SAFE_BUILTINS`` keeps ``__import__`` — root
+    code can read ``os.environ``. The paper steering the root is an arbitrary
+    uploaded PDF, i.e. attacker-influenceable. ``credential_vault`` therefore holds
+    every API key OUT of ``os.environ`` for the whole REPL window; this wrapper is
+    the ``set -> use -> immediately restore`` window that hands them back for the
+    duration of a *primitive* call — harness code, not root-written code.
+
+    It exists because several credential consumers resolve their key lazily from
+    ``os.environ`` at call time (``grader_transport`` → the Anthropic SDK's own
+    ``ANTHROPIC_API_KEY`` lookup, ``runpod_backend`` → the RunPod key, the Azure /
+    Foundry resolvers), and every one of them is reached from inside a primitive.
+    Wrapping here keeps those modules byte-identical.
+
+    Non-callable ``custom_tools`` entries (data: ``rubric_spec``, run config) are
+    passed through untouched — ``rlm``'s LocalREPL binds those as REPL *variables*.
+    """
+    from backend.agents.runtime import credential_vault
+
+    def _wrap(name: str, tool: Any) -> Any:
+        @functools.wraps(tool)
+        def _credential_scoped(*args: Any, **kwargs: Any) -> Any:
+            with credential_vault.exposed():
+                return tool(*args, **kwargs)
+
+        # rlm binds tools by name into the REPL globals; keep the identity stable.
+        _credential_scoped.__name__ = getattr(tool, "__name__", name)
+        return _credential_scoped
+
+    scoped: dict = {}
+    for name, entry in custom_tools.items():
+        if isinstance(entry, dict) and callable(entry.get("tool")):
+            scoped[name] = {**entry, "tool": _wrap(name, entry["tool"])}
+        elif callable(entry):
+            scoped[name] = _wrap(name, entry)
+        else:
+            scoped[name] = entry
+    return scoped
+
+
 def _record_last_primitive_result_tools(
     custom_tools: dict,
     ctx: RunContext,
@@ -2270,7 +2392,27 @@ def _hard_stop_with_report(
     # and write_final_report_rlm's merge both read).
     try:
         from backend.agents.rlm import finalize_regrade as _fr
-        _fresh = _fr.regrade_for_hard_stop(project_dir, getattr(ctx, "llm_client", None))
+        # Thread ctx through so the regrade can consult the in-process cost ledger
+        # for success-compatible run_experiment calls. Without it this path fell back
+        # to content-only trust (numbers merely EXISTING in a root-writable
+        # metrics.json), which is the forgeable signal the failed->reproduced clamp
+        # exists to refuse. ctx is already in scope here — it was only ever used for
+        # llm_client.
+        #
+        # credential_vault.exposed(): this runs on the WALL-CLOCK WATCHDOG thread (or
+        # the SIGTERM handler), which fires at an ARBITRARY moment — including while
+        # the REPL window has the API keys scrubbed out of os.environ. The re-grade
+        # lazily builds its transport (grader_transport -> AnthropicMessagesClient with
+        # api_key=None, i.e. the Anthropic SDK's own ANTHROPIC_API_KEY lookup) whenever
+        # OPENRESEARCH_GRADER_BACKEND is set, so without this it would silently degrade
+        # to the fallback client (openai backend) or fail at request time (anthropic
+        # backend) and ship an un-regraded report. No-op when the vault is not armed.
+        from backend.agents.runtime import credential_vault as _cv
+
+        with _cv.exposed():
+            _fresh = _fr.regrade_for_hard_stop(
+                project_dir, getattr(ctx, "llm_client", None), ctx=ctx
+            )
         if _fresh is not None:
             _fr_emit = emit if callable(emit) else (lambda *a, **k: None)
             _fr_emit("run_warning", {
@@ -3178,6 +3320,174 @@ def assert_no_foundry_oauth_coresidency(root_key: str, role_selection: Any) -> N
         )
 
 
+def _drain_foundry_root_usage_to_ledger(
+    *,
+    root_model: RootModel,
+    result_obj: Any,
+    ctx: RunContext,
+    project_dir: Path,
+    emit: Callable[[dict], None],
+) -> None:
+    """Drain Foundry-routed root LLM usage into cost_ledger.jsonl.
+
+    Sibling of the ``anthropic-oauth`` drain block in ``run_pipeline_rlm`` — the
+    only other root backend the ledger knows how to price. Scope: every root
+    billed against the Azure AI Foundry resource, i.e. ``root_model.cred_provider
+    == "azure-foundry"`` (opus-foundry / sonnet-foundry, ``rlm_backend ==
+    "anthropic-foundry"``, real Claude weights over the Foundry Anthropic
+    endpoint; AND the ``azure-foundry``/``grok`` key, ``rlm_backend == "openai"``,
+    the OpenAI-compatible Foundry endpoint). Unlike ``claude-oauth`` (a real
+    subscription — ``estimated_usd`` staying $0 is correct), Foundry is real
+    paid API spend, so a $0 ledger row for it is a money-safety bug, not a
+    feature.
+
+    No bespoke module-level sink is needed here (unlike
+    ``claude_oauth_client.drain_root_usage``, which exists only because the
+    Claude Agent SDK transport does not surface token counts): both the
+    ``AnthropicClient`` (anthropic-foundry) and ``OpenAIClient``
+    (openai-compatible azure-foundry) rlm library clients already track real
+    per-model token counts via their normal ``get_usage_summary()``, merged by
+    rlm's ``LmHandler`` into ``result_obj.usage_summary`` — it was simply never
+    read into the ledger.
+
+    No-double-count invariant (mirrors the OAuth block's own documented
+    analysis): neither client ever populates ``ModelUsageSummary.total_cost``
+    for a non-OpenRouter host (no ``usage.cost``/``model_extra`` field on the
+    wire), so the ``rlm_usd`` term in ``report._cost_dict()``
+    (``result.usage_summary.total_cost``) is ALWAYS 0 for these backends —
+    the ledger row appended here is therefore the ONLY contributor to
+    ``final_report.cost.llm_usd`` for a Foundry root, never a second count on
+    top of an existing nonzero ``rlm_usd``.
+
+    A model with real usage but an unresolvable price (``estimated_usd is
+    None`` — e.g. an arbitrary xAI/other deployment behind ``azure-foundry``/
+    ``grok`` with no rate-table entry) is still ledgered — tokens must never
+    vanish — but fires a loud ``unpriced_root_tokens`` run_warning naming the
+    exact token count instead of silently reporting $0 (the bug this function
+    exists to close).
+
+    Best-effort: any failure is logged and swallowed, matching the OAuth
+    branch's own contract — ledgering must never crash a run.
+    """
+    if root_model.cred_provider != "azure-foundry":
+        return
+    try:
+        from backend.agents.resilience.cost import CostLedgerEntry
+
+        provider = "anthropic" if root_model.rlm_backend == "anthropic-foundry" else "openai"
+        usage_summary = getattr(result_obj, "usage_summary", None)
+        summaries = getattr(usage_summary, "model_usage_summaries", None) or {}
+        for _model, _summary in summaries.items():
+            _calls = getattr(_summary, "total_calls", 0) or 0
+            if _calls == 0:
+                continue
+            _input_tokens = getattr(_summary, "total_input_tokens", 0) or 0
+            _output_tokens = getattr(_summary, "total_output_tokens", 0) or 0
+            _entry = CostLedgerEntry.from_usage(
+                agent_id="rlm_root",
+                attempt_index=0,
+                provider=provider,  # type: ignore[arg-type]
+                model=_model,
+                usage={
+                    "input_tokens": _input_tokens,
+                    "output_tokens": _output_tokens,
+                    # rlm's AnthropicClient/OpenAIClient do not track cache/
+                    # reasoning tokens separately (upstream limitation) —
+                    # zeroed rather than guessed.
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                    "reasoning_tokens": 0,
+                },
+            )
+            if ctx.cost_ledger is not None:
+                ctx.cost_ledger.append(_entry)
+            # Also write directly to the ledger file (mirrors the OAuth branch's
+            # own resilience fallback for when ctx.cost_ledger has no path attached).
+            _ledger_path = project_dir / "cost_ledger.jsonl"
+            if ctx.cost_ledger is None or ctx.cost_ledger.path is None:
+                import json as _json_ledger
+
+                _ledger_path.parent.mkdir(parents=True, exist_ok=True)
+                with _ledger_path.open("a", encoding="utf-8") as _fh:
+                    _fh.write(_json_ledger.dumps(_entry.to_json(), sort_keys=True) + "\n")
+            else:
+                ctx.cost_ledger.flush()
+
+            if _entry.estimated_usd is None:
+                _unpriced_tokens = _input_tokens + _output_tokens
+                try:
+                    emit(build_run_warning_event(
+                        level="warn",
+                        code="unpriced_root_tokens",
+                        message=(
+                            f"root model {_model!r} (backend {root_model.key!r}) has no "
+                            f"known per-token rate — {_unpriced_tokens} unpriced tokens "
+                            "recorded at $0 in cost_ledger.jsonl. This is NOT proof of $0 "
+                            "spend; add a rate to backend/agents/resilience/pricing.py "
+                            "(and backend/services/pricing/catalog.py)."
+                        ),
+                        data={"model": _model, "unpriced_tokens": _unpriced_tokens},
+                    ))
+                except Exception:  # noqa: BLE001 — narration must never block the run
+                    logger.warning(
+                        "run_pipeline_rlm: unpriced_root_tokens warning emit failed",
+                        exc_info=True,
+                    )
+    except Exception:  # noqa: BLE001 — ledgering is best-effort
+        logger.warning("run_pipeline_rlm: foundry root usage drain failed", exc_info=True)
+
+
+def _warn_unmetered_root_backend(
+    *,
+    root_model: RootModel,
+    result_obj: Any,
+    emit: Callable[[dict], None],
+) -> None:
+    """Loud backstop: warn when a root backend has NO cost-ledger drain path.
+
+    ``anthropic-oauth`` (drained above; $0 is legitimate) and every
+    ``cred_provider == "azure-foundry"`` backend (drained by
+    ``_drain_foundry_root_usage_to_ledger`` above) are the only root backends
+    this orchestrator currently knows how to ledger. Every other registered
+    root (gpt-5, openrouter, the plain API-key anthropic backend, azure_openai,
+    Featherless, or any backend added later) silently drops its root-loop
+    token usage on the floor today — exactly the bug Foundry had before this
+    fix. This makes that gap LOUD instead of silent, so it can never be
+    reintroduced/rediscovered by accident. Fires only when the root actually
+    made LLM calls — a crashed/no-op run legitimately costs $0.
+    """
+    if root_model.rlm_backend == "anthropic-oauth" or root_model.cred_provider == "azure-foundry":
+        return
+    try:
+        usage_summary = getattr(result_obj, "usage_summary", None)
+        if usage_summary is None:
+            return
+        total_tokens = int(
+            getattr(usage_summary, "total_input_tokens", 0) or 0
+        ) + int(getattr(usage_summary, "total_output_tokens", 0) or 0)
+        if total_tokens <= 0:
+            return
+        emit(build_run_warning_event(
+            level="warn",
+            code="root_cost_unmetered",
+            message=(
+                f"root backend {root_model.rlm_backend!r} (model {root_model.key!r}) has "
+                "no cost-ledger drain path — this run's root LLM spend is UNMETERED: "
+                f"{total_tokens} tokens moved but cost_ledger.jsonl / tokens_total.json "
+                "will show $0 for the root loop. A $0 here is NOT proof of $0 spent."
+            ),
+            data={
+                "backend": root_model.rlm_backend,
+                "root_key": root_model.key,
+                "tokens": total_tokens,
+            },
+        ))
+    except Exception:  # noqa: BLE001 — narration must never block the run
+        logger.warning(
+            "run_pipeline_rlm: root_cost_unmetered warning emit failed", exc_info=True
+        )
+
+
 async def run_pipeline_rlm(
     project_id: str,
     runs_root: Path,
@@ -3812,6 +4122,11 @@ async def run_pipeline_rlm(
     repair_policy_holder: list = []
     custom_tools, tools_label = _resolve_custom_tools(ctx)
     custom_tools = _record_last_primitive_result_tools(custom_tools, ctx, repair_policy_holder)
+    # Credential scoping is the OUTERMOST wrapper: the vault re-exposes the API
+    # keys before any other wrapper (and therefore the primitive itself) runs, and
+    # scrubs them again only once the whole primitive has returned. See
+    # _credential_scoped_tools + backend/agents/runtime/credential_vault.py.
+    custom_tools = _credential_scoped_tools(custom_tools)
     logger.info(
         "run_pipeline_rlm: project=%s root=%s primitives=%s",
         project_id,
@@ -4462,7 +4777,22 @@ async def run_pipeline_rlm(
             # thread, silently disabling the entire premature-exit guard (Lane H /
             # BUG-LR-013): the root could FINAL_VAR after one sub-target iteration and
             # nothing refused it. Enter the policy INSIDE the worker callable.
-            with forced_iteration_policy(iteration_policy):
+            #
+            # ── THE REPL SECURITY BOUNDARY (pivot brief §7) ────────────────────
+            # Everything past this line can execute root-MODEL-written Python via
+            # `exec` in THIS process (environment="local" is mandatory — DockerREPL
+            # drops custom_tools), and rlm's _SAFE_BUILTINS keeps `__import__`, so
+            # that code can read os.environ. The paper steering the root is an
+            # arbitrary uploaded PDF — attacker-influenceable. So hold every API key
+            # in the credential vault (out of os.environ) for the whole REPL window;
+            # the primitives re-expose them for the duration of their own call via
+            # _credential_scoped_tools. assert_repl_boundary_clean is the fail-closed
+            # regression guard: it fires the day a new os.environ credential bridge
+            # lands upstream of here.
+            from backend.agents.runtime import credential_vault
+
+            with forced_iteration_policy(iteration_policy), credential_vault.armed_vault():
+                credential_vault.assert_repl_boundary_clean()
                 return rlm.completion(context_dict, active_prompt)
 
         _primary_active = False
@@ -4569,6 +4899,32 @@ async def run_pipeline_rlm(
                             ctx.cost_ledger.flush()
                 except Exception:  # noqa: BLE001 — ledgering is best-effort
                     logger.warning("run_pipeline_rlm: drain_root_usage ledger failed", exc_info=True)
+            else:
+                # Foundry-routed roots (opus-foundry/sonnet-foundry/azure-foundry —
+                # cred_provider collapses all three to "azure-foundry") are real
+                # paid API spend, same as OAuth is real $0 — but were previously
+                # NEVER drained here, so their tokens silently never reached
+                # cost_ledger.jsonl / tokens_total.json, and the campaign's own
+                # budget enforcement (attempt_assessment._cost, which sums
+                # cost_ledger.jsonl directly) silently under-counted spend (the
+                # $24.23-vs-$19-cap incident). _drain_foundry_root_usage_to_ledger
+                # mirrors the OAuth block above (same CostLedgerEntry.from_usage
+                # shape, same no-double-count invariant). Any OTHER backend with
+                # no known drain path — including a genuinely unpriced Foundry
+                # deployment — fails loud via a run_warning instead of silently
+                # reporting $0.
+                _drain_foundry_root_usage_to_ledger(
+                    root_model=root_model,
+                    result_obj=result_obj,
+                    ctx=ctx,
+                    project_dir=project_dir,
+                    emit=emit,
+                )
+                _warn_unmetered_root_backend(
+                    root_model=root_model,
+                    result_obj=result_obj,
+                    emit=emit,
+                )
 
     except _FatalPrimitiveAbort as exc:
         fatal_abort = exc

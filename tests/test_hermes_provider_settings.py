@@ -187,11 +187,17 @@ def test_settings_accepts_unprefixed_runpod_api_key(monkeypatch: pytest.MonkeyPa
 
 
 def test_settings_reads_unprefixed_provider_keys_from_dotenv(
+    dotenv_disk_reads_enabled,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ):
     """A checked-in .env next to the process cwd is enough; callers do not
-    need to export provider keys before starting the app."""
+    need to export provider keys before starting the app.
+
+    This test's SUBJECT is the dotenv-read path itself, so it opts back into it
+    via `dotenv_disk_reads_enabled` — the suite otherwise blocks that disk read
+    session-wide (see the ENV HERMETICITY block in tests/conftest.py). It still
+    reads only the .env it writes into tmp_path, never the repo's real one."""
 
     (tmp_path / ".env").write_text(
         "OPENAI_API_KEY=sk-from-dotenv\nRUNPOD_API_KEY=runpod-from-dotenv\n"

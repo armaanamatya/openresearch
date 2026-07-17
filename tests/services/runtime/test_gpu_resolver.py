@@ -305,8 +305,13 @@ def test_resolve_azure_over_80gb_multi_gpu_picks_x2():
     assert plan.gpu_count == 2
     assert plan.cloud_type == "ONDEMAND"
     assert plan.runpod_id == "Standard_NC48ads_A100_v4"
-    assert plan.sku_usd_per_hr == pytest.approx(7.35)
-    assert plan.total_usd_per_hr == pytest.approx(7.35 * 2)
+    # GpuPlan's schema defines sku_usd_per_hr as the PER-GPU rate and
+    # total_usd_per_hr as (per-GPU x gpu_count). The catalog's approx_usd_per_hr
+    # ($7.35) is the WHOLE-MACHINE rate for this 2-GPU VM, so the per-GPU rate is
+    # $3.675 and the machine total is $7.35 -- NOT the $14.70 the old assertion
+    # encoded (7.35 x 2), which double-billed every multi-GPU node.
+    assert plan.sku_usd_per_hr == pytest.approx(7.35 / 2)
+    assert plan.total_usd_per_hr == pytest.approx(7.35)
     assert "azure_a100_80x4" in plan.ladder_remaining
 
 

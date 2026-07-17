@@ -38,6 +38,19 @@ Signal design — robust + near-zero false-positive, scale/num-classes-agnostic:
 All four conditions together make a false positive on healthy training essentially
 impossible: a converging model fails the FLAT test early and the NO-DESCENT test later.
 
+SECOND SIGNATURE — NON-FINITE loss (NaN/±Inf; P0 fix). A network can also die by
+BLOWING UP rather than flat-lining, and that mode was invisible here twice over: the
+number regex only matched digits (so ``loss=nan`` never even parsed), and
+:func:`extract_loss` then *discarded* any non-finite value it did manage to see. A
+diverged cell therefore ran to completion, exited 0, and was recorded ``status="ok"`` —
+the exact fake-green this guard exists to prevent. Both are fixed: ``nan``/``inf`` now
+parse, and :data:`NONFINITE_WINDOW` (3) CONSECUTIVE non-finite readings early-stop the
+cell with the same repairable ``training diverged`` signal. Requiring consecutive readings
+(not just one) keeps a transient fp16 overflow that the grad-scaler recovers from — a
+finite reading resets the counter — from killing a healthy cell. Non-finite readings never
+enter the flat/best/first statistics, so the flat-and-high signature above is byte-for-byte
+unchanged for finite log streams.
+
 The whole guard is gated behind ``OPENRESEARCH_DEAD_LOSS_EARLYSTOP`` (default OFF). When
 off, the cell runner never instantiates a detector and behaviour is byte-for-byte
 unchanged. It is ``local``/cell-path scoped — the monolithic and runpod/docker exec
@@ -55,11 +68,25 @@ from collections import deque
 # without threading a side-channel return value out of the streaming reader thread.
 MARKER = "[gpu_cell_runner] DEAD-TRAINING early-stop"
 
+# Consecutive non-finite (NaN/±Inf) loss readings that constitute a DIVERGED cell. Not an
+# env flag on purpose: the guard already has a master flag (``OPENRESEARCH_DEAD_LOSS_EARLYSTOP``)
+# and this is a correctness threshold, not a fleet-tuning dial. 3 consecutive logged epochs
+# of NaN is decisive — a grad-scaler skip recovers within one — while a single reading is
+# not (that is what makes this conservative). Overridable per-detector via the constructor.
+NONFINITE_WINDOW = 3
+
+# A loss reading: a decimal/scientific number OR a non-finite literal (``nan``/``inf``/
+# ``infinity``, any case, optionally signed — the forms torch/numpy/python print). The
+# non-finite alternatives are the P0 fix: without them ``loss=nan`` did not match at all,
+# so a diverged cell was never even offered to the detector. ``float()`` parses every
+# alternative directly.
+_NUM = r"[+-]?(?:\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|(?i:nan|inf(?:inity)?))"
+
 # Prefer ``train_loss`` (the optimisation target) but fall back to a bare ``loss``. We
 # deliberately do NOT match ``val_loss`` / ``test_loss`` first — a dead net's TRAIN loss
 # is the cleanest stuck signal. ``(?<![\w])`` avoids matching inside another token.
-_TRAIN_LOSS_RE = re.compile(r"(?<![\w])train[_ ]?loss\s*[=:]\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)")
-_LOSS_RE = re.compile(r"(?<![\w])loss\s*[=:]\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)")
+_TRAIN_LOSS_RE = re.compile(r"(?<![\w])train[_ ]?loss\s*[=:]\s*(" + _NUM + r")")
+_LOSS_RE = re.compile(r"(?<![\w])loss\s*[=:]\s*(" + _NUM + r")")
 
 
 def is_enabled() -> bool:
@@ -72,18 +99,20 @@ def is_enabled() -> bool:
 def extract_loss(line: str) -> float | None:
     """Extract a per-epoch loss value from one log line, or ``None`` if absent.
 
-    Prefers ``train_loss`` over a bare ``loss``. Non-finite values (NaN/Inf — a
-    separate failure mode the NaN guards already handle) are ignored here so this guard
-    stays focused on the *flat-and-high* dead-training signature.
+    Prefers ``train_loss`` over a bare ``loss``. ``None`` means "this line carries no
+    loss reading" — and ONLY that. A non-finite reading (``nan``/``inf``) is a real,
+    highly informative reading and is RETURNED as ``float('nan')``/``float('inf')``:
+    silently mapping it to ``None`` (the old behaviour) made a diverged run
+    indistinguishable from a line with no loss at all, which is precisely how a blown-up
+    cell reached ``status="ok"``. :meth:`DeadTrainingDetector.observe_loss` classifies it.
     """
     m = _TRAIN_LOSS_RE.search(line) or _LOSS_RE.search(line)
     if not m:
         return None
     try:
-        v = float(m.group(1))
+        return float(m.group(1))
     except (TypeError, ValueError):
         return None
-    return v if math.isfinite(v) else None
 
 
 def _random_guess_note(value: float) -> str:
@@ -120,6 +149,11 @@ class DeadTrainingDetector:
       * ``OPENRESEARCH_DEAD_LOSS_EPS``     (default 1e-3)  max-min flatness threshold
       * ``OPENRESEARCH_DEAD_LOSS_MIN``     (default 0.2)   only trip above this loss value
       * ``OPENRESEARCH_DEAD_LOSS_DESCENT`` (default 0.9)   best must stay >= this * first
+
+    ``nonfinite_window`` (:data:`NONFINITE_WINDOW`, 3) is the DIVERGED signature's
+    threshold — consecutive NaN/Inf readings before the cell is early-stopped. A single
+    finite reading resets the counter, so a transient fp16 overflow the grad-scaler
+    recovers from is never flagged.
     """
 
     def __init__(
@@ -129,6 +163,7 @@ class DeadTrainingDetector:
         flat_eps: float | None = None,
         min_loss: float | None = None,
         descent_frac: float | None = None,
+        nonfinite_window: int | None = None,
     ) -> None:
         self.window = int(window if window is not None else _env_int("OPENRESEARCH_DEAD_LOSS_WINDOW", 40))
         self.flat_eps = float(flat_eps if flat_eps is not None else _env_float("OPENRESEARCH_DEAD_LOSS_EPS", 1e-3))
@@ -136,16 +171,36 @@ class DeadTrainingDetector:
         self.descent_frac = float(
             descent_frac if descent_frac is not None else _env_float("OPENRESEARCH_DEAD_LOSS_DESCENT", 0.9)
         )
+        self.nonfinite_window = max(
+            1, int(nonfinite_window if nonfinite_window is not None else NONFINITE_WINDOW)
+        )
         self.window = max(self.window, 2)  # a window of <2 is meaningless
         self._recent: deque[float] = deque(maxlen=self.window)
         self._first: float | None = None
         self._best: float = math.inf
         self._n_seen = 0
+        self._nonfinite_run = 0  # consecutive NaN/Inf readings seen right now
 
     def observe_loss(self, loss: float) -> str | None:
         """Feed one numeric loss reading; return a diagnosis when dead, else ``None``."""
-        if loss is None or not math.isfinite(loss):
+        if loss is None:
             return None
+        # DIVERGED signature (P0): the loss blew up to NaN/±Inf. Counted separately and
+        # NEVER fed into _recent/_first/_best — a NaN poisons max/min/comparisons and
+        # would silently disable the flat-and-high signature below.
+        if not math.isfinite(loss):
+            self._nonfinite_run += 1
+            if self._nonfinite_run >= self.nonfinite_window:
+                return (
+                    f"training diverged: loss is non-finite ({loss}) for "
+                    f"{self._nonfinite_run} consecutive readings — the optimisation blew "
+                    f"up and cannot recover, so every metric this cell reports is "
+                    f"meaningless (likely a too-high learning rate, a missing gradient "
+                    f"clip, a log/division by zero, an fp16 overflow, or an un-normalized "
+                    f"reward)"
+                )
+            return None
+        self._nonfinite_run = 0  # a finite reading — the blow-up recovered
         if self._first is None:
             self._first = loss
         self._best = min(self._best, loss)
@@ -202,6 +257,7 @@ def is_dead_training(output: str) -> bool:
 
 __all__ = [
     "MARKER",
+    "NONFINITE_WINDOW",
     "is_enabled",
     "extract_loss",
     "DeadTrainingDetector",

@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from backend.services.runtime import gpu_pool_preflight
 from backend.services.runtime.interface import (
     ExecResult,
     RuntimeBackend,
@@ -679,6 +680,53 @@ class _KubernetesJobBackend(RuntimeBackend):
             return self._core_api
         return _load_kubernetes_core_api()
 
+    def _run_gpu_pool_preflight(self) -> None:
+        """GCP-only: verify every configured GPU SKU is a real, schedulable node pool.
+
+        Called once per ``create_sandbox()`` (never per-cell — this backend's
+        ``exec()`` is invoked once per Job, but ``create_sandbox()`` runs exactly
+        once per sandbox lifetime). GKE-specific: the ``reprolab/sku`` drift class
+        this guards against is documented in ``gpu_pool_preflight.py``; AKS is
+        deliberately untouched here (Azure has its own ``azure_gpu_skus`` setting
+        and its own cell-runner path — wiring it in is a follow-up, not this fix).
+
+        ``settings`` is threaded through so the authoritative tier-1 GKE
+        node-pool API lister is built from THIS backend's settings (honouring an
+        injected test double), not from a global ``get_settings()``.
+
+        Fail-soft on anything that ISN'T a confirmed drift: if the K8s client
+        can't even be constructed (stale kubeconfig, transient issue), that is a
+        "cannot verify" situation, not a "the pool is missing" situation, so we
+        warn and continue rather than turning a client hiccup into a hard block.
+        A genuinely-missing pool (``gpu_pool_preflight.enforce_gpu_pool_preflight``
+        raising ``SandboxRuntimeError``) is allowed to propagate — that IS the
+        fail-loud behavior this method exists to provide.
+        """
+        if self._cloud.provider != "gcp":
+            return
+        prefix = self._cloud.settings_prefix
+        settings = self._get_settings()
+        configured = _settings_get(settings, f"{prefix}_gpu_skus", []) or []
+        if not configured:
+            return
+        try:
+            core_api = self._get_core_api()
+        except Exception as exc:  # noqa: BLE001 — client construction failure => cannot verify
+            _log.warning(
+                "%s backend: GPU SKU/node-pool preflight could not obtain a Kubernetes "
+                "client (%s) -- proceeding without this guard; a genuinely-missing pool "
+                "is still caught later (capacity_exhausted after the pending timeout).",
+                self._cloud.provider.upper(), exc,
+            )
+            return
+        gpu_pool_preflight.enforce_gpu_pool_preflight(
+            configured,
+            core_api=core_api,
+            provider_label=self._cloud.provider.upper(),
+            settings_var_name=f"OPENRESEARCH_{prefix.upper()}_GPU_SKUS",
+            settings=settings,
+        )
+
     # ------------------------------------------------------------------
     # RuntimeBackend ABC
     # ------------------------------------------------------------------
@@ -697,6 +745,11 @@ class _KubernetesJobBackend(RuntimeBackend):
             )
 
         image = self._base_image()
+
+        # GPU SKU/node-pool preflight — BEFORE the (expensive) project upload.
+        # One live cluster query, GCP-only, no-op when no GPU SKUs are configured.
+        await asyncio.get_running_loop().run_in_executor(None, self._run_gpu_pool_preflight)
+
         blob_prefix = _blob_code_prefix(config.project_id, config.run_id)
 
         # Upload project files to object storage (run in executor — sync SDK).

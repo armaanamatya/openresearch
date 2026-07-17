@@ -1045,3 +1045,33 @@ async def test_exec_uses_default_ttl_when_setting_absent(tmp_path: Path):
 
     body = batch_api.created_jobs[0]["body"]
     assert body["spec"]["ttlSecondsAfterFinished"] == _DEFAULT_TTL_AFTER_FINISHED_S
+
+
+# ---------------------------------------------------------------------------
+# GPU SKU / node-pool preflight: GCP-only, AKS is unaffected (no new behavior).
+# See backend/services/runtime/gpu_pool_preflight.py + test_gke_job_backend.py
+# for the actual GCP hard-block/warn/pass coverage.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_never_invokes_gpu_pool_preflight_on_azure(tmp_path: Path):
+    """AksJobBackend._cloud.provider == "azure", so the GCP-only preflight added
+    to _KubernetesJobBackend.create_sandbox must never touch the cluster here —
+    even with a non-empty azure_gpu_skus and a core_api that would raise if
+    list_node() were ever called."""
+
+    class _RaisingOnListNodeCoreApi(FakeCoreApi):
+        def list_node(self):
+            raise AssertionError(
+                "list_node() must never be called for the azure/AKS backend "
+                "(the GPU SKU/node-pool preflight is GCP-only)"
+            )
+
+    fake_settings = _make_fake_settings(azure_gpu_skus=["azure_a100_80"])  # non-empty on purpose
+    backend = _make_backend(core_api=_RaisingOnListNodeCoreApi(), settings=fake_settings)
+
+    with patch.object(backend, "_upload_project_sync", return_value=None):
+        sandbox = await backend.create_sandbox(_make_config(tmp_path))
+
+    assert isinstance(sandbox, Sandbox)

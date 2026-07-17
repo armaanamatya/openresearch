@@ -2,9 +2,15 @@
 
 No IO. Given a user-provided URL, the paper's discovered repository artifacts,
 a blacklist, and an optional mode override, decide WHICH repo (if any) to use
-and in WHICH mode (adapt / reference / scratch). The blacklist preserves the
-existing "blocked = do not use" semantics: a resolved URL on the blacklist is
+and in WHICH mode (adapt / reference / execute / scratch). The blacklist preserves
+the existing "blocked = do not use" semantics: a resolved URL on the blacklist is
 DROPPED (treated as not-found) and the run proceeds scratch.
+
+The returned ``RepoSpec.mode`` is the **RESOLVED** mode — what will actually run —
+never the raw request. That matters for the ``auto`` override (see ``resolve``):
+``auto`` is a per-paper *request* that resolves to ``execute`` when a repo is
+usable and to ``scratch`` when none is, and the whole harness downstream keys off
+the resolved mode persisted to ``rlm_state/repo_spec.json``.
 """
 from __future__ import annotations
 
@@ -68,8 +74,26 @@ class RepoResolver:
         blacklist: set[str],
         mode_override: str | None,
     ) -> RepoSpec:
+        """Resolve the repo decision. ``mode_override`` is the REQUEST; ``RepoSpec.mode``
+        is the RESOLVED outcome.
+
+        ``auto`` (the triage-funnel mode) resolves per-paper: a usable repo means
+        ``execute`` (run the authors' published code — the high-evidence path), and no
+        usable repo falls through to the terminal ``scratch`` branch below (an honest
+        from-scratch attempt). The caller discloses that fallback loudly; a triage
+        funnel's expensive error is a FALSE NEGATIVE, so a paper that published no
+        code must still get a real attempt rather than hard-failing the run.
+
+        ``adapt`` (default) / ``reference`` / ``execute`` keep their exact prior
+        behavior — the request is stamped through verbatim.
+        """
         _mode_norm = (mode_override or "").strip().lower()
-        mode = _mode_norm if _mode_norm in ("reference", "execute") else "adapt"
+        if _mode_norm == "auto":
+            mode = "execute"
+        elif _mode_norm in ("reference", "execute"):
+            mode = _mode_norm
+        else:
+            mode = "adapt"
 
         # 1. User-provided URL wins.
         norm_user = normalize_repo_url(user_url)

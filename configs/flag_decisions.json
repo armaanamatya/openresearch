@@ -1,0 +1,209 @@
+{
+  "_meta": {
+    "purpose": "Forcing-function registry. Every integrity/reliability-shaped OPENRESEARCH_* flag carries an EXPLICIT, reviewed decision per run-spec profile. A default-OFF guard protects NOTHING until it is wired into a profile (learn.md 2026-07-07: 'reliability fixes ship default-OFF and protect nothing until enabled in the run-spec'). This manifest plus tests/config/test_flag_decision_manifest.py make shipping a guard dark IMPOSSIBLE: a new integrity-token flag cannot merge without a decision here, and a decision can never silently drift from the profile JSON.",
+    "profiles": ["triage_screen", "verify_deep"],
+    "profile_files": {
+      "triage_screen": "configs/triage_screen_run_spec.json",
+      "verify_deep": "configs/verify_deep_run_spec.json"
+    },
+    "decision_values": {
+      "on": "flag MUST be present and truthy (1/true/yes/on) in that profile's JSON",
+      "off": "flag MUST be absent (or an explicit disabling value) in that profile's JSON. An 'off' is a DECISION WITH A STATED REASON, not an accident.",
+      "<literal>": "e.g. 'partial' / 'openai' / 'gpt-5' / '2' -- flag MUST be present in that profile with exactly this value"
+    },
+    "enforced_by": "tests/config/test_flag_decision_manifest.py",
+    "enforcement": [
+      "ENUMERATION: every OPENRESEARCH_* flag in backend/ whose name contains an integrity token (GUARD/GATE/KILL/VERDICT/VALIDATOR/CHECK/DETECTION) as a '_'-delimited SEGMENT must be a key in 'flags' -- else the test FAILS naming the flag and telling the author to decide on/off.",
+      "CONSISTENCY: each decision is checked against the live profile JSON in BOTH directions, so the manifest can never drift from what actually ships.",
+      "TYPO GUARD: every manifest flag literal must appear in backend/ source (mirrors the profile test) so a renamed flag cannot rot here."
+    ],
+    "artifact_exclusions": {
+      "OPENRESEARCH_VALIDATOR_": "NOT a flag -- a frozen-surface prefix literal in harness_self_edit.py used as a startswith() guard over protected env prefixes. Segment-matches VALIDATOR; excluded from the enumeration.",
+      "note_on_SKILL_family": "OPENRESEARCH_SKILLS / _SKILL_SELECT / _SKILL_INFRA_SELECT match the audit's substring-KILL regex ('sKILLs') but contain NO integrity token as a segment, so the enumeration does NOT require them. They are recorded here anyway (the audit named them) as explicit off/off: they are ADVISORY prompt-shaping only and can NEVER be a fitness/evidence signal, so they are out of scope for the integrity funnel -- enabling them is a separate implementation-quality A/B, not a guard decision."
+    },
+    "settings_inert_check": "Every flag below reads os.environ AT CALL TIME (verified) -- none is a pydantic-Settings field in backend/config.py, so none is silently inert when injected via --run-spec. (The known Settings-inert keys -- OPENRESEARCH_REPO_CLONE_TIMEOUT_S/_MAX_MB/_LFS/_LOCAL_PATH/_COMMIT -- are NOT integrity flags and are deliberately absent from both profiles; see configs/README.md.)"
+  },
+
+  "flags": {
+    "OPENRESEARCH_ZERO_METRICS_GUARD": {
+      "triage_screen": "on", "verify_deep": "on",
+      "class": "fabrication-guard", "cost": "stdlib", "false_block": "low", "default": "off",
+      "rationale": "Vetoes all-zero/constant result-claiming metrics that claim GPU training with no provenance.json, and vetoes any non-finite (NaN/Inf) result-claiming metric UNCONDITIONALLY. Cheap, conservative, fail-soft. Core red-line evidence guard; on in both tiers (also supplies triage's NaN protection when METRIC_SEMANTICS_GUARD is off there)."
+    },
+    "OPENRESEARCH_STUB_METRICS_GUARD": {
+      "triage_screen": "on", "verify_deep": "on",
+      "class": "fabrication-guard", "cost": "stdlib", "false_block": "low", "default": "off",
+      "rationale": "Degrades a success whose metric keys are ALL placeholders (total_length/chunk_count) with no real-metric key. Never fires if any real-metric key is present. Cheap, conservative, both tiers."
+    },
+    "OPENRESEARCH_EVAL_PROVENANCE_GUARD": {
+      "triage_screen": "on", "verify_deep": "on",
+      "class": "fabrication-guard", "cost": "stdlib", "false_block": "low", "default": "off",
+      "rationale": "Vetoes an in-range non-zero rate metric that is NOT a real held-out measurement (missing eval_provenance.json sidecar / reported != mean(records) / in-sample id overlap). Conservative exemptions (RL-reward-only, zero, boolean-success). Both tiers."
+    },
+    "OPENRESEARCH_EVIDENCE_GATE": {
+      "triage_screen": "on", "verify_deep": "on",
+      "class": "evidence-veto", "cost": "stdlib", "false_block": "low", "default": "on",
+      "rationale": "VERDICT-level gate (report.py::_apply_evidence_gate): a success-ish verdict needs a success+metrics experiment row AND >=1 in-process run_experiment call (forge-resistant). DISTINCT from OPENRESEARCH_LEAF_EVIDENCE_GATE (the per-leaf veto). Default-ON; pinned =1 in both tiers to make the reliance explicit and A/B-flip-proof."
+    },
+    "OPENRESEARCH_LEAF_EVIDENCE_GATE": {
+      "triage_screen": "on", "verify_deep": "on",
+      "class": "evidence-veto", "cost": "stdlib", "false_block": "low", "default": "off",
+      "rationale": "A7 per-leaf veto (leaf_scorer + evidence_gate.py): zeroes a grader-CREDITED measured-result leaf whose cited per_model cell has NO successful on-disk evidence. THE evidence-not-grade red line and the corpus's single highest-value correctness lever. WAS DARK IN BOTH PROFILES -- they set EVIDENCE_GATE=1 (the verdict gate) believing it enabled this, but the leaf veto reads a DIFFERENT var (the 'same env var, opposite defaults' split). Conservative: only confident result-claim leaves are eligible; judgment/method leaves exempt; model+dataset alias-matched. Residual alias-gap false-block is rare under execute-mode (author code writes real metrics.json), and crediting an unsubstantiated result is exactly the fake a recall funnel must not pass forward -- on in both tiers."
+    },
+    "OPENRESEARCH_PER_MODEL_STATUS_GATE": {
+      "triage_screen": "on", "verify_deep": "on",
+      "class": "fabrication-guard", "cost": "stdlib", "false_block": "low", "default": "off",
+      "rationale": "Closes the monolithic run_experiment fake-green where per_model is non-empty but EVERY entry errored with 0.0 metrics yet exit==0. Flips to repairable all_models_failed. Both tiers."
+    },
+    "OPENRESEARCH_METRICS_COMPLETENESS_CHECK": {
+      "triage_screen": "on", "verify_deep": "on",
+      "class": "fabrication-guard", "cost": "stdlib", "false_block": "low", "default": "on",
+      "rationale": "Fires on EMPTY metric placeholders. Default-ON; pinned in both tiers for explicitness/A-B-flip protection. Cheap, conservative."
+    },
+    "OPENRESEARCH_ENV_LIVENESS_GATE": {
+      "triage_screen": "on", "verify_deep": "on",
+      "class": "evidence-veto", "cost": "stdlib", "false_block": "low", "default": "off",
+      "rationale": "Closes the WebShop fake-zero: a dead env that served 0 episodes becomes a verified env_setup_failed Exclusion (a fair GAP) instead of a fake 0. Conservative: any served episode / no health data => never flagged. Both tiers."
+    },
+    "OPENRESEARCH_NO_LEARNING_SIGNAL_GATE": {
+      "triage_screen": "on", "verify_deep": "on",
+      "class": "verdict-gate", "cost": "stdlib", "false_block": "low", "default": "off",
+      "rationale": "Forces replication_verdict=inconclusive when EVERY judgeable cell is flat (reward never rose AND loss never descended) or the curve tail is non-finite. Conservative: ANY learning leaf => not flagged. Deterministic (curves, never the grade). Both tiers; also backstops triage's NaN-on-curve case."
+    },
+    "OPENRESEARCH_ANTIFAB_GUARD": {
+      "triage_screen": "on", "verify_deep": "on",
+      "class": "fabrication-guard", "cost": "stdlib+nvidia-smi", "false_block": "low", "default": "on",
+      "rationale": "Static-AST + VRAM-evidence anti-fabrication (stub model / random logprobs / hardcoded metric / GPU-claim below the 1.5GiB VRAM floor). Cheap (ast parse + a local nvidia-smi sample), fail-soft, LOW false-block (needs the FULL fingerprint). Default-ON in code; NOW PINNED =1 in both profiles (was relying on the default -- explicit is A/B-flip-proof)."
+    },
+    "OPENRESEARCH_METRIC_SEMANTICS_GUARD": {
+      "triage_screen": "off", "verify_deep": "on",
+      "class": "fabrication-guard", "cost": "stdlib", "false_block": "low-medium", "default": "off",
+      "rationale": "Degrades a semantically-impossible metric: a rate-named key (accuracy/f1/...) outside [0,1] or a non-finite loss/reward. OFF ON TRIAGE: the rate-range branch false-blocks a faithful paper that stores a rate as a PERCENTAGE (accuracy=84.0) -> repair loop -> a false negative the recall tier cannot afford; triage keeps NaN protection via ZERO_METRICS_GUARD's unconditional non-finite veto. ON in verify_deep (precision-first; operator reviews the shortlist)."
+    },
+    "OPENRESEARCH_DEGENERATE_TRAINING_CHECK": {
+      "triage_screen": "on", "verify_deep": "on",
+      "class": "fabrication-guard", "cost": "stdlib", "false_block": "medium", "default": "on",
+      "rationale": "Per-model no-learning-signal check (status=ok but explicit 0 optimizer steps, OR every reward magnitude ~0). Default-ON in code; pinned =1 both tiers to reflect reality. CAVEAT (medium false-block): a faithful EVAL-ONLY/inference reproduction (0 training steps) or a genuinely sparse-reward RL run can be degraded to REPAIRABLE (not fatal). Mitigated: status=ok-only, model-level (any nonzero leaf clears), abs() handles negative-penalty rewards, and DEGENERATE_REWARD_EPSILON tunes the threshold. If the funnel begins screening eval-only/inference papers, revisit a triage =0 carve-out."
+    },
+    "OPENRESEARCH_IMPL_ABANDON_GUARD": {
+      "triage_screen": "on", "verify_deep": "on",
+      "class": "reliability", "cost": "stdlib", "false_block": "low", "default": "off",
+      "rationale": "On an implement_baseline SDK-aclose-stall give-up, returns repairable implement_timeout_abandoned instead of caching 'ok' over half-written code (the harvest-race that false-blocked a faithful SDAR impl). Both tiers."
+    },
+    "OPENRESEARCH_ORPHAN_GUARD": {
+      "triage_screen": "on", "verify_deep": "on",
+      "class": "reliability", "cost": "stdlib", "false_block": "low", "default": "off",
+      "rationale": "On a per-primitive timeout, SIGKILLs the abandoned experiment's process group(s) so the retry isn't starved of GPU/VRAM. No verdict effect. Both tiers."
+    },
+    "OPENRESEARCH_DOOMED_KILL": {
+      "triage_screen": "on", "verify_deep": "on",
+      "class": "reliability", "cost": "stdlib", "false_block": "none-today", "default": "off",
+      "rationale": "Early-kill comparator for doomed runs. Present in both profiles but the comparator (doomed_run_comparator.py) is DELIBERATELY UNWIRED into any live path today -- so =1 is a documented NO-OP, harmless, and ready for when it is wired. Kept as-is (not removed)."
+    },
+    "OPENRESEARCH_MAX_TERMINAL_VERDICT": {
+      "triage_screen": "partial", "verify_deep": "off",
+      "class": "verdict-ceiling", "cost": "stdlib", "false_block": "n/a-by-design", "default": "off (uncapped)",
+      "rationale": "Fail-closed verdict ceiling (can only LOWER). triage='partial' makes 'a screening run can never mint reproduced' a STRUCTURAL invariant (score untouched -- still ranks). verify_deep leaves it UNCAPPED: it is the only tier permitted to certify 'reproduced'."
+    },
+    "OPENRESEARCH_TWO_AXIS_VERDICT": {
+      "triage_screen": "off", "verify_deep": "on",
+      "class": "verdict-shape", "cost": "stdlib", "false_block": "low", "default": "off",
+      "rationale": "Attaches implementation_verdict/replication_verdict (schema 2) with a fail-closed upgrade-clamp. Tier-2-only: the two-axis certification shape belongs to the precision tier. Off on triage (the cheap screen reports a single capped verdict)."
+    },
+    "OPENRESEARCH_EVIDENCE_AUDIT": {
+      "triage_screen": "off", "verify_deep": "on",
+      "class": "evidence-veto", "cost": "stdlib", "false_block": "low", "default": "off",
+      "rationale": "Unified deterministic critic: AND-s run_level_clean (no fabrication-family row / not all-models-failed / rubric-hash match) into the success-ish verdict. Deterministic, fail-soft. ON in verify_deep -- it echoes the campaign REPRODUCED gate's own run_level_clean requirement at the report chokepoint, so it adds no NEW false-block surface at the certification tier. OFF on triage (avoid a verdict-downgrade path on the recall tier; upstream per-experiment fabrication guards already degrade fabricated rows there). [Found beyond the audit's 14 -- another dark deterministic backstop.]"
+    },
+    "OPENRESEARCH_REPORT_CLAIM_GATE": {
+      "triage_screen": "off", "verify_deep": "on",
+      "class": "verdict-cap", "cost": "stdlib", "false_block": "medium", "default": "off",
+      "rationale": "Deterministic (no LLM) output-side backstop: caps verdict reproduced->partial (DOWN only, score untouched) when a report-narrative result number can't be matched to code/metrics.json within 5%. ON in verify_deep: requiring a 'reproduced' write-up's headline numbers to be grounded in evidence is exactly the fail-closed certification contract. CAVEAT (medium false-block): a derived/renamed prose number can wrongly cap to partial -- bounded (floor is partial, operator reviews). OFF on triage: redundant there (MAX_TERMINAL_VERDICT=partial already forbids reproduced) and the recall tier avoids the extra hard-mutation path."
+    },
+    "OPENRESEARCH_CODE_REVIEW_GATE": {
+      "triage_screen": "off", "verify_deep": "on",
+      "class": "fabrication-guard", "cost": "llm-per-run_experiment", "false_block": "low", "default": "off",
+      "rationale": "Pre-GPU cross-family LLM review of the executor's training code (fake/wrong-metrics fingerprints); a GROUNDED high-severity finding degrades the experiment to REPAIRABLE (fail-open on client/parse error). AND-gated with EXTERNAL_VALIDATOR (inert without it). ON in verify_deep: catches fabrication BEFORE the GPU spend (a false block costs only re-implement, never wasted GPU) and reuses the configured openai/gpt-5 validator client. OFF on triage: costs an LLM call per run_experiment and is inert there anyway (triage omits EXTERNAL_VALIDATOR). [cost-bearing -- reviewer may flip to off/off]"
+    },
+    "OPENRESEARCH_EXTERNAL_VALIDATOR": {
+      "triage_screen": "off", "verify_deep": "on",
+      "class": "adversarial-panel", "cost": "llm-panel", "false_block": "low", "default": "off",
+      "rationale": "Separate-model adversarial panel that machine-checks each typed predicate (min-aggregation veto, fingerprint-keyed). Tier-2-only, cost-bearing; fail-CLOSED build (grader_transport raises rather than judging with the executor's lineage). REPRODUCED is unreachable without it -> requires VALIDATOR_BACKEND set (see below)."
+    },
+    "OPENRESEARCH_VALIDATOR_BACKEND": {
+      "triage_screen": "off", "verify_deep": "openai",
+      "class": "validator-config", "cost": "n/a", "false_block": "n/a", "default": "unset",
+      "rationale": "Transport for EXTERNAL_VALIDATOR. verify_deep='openai' keeps the validator CROSS-FAMILY from the Claude executor (a genuinely independent judge). Value companion; off/unset on triage (no validator there)."
+    },
+    "OPENRESEARCH_VALIDATOR_MODEL": {
+      "triage_screen": "off", "verify_deep": "gpt-5",
+      "class": "validator-config", "cost": "n/a", "false_block": "n/a", "default": "unset",
+      "rationale": "Model for EXTERNAL_VALIDATOR panel. verify_deep='gpt-5'. Value companion; off on triage."
+    },
+    "OPENRESEARCH_VALIDATOR_PANEL_N": {
+      "triage_screen": "off", "verify_deep": "2",
+      "class": "validator-config", "cost": "n/a", "false_block": "n/a", "default": "unset",
+      "rationale": "Panel size for EXTERNAL_VALIDATOR. verify_deep='2'. Value companion; off on triage."
+    },
+    "OPENRESEARCH_VALIDATOR_CHECK_REPORT": {
+      "triage_screen": "off", "verify_deep": "on",
+      "class": "adversarial-panel", "cost": "stdlib (0 extra LLM)", "false_block": "low", "default": "off",
+      "rationale": "Companion of EXTERNAL_VALIDATOR: threads the report's OWN claims into the finalize validation panel so they are machine-checked against evidence too (0 additional LLM calls; the panel's veto stays machine-checked). ON in verify_deep (free precision enrichment). OFF on triage: completely inert without EXTERNAL_VALIDATOR -- recorded as a real decision, not an accident."
+    },
+    "OPENRESEARCH_SPEC_VALIDATOR": {
+      "triage_screen": "off", "verify_deep": "on",
+      "class": "adversarial-panel", "cost": "llm-panel", "false_block": "low", "default": "off",
+      "rationale": "Adversarial panel (default 2 LLM calls, once/run) that machine-checks the AUTO-GENERATED RUBRIC for hallucinated_leaf/wrong_target before GPU spend. ON in verify_deep in ADVISORY mode (surfaces findings as run_warnings for the operator reviewing the shortlist; inherits the openai/gpt-5 validator transport). OFF on triage: cost-bearing and needs its own validator backend (triage omits VALIDATOR_BACKEND). See SPEC_VALIDATOR_BLOCK for why it stays advisory."
+    },
+    "OPENRESEARCH_SPEC_VALIDATOR_BLOCK": {
+      "triage_screen": "off", "verify_deep": "off",
+      "class": "rubric-mutation", "cost": "stdlib", "false_block": "precision-risk", "default": "off",
+      "rationale": "OFF everywhere. When on, DROPS machine-confirmed hallucinated/wrong-target leaves from the rubric -- which EASES the bar. Auto-lowering its own bar is misaligned with a fail-closed CERTIFICATION tier (a false drop lets a fake pass), so verify_deep runs SPEC_VALIDATOR in advisory mode and leaves the drop decision to the operator. Deliberate off/off."
+    },
+    "OPENRESEARCH_SPEC_VALIDATOR_BACKEND": {
+      "triage_screen": "off", "verify_deep": "off",
+      "class": "validator-config", "cost": "n/a", "false_block": "n/a", "default": "unset",
+      "rationale": "Value companion; unset in both -> SPEC_VALIDATOR inherits the VALIDATOR_BACKEND fallback (openai in verify_deep). No profile override needed."
+    },
+    "OPENRESEARCH_SPEC_VALIDATOR_MODEL": {
+      "triage_screen": "off", "verify_deep": "off",
+      "class": "validator-config", "cost": "n/a", "false_block": "n/a", "default": "unset",
+      "rationale": "Value companion; unset in both -> inherits the VALIDATOR_MODEL fallback (gpt-5 in verify_deep)."
+    },
+    "OPENRESEARCH_SPEC_VALIDATOR_PANEL_N": {
+      "triage_screen": "off", "verify_deep": "off",
+      "class": "validator-config", "cost": "n/a", "false_block": "n/a", "default": "2",
+      "rationale": "Value companion; unset in both -> the module default panel of 2. No override needed."
+    },
+    "OPENRESEARCH_LITERATURE_CLAIM_GATE": {
+      "triage_screen": "off", "verify_deep": "off",
+      "class": "advisory", "cost": "network", "false_block": "none", "default": "off",
+      "rationale": "OFF everywhere. Advisory-only: emits run_warnings about un-corroborated paper claims; NEVER changes the rubric/target/weight/verdict/score (cannot block). It also makes external HTTP calls to literature connectors and is a NO-OP without the separate OPENRESEARCH_LITERATURE_GROUNDING flag. Zero evidence-layer effect for an external-network dependency -> not worth it in either tier; the fitness signal is on-disk evidence, not literature corroboration of the paper's own numbers."
+    },
+    "OPENRESEARCH_REMOTE_STALL_GUARD": {
+      "triage_screen": "off", "verify_deep": "off",
+      "class": "reliability", "cost": "stdlib", "false_block": "low", "default": "off",
+      "rationale": "OFF everywhere. RunPod-ONLY: remote_stall.py is imported solely by runpod_backend.py; the GKE/gcp k8s backends and the local screen path never reach it. The production substrate is GKE (verify_deep --sandbox gcp) and triage runs --sandbox local, so this guard is STRUCTURALLY INERT in both profiles. A decision with a substrate reason, not an omission."
+    },
+    "OPENRESEARCH_WATCHDOG_KILL_SECONDS": {
+      "triage_screen": "off", "verify_deep": "off",
+      "class": "value-knob", "cost": "stdlib", "false_block": "n/a", "default": "1500 (25min)",
+      "rationale": "NOT a boolean guard -- an integer idle-kill threshold for the ALWAYS-ON stall watchdog (the master toggle is OPENRESEARCH_WATCHDOG_DISABLED). off/off = NO profile override: the built-in 1500s default plus the per-primitive 4h bumps for run_experiment/implement_baseline plus the compute-liveness veto (no kill while GPU>5% or CPU advancing) are well-calibrated. Recorded so it is a decision, not a gap."
+    },
+    "OPENRESEARCH_SKILLS": {
+      "triage_screen": "off", "verify_deep": "off",
+      "class": "advisory-not-integrity", "cost": "stdlib", "false_block": "none", "default": "off",
+      "rationale": "OFF everywhere. Advisory playbook library that only shapes the LLM implementer/verifier prompt -- explicit invariant: skills are NEVER a fitness/evidence signal, so they cannot make either tier more or less honest. Surfaced only as a substring-KILL regex artifact ('sKILLs'), not a guard. Enabling is an implementation-QUALITY A/B (the sdar-/gcp-gke- skills are a reasonable verify_deep candidate), deferred to the quality track -- not an integrity decision."
+    },
+    "OPENRESEARCH_SKILL_SELECT": {
+      "triage_screen": "off", "verify_deep": "off",
+      "class": "advisory-not-integrity", "cost": "llm (<=1/run)", "false_block": "none", "default": "off",
+      "rationale": "OFF everywhere. Relevance-gated active-skill layer; costs <=1 bounded, idempotent, fail-soft LLM prune per run. Advisory only (never a fitness signal), requires SKILLS on. Quality A/B, not a guard."
+    },
+    "OPENRESEARCH_SKILL_INFRA_SELECT": {
+      "triage_screen": "off", "verify_deep": "off",
+      "class": "advisory-not-integrity", "cost": "stdlib", "false_block": "none", "default": "off",
+      "rationale": "OFF everywhere. Force-includes the sandbox's infra skill (gcp/gke -> gcp-gke-reproduction) into the advisory active set (append-only, deterministic, requires SKILLS+SKILL_SELECT). Advisory only. Quality A/B, not a guard."
+    }
+  }
+}

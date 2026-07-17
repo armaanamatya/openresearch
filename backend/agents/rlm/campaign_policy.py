@@ -31,6 +31,7 @@ from typing import Any
 
 from backend.agents.rlm.attempt_assessment import AttemptAssessment
 from backend.agents.rlm.campaign_types import CampaignSpend
+from backend.agents.rlm.doomed_run_comparator import DOOMED_KILLED_CLASS
 
 # --- Exceptions --------------------------------------------------------
 
@@ -446,6 +447,27 @@ def evidence_count(a: AttemptAssessment) -> int:
     return sum(1 for key, value in a.evidence_predicates.items() if key != "run_level_clean" and value)
 
 
+def is_doomed_killed(a: AttemptAssessment) -> bool:
+    """Spec §10.3: the campaign STOPPED PAYING for this attempt mid-flight
+    (``OPENRESEARCH_DOOMED_KILL``); it is not an observation of the science.
+
+    "We cut our losses" and "the science failed" are different facts, and
+    conflating them corrupts every retry rule below: a killed attempt has no
+    report (so it would trip ``report_missing_twice``), no evidence (so it
+    would look like a plateau), and no verdict (so it would drag the champion
+    ranking). It is therefore invisible to every SCIENCE counter — while
+    still counting toward ``max_attempts`` and still accruing its real spend,
+    because the money was genuinely spent and the kill count must stay bounded.
+    """
+    return a.failure_class == DOOMED_KILLED_CLASS
+
+
+def _science_attempts(assessments: Sequence[AttemptAssessment]) -> list[AttemptAssessment]:
+    """The attempts that are actually observations of the science — i.e. every
+    attempt the campaign let run to its own conclusion."""
+    return [a for a in assessments if not is_doomed_killed(a)]
+
+
 def _meets_target_distance(a: AttemptAssessment) -> float:
     """``max(0, target - score)`` when both are numeric, else +inf (missing
     data can never out-rank a measured pair — fail-closed on trust)."""
@@ -468,8 +490,14 @@ def _champion_rank_key(a: AttemptAssessment) -> tuple[int, float, int, int]:
 def select_champion(assessments: Sequence[AttemptAssessment]) -> AttemptAssessment | None:
     """§8.2/F5: the campaign-owned, guard-filtered champion. Filters to
     ``grade_usable_for_terminal`` FIRST, ranks second — a higher-scoring
-    guard-tripped attempt can never win. ``None`` if nothing qualifies."""
-    pool = [a for a in assessments if a.grade_usable_for_terminal]
+    guard-tripped attempt can never win. ``None`` if nothing qualifies.
+
+    A doomed-killed attempt is excluded explicitly as well as structurally
+    (the kill marks it hard-quarantined, which ``grade_usable_for_terminal``
+    already rejects). Belt-and-braces on purpose: "an attempt we cut short can
+    never be shipped as the champion" is a MONEY-and-honesty invariant, and it
+    must not depend on one flag surviving a dict round-trip."""
+    pool = [a for a in assessments if a.grade_usable_for_terminal and not is_doomed_killed(a)]
     return min(pool, key=_champion_rank_key) if pool else None
 
 
@@ -484,8 +512,10 @@ def _champion_attempt_n(assessments: Sequence[AttemptAssessment]) -> int | None:
 
 def seeding_pool(assessments: Sequence[AttemptAssessment]) -> list[AttemptAssessment]:
     """§8.1: attempts usable to seed the next lineage — not hard-quarantined.
-    Soft-quarantined (e.g. validator-stale) attempts stay seedable."""
-    return [a for a in assessments if a.usable_for_seeding]
+    Soft-quarantined (e.g. validator-stale) attempts stay seedable. A
+    doomed-killed attempt never seeds: we interrupted it, so its ``code/`` is
+    a half-finished state nobody ever evaluated."""
+    return [a for a in assessments if a.usable_for_seeding and not is_doomed_killed(a)]
 
 
 def campaign_floor(assessments: Sequence[AttemptAssessment]) -> float | None:
@@ -494,7 +524,10 @@ def campaign_floor(assessments: Sequence[AttemptAssessment]) -> float | None:
     scores = [
         a.final_report.score
         for a in assessments
-        if a.grade_usable_for_terminal and a.final_report is not None and a.final_report.score is not None
+        if a.grade_usable_for_terminal
+        and not is_doomed_killed(a)
+        and a.final_report is not None
+        and a.final_report.score is not None
     ]
     return max(scores) if scores else None
 
@@ -544,10 +577,11 @@ def _champion_lineage_stalled_twice(
 ) -> bool:
     """True iff the champion lineage has >=2 recorded attempts and its last
     two each failed to raise evidence_count over the best-before-them."""
-    champion_attempts = [a for a in sorted_assessments if lineage_by_attempt.get(a.attempt_n) == "champion"]
+    science = _science_attempts(sorted_assessments)
+    champion_attempts = [a for a in science if lineage_by_attempt.get(a.attempt_n) == "champion"]
     if len(champion_attempts) < 2:
         return False
-    return all(not _evidence_improved_over_prior(sorted_assessments, a) for a in champion_attempts[-2:])
+    return all(not _evidence_improved_over_prior(science, a) for a in champion_attempts[-2:])
 
 
 def lineage_arms(
@@ -734,29 +768,50 @@ def _budget_floor_stop_reason(
 
 
 def _plateaued(sorted_assessments: Sequence[AttemptAssessment], *, plateau_k: int) -> bool:
-    if len(sorted_assessments) < plateau_k:
+    """§8.2 rule 4c: ``plateau_k`` CONSECUTIVE attempts with no EVIDENCE
+    improvement over the best attempt before them.
+
+    The failure-signature novelty escape was REMOVED (2026-07-13). It used to
+    reset the rule whenever the latest attempt failed with a signature never
+    seen before — which meant an agent that failed a DIFFERENT way every
+    attempt could never plateau and never stop, and so ran to max_attempts or
+    budget exhaustion while measurably learning nothing. (Campaign
+    prj_09047604e591d969: $24.23 of LLM spend, 4.5h, terminal EXHAUSTED,
+    score 0.000.) Novelty of a FAILURE LABEL is not progress; the deterministic
+    evidence layer is the only fitness signal, here as everywhere else, so a
+    run of six inventive new ways to produce zero evidence is exactly what
+    "plateau" is supposed to mean.
+
+    Doomed-killed attempts are invisible on BOTH sides of the comparison —
+    neither window members nor part of the "best before them" baseline: the
+    campaign stopped them, so their (absent) evidence says nothing about
+    whether the science is still moving.
+    """
+    science = _science_attempts(sorted_assessments)
+    if len(science) < plateau_k:
         return False
-    for a in sorted_assessments[-plateau_k:]:
-        if _evidence_improved_over_prior(sorted_assessments, a):
-            return False
-        earlier_signatures = {x.failure_signature for x in sorted_assessments if x.attempt_n < a.attempt_n}
-        if a.failure_signature is not None and a.failure_signature not in earlier_signatures:
-            return False
-    return True
+    return all(not _evidence_improved_over_prior(science, a) for a in science[-plateau_k:])
 
 
 def _infra_signature_repeated(sorted_assessments: Sequence[AttemptAssessment]) -> bool:
-    if len(sorted_assessments) < 3:
+    science = _science_attempts(sorted_assessments)
+    if len(science) < 3:
         return False
-    window = sorted_assessments[-3:]
+    window = science[-3:]
     signatures = {a.failure_signature for a in window}
     return len(signatures) == 1 and None not in signatures and all(a.failure_scope == "infra" for a in window)
 
 
 def _report_missing_twice(sorted_assessments: Sequence[AttemptAssessment]) -> bool:
-    if len(sorted_assessments) < 2:
+    # Killed attempts are filtered out on BOTH counts: a killed child writes no
+    # report, so without this a pair of kills would read as "the harness cannot
+    # produce a report twice running" and terminate the campaign for the wrong
+    # reason — and a kill landing between two genuine report_missing attempts
+    # would equally wrongly MASK the real rule.
+    science = _science_attempts(sorted_assessments)
+    if len(science) < 2:
         return False
-    latest, previous = sorted_assessments[-1], sorted_assessments[-2]
+    latest, previous = science[-1], science[-2]
     return latest.failure_class == "report_missing" and previous.failure_class == "report_missing"
 
 
@@ -779,10 +834,12 @@ def decide(
     full_rung = config.ladder_len - 1
 
     # 1. REPRODUCED — a quarantined grade (hard OR soft) never satisfies
-    # this, whatever its score (F4/F5).
+    # this, whatever its score (F4/F5); neither does an attempt the campaign
+    # itself killed (§10.3).
     for a in assessments:
         if (
             a.grade_usable_for_terminal
+            and not is_doomed_killed(a)
             and a.final_report is not None
             and a.final_report.meets_target is True
             and scope_rung_by_attempt.get(a.attempt_n) == full_rung
@@ -800,6 +857,7 @@ def decide(
         a
         for a in assessments
         if a.grade_usable_for_terminal
+        and not is_doomed_killed(a)
         and a.final_report is not None
         and a.final_report.implementation_verdict == "faithful"
         and a.final_report.replication_verdict == "contradicted"

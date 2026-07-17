@@ -104,6 +104,26 @@ _BLOB_CELLS_PREFIX = "cells"
 # Sentinel outcome written by the wrapper when OOM ladder is exhausted.
 _SENTINEL_OOM_OUTCOME = "oom_shrink_exhausted"
 
+# Literal name of the persistent-cache PVC. Must match the Helm-rendered PVC
+# ("reprolab-cache" in infra/gcp/helm/templates/pvc-cache.yaml and its Azure
+# mirror) -- NOT the backing Filestore/Azure-Files share name, which is a
+# separate, operator-configurable string (files_share).
+_CACHE_PVC_NAME = "reprolab-cache"
+
+# Dataset/asset-access credentials CredentialBroker may hand out for injection
+# into a training-cell pod env (backend/services/runtime/credential_broker.py
+# is the canonical resolver -- read its registry, don't hand-roll a second
+# one). Deliberately EXCLUDES LLM-provider keys (anthropic/openai/runpod/
+# azure_foundry api keys): a cell pod runs train_cell.py, never an LLM call,
+# so injecting those would only widen the secret blast radius for no
+# functional benefit.
+_CELL_POD_SECRET_NAMES: tuple[str, ...] = (
+    "hf_token",
+    "kaggle_key",
+    "aws_access_key_id",
+    "aws_secret_access_key",
+)
+
 # Default fallback values used when a settings attribute is absent (defensive,
 # so the module imports + tests run against a partial/older config).
 _SETTINGS_DEFAULTS: dict[str, Any] = {
@@ -486,6 +506,39 @@ def _setting(name: str, default: Any = None) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Credential injection (CredentialBroker is the canonical resolver -- this is
+# the ONLY seam that turns a logical secret name into a cell-pod env var; see
+# backend/services/runtime/credential_broker.py::resolve_env)
+# ---------------------------------------------------------------------------
+
+def _credential_env_vars() -> list[dict[str, str]]:
+    """Resolve dataset/asset credentials for injection into the cell Job env.
+
+    Uses ``CredentialBroker.resolve_env`` -- the canonical secret resolver --
+    so the cell-pod env seam shares resolution order/semantics with the
+    host-side asset-gating seam (``asset_resolver.py``'s ``gated_exclusion``).
+    Only secrets that actually resolve to a non-empty value are returned; an
+    unconfigured credential is silently omitted (byte-identical env when
+    nothing is configured, matching every other flag/knob in this module).
+    Fail-soft: any resolver error yields an empty list rather than aborting
+    manifest construction over a credential lookup.
+    """
+    try:
+        from backend.services.runtime.credential_broker import CredentialBroker  # type: ignore[import]
+        pairs = CredentialBroker().resolve_env(_CELL_POD_SECRET_NAMES)
+    except Exception as exc:  # noqa: BLE001 — a credential lookup must never abort the manifest
+        logger.debug("k8s_job_cell_runner: credential resolution failed: %s", exc)
+        return []
+    if pairs:
+        # Log only the NAMES that were injected -- never the resolved values.
+        logger.info(
+            "k8s_job_cell_runner: injecting credentials into cell env: %s",
+            [name for name, _value in pairs],
+        )
+    return [{"name": name, "value": value} for name, value in pairs]
+
+
+# ---------------------------------------------------------------------------
 # DNS-safe Job name
 # ---------------------------------------------------------------------------
 
@@ -577,6 +630,25 @@ def _cache_volume_spec(
             "persistentVolumeClaim": {"claimName": "reprolab-cache"},
         }
     return {"name": "reprolab-cache", "emptyDir": {}}
+
+
+def _cache_pvc_exists(k8s: _K8sClients, namespace: str, pvc_name: str = _CACHE_PVC_NAME) -> bool:
+    """Best-effort LIVE check: does the persistent-cache PVC actually exist?
+
+    A single GET, called ONCE per ``run_matrix`` invocation (not per-cell) --
+    mirrors the P0-scale-2 shared-client pattern elsewhere in this module.
+    Fail-closed: any error (404 not-found, RBAC denial, a transient API
+    hiccup, or an older test double that doesn't implement this method) is
+    treated as "not available", so the caller falls back to an HONEST
+    emptyDir + loud warning instead of referencing a PVC that may never bind
+    (which would strand the cell pod in Pending until the timeout fires --
+    worse than an emptyDir, not better).
+    """
+    try:
+        k8s.core.read_namespaced_persistent_volume_claim(pvc_name, namespace)
+    except Exception:
+        return False
+    return True
 
 
 def _build_job_manifest(
@@ -714,6 +786,11 @@ def _build_job_manifest(
     # (gke_cell_entrypoint.resolve_cell_gpu_count). Additive + default 1 → every
     # single-GPU cell (incl. the AKS path) is byte-for-byte unchanged where unread.
     env_vars.append({"name": "OPENRESEARCH_CELL_GPU_COUNT", "value": gpu_count_str})
+
+    # Dataset/asset credentials (HF_TOKEN etc.) -- resolved via CredentialBroker,
+    # the canonical secret resolver. Only injects what is actually configured;
+    # byte-identical env when nothing resolves (the common case today).
+    env_vars.extend(_credential_env_vars())
 
     # P0-fix-3: node selector uses the infra pool label reprolab/sku in ALL paths.
     # With gpu_plan → target that SKU's pool; without → fall back to the default SKU.
@@ -1231,6 +1308,7 @@ def _run_cell_job(
     gpu_plan: Any | None = None,
     blob_client: Any | None = None,
     pod_template_extra_labels: dict | None = None,
+    files_cache_enabled_override: bool | None = None,
 ) -> CellResult:
     """Submit a K8s Job for ``cell`` and block until terminal, then return a CellResult.
 
@@ -1238,6 +1316,12 @@ def _run_cell_job(
     ``run_matrix`` invocation (P0-scale-2).  When ``None`` the helpers fall
     back to constructing their own client (pre-fix behaviour — tolerated in
     tests and for any call site that does not supply one).
+
+    ``files_cache_enabled_override`` is the FINAL cache decision already
+    computed once per ``run_matrix`` invocation (settings flag AND a live PVC
+    existence check — see ``_cache_pvc_exists``). When ``None`` (a direct call
+    bypassing ``run_matrix``, e.g. in tests), falls back to the settings-only
+    read (pre-existing behaviour, no live check).
     """
     cell_id: str = cell.get("id", f"cell_{id(cell)}")
     job_name = _job_name(cell_id, run_id)
@@ -1253,6 +1337,12 @@ def _run_cell_job(
     _backoff_limit = int(_cloud_setting("job_backoff_limit", 0))
     if _backoff_limit == 0 and _cloud_setting("use_spot", False):
         _backoff_limit = int(_cloud_setting("spot_backoff_limit", 3))
+
+    _effective_files_cache_enabled: bool = (
+        bool(_cloud_setting("files_cache_enabled", True))
+        if files_cache_enabled_override is None
+        else bool(files_cache_enabled_override)
+    )
 
     try:
         manifest = _build_job_manifest(
@@ -1277,7 +1367,7 @@ def _run_cell_job(
             ttl_seconds_after_finished=int(_cloud_setting("ttl_seconds_after_finished", 3600)),
             backoff_limit=_backoff_limit,
             cache_mount_path=str(_cloud_setting("cache_mount_path", "/mnt/reprolab-cache")),
-            files_cache_enabled=bool(_cloud_setting("files_cache_enabled", True)),
+            files_cache_enabled=_effective_files_cache_enabled,
             # P1-fix-9: OOM shrink ratios forwarded from settings.
             oom_batch_scale_step1=float(
                 _cloud_setting("oom_batch_scale_step1", 0.5)
@@ -1297,8 +1387,13 @@ def _run_cell_job(
     except ValueError as exc:
         # P1-fix-5: manifest builder raises ValueError on empty base_image.
         # Treat as a job submission failure — cell becomes "error" with a clear message.
+        # Redact defensively: the manifest env may now carry injected credentials
+        # (HF_TOKEN etc.), so an exception string must never round-trip one into
+        # this CellResult.error field, which IS persisted to cell_manifest.json.
+        from backend.services.runtime.credential_broker import CredentialBroker  # type: ignore[import]
+        _safe_exc = CredentialBroker.redact_text(str(exc)) or "error (redacted)"
         logger.error(
-            "k8s_job_cell_runner: manifest build failed cell=%s: %s", cell_id, exc
+            "k8s_job_cell_runner: manifest build failed cell=%s: %s", cell_id, _safe_exc
         )
         _cs = "gke" if _get_settings_prefix() == "gcp" else "aks"
         return CellResult(
@@ -1307,7 +1402,7 @@ def _run_cell_job(
             metrics=None,
             gpu=f"{_cs}:unassigned",
             retries=0,
-            error=f"manifest build failed: {exc}",
+            error=f"manifest build failed: {_safe_exc}",
         )
 
     # Submit the Job.
@@ -1320,14 +1415,19 @@ def _run_cell_job(
             getattr(gpu_plan, "short_name", "default") if gpu_plan else "default",
         )
     except Exception as exc:
-        logger.error("k8s_job_cell_runner: create_namespaced_job failed cell=%s: %s", cell_id, exc)
+        # Redact: the submitted manifest may carry injected credentials, and some
+        # API-server validation errors echo back request fields — never let a
+        # secret value survive into a log line or this CellResult.error field.
+        from backend.services.runtime.credential_broker import CredentialBroker  # type: ignore[import]
+        _safe_exc = CredentialBroker.redact_text(str(exc)) or "error (redacted)"
+        logger.error("k8s_job_cell_runner: create_namespaced_job failed cell=%s: %s", cell_id, _safe_exc)
         return CellResult(
             cell_id=cell_id,
             status=STATUS_ERROR,
             metrics=None,
             gpu=f"{_cs}:unassigned",
             retries=0,
-            error=f"job submission failed: {exc}",
+            error=f"job submission failed: {_safe_exc}",
         )
 
     # Watch Job until terminal.
@@ -1587,6 +1687,39 @@ def run_matrix(
             for i, cell in enumerate(cells)
         }
 
+    # --- GPU SKU / node-pool preflight: ONE live check per run_matrix call, not
+    # per-cell (same "once per call" shape as the persistent-cache check below).
+    # A configured SKU with no matching provisioned node pool leaves every cell
+    # that resolves to it Pending until capacity_exhausted (~15-25 min wasted,
+    # near-$0 apparent spend) -- catch it here, before the first Job is ever
+    # submitted, instead of once per cell. GCP-only for now (mirrors gke_check.sh);
+    # see backend/services/runtime/gpu_pool_preflight.py for the verified-absent
+    # vs cannot-verify distinction (a transient API blip or an idle scale-to-zero
+    # cluster must never hard-block a run).
+    if _prefix == "gcp" and provisioned_skus:
+        from backend.services.runtime import gpu_pool_preflight
+        try:
+            gpu_pool_preflight.enforce_gpu_pool_preflight(
+                provisioned_skus,
+                core_api=k8s.core,
+                provider_label="GCP",
+                settings_var_name="OPENRESEARCH_GCP_GPU_SKUS",
+            )
+        except Exception as exc:
+            err = f"k8s_job_cell_runner: GPU SKU/node-pool preflight failed: {exc}"
+            logger.error(err)
+            return {
+                cell.get("id", f"cell_{i}"): CellResult(
+                    cell_id=cell.get("id", f"cell_{i}"),
+                    status=STATUS_ERROR,
+                    metrics=None,
+                    gpu=f"{_cloud_short}:unassigned",
+                    retries=0,
+                    error=err,
+                ).to_dict()
+                for i, cell in enumerate(cells)
+            }
+
     # Upload code once (parent of cell_script).
     cell_script = Path(cell_script)
     code_dir = cell_script.parent
@@ -1624,6 +1757,44 @@ def run_matrix(
     # None (each helper constructs its own client) when storage is unconfigured
     # or the azure SDK is absent.
     shared_blob_client: Any | None = _make_blob_client(storage_account, blob_container)
+
+    # --- Persistent-cache availability: ONE live check per run_matrix call,
+    # not per-cell (mirrors the P0-scale-2 shared-client pattern above).
+    # gcp_files_cache_enabled now defaults True, so by default every cell tries
+    # to use the shared PVC cache instead of an ephemeral emptyDir. But a
+    # config flag flipped on does not mean the PVC actually exists (Terraform
+    # filestore_enabled + the matching Helm storage.filestoreShare/filestoreIp
+    # values are a separate, operator-run step) -- referencing a nonexistent
+    # claimName would strand every cell pod Pending until the timeout. So:
+    # check once, and if the cache is configured-on but genuinely unreachable,
+    # fall back to an HONEST emptyDir with a loud run_warning naming the cost
+    # impact, instead of either silently using emptyDir (the old behaviour) or
+    # hanging forever.
+    _configured_cache_enabled: bool = bool(_cloud_setting("files_cache_enabled", True))
+    _files_share_for_check: str = str(_cloud_setting("files_share", "reprolab-cache") or "")
+    _cache_confirmed: bool = False
+    if _configured_cache_enabled and _files_share_for_check.strip():
+        _cache_confirmed = _cache_pvc_exists(k8s, namespace, _CACHE_PVC_NAME)
+    if _configured_cache_enabled and not _cache_confirmed:
+        _cloud_label = "Filestore" if _prefix == "gcp" else "Azure Files"
+        _flag_name = f"OPENRESEARCH_{_prefix.upper()}_FILES_CACHE_ENABLED"
+        _cache_warning = (
+            f"persistent cache PVC '{_CACHE_PVC_NAME}' not found in "
+            f"namespace={namespace!r} — falling back to an ephemeral emptyDir. "
+            f"EVERY cell (and every re-run) will now re-download model weights, "
+            f"datasets, and pip wheels while the GPU meters — a multi-GB model "
+            f"pulled across a wide grid is real recurring cost, not a one-time "
+            f"charge. Provision the {_cloud_label} instance + PVC (Terraform "
+            f"filestore_enabled=true + the matching Helm storage.filestoreShare/"
+            f"filestoreIp values — see infra/gcp/README.md), or set "
+            f"{_flag_name}=false to silence this warning as a deliberate opt-out."
+        )
+        logger.warning("k8s_job_cell_runner: %s", _cache_warning)
+        event_sink("run_warning", {
+            "code": "persistent_cache_unavailable",
+            "message": _cache_warning,
+        })
+    _use_persistent_cache: bool = _configured_cache_enabled and _cache_confirmed
 
     # Budget tracking: sum of reserved GPU-seconds for active + completed cells.
     reserved_gpu_seconds = 0.0    # Σ wall-clock seconds → the max_pod_seconds cap
@@ -1830,6 +2001,7 @@ def run_matrix(
                 # P0-scale-2: shared client avoids per-call MSI probe.
                 blob_client=shared_blob_client,
                 pod_template_extra_labels=_pod_extra_labels,
+                files_cache_enabled_override=_use_persistent_cache,
             )
 
             # Escalation check: only if oom_failed + plan available + cap not hit.
@@ -1863,11 +2035,22 @@ def run_matrix(
 
             # P0-fix-4: update the GPU rate to the escalated SKU's catalog price
             # BEFORE the budget re-check, so the guard uses the correct (higher) rate.
+            # The rate MUST be PER-GPU: _check_budget multiplies it by the cell's
+            # gpu_count (see its docstring), and the catalog's approx_usd_per_hr is
+            # the WHOLE-MACHINE rate. Feeding the machine rate in raw billed an
+            # escalation to a2-ultragpu-8g at $31.44 × 8 = $251.52/hr — an 8×
+            # phantom cost that spuriously trips budget_exhausted and aborts a
+            # legitimate escalation. usd_per_gpu_hr is the canonical divisor and is
+            # a no-op for every 1-GPU SKU.
             escalated_usd_per_hour: float = cell_gpu_usd_per_hour
             if next_sku is not None:
-                escalated_usd_per_hour = float(
-                    getattr(next_sku, "approx_usd_per_hr", cell_gpu_usd_per_hour)
-                )
+                try:
+                    from backend.services.runtime.gpu_catalog import usd_per_gpu_hr  # type: ignore[import]
+                    escalated_usd_per_hour = float(usd_per_gpu_hr(next_sku))
+                except Exception:  # noqa: BLE001 — a pricing lookup must never abort the escalation
+                    escalated_usd_per_hour = float(
+                        getattr(next_sku, "approx_usd_per_hr", cell_gpu_usd_per_hour)
+                    )
 
             # P0-fix-4 (cont.): RESERVE the escalated retry's ADDITIONAL budget before
             # committing — the escalated attempt runs another ~deadline on a bigger SKU,

@@ -135,7 +135,10 @@ if [[ "${OPENRESEARCH_DEFAULT_SANDBOX}" == "gcp" || "${OPENRESEARCH_DEFAULT_SAND
             # exit 6 == the --start-pod smoke is an intentionally-unimplemented
             # operator-gated stub. Treat it as a NON-FATAL skip so
             # START_FULL_SMOKE=1 doesn't brick GKE startup; the free preflight
-            # checks above already ran. Any OTHER non-zero stays fatal.
+            # checks above already ran. Any OTHER non-zero stays fatal — including
+            # exit 7 (a configured OPENRESEARCH_GCP_GPU_SKUS entry has no matching
+            # live node pool: config/Terraform drift that would otherwise leave a
+            # cell Pending until capacity_exhausted, ~15-25 min in).
             echo "[start.sh] GKE pod smoke unimplemented (exit 6) — skipping smoke, continuing startup."
         elif [[ "${gke_rc}" -ne 0 ]]; then
             echo "[start.sh] GKE preflight FAILED (exit ${gke_rc}) — refusing to start (set START_SKIP_PREFLIGHT=1 to bypass)."

@@ -1,5 +1,6 @@
 """
-P0 deterministic anti-fabrication guard — zero/constant result-claiming metrics veto.
+P0 deterministic anti-fabrication guard — zero/constant/non-finite result-claiming
+metrics veto.
 
 Pure stdlib module — no third-party imports.  Detects run_experiment results
 whose every RESULT-CLAIMING metric value is 0.0 (all-zero) or bit-identical
@@ -12,13 +13,30 @@ Key design:
   - Structural/denominator/size keys are excluded (see EXCLUDED_KEY_PATTERNS).
   - Hyperparameter/config keys are also excluded (see _CONFIG_TERMS).
   - Pure shape signal only — provenance/GPU discriminators are applied by the
-    CALLER (primitives.py:6465, W2-1 wire), not here.
+    CALLER (primitives.py, W2-1 wire), not here.
   - Fail-soft everywhere; any exception -> safe fallback ([] or False).
   - Flag default-OFF (OPENRESEARCH_ZERO_METRICS_GUARD).
+
+NON-FINITE (NaN / ±Inf) — the strictly-worse-than-zero class (P0 fix):
+  A diverged run whose loss/reward went NaN used to EVADE this guard entirely:
+  IEEE-754 self-inequality makes BOTH veto predicates false for NaN
+  (``nan == 0.0`` is False; ``nan == values[0]`` is False even against itself),
+  so the guard built to catch degenerate results waved through the most
+  degenerate result there is.  A non-finite value is not a measurement at all —
+  it is therefore an AUTOMATIC, UNCONDITIONAL veto:
+    * never silently dropped from the normalized value list,
+    * never exempted by ``provenance.json`` (a manifest cannot launder a NaN —
+      unlike a legitimate 0.0, there is no honest reading of "the result is NaN"),
+    * never exempted by the absence of a GPU claim.
+  The conservative key exclusions still apply FIRST, so a NaN parked in a
+  denominator/size/config key (or a bool status flag) is not a result claim and
+  does not veto.  ``OPENRESEARCH_ZERO_METRICS_GUARD`` still gates the composed
+  decision, so the OFF state remains byte-identical.
 """
 
 from __future__ import annotations
 
+import math
 import os
 import re
 
@@ -147,7 +165,16 @@ def _is_excluded_key(key: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def _coerce_float(v: object) -> float | None:
-    """Return v as float if it is numeric or a numeric-coercible str, else None."""
+    """Return v as float if it is numeric or a numeric-coercible str, else None.
+
+    NaN / ±Inf are deliberately RETURNED, never filtered: a non-finite reading is
+    the single most degenerate result a run can claim, and dropping it here is how
+    it used to become invisible to the veto (it read as "no data").  ``is_finite``
+    classification is the CALLER's job — see :func:`non_finite_metric_keys`.
+    Note ``json.loads`` parses bare ``NaN``/``Infinity`` (Python's json extension)
+    straight to floats, and ``float("nan")``/``float("inf")`` parses the string
+    forms, so both reach this function from a real ``metrics.json``.
+    """
     if isinstance(v, bool):
         # booleans are a subclass of int but are structural (True/False flags)
         return None
@@ -161,8 +188,13 @@ def _coerce_float(v: object) -> float | None:
     return None
 
 
-def _flatten(obj: object, parent_key: str | None, out: list[float]) -> None:
-    """Recursively flatten obj, collecting result-claiming numeric leaves."""
+def _flatten(obj: object, parent_key: str | None, out: list[tuple[str | None, float]]) -> None:
+    """Recursively flatten obj, collecting (key, value) result-claiming numeric leaves.
+
+    The single walker behind BOTH projections (:func:`normalize_metric_values` for
+    the values and :func:`non_finite_metric_keys` for the offending keys) — one
+    source of truth for what counts as a result-claiming leaf.
+    """
     if isinstance(obj, dict):
         for k, v in obj.items():
             if _is_excluded_key(k):
@@ -179,7 +211,19 @@ def _flatten(obj: object, parent_key: str | None, out: list[float]) -> None:
             return
         fv = _coerce_float(obj)
         if fv is not None:
-            out.append(fv)
+            out.append((parent_key, fv))
+
+
+def _normalize_metric_items(metrics: object) -> list[tuple[str | None, float]]:
+    """(key, value) pairs for every result-claiming numeric leaf.  Fail-soft -> []."""
+    try:
+        if not isinstance(metrics, dict):
+            return []
+        items: list[tuple[str | None, float]] = []
+        _flatten(metrics, None, items)
+        return items
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def normalize_metric_values(metrics: object) -> list[float]:
@@ -190,16 +234,51 @@ def normalize_metric_values(metrics: object) -> list[float]:
       nested:      {"per_model": {m: {e: {b: {"metric": 0.086}}}}, "status": ..., ...}
 
     Excluded keys (structural/denominator/size): see module docstring.
+    Non-finite (NaN/±Inf) values ARE included — they are result claims like any
+    other, and the veto predicates below treat them as strictly worse than zero.
     Non-dict top-level / any error -> [].
     """
     try:
-        if not isinstance(metrics, dict):
-            return []
-        result: list[float] = []
-        _flatten(metrics, None, result)
-        return result
+        return [v for _k, v in _normalize_metric_items(metrics)]
     except Exception:  # noqa: BLE001
         return []
+
+
+# ---------------------------------------------------------------------------
+# Non-finite (NaN / ±Inf) detection — the automatic veto
+# ---------------------------------------------------------------------------
+
+def non_finite_metric_keys(metrics: object) -> list[str]:
+    """The RESULT-CLAIMING keys whose value is NaN or ±Inf (deduped, ordered).
+
+    Empty when there are none.  Excluded keys (denominator/size/config/bool
+    status flags) are already gone by the time we get here, so every key this
+    returns is a metric the run is CLAIMING as a result.  Fail-soft -> [].
+    """
+    try:
+        seen: list[str] = []
+        for key, value in _normalize_metric_items(metrics):
+            if math.isfinite(value):
+                continue
+            name = key if key is not None else "(unnamed)"
+            if name not in seen:
+                seen.append(name)
+        return seen
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def has_non_finite_metric(metrics: object) -> bool:
+    """True iff ANY result-claiming metric value is NaN or ±Inf.
+
+    This is the diverged-training signal the zero/constant predicates structurally
+    cannot see (``nan == 0.0`` and ``nan == nan`` are both False under IEEE-754).
+    Fail-soft -> False.
+    """
+    try:
+        return bool(non_finite_metric_keys(metrics))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -207,9 +286,12 @@ def normalize_metric_values(metrics: object) -> list[float]:
 # ---------------------------------------------------------------------------
 
 def looks_like_zero_metrics(metrics: object) -> bool:
-    """True iff normalize_metric_values is non-empty AND either:
-      (a) all values are exactly 0.0, OR
-      (b) all values are bit-identical to each other (constant across cells).
+    """True iff normalize_metric_values is non-empty AND any of:
+      (a) ANY value is non-finite (NaN/±Inf) — diverged/degenerate, strictly
+          worse than zero (checked FIRST: the equality predicates below are both
+          False for NaN, which is exactly how a diverged run used to slip past),
+      (b) all values are exactly 0.0, OR
+      (c) all values are bit-identical to each other (constant across cells).
 
     Pure shape signal — the GPU-claim and provenance discriminators are applied
     by the caller.  Fail-soft -> False.
@@ -218,10 +300,15 @@ def looks_like_zero_metrics(metrics: object) -> bool:
         values = normalize_metric_values(metrics)
         if not values:
             return False
-        # All-zero check (a single 0.0 is legitimately suspect)
+        # (a) Non-finite check FIRST — a NaN/Inf result is not a measurement.
+        # Unlike the all-zero/constant branches this needs no minimum count: one
+        # NaN result-claiming metric is already degenerate.
+        if any(not math.isfinite(v) for v in values):
+            return True
+        # (b) All-zero check (a single 0.0 is legitimately suspect)
         if all(v == 0.0 for v in values):
             return True
-        # Constant-across-cells check — only meaningful with >= 2 values.
+        # (c) Constant-across-cells check — only meaningful with >= 2 values.
         # A single non-zero metric is a normal partial result, NOT "constant
         # across cells"; requiring >= 2 avoids vetoing a lone legitimate value.
         if len(values) >= 2 and all(v == values[0] for v in values):
@@ -252,9 +339,18 @@ def zero_metrics_should_veto(
     Provenance presence is the fake-0-vs-real-0 discriminator: a legitimately
     failing baseline that scored 0 emits a provenance manifest and is NOT vetoed.
     Pure — the inputs are pre-computed by the caller; never raises.
+
+    NON-FINITE OVERRIDE (P0): a NaN/±Inf result-claiming metric vetoes
+    UNCONDITIONALLY — no gpu_claim requirement, no provenance exemption.  The
+    provenance discriminator exists to separate a HONEST zero (a baseline really
+    scored 0 on real outputs) from a FAKE zero; there is no honest reading of a
+    NaN result, so a manifest pointing at a NaN cannot launder it.  A diverged
+    run must repair, not ship.
     """
     if not zero_metrics_guard_enabled():
         return False
+    if has_non_finite_metric(metrics):
+        return True
     if not looks_like_zero_metrics(metrics):
         return False
     return bool(gpu_claim) and not bool(provenance_present)
@@ -265,9 +361,31 @@ def zero_metrics_should_veto(
 # ---------------------------------------------------------------------------
 
 def zero_metrics_repair_message(metrics: object) -> str:
-    """Actionable repair directive naming the offending pattern (all-zero vs constant)
-    and the first ≤6 result-claiming keys.  Mirrors stub_repair_message tone."""
+    """Actionable repair directive naming the offending pattern (non-finite vs
+    all-zero vs constant) and the first ≤6 result-claiming keys.  Mirrors
+    stub_repair_message tone."""
     try:
+        # Non-finite takes precedence — it is a DIFFERENT bug (numerical divergence)
+        # with a different repair (stabilize training), so it gets its own directive
+        # rather than being mislabelled "all-zero or constant".
+        nf_keys = non_finite_metric_keys(metrics)
+        if nf_keys:
+            nf_str = ", ".join(nf_keys[:6])
+            return (
+                f"fabrication_suspected: run_experiment reported success but the "
+                f"result-claiming metrics are non-finite (NaN/Inf) — keys: {nf_str}. "
+                f"A NaN/Inf metric is not a measurement: training DIVERGED (or the "
+                f"metric was never assigned a real value), so this result cannot back "
+                f"any claim. This is strictly worse than a zero result and is never "
+                f"exempted by a provenance manifest. "
+                f"Re-implement: find where the loss/reward becomes non-finite (typical "
+                f"causes: learning rate too high, missing gradient clipping, log/div of "
+                f"zero, fp16 overflow, an un-normalized reward), fix it, and re-run "
+                f"until every reported metric is a finite number computed from real "
+                f"model outputs. Do NOT write NaN/Inf (or placeholder) values to "
+                f"metrics.json."
+            )
+
         # Collect the first ≤6 result-claiming keys (not excluded).
         result_keys: list[str] = []
         if isinstance(metrics, dict):

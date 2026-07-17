@@ -18,6 +18,7 @@ import signal
 import subprocess
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -679,6 +680,200 @@ def test_driver_written_marker_is_consumed_by_best_attempt(tmp_path, monkeypatch
     staged = (run_dir / "code" / best_attempt.REFERENCE_DIR_NAME / "train.py").read_text()
     assert "the campaign's chosen champion" in staged
     assert best_attempt.floored_target(run_dir, 0.1) == 0.55
+
+
+# ---------------------------------------------------------------------------
+# Seed-marker ordering vs. the pre-launch archive (the cold-start regression)
+# ---------------------------------------------------------------------------
+
+
+def _attempt_with_live_code(runs_root, project_id: str, content: str):
+    """A run dir shaped exactly like a just-assessed attempt: a working code/
+    tree plus the final_report.json that makes it a COMPLETED prior attempt."""
+    run_dir = runs_root / project_id
+    live_code = run_dir / "code"
+    live_code.mkdir(parents=True)
+    (live_code / "train.py").write_text(content)
+    (run_dir / "final_report.json").write_text(
+        json.dumps({"rubric": {"overall_score": 0.831, "leaf_scores": []}})
+    )
+    return run_dir, live_code
+
+
+def test_launch_stages_seed_marker_at_archived_code_not_the_emptied_live_dir(tmp_path):
+    """THE cross-attempt-learning regression.
+
+    force_archive_incomplete MOVES run_dir/code into attempts/<ts>/, and the
+    plan-time seed_pointer names that very same live run_dir/code (it is the
+    latest assessed attempt's tree). Staging the marker WITHOUT following the
+    archive's returned path left source_code_dir naming a directory the
+    archive had just emptied -- seed_reference_code then failed closed and
+    every campaign attempt cold-started, which is exactly the Adam regression
+    the rail exists to prevent.
+    """
+    runs_root, repo_root = tmp_path / "runs", tmp_path / "repo"
+    runs_root.mkdir()
+    repo_root.mkdir()
+    run_dir, live_code = _attempt_with_live_code(runs_root, "prj_seed_order", "# proven tree")
+
+    driver = LiveCliDriver(
+        runs_root=runs_root, repo_root=repo_root,
+        popen=_fake_popen_factory([]), clock=FakeClock(), sleep=FakeSleep(),
+    )
+    # Exactly what PLAN hands the driver for attempt 2: a pointer at the
+    # latest assessed attempt's still-live code/.
+    driver.launch(_directives(
+        attempt_n=2, project_id="prj_seed_order",
+        seed_pointer=str(live_code), seed_lineage="champion",
+    ))
+
+    marker = json.loads((run_dir / "campaign" / "seed_staging.json").read_text())
+    src = Path(marker["source_code_dir"])
+
+    assert not live_code.exists()          # the archive emptied it, as always
+    assert src != live_code                # ...so the marker must NOT name it
+    assert src.is_dir()                    # the marker's source really exists
+    assert (src / "train.py").read_text() == "# proven tree"
+    assert src.parent.parent.name == "attempts"  # it followed the archive
+
+
+def test_launched_marker_actually_seeds_the_prior_attempts_code(tmp_path, monkeypatch):
+    """The other half of the seam: the child's seed_reference_code succeeds
+    from the marker the driver just staged. This is cross-attempt learning
+    working end to end -- pre-fix it returned None on every attempt."""
+    runs_root, repo_root = tmp_path / "runs", tmp_path / "repo"
+    runs_root.mkdir()
+    repo_root.mkdir()
+    run_dir, live_code = _attempt_with_live_code(runs_root, "prj_seed_e2e", "# proven tree")
+
+    driver = LiveCliDriver(
+        runs_root=runs_root, repo_root=repo_root,
+        popen=_fake_popen_factory([]), clock=FakeClock(), sleep=FakeSleep(),
+    )
+    driver.launch(_directives(
+        attempt_n=2, project_id="prj_seed_e2e",
+        seed_pointer=str(live_code), seed_lineage="champion",
+    ))
+
+    # The flags build_attempt_env sets for the child (mirrored: this
+    # in-process test never spawns it).
+    monkeypatch.setenv("OPENRESEARCH_SEED_BEST_ATTEMPT", "1")
+
+    rel = best_attempt.seed_reference_code(run_dir)
+    assert rel == f"code/{best_attempt.REFERENCE_DIR_NAME}"
+    seeded = run_dir / "code" / best_attempt.REFERENCE_DIR_NAME / "train.py"
+    assert seeded.read_text() == "# proven tree"
+
+
+def test_launch_keeps_a_genuinely_missing_seed_source_failing_closed(tmp_path, monkeypatch):
+    """The remap FOLLOWS the archive; it never INVENTS a source. A pointer at
+    a path that never existed (and that this archive did not move) is written
+    through unchanged, so seed_reference_code still fails CLOSED -- never a
+    silent fallback to the score-ranked scan (Codex F5)."""
+    runs_root, repo_root = tmp_path / "runs", tmp_path / "repo"
+    runs_root.mkdir()
+    repo_root.mkdir()
+    run_dir, _live = _attempt_with_live_code(runs_root, "prj_missing_src", "# decoy tree")
+
+    # A high-scoring decoy the legacy scan WOULD stage if the marker path
+    # silently fell back to it.
+    decoy = run_dir / "attempts" / "20260701T000000-000000-decoyy"
+    (decoy / "code").mkdir(parents=True)
+    (decoy / "code" / "train.py").write_text("# decoy 0.99")
+    (decoy / "final_report.json").write_text(
+        json.dumps({"rubric": {"overall_score": 0.99, "leaf_scores": []}})
+    )
+
+    driver = LiveCliDriver(
+        runs_root=runs_root, repo_root=repo_root,
+        popen=_fake_popen_factory([]), clock=FakeClock(), sleep=FakeSleep(),
+    )
+    vanished = tmp_path / "never_existed"
+    driver.launch(_directives(
+        attempt_n=2, project_id="prj_missing_src",
+        seed_pointer=str(vanished), seed_lineage="champion",
+    ))
+
+    marker = json.loads((run_dir / "campaign" / "seed_staging.json").read_text())
+    assert marker["source_code_dir"] == str(vanished)  # unchanged, not invented
+
+    monkeypatch.setenv("OPENRESEARCH_SEED_BEST_ATTEMPT", "1")
+    assert best_attempt.seed_reference_code(run_dir) is None
+    assert not (run_dir / "code" / best_attempt.REFERENCE_DIR_NAME).exists()
+
+
+def test_seed_source_holding_nothing_seedable_fails_closed(tmp_path, monkeypatch):
+    """An empty seed is not a seed. A marker whose source exists but yields
+    zero copied items must NOT leave behind a README-only code/_best_attempt/
+    claiming to be "the COMPLETE working code" of a seed that never
+    materialized."""
+    project_dir = tmp_path / "prj_empty_seed"
+    empty_src = project_dir / "attempts" / "20260701T000000-000000-empty1" / "code"
+    empty_src.mkdir(parents=True)
+
+    marker_path = project_dir / best_attempt.CAMPAIGN_SEED_MARKER
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text(json.dumps({
+        "attempt_n": 2, "source_code_dir": str(empty_src),
+        "target_floor": None, "lineage": "champion",
+    }))
+
+    monkeypatch.setenv("OPENRESEARCH_SEED_BEST_ATTEMPT", "1")
+    assert best_attempt.seed_reference_code(project_dir) is None
+    assert not (project_dir / "code" / best_attempt.REFERENCE_DIR_NAME).exists()
+
+
+def test_attempt_code_index_keeps_every_prior_attempt_addressable(tmp_path):
+    """Each launch's archive rotation records the outgoing attempt's code
+    under its ATTEMPT NUMBER, so attempt 1 stays resolvable long after
+    attempt 3 is live. Without it only the newest attempt is locatable and a
+    non-latest champion can never be seeded."""
+    runs_root, repo_root = tmp_path / "runs", tmp_path / "repo"
+    runs_root.mkdir()
+    repo_root.mkdir()
+    project_id = "prj_index"
+    run_dir = runs_root / project_id
+
+    driver = LiveCliDriver(
+        runs_root=runs_root, repo_root=repo_root,
+        popen=_fake_popen_factory([]), clock=FakeClock(), sleep=FakeSleep(),
+    )
+
+    for n in (1, 2, 3):
+        driver.launch(_directives(attempt_n=n, project_id=project_id))
+        # The child would now write its code/ tree; mirrored here.
+        (run_dir / "code").mkdir(parents=True, exist_ok=True)
+        (run_dir / "code" / "train.py").write_text(f"# attempt {n}")
+        (run_dir / "final_report.json").write_text(
+            json.dumps({"rubric": {"overall_score": 0.5, "leaf_scores": []}})
+        )
+
+    for n in (1, 2):
+        resolved = ad.resolve_attempt_code_dir(run_dir, n)
+        assert resolved is not None, f"attempt {n} unresolvable"
+        assert (Path(resolved) / "train.py").read_text() == f"# attempt {n}"
+        assert Path(resolved).parent.parent.name == "attempts"  # archived
+
+    # Attempt 3 is the live one.
+    assert ad.resolve_attempt_code_dir(run_dir, 3) == str(run_dir / "code")
+    # An attempt that never ran has no pointer (degrades to a fresh lineage).
+    assert ad.resolve_attempt_code_dir(run_dir, 9) is None
+
+
+def test_resolve_seed_source_leaves_an_unrelated_live_pointer_alone(tmp_path):
+    """A width child (<id>_w<k>) launches in its OWN run dir while the seed
+    points at the campaign dir's code/ -- a tree this launch's archive never
+    touched. It must be used verbatim, not remapped."""
+    other_code = tmp_path / "runs" / "prj_top" / "code"
+    other_code.mkdir(parents=True)
+    child_live = tmp_path / "runs" / "prj_top_w1" / "code"
+
+    resolved = ad.resolve_seed_source(
+        str(other_code),
+        live_code_dir=child_live,
+        archived={"attempt_dir": str(tmp_path / "runs" / "prj_top_w1" / "attempts" / "x")},
+    )
+    assert resolved == str(other_code)
 
 
 # ---------------------------------------------------------------------------

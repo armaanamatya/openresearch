@@ -45,6 +45,25 @@ def effective_vram_gb(sku: GpuSku) -> int:
     return sku.vram_gb * sku.gpu_count
 
 
+def usd_per_gpu_hr(sku: GpuSku) -> float:
+    """Per-GPU $/hr for this SKU (``approx_usd_per_hr / gpu_count``).
+
+    ``approx_usd_per_hr`` is the **whole-machine** on-demand rate (an
+    ``a2-ultragpu-8g`` is $31.44/hr for all 8 A100s, not $31.44 per GPU) —
+    ``feasibility_triage`` depends on that meaning, so it stays as-is. But the
+    ``max_gpu_usd_per_hour`` cap and ``GpuPlan.sku_usd_per_hr`` are both defined
+    PER-GPU (see the GpuPlan schema: "Per-GPU rate from catalog"). Comparing a
+    whole-machine price against a per-GPU cap wrongly excluded every multi-GPU
+    node — an 8×A100-80 machine ($31.44 total = $3.93/GPU) failed the default
+    $10/GPU cap and a genuine multi-GPU paper could not resolve at all.
+
+    For every ``gpu_count == 1`` row — which is EVERY RunPod row plus the
+    single-GPU azure/gcp rows — this returns ``approx_usd_per_hr`` unchanged, so
+    the RunPod path is byte-for-byte identical.
+    """
+    return sku.approx_usd_per_hr / max(1, sku.gpu_count)
+
+
 CATALOG: tuple[GpuSku, ...] = (
     # RunPod rows — sorted by (vram_gb ASC, approx_usd_per_hr ASC) for human readability.
     # find_ladder() re-sorts the filtered result by price for selection.
@@ -178,4 +197,11 @@ def find_by_alias(phrase: str, *, provider: str = "runpod") -> GpuSku | None:
     return best[1] if best else None
 
 
-__all__ = ["GpuSku", "CATALOG", "effective_vram_gb", "find_ladder", "find_by_alias"]
+__all__ = [
+    "GpuSku",
+    "CATALOG",
+    "effective_vram_gb",
+    "usd_per_gpu_hr",
+    "find_ladder",
+    "find_by_alias",
+]

@@ -87,7 +87,15 @@ class Settings(BaseSettings):
     # to today: no resolve/clone, repo_files stays None, inspect_repository returns
     # disabled, detect_environment/implement_baseline/report unchanged.
     use_author_repo: bool = False           # OPENRESEARCH_USE_AUTHOR_REPO (master)
-    reproduction_mode: str = "adapt"        # OPENRESEARCH_REPRODUCTION_MODE: adapt | reference | execute
+    # OPENRESEARCH_REPRODUCTION_MODE: adapt | reference | execute | auto
+    #   auto = execute when the paper has a usable author repo, else fall back to
+    #   from-scratch and DISCLOSE it (run_warning `execute_mode_no_repo`, the report's
+    #   reproduction.fallback block, and degradations_taken[]). Added so an
+    #   execute-mode-first profile does not hard-fail every paper with no published
+    #   repo — for a triage funnel that would be a false negative, the one error a
+    #   recall-oriented screen cannot afford. The RESOLVED mode is stamped to
+    #   rlm_state/repo_spec.json["mode"], which is what every downstream consumer reads.
+    reproduction_mode: str = "adapt"
     # Minimal Viable Reproduction (MVR, default-OFF): standalone opt-in mode that
     # composes with adapt/reference/execute -- run the paper's central claim at the
     # smallest scope (1 model x 1 env/dataset x 1 seed) on a short budget and judge
@@ -442,12 +450,22 @@ class Settings(BaseSettings):
     gcp_gcs_bucket: str = Field(default="", description="GCS bucket name for run artifacts (replaces Azure storage account + container)")
     gcp_filestore_share: str = Field(default="reprolab-cache", description="Filestore share name for HF_HOME + pip cache")
     gcp_files_cache_enabled: bool = Field(
-        default=False,
+        default=True,
         description=(
-            "Mount the Filestore PVC (reprolab-cache) as the cell cache. GCP "
-            "Filestore is OPTIONAL and off by default, so this defaults False — "
-            "cells then use an ephemeral emptyDir and never block on a missing "
-            "PVC. Set True only when the optional Filestore is provisioned."
+            "Mount the Filestore PVC (reprolab-cache) as the cell cache. Default "
+            "True: without a persistent cache, EVERY cell (and every re-run) "
+            "re-downloads multi-GB model weights/datasets/pip wheels while an "
+            "A100 meters — pure wasted GPU spend on a wide grid. Requires "
+            "Terraform filestore_enabled=true PLUS the Helm storage.filestoreShare/"
+            "storage.filestoreIp values set from its outputs (see "
+            "infra/gcp/README.md step 7) — Terraform alone provisions the "
+            "Filestore instance; the L2 Helm chart renders the actual PVC. When "
+            "the PVC is not actually reachable, k8s_job_cell_runner detects this "
+            "live (once per run, not per-cell) and falls back to an ephemeral "
+            "emptyDir with a loud run_warning naming the cost impact, instead of "
+            "failing silently. Set False to deliberately opt out of the "
+            "persistent cache (no warning in that case — it's an informed "
+            "choice, not a missing provision)."
         ),
     )
     gcp_artifact_registry: str = Field(default="", description="Artifact Registry host (e.g. us-central1-docker.pkg.dev/myproject/reprolab)")
@@ -474,22 +492,28 @@ class Settings(BaseSettings):
     # provisioned pool resolves to a label that exists on no node, so every cell
     # stays Pending → capacity_exhausted. Keep config ⊇ TF pool labels.
     # pydantic-settings 2.x parses this from a JSON array env var:
-    #   OPENRESEARCH_GCP_GPU_SKUS='["gcp_a100_80x8"]'
+    #   OPENRESEARCH_GCP_GPU_SKUS='["gcp_a100_80","gcp_a100_80x8"]'
     # or from a comma-separated string via the built-in list coercion.
-    # Default = the single 8×A100-80 pool (gcp_a100_80x8) that infra/gcp
-    # variables.tf `gpu_skus` provisions by default — needs gpu_count(8) ×
-    # max_nodes A100-80 GPUs of quota in the matching region.
-    # Lean smallest-two validation run: override to ["gcp_a100_80"] AND give
-    # tfvars a single 1-GPU gcp_a100_80 (a2-ultragpu-1g) pool — only
-    # gpu_count(1) × max_nodes A100-80 GPUs of quota.
+    # Default = a 1×A100-80 pool (gcp_a100_80, a2-ultragpu-1g) PLUS the
+    # 8×A100-80 pool (gcp_a100_80x8, a2-ultragpu-8g) that infra/gcp
+    # variables.tf `gpu_skus` provisions by default. With force_single_gpu
+    # defaulting True, a single-GPU paper (the common case) now resolves onto
+    # the 1-GPU pool instead of raising GpuResolutionError (no matching
+    # gpu_count==1 SKU) or over-provisioning the full 8-GPU pool; a genuine
+    # multi-GPU paper still reaches the x8 pool via the escalation ladder.
+    # Needs (1×4) + (8×4) = 36 "NVIDIA A100 80GB GPUs" of quota in the region —
+    # see the quota comment above `variable "gpu_skus"` in variables.tf.
     gcp_gpu_skus: list[str] = Field(
-        default_factory=lambda: ["gcp_a100_80x8"],
+        default_factory=lambda: ["gcp_a100_80", "gcp_a100_80x8"],
         description=(
             "Catalog short_names of the GCP GPU SKUs that are actually provisioned "
             "as node pools. Must equal the reprolab/sku labels tfvars `gpu_skus` "
             "provisions (config ⊇ TF pools). The resolver only selects from these; "
             "the OOM ladder only escalates within these. "
-            "Default = the single 8×A100-80 pool (gcp_a100_80x8) from the TF default."
+            "Default = a 1×A100-80 pool (gcp_a100_80) PLUS the 8×A100-80 pool "
+            "(gcp_a100_80x8) from the TF default, so a single-GPU paper resolves "
+            "to 1 GPU (force_single_gpu defaults True) while a genuine multi-GPU "
+            "paper still reaches the 8-GPU pool."
         ),
     )
     # TTL added to the Job spec's ttlSecondsAfterFinished; Kubernetes deletes

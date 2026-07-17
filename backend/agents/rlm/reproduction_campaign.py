@@ -6,19 +6,33 @@ writes, a write-ahead intent row precedes every launch, and any I/O failure
 halts the campaign rather than risk a double-spend or a silent skip. No real
 stage logic lives here -- every stage is an injected ``CampaignStages``
 callable; later units supply real implementations.
+
+ONE exception to "no stage logic here": the doomed-run early kill (spec
+§10.3, ``OPENRESEARCH_DOOMED_KILL``, default OFF). Cutting losses on a
+diverging attempt is a MONEY decision about an attempt that is mid-flight,
+so it belongs to whoever owns the AWAIT stage and the in-flight handle --
+this machine. It is deliberately thin: all judgement lives in the pure
+``doomed_run_comparator`` module (evidence reader + comparator + watch), and
+this file only owns the impure half -- the poll thread, the process-group
+kill, and the honest ledger/SSE record. When the flag is off, none of it is
+constructed and every code path below is byte-identical to before.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import signal
 import socket
 import tempfile
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from backend.agents.rlm import doomed_run_comparator as doomed
 
 
 class CampaignLedgerError(Exception):
@@ -282,6 +296,65 @@ class CampaignStages:
 
 _PID_UNKNOWN_GRACE_S = 900.0  # bounded pid=None liveness-ambiguity grace window (controller finding I1)
 
+# --- doomed-run early kill (spec §10.3, OPENRESEARCH_DOOMED_KILL) -----------
+#
+# Cadence knobs are deliberately NOT env-exposed: the operator-facing contract
+# is the three documented ones the comparator already owns (DOOMED_MARGIN /
+# DOOMED_POLLS / DOOMED_MIN_PROGRESS). The interval below only sets how often
+# we LOOK; it cannot change WHETHER a kill is justified, because an observation
+# only counts when the measured curve has advanced to a new step.
+_DOOMED_POLL_INTERVAL_S = 30.0
+#: How long the AWAIT stage waits for the watch thread to wind down once the
+#: attempt has resolved (it is a daemon thread; this is politeness, not safety).
+_DOOMED_JOIN_TIMEOUT_S = 10.0
+#: SIGTERM -> grace -> SIGKILL, mirroring ``LiveCliDriver._kill_group``.
+_DOOMED_TERM_GRACE_S = 20.0
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _terminate_process_group(pid: int, *, grace_s: float = _DOOMED_TERM_GRACE_S) -> bool:
+    """SIGTERM the attempt's process group, escalating to SIGKILL after
+    ``grace_s``. Returns True IFF we actually signalled a LIVE process.
+
+    That return value is load-bearing, not cosmetic: it is what keeps a run
+    that finished on its own inside the last poll window from being
+    mislabelled a kill. If the child is already gone we signalled nothing, we
+    saved nothing, and its real result stands untouched.
+
+    The child was spawned ``start_new_session=True`` (``LiveCliDriver``), so
+    signalling the GROUP is what actually stops the GPU-burning grandchildren
+    -- SIGTERM to the pid alone would leave the sandbox/executor subprocesses
+    running, which is the whole failure this feature exists to prevent.
+    """
+    try:
+        pgid = os.getpgid(pid)
+        os.killpg(pgid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+
+    deadline = time.time() + grace_s
+    while time.time() < deadline:
+        if not _pid_alive(pid):
+            return True
+        time.sleep(0.5)
+
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    return True
+
 
 def default_liveness_probe(in_flight: InFlight) -> bool:
     """Alive iff a live pid (host-scoped), ``demo_status.json`` says
@@ -351,6 +424,10 @@ class ReproductionCampaign:
         self.campaign_dir = self.run_dir / "campaign"
         self.ledger = CampaignLedger(self.campaign_dir)
         self._state: CampaignState | None = None
+        # attempt_n -> the kill evidence packet, set by the watch thread and
+        # consumed by the AWAIT caller once ``await_result`` has returned.
+        # Empty forever when OPENRESEARCH_DOOMED_KILL is off.
+        self._doomed_kills: dict[int, dict] = {}
 
     def _new_state(self, *, state: str) -> CampaignState:
         now = time.time()
@@ -375,6 +452,225 @@ class ReproductionCampaign:
     def _directives_sha256_for_attempt(rows: list, attempt_n: int) -> str | None:
         launched = CampaignLedger.latest_by_status(rows, attempt_n).get("launched")
         return launched.get("directives_sha256") if isinstance(launched, dict) else None
+
+    # --- doomed-run early kill (spec §10.3) --------------------------------
+    #
+    # The AWAIT stage is the ONLY place in the campaign where money is being
+    # spent and nobody is looking. `stages.await_result` blocks until the
+    # child reaches a terminal state -- for a diverging SDAR-class attempt
+    # that means burning the FULL wall-clock/GPU envelope before anyone
+    # notices. These five methods are the "stop paying" path.
+
+    def _await_with_doomed_watch(self, state: CampaignState, attempt_n: int, handle: Mapping[str, Any]) -> dict:
+        """AWAIT, optionally under a doomed-run watch.
+
+        Flag OFF (the default) -> a bare ``stages.await_result(handle)``: no
+        thread, no disk reads, no ledger/SSE additions. Byte-identical.
+        """
+        if not doomed.enabled():
+            return self.stages.await_result(dict(handle))
+
+        watch, baseline_n = self._build_doomed_watch(state, attempt_n, handle)
+        if watch is None:
+            return self.stages.await_result(dict(handle))
+
+        stop = threading.Event()
+        thread = threading.Thread(
+            target=self._doomed_watch_loop,
+            args=(state, attempt_n, handle, watch, baseline_n, stop),
+            name=f"doomed-watch-{attempt_n}",
+            daemon=True,
+        )
+        thread.start()
+        try:
+            return self.stages.await_result(dict(handle))
+        finally:
+            stop.set()
+            thread.join(timeout=_DOOMED_JOIN_TIMEOUT_S)
+
+    def _build_doomed_watch(
+        self, state: CampaignState, attempt_n: int, handle: Mapping[str, Any]
+    ) -> tuple[Any, int | None]:
+        """``(DoomedWatch, baseline_attempt_n)`` or ``(None, None)`` when a
+        kill is not possible OR not safe. Every ``None`` return below is a
+        deliberate refusal to kill, not a failure:
+
+        * **No pid.** ``UnifiedRunDriver`` runs the attempt IN-PROCESS, so
+          there is no process group to signal -- we could not actually stop
+          paying, and a guard that reports a kill it did not perform is worse
+          than no guard.
+        * **No baseline.** Attempt 1, or a campaign whose only prior attempts
+          are hard-quarantined/doomed-killed/curve-less. Structurally
+          unkillable, by design.
+        * **Baseline == live code dir.** Defensive: never compare a run with
+          itself (would be a silent no-op, but an honest guard should not be
+          able to reach that state at all).
+        """
+        try:
+            pid = handle.get("pid")
+            if not isinstance(pid, int):
+                return None, None
+
+            live_code = self._live_code_dir(handle)
+            rows = self.ledger.read_rows()
+            selected = doomed.select_baseline(
+                rows,
+                exclude_attempt_n=attempt_n,
+                resolve_code_dir=lambda n: self._attempt_code_dir(rows, n),
+            )
+            if selected is None:
+                return None, None
+
+            baseline_n, baseline_curves = selected
+            baseline_dir = self._attempt_code_dir(rows, baseline_n)
+            if baseline_dir and Path(baseline_dir).resolve() == live_code.resolve():
+                return None, None
+
+            return doomed.watch_from_env(baseline_curves), baseline_n
+        except Exception as exc:  # noqa: BLE001 -- a watchdog that cannot be built never breaks a campaign
+            state.warnings.append(f"doomed_watch_unavailable:{type(exc).__name__}")
+            return None, None
+
+    def _live_code_dir(self, handle: Mapping[str, Any]) -> Path:
+        return Path(str(handle.get("run_dir") or self.run_dir)) / "code"
+
+    def _attempt_code_dir(self, rows: Sequence[Mapping[str, Any]], attempt_n: int) -> str | None:
+        """An attempt's ``code/`` tree -- live while it is live, archived
+        afterwards -- via the driver-maintained attempt-code index.
+
+        Imported lazily so that with the flag off this module's import graph
+        is completely unchanged. Resolution is delegated (never re-derived):
+        the index format is ``attempt_driver``'s, and a second implementation
+        of it here is exactly how the two would silently drift apart.
+        """
+        from backend.agents.rlm.attempt_driver import resolve_attempt_code_dir
+
+        launched = CampaignLedger.latest_by_status(list(rows), attempt_n).get("launched") or {}
+        run_dir = Path(str(launched.get("run_dir") or self.run_dir))
+        return resolve_attempt_code_dir(run_dir, attempt_n)
+
+    def _doomed_watch_loop(
+        self,
+        state: CampaignState,
+        attempt_n: int,
+        handle: Mapping[str, Any],
+        watch: Any,
+        baseline_n: int | None,
+        stop: threading.Event,
+    ) -> None:
+        live_code = self._live_code_dir(handle)
+        # ``stop.wait`` (not ``sleep``) so a natural completion unwinds the
+        # thread instantly, and so the FIRST sample is taken one interval in
+        # -- never at t=0, when nothing has been written yet.
+        while not stop.wait(_DOOMED_POLL_INTERVAL_S):
+            try:
+                verdict = watch.observe(doomed.read_cell_curves(live_code))
+            except Exception as exc:  # noqa: BLE001 -- observation failure => stop watching, never kill
+                state.warnings.append(f"doomed_watch_failed:{type(exc).__name__}")
+                return
+            if verdict is None:
+                continue
+            self._fire_doomed_kill(state, attempt_n, handle, verdict, baseline_n)
+            return
+
+    def _fire_doomed_kill(
+        self,
+        state: CampaignState,
+        attempt_n: int,
+        handle: Mapping[str, Any],
+        verdict: Any,
+        baseline_n: int | None,
+    ) -> None:
+        pid = handle.get("pid")
+        if not isinstance(pid, int):
+            return
+
+        evidence = {
+            "attempt_n": attempt_n,
+            "baseline_attempt_n": baseline_n,
+            "killed_at": time.time(),
+            **verdict.to_dict(),
+        }
+        # RECORD BEFORE SIGNALLING. A SIGTERM the child handles GRACEFULLY (the
+        # CLI's own handler flips demo_status to "killed" and then finalizes)
+        # lands on the status file long before the process actually exits --
+        # so AWAIT can return, and the caller can reach _apply_doomed_kill,
+        # while this thread is still inside the SIGTERM->SIGKILL grace loop
+        # below. A kill we PERFORMED but failed to RECORD would be the one
+        # dishonest outcome this whole feature exists to prevent (a run silently
+        # stopped, reported as a science failure), so the record goes first and
+        # is retracted only if it turns out we stopped nothing.
+        self._doomed_kills[attempt_n] = evidence
+
+        if not _terminate_process_group(pid):
+            # Already gone: the attempt finished on its own inside this poll
+            # window. We stopped nothing, so we claim nothing -- its real
+            # result stands and is assessed exactly as it would have been.
+            # (This branch is immediate -- os.getpgid/killpg raise at once on a
+            # dead pid -- so the retraction always beats any reader.)
+            self._doomed_kills.pop(attempt_n, None)
+            return
+
+        message = (
+            f"attempt {attempt_n} stopped early (doomed): every matched training cell "
+            f"({', '.join(verdict.cells)}) trailed attempt {baseline_n}'s MEASURED curve at the "
+            f"same step by >= {verdict.margin:.0%} for {verdict.polls_required} consecutive "
+            f"advancing polls. The attempt is recorded as '{doomed.DOOMED_KILLED_CLASS}' -- we "
+            f"stopped paying; the science did not fail."
+        )
+        self._safe_emit(state, "attempt_doomed_killed", dict(evidence))
+        self._safe_emit(
+            state,
+            "run_warning",
+            {
+                "code": "doomed_run_killed",
+                "message": message,
+                "attempt_n": attempt_n,
+                "baseline_attempt_n": baseline_n,
+                "evidence": list(verdict.detail),
+            },
+        )
+
+    def _apply_doomed_kill(self, attempt_n: int, assessment: dict) -> dict:
+        """Overlay the honest doomed-kill marks onto a killed attempt's
+        assessment. A no-op (the same dict object) when no kill fired, which
+        is always the case with the flag off.
+
+        The marks are chosen so the attempt is STRUCTURALLY excluded from
+        every downstream science decision without any of those consumers
+        needing to learn a new field:
+
+        * ``failure_class``/``failure_signature`` = ``doomed_killed`` -- a
+          distinct terminal, so nothing reads it as a science failure. It
+          also keeps the killed attempt out of ``report_missing_twice``
+          (which it would otherwise trip -- a killed child writes no report)
+          and out of ``infra_signature_repeated`` (scope is neither infra
+          nor method: we interrupted it, we did not observe it fail).
+        * ``hard_quarantined`` -> champion selection, the seeding pool, the
+          campaign score floor, REPRODUCED and CONTRADICTED all already
+          filter on this. A killed attempt therefore cannot become champion
+          and cannot seed a lineage.
+        * ``doomed_kill`` -- the full evidence packet, for the campaign report
+          and any downstream triage consumer.
+
+        What is deliberately NOT suppressed: the attempt's measured ``cost``.
+        Real money was spent, so it still accrues to ``state.spent`` and the
+        attempt still counts toward ``max_attempts`` -- which is also what
+        bounds the number of kills a campaign can perform.
+        """
+        kill = self._doomed_kills.get(attempt_n)
+        if kill is None:
+            return assessment
+
+        marked = dict(assessment)
+        reasons = [*(marked.get("quarantine_reasons") or ()), f"{doomed.DOOMED_KILLED_CLASS}:{kill['reason']}"]
+        marked["doomed_kill"] = dict(kill)
+        marked["failure_class"] = doomed.DOOMED_KILLED_CLASS
+        marked["failure_signature"] = doomed.DOOMED_KILLED_CLASS
+        marked["failure_scope"] = None
+        marked["hard_quarantined"] = True
+        marked["quarantine_reasons"] = reasons
+        return marked
 
     def run(self) -> dict:
         try:
@@ -483,12 +779,20 @@ class ReproductionCampaign:
         alive = self.stages.liveness_probe(in_flight)
 
         if alive:
-            raw_result = self.stages.await_result(
-                {"pid": in_flight.pid, "run_dir": in_flight.run_dir, "lease_ref": in_flight.lease_ref}
+            # A resumed campaign re-attaching to a still-running child is
+            # AWAIT just as much as the fresh path is -- it must be watched
+            # too, or a doomed attempt survives simply by outliving a campaign
+            # restart.
+            raw_result = self._await_with_doomed_watch(
+                state,
+                in_flight.attempt_n,
+                {"pid": in_flight.pid, "run_dir": in_flight.run_dir, "lease_ref": in_flight.lease_ref},
             )
             rows = self.ledger.read_rows()
             planned = CampaignLedger.latest_by_status(rows, in_flight.attempt_n).get("launched", {})
-            assessment = self.stages.assess(raw_result, planned)
+            assessment = self._apply_doomed_kill(
+                in_flight.attempt_n, self.stages.assess(raw_result, planned)
+            )
             outcome = self._record_assessment_and_continue(state, in_flight.attempt_n, assessment)
             return outcome if outcome is not None else self._loop(state)
 
@@ -591,8 +895,8 @@ class ReproductionCampaign:
             state.updated_at = time.time()
             self.ledger.write_state(state)
 
-            raw_result = self.stages.await_result(handle)
-            assessment = self.stages.assess(raw_result, planned)
+            raw_result = self._await_with_doomed_watch(state, attempt_n, handle)
+            assessment = self._apply_doomed_kill(attempt_n, self.stages.assess(raw_result, planned))
 
             outcome = self._record_assessment_and_continue(state, attempt_n, assessment)
             if outcome is not None:
@@ -627,10 +931,19 @@ class ReproductionCampaign:
         state.updated_at = time.time()
         self.ledger.write_state(state)
 
-        try:
-            self.stages.distill(assessment)
-        except Exception as exc:  # noqa: BLE001 -- DISTILL is fail-soft by design (spec §13)
-            state.warnings.append(f"distill_failed:{type(exc).__name__}")
+        # DISTILL mines CROSS-RUN memory (lessons / recipes / ExperienceMemory)
+        # from what an attempt observed. A doomed-killed attempt observed
+        # nothing -- we interrupted it mid-training -- so mining it would
+        # teach the harness a "lesson" about a run WE stopped, permanently
+        # poisoning memory that outlives this campaign. Skip it: the kill is
+        # already recorded honestly in the ledger, the report and the SSE log.
+        if assessment.get("doomed_kill"):
+            state.warnings.append("distill_skipped:doomed_killed")
+        else:
+            try:
+                self.stages.distill(assessment)
+            except Exception as exc:  # noqa: BLE001 -- DISTILL is fail-soft by design (spec §13)
+                state.warnings.append(f"distill_failed:{type(exc).__name__}")
 
         rows = self.ledger.read_rows()
         return self._decide_and_continue(state, rows)

@@ -440,3 +440,113 @@ class TestLeafNoLearning:
             "training_curves": {"mean_reward": [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]},
         }
         assert _leaf_no_learning(leaf) is False
+
+
+# ---------------------------------------------------------------------------
+# P0 (2026-07-13): DIVERGED curves (NaN / ±Inf)
+#
+# Non-finite readings used to be FILTERED OUT of the curve, so a run whose loss
+# went NaN and stayed NaN produced an EMPTY curve → "not judgeable" → (False, None)
+# = "no data". The most degenerate training outcome there is read as silence. Now a
+# curve that ENDS non-finite is reported as DIVERGED. Deliberately keyed on the TAIL:
+# a transient fp16 spike that recovers to finite values is NOT a diverged run.
+# ---------------------------------------------------------------------------
+
+NAN = float("nan")
+INF = float("inf")
+
+
+class TestDivergedCurves:
+    def test_all_nan_reward_curve_is_diverged_not_no_data(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENRESEARCH_NO_LEARNING_SIGNAL_GATE", "1")
+        leaf = {"status": "ok", "reward_history": [NAN] * 8}
+        code_dir = _write_metrics(tmp_path, {"per_model": {"qwen-1.7b": leaf}})
+        veto, detail = detect_no_learning_signal(code_dir)
+        assert veto is True, "an all-NaN curve must not read as 'no data'"
+        assert "diverged" in (detail or "").lower()
+
+    def test_all_nan_loss_curve_is_diverged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENRESEARCH_NO_LEARNING_SIGNAL_GATE", "1")
+        leaf = {"status": "ok", "training_curves": {"loss": [NAN] * 8}}
+        code_dir = _write_metrics(tmp_path, {"per_model": {"m": leaf}})
+        veto, detail = detect_no_learning_signal(code_dir)
+        assert veto is True
+        assert "diverged" in (detail or "").lower()
+
+    def test_loss_that_goes_nan_and_stays_nan_is_diverged(self) -> None:
+        """The canonical shape: healthy start, then the optimisation blows up."""
+        leaf = {"status": "ok", "loss_history": [2.3, 1.9, 1.4, NAN, NAN, NAN, NAN]}
+        assert _leaf_no_learning(leaf) is True
+
+    def test_inf_tail_is_diverged(self) -> None:
+        leaf = {"status": "ok", "loss_history": [2.3, 9.9, 1e30, INF, INF, INF]}
+        assert _leaf_no_learning(leaf) is True
+
+    def test_short_nan_curve_is_still_judgeable(self) -> None:
+        """No minimum-points floor for divergence — there is no 'too short to tell'
+        about a NaN (whereas a 2-point FLAT curve stays unjudgeable)."""
+        assert _leaf_no_learning({"status": "ok", "loss_history": [1.2, NAN]}) is True
+        assert _leaf_no_learning({"status": "ok", "loss_history": [1.2, 1.1]}) is None
+
+    def test_diverged_run_forces_inconclusive_replication_verdict(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End-to-end: the diverged signal reaches the two-axis verdict the same way the
+        flat signal does — a fully-green fidelity certificate does NOT let a NaN run
+        claim replication."""
+        monkeypatch.setenv("OPENRESEARCH_NO_LEARNING_SIGNAL_GATE", "1")
+        leaf = {"status": "ok", "reward_history": [0.1, 0.2, NAN, NAN, NAN, NAN]}
+        code_dir = _write_metrics(tmp_path, {"per_model": {"m": leaf}})
+        veto, _detail = detect_no_learning_signal(code_dir)
+        assert veto is True
+        verdict = compute_reproducibility_verdict(
+            fidelity_score=0.85,
+            certificate=_green_cert(),
+            claims=[],
+            no_learning_signal=veto,
+        )
+        assert verdict.replication_verdict == "inconclusive"
+
+    def test_repair_message_names_divergence(self) -> None:
+        msg = no_learning_repair_message("m(diverged: loss curve ends nan)")
+        assert "diverged" in msg.lower()
+        assert "nan" in msg.lower()
+
+    # --- NO FALSE POSITIVES ---
+
+    def test_transient_nan_that_recovers_is_not_diverged(self) -> None:
+        """An fp16 spike the grad-scaler recovers from ends FINITE → the run is judged on
+        its finite trend exactly as before, never flagged as diverged."""
+        leaf = {"status": "ok", "loss_history": [2.3, NAN, 1.8, 1.2, 0.7, 0.3, 0.1]}
+        assert _leaf_no_learning(leaf) is False  # real descent → learning
+
+    def test_transient_nan_does_not_corrupt_the_flat_verdict(self) -> None:
+        """The finite sub-curve still drives the trend math, so a flat run with one NaN
+        blip is still 'flat', not 'diverged' — and still not judged by max/min over NaN."""
+        leaf = {"status": "ok", "reward_history": [0.01, NAN, 0.01, 0.01, 0.01, 0.01, 0.01]}
+        assert _leaf_no_learning(leaf) is True
+
+    def test_healthy_run_with_a_diverged_sibling_is_not_flagged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Conservative aggregation is preserved: ANY learning leaf → the run is not
+        flagged. One dead cell in a grid does not force the whole run inconclusive."""
+        monkeypatch.setenv("OPENRESEARCH_NO_LEARNING_SIGNAL_GATE", "1")
+        code_dir = _write_metrics(tmp_path, {"per_model": {
+            "good": {"status": "ok", "reward_history": [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]},
+            "dead": {"status": "ok", "reward_history": [NAN] * 8},
+        }})
+        veto, detail = detect_no_learning_signal(code_dir)
+        assert veto is False
+        assert detail is None
+
+    def test_gate_off_is_byte_identical(self, tmp_path: Path,
+                                        monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("OPENRESEARCH_NO_LEARNING_SIGNAL_GATE", raising=False)
+        leaf = {"status": "ok", "reward_history": [NAN] * 8}
+        code_dir = _write_metrics(tmp_path, {"per_model": {"m": leaf}})
+        assert detect_no_learning_signal(code_dir) == (False, None)

@@ -136,3 +136,67 @@ def test_all_model_entries_have_last_audited_utc():
 def test_all_gpu_entries_have_last_audited_utc():
     for key, entry in GPU_PRICING.items():
         assert entry.last_audited_utc, f"{key}: last_audited_utc is empty"
+
+
+# ---------------------------------------------------------------------------
+# Foundry-routed Anthropic models (opus-foundry / sonnet-foundry) — added to
+# close the money-safety bug where cost_ledger.jsonl reported $0 for real
+# Foundry spend. See backend/agents/rlm/run.py::_drain_foundry_root_usage_to_ledger,
+# which is the actual ledger-drain fix; these entries are this table's half of
+# making that spend visible in the separate /paper/estimate budget-UI surface.
+# ---------------------------------------------------------------------------
+
+
+def test_foundry_anthropic_entries_present_with_expected_rates():
+    opus = MODEL_PRICING["azure-foundry.claude-opus-4-8"]
+    assert opus.usd_per_1m_input == 15.0
+    assert opus.usd_per_1m_output == 75.0
+
+    sonnet = MODEL_PRICING["azure-foundry.claude-sonnet-5"]
+    assert sonnet.usd_per_1m_input == 3.0
+    assert sonnet.usd_per_1m_output == 15.0
+
+
+def test_foundry_anthropic_rates_match_direct_api_siblings():
+    """Foundry is assumed same-rate as the direct API (see the code comment on
+    these entries) -- pin that assumption so a future direct-API repricing
+    can't silently drift the two apart without a human noticing."""
+    opus_foundry = MODEL_PRICING["azure-foundry.claude-opus-4-8"]
+    opus_direct = MODEL_PRICING["anthropic.claude-opus-4-7"]
+    assert opus_foundry.usd_per_1m_input == opus_direct.usd_per_1m_input
+    assert opus_foundry.usd_per_1m_output == opus_direct.usd_per_1m_output
+
+    sonnet_foundry = MODEL_PRICING["azure-foundry.claude-sonnet-5"]
+    sonnet_direct = MODEL_PRICING["anthropic.claude-sonnet-4-6"]
+    assert sonnet_foundry.usd_per_1m_input == sonnet_direct.usd_per_1m_input
+    assert sonnet_foundry.usd_per_1m_output == sonnet_direct.usd_per_1m_output
+
+
+def test_foundry_anthropic_rates_match_the_ledger_pricing_table():
+    """The cost ledger prices Foundry root usage via
+    backend/agents/resilience/pricing.py (NOT this catalog) -- pin the two
+    surfaces to the same numbers so they cannot silently disagree."""
+    from backend.agents.resilience.pricing import PRICING as LEDGER_PRICING
+
+    opus_catalog = MODEL_PRICING["azure-foundry.claude-opus-4-8"]
+    opus_ledger = LEDGER_PRICING["claude-opus-4-8"]
+    assert opus_catalog.usd_per_1m_input == opus_ledger.input_per_1m
+    assert opus_catalog.usd_per_1m_output == opus_ledger.output_per_1m
+
+    sonnet_catalog = MODEL_PRICING["azure-foundry.claude-sonnet-5"]
+    sonnet_ledger = LEDGER_PRICING["claude-sonnet-5"]
+    assert sonnet_catalog.usd_per_1m_input == sonnet_ledger.input_per_1m
+    assert sonnet_catalog.usd_per_1m_output == sonnet_ledger.output_per_1m
+
+
+def test_no_generic_foundry_deployment_pricing_row():
+    """The azure-foundry/grok root deploys an arbitrary operator-chosen model
+    (AZURE_FOUNDRY_DEPLOYMENT) -- deliberately NOT priced here (see the NOTE
+    comment in catalog.py). Guards against someone adding a guessed rate for
+    a specific deployment name (e.g. "grok-4.3") under this provider prefix."""
+    generic_deployment_keys = [
+        key
+        for key in MODEL_PRICING
+        if key.startswith("azure-foundry.") and "claude" not in key
+    ]
+    assert generic_deployment_keys == []

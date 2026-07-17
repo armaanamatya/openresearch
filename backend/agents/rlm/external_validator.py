@@ -111,26 +111,33 @@ def check_provenance_present(metrics: Any, project_dir: Path) -> bool:
 
 
 def check_not_all_constant(metrics: Any) -> bool:
-    """True iff the metrics are NOT all-zero or all-constant (healthy).
+    """True iff the metrics are NOT degenerate (all-zero / all-constant / diverged).
 
-    Lazy-imports ``normalize_metric_values`` from ``zero_metrics_detection``
-    (built in parallel — this deferred import keeps tests hermetic when that
-    module is absent and the caller passes simple flat dicts).
+    Delegates to ``zero_metrics_detection.looks_like_zero_metrics`` — the single
+    canonical degenerate-metrics predicate — rather than re-deriving it.
 
-    Fail-soft: import failure or any error returns True (healthy, no veto).
+    WHY (2026-07-13): this function used to re-implement the predicate inline as
+    ``all(v == 0.0 ...)`` + ``len(set(values)) == 1``. Both comparisons are
+    structurally blind to NaN under IEEE-754 self-inequality (``nan == 0.0`` is
+    False; ``nan == nan`` is False), so a training run that DIVERGED to NaN was
+    reported to the Tier-2 adversarial panel as *healthy* — defeating the very
+    precision guarantee the validator exists to provide, on the one tier that
+    enables it. A second copy of a trust predicate is a second place for it to be
+    wrong; the canonical one is now non-finite-aware, so we call it.
+
+    Fail-soft: import failure or any error returns True (healthy, no veto). That
+    is deliberate here and safe — this predicate is one input to the validator's
+    MIN-aggregation veto (see ``external_validator``'s module docstring), so a
+    single "healthy" cannot green-light a run on its own; the deterministic
+    fabrication guards remain the authoritative backstop.
     """
     try:
-        from backend.agents.rlm.zero_metrics_detection import normalize_metric_values  # noqa: PLC0415
-        values = normalize_metric_values(metrics)
-        if not values:
-            return True  # nothing to check — conservatively healthy
-        if all(v == 0.0 for v in values):
-            return False  # all-zero (even a single 0.0 is suspect)
-        if len(values) >= 2 and len(set(values)) == 1:
-            return False  # all bit-identical (constant across cells; needs >= 2 values)
-        return True  # at least some variation — healthy
+        from backend.agents.rlm.zero_metrics_detection import looks_like_zero_metrics  # noqa: PLC0415
+
+        # looks_like_zero_metrics == "degenerate"; this predicate is its inverse.
+        return not looks_like_zero_metrics(metrics)
     except Exception:  # noqa: BLE001
-        return True  # fail-soft: cannot determine → treat as healthy
+        return True  # fail-soft: cannot determine → treat as healthy (min-aggregated)
 
 
 def check_gpu_claim_plausible(metrics: Any, evidence: dict[str, Any]) -> bool:

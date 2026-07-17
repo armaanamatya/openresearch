@@ -2,9 +2,106 @@
 
 from __future__ import annotations
 
+import os
+
+# ---------------------------------------------------------------------------
+# ENV HERMETICITY — this block MUST stay above every ``backend.*`` import.
+#
+# The suite is socket-hermetic (pytest-socket, see pyproject `addopts`) but was
+# NOT env-hermetic: `Settings` (backend/config.py) is declared with
+# ``SettingsConfigDict(env_file=".env")``, and pydantic-settings re-reads that
+# file FROM DISK on every ``Settings()`` construction, independent of what
+# os.environ contains. That is deliberate in production (providers must work
+# when spawned from the Next.js dev server or a docker entrypoint that never
+# loaded the dotenv) — but under test it meant the suite silently asserted
+# against whatever the *developer's* .env happened to say:
+#
+#   * credential exposure — a failing assertion on any Settings-derived object
+#     printed live API keys straight into pytest output / CI logs (this actually
+#     happened: tests/rlm/test_accelerator.py::TestResolveAuto dumped a live
+#     Azure Foundry key when its `is None` assertion failed);
+#   * a correctness hole — every "default flag / default setting" assertion was
+#     really asserting "whatever this machine's .env says", which cannot prove
+#     the repo's central default-OFF / byte-identical-when-off invariant.
+#
+# ``monkeypatch.delenv`` cannot fix this: the value never came from os.environ,
+# it came off disk. Two layers close it:
+#
+#   1. Import-time (below): scrub the process env, then set
+#      ``Settings.model_config["env_file"] = None``. pydantic-settings reads
+#      ``self.model_config.get("env_file")`` inside ``_settings_build_values``
+#      at *construction* time (not at class-creation time), so this
+#      post-class-creation mutation is honoured — verified against
+#      pydantic-settings 2.14 and pinned by tests/test_env_hermeticity.py.
+#      This is a TEST-SIDE change only: backend/config.py is untouched and
+#      production behaviour is byte-identical.
+#   2. Per-test (`_isolate_environment` autouse fixture): re-assert both, via
+#      monkeypatch, so one test cannot leak env/config state into the next.
+#
+# A test that genuinely needs a credential must set it explicitly with
+# ``monkeypatch.setenv`` (it runs in the test body, i.e. after every fixture, so
+# it always wins). A test that genuinely exercises the dotenv-read path must
+# request the `dotenv_disk_reads_enabled` fixture below.
+# ---------------------------------------------------------------------------
+
+# Whole namespaces we own or that carry provider credentials/config overrides.
+_SCRUBBED_ENV_PREFIXES: tuple[str, ...] = (
+    "OPENRESEARCH_",
+    "REPROLAB_",
+    "ANTHROPIC_",
+    "OPENAI_",
+    "AZURE_",
+    "GCP_",
+    "RUNPOD_",
+)
+
+# Unprefixed credentials the code (or a vendored SDK) reads straight from env.
+# NB: only CLAUDE_CODE_OAUTH_TOKEN is scrubbed from the CLAUDE_* namespace —
+# CLAUDE_CODE_ENTRYPOINT / _SESSION_ID etc. belong to the harness running pytest.
+_SCRUBBED_ENV_NAMES: frozenset[str] = frozenset(
+    {
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "APIFY_API_TOKEN",
+        "TAVILY_API_KEY",
+        "FEATHERLESS_API_KEY",
+        "OPENROUTER_API_KEY",
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "HUGGINGFACEHUB_API_TOKEN",
+        "XAI_API_KEY",
+        "GEMINI_API_KEY",
+        "GROQ_API_KEY",
+        "WANDB_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+    }
+)
+
+
+def _leaking_env_names(env=os.environ) -> list[str]:
+    """Every env var that could bleed a host credential/override into a test."""
+    return [
+        key
+        for key in list(env)
+        if key.startswith(_SCRUBBED_ENV_PREFIXES) or key in _SCRUBBED_ENV_NAMES
+    ]
+
+
+# Layer 1 — scrub before anything imports backend.config (whose import-time
+# `_apply_legacy_env_aliases()` would otherwise mirror REPROLAB_*/OPENRESEARCH_*
+# leaks across both spellings).
+for _leaked in _leaking_env_names():
+    os.environ.pop(_leaked, None)
+
 import pytest
 
+import backend.config as _backend_config
+from backend.config import Settings
 from backend.messaging.event import register_event
+
+# Layer 1 (cont.) — stop pydantic-settings reading .env off disk, session-wide.
+Settings.model_config["env_file"] = None
+_backend_config._settings_cache = None
 
 
 def _re_register_production_events() -> None:
@@ -111,7 +208,48 @@ def _isolate_event_registry():
 
 
 @pytest.fixture(autouse=True)
-def _disable_disk_floor_preflight(monkeypatch):
+def _isolate_environment(monkeypatch):
+    """Make every test env-hermetic — see the ENV HERMETICITY block up top.
+
+    Layer 2 of the fix. The import-time block already scrubbed the process env
+    and disabled the ``.env`` disk read session-wide; this re-asserts both per
+    test (through monkeypatch, so it self-restores) and resets the module-level
+    Settings cache, so no test can inherit — or bequeath — host config.
+
+    Precedence, by construction:
+      * this fixture           — strips host credentials/overrides;
+      * fixtures that DEPEND on it (`_disable_disk_floor_preflight`,
+        `dotenv_disk_reads_enabled`) — run strictly after, so their setenv
+        survives the scrub;
+      * a test's own ``monkeypatch.setenv`` — runs in the test body, i.e. after
+        every fixture, so an explicitly-injected credential always wins.
+    Both halves are pinned by tests/test_env_hermeticity.py.
+    """
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    for key in _leaking_env_names():
+        monkeypatch.delenv(key, raising=False)
+
+    # Not monkeypatch.setattr: that would restore the *previous* test's cached
+    # Settings on teardown. Force a cold cache on both sides instead.
+    _backend_config._settings_cache = None
+    yield
+    _backend_config._settings_cache = None
+
+
+@pytest.fixture
+def dotenv_disk_reads_enabled(_isolate_environment, monkeypatch):
+    """Opt one test back into pydantic-settings' ``.env`` disk read.
+
+    For the handful of tests whose SUBJECT is the dotenv-loading behaviour
+    itself (they chdir into a tmp_path and write their own .env). Depending on
+    `_isolate_environment` guarantees this runs after the session-wide block is
+    applied, so the re-enable is not immediately undone.
+    """
+    monkeypatch.setitem(Settings.model_config, "env_file", ".env")
+
+
+@pytest.fixture(autouse=True)
+def _disable_disk_floor_preflight(_isolate_environment, monkeypatch):
     """Keep the suite hermetic to host free-disk.
 
     ``run_experiment``'s disk-floor preflight (primitives.py, default
@@ -121,5 +259,9 @@ def _disable_disk_floor_preflight(monkeypatch):
     by default; the floor behaviour itself is covered by
     tests/agents/rlm/test_harness_enforcement.py, which sets the variable
     explicitly (its in-test monkeypatch.setenv overrides this fixture).
+
+    Depends on `_isolate_environment` so this setenv lands AFTER that fixture's
+    OPENRESEARCH_* scrub — otherwise the scrub would delete the floor override
+    and the preflight would probe the host disk again.
     """
     monkeypatch.setenv("OPENRESEARCH_DISK_FLOOR_GB", "0")

@@ -13,9 +13,16 @@ execution evidence** the grader can read at face value:
 - :func:`emit_provenance` writes ``provenance.json`` — a structured record of
   what each experiment actually ran (model, env, baseline, seed, epochs,
   steps, batch size, per-optimizer hyperparameters, hardware, framework
-  versions, and a convergence series).  A long convergence series is stored as
-  a compact ``{len, first, last, min, max, sampled}`` **summary** so it never
-  blows the grader's evidence byte-cap.
+  versions, a convergence series, and the paper-declared **coefficients**).  A
+  long convergence series is stored as a compact
+  ``{len, first, last, min, max, sampled}`` **summary** so it never blows the
+  grader's evidence byte-cap.
+
+  The ``coefficients`` section (``{"beta": 10, "lambda": 0.1}``) is the one that
+  carries METHOD FIDELITY rather than bookkeeping: it records the paper's
+  algorithmic constants as the code actually used them, so a rubric leaf pinning
+  ``β=10`` is settled by a comparison instead of an LLM's opinion.  See the
+  extended note beside :data:`COEFFICIENTS_KEY`.
 - :func:`emit_figure_sidecar` writes a ``<png_stem>.json`` next to each PNG so
   the figure-blind grader can read the axes (``scale:"log"`` answers
   *"log-scale axis not verifiable"*) and the series without seeing the image.
@@ -53,6 +60,125 @@ _MAX_SERIES_LEN = 32
 _MAX_SAMPLED_POINTS = 20
 
 SCHEMA_VERSION = 1
+
+# --------------------------------------------------------------------------- #
+# Paper-declared COEFFICIENTS — a namespace of their own (2026-07-13).
+#
+# WHY A SEPARATE NAMESPACE, AND WHY IT IS NOT OPTIONAL
+# ----------------------------------------------------
+# The fields above (``lr`` / ``epochs`` / ``batch_size`` / ``per_optimizer.*``)
+# are *bookkeeping* hyperparameters — the training recipe. They are NOT the
+# thing a surrogate gets wrong. What a surrogate gets wrong is the paper's
+# ALGORITHMIC CONSTANTS: SDAR's ``g_t = σ(β·Δ_t)`` with ``β=10``, its
+# ``λ=0.1`` distillation weight, a temperature, a gate threshold, a clip ε.
+# Those ARE the method. Until this section existed no provenance producer wrote
+# a field by any of those names, so a rubric leaf pinning ``β=10`` could only be
+# graded by an LLM's opinion of the code — precisely what the project's
+# "evidence, not grade" red line forbids.
+#
+# ROLE-SCOPED, NEVER NAME-GUESSED (learn.md 2026-07-07)
+# ----------------------------------------------------
+# ``alpha`` / ``beta`` / ``lambda`` / ``tau`` are AMBIGUOUS: the same glyph is a
+# learning-rate-ish knob in one paper and a loss coefficient in the next, and
+# ``0.0`` (an ablation) and ``>1.0`` (a weight) are both legitimate values. An
+# over-broad LR guard that keyed on the NAME ``alpha`` hard-blocked a faithful
+# ``alpha=0.0`` ablation (prj_618). So a coefficient is addressed by its ROLE —
+# the namespace says "this is a constant the PAPER DECLARED", nothing more —
+# and NOTHING in this file, or in any consumer of it, may range-check, sanity-
+# check, or otherwise interpret a coefficient's value. The only legal question
+# is "does it equal the value the paper declared for this leaf?".
+#
+# The dotted address ``coefficients.<name>`` is what a rubric leaf asserts, and
+# it resolves through ``deterministic_leaf_checker``'s EXISTING dotted-field
+# traversal (top level first, then each ``experiments[*]`` record) — the same
+# resolution style that makes a bare ``lr`` find ``per_optimizer.adam.lr``. No
+# second lookup mechanism is introduced.
+# --------------------------------------------------------------------------- #
+
+#: The namespace key. A leaf asserts ``field="coefficients.beta"``.
+COEFFICIENTS_KEY = "coefficients"
+
+#: Greek glyphs → the ASCII word provenance stores. A paper prints ``β``; a
+#: manifest key must be a plain identifier. Spelling normalization ONLY — never a
+#: semantic remap (``lambda`` is never rewritten to ``loss_weight``: that would be
+#: guessing the symbol's role, the exact mistake learn.md 2026-07-07 records).
+_GREEK_TO_ASCII: dict[str, str] = {
+    "α": "alpha", "β": "beta", "γ": "gamma", "δ": "delta", "ε": "epsilon",
+    "ζ": "zeta", "η": "eta", "θ": "theta", "ι": "iota", "κ": "kappa",
+    "λ": "lambda", "μ": "mu", "ν": "nu", "ξ": "xi", "π": "pi", "ρ": "rho",
+    "σ": "sigma", "τ": "tau", "υ": "upsilon", "φ": "phi", "χ": "chi",
+    "ψ": "psi", "ω": "omega",
+}
+
+
+def canonical_coefficient_name(name: Any) -> str:
+    """Canonical manifest key for a paper-declared coefficient. Idempotent.
+
+    ``"β"`` → ``"beta"``; ``"\\beta"`` → ``"beta"``; ``"Top-K"`` → ``"top_k"``;
+    ``"beta"`` → ``"beta"``. Returns ``""`` for anything unusable — callers drop
+    an empty name rather than inventing one.
+
+    Pure spelling normalization. It never maps one symbol onto another.
+    """
+    s = str(name).strip()
+    if not s:
+        return ""
+    # A bare Greek glyph (possibly LaTeX-escaped) → its ASCII word.
+    stripped = s.lstrip("\\").strip()
+    if stripped in _GREEK_TO_ASCII:
+        return _GREEK_TO_ASCII[stripped]
+    s = stripped.lower()
+    if s in _GREEK_TO_ASCII:  # already-lowered glyph
+        return _GREEK_TO_ASCII[s]
+    out = []
+    for ch in s:
+        if ch.isalnum():
+            out.append(ch)
+        elif ch in ("_", "-", " ", "."):
+            out.append("_")
+        # anything else (parens, math ops) is dropped.
+    joined = "".join(out)
+    while "__" in joined:
+        joined = joined.replace("__", "_")
+    return joined.strip("_")
+
+
+def coefficient_field(name: Any) -> str:
+    """The dotted provenance field a rubric leaf asserts for a coefficient.
+
+    ``coefficient_field("β") == "coefficients.beta"``. This is the ONE place the
+    address is constructed — ``rubric_gen`` (which writes the assertion) and the
+    checker (which resolves it) both key off this, so the contract cannot drift.
+    Returns ``""`` when the name is unusable.
+    """
+    canon = canonical_coefficient_name(name)
+    return f"{COEFFICIENTS_KEY}.{canon}" if canon else ""
+
+
+def normalize_coefficients(coefficients: Any) -> dict[str, Any]:
+    """Canonicalize a ``{name: value}`` coefficient mapping. Fail-soft.
+
+    Keys are canonicalized (``β`` → ``beta``); values are kept ONLY when they are
+    a real number (int/float, bool excluded — a bool is not a declared constant).
+    A non-numeric or unnamed entry is dropped rather than written, because a
+    coefficient that cannot be compared is worse than absent: absent routes to the
+    LLM, garbage would be compared and could fail a faithful run.
+
+    NOTE what is deliberately NOT here: any range/plausibility check. ``0.0`` and
+    ``1e4`` are both legitimate declared values (learn.md 2026-07-07).
+    """
+    out: dict[str, Any] = {}
+    if not isinstance(coefficients, dict):
+        return out
+    try:
+        for raw_name, value in coefficients.items():
+            name = canonical_coefficient_name(raw_name)
+            if not name or not _is_number(value):
+                continue
+            out[name] = value
+    except Exception:  # noqa: BLE001 — fail-soft; never break the training run.
+        return {}
+    return out
 
 
 def _is_number(x: Any) -> bool:
@@ -123,12 +249,24 @@ def _summarize_convergence(convergence: Any) -> Any:
 
 
 def _summarize_experiment(exp: Any) -> Any:
-    """Return a shallow copy of one experiment with its convergence summarized."""
+    """Return a shallow copy of one experiment with its convergence summarized.
+
+    A per-experiment ``coefficients`` sub-dict is canonicalized in place (``β`` →
+    ``beta``) so a cell that OVERRIDES a run-global coefficient — an ablation
+    sweeping λ — is addressable at ``coefficients.<name>`` inside that record,
+    exactly as it is at the manifest top level.
+    """
     if not isinstance(exp, dict):
         return exp
     out = dict(exp)
     if "convergence" in out:
         out["convergence"] = _summarize_convergence(out["convergence"])
+    if COEFFICIENTS_KEY in out:
+        normalized = normalize_coefficients(out[COEFFICIENTS_KEY])
+        if normalized:
+            out[COEFFICIENTS_KEY] = normalized
+        else:
+            out.pop(COEFFICIENTS_KEY, None)
     return out
 
 
@@ -154,6 +292,7 @@ def emit_provenance(
     output_dir: str | Path,
     *,
     experiments: dict,
+    coefficients: dict | None = None,
     run_id: str | None = None,
     generated_at: str | None = None,
 ) -> Path:
@@ -168,11 +307,27 @@ def emit_provenance(
     :func:`_summarize_series`) so the grader's evidence byte-cap is never
     blown by a long training curve.
 
+    ``coefficients`` is the run-global mapping of PAPER-DECLARED ALGORITHMIC
+    CONSTANTS actually used by the code — ``{"beta": 10, "lambda": 0.1}`` for
+    SDAR's ``g_t = σ(β·Δ_t)`` and its distillation weight.  These are the
+    algorithmic invariants a surrogate gets wrong, so recording them is what
+    lets a rubric leaf that pins ``β=10`` be graded by a string compare instead
+    of an LLM's opinion.  Emit the value your code ACTUALLY USES (pass the same
+    Python variable the loss reads) — this manifest is evidence, not a
+    restatement of the paper.  A cell that overrides a run-global coefficient
+    (an ablation sweeping λ) puts its own value in that experiment's
+    ``coefficients`` sub-dict; both addresses resolve.
+
     Args:
         output_dir:    Directory to write ``provenance.json`` into (created if
                        absent).
         experiments:   ``{exp_id: {...}}`` execution record.  Per-experiment
                        ``convergence`` arrays are summarized in place.
+        coefficients:  Optional ``{name: number}`` paper-declared constants.
+                       Keys are canonicalized (``"β"`` → ``"beta"``); non-numeric
+                       entries are dropped.  Omitted from the manifest entirely
+                       when empty, so a caller that passes nothing writes the
+                       byte-identical file it wrote before this section existed.
         run_id:        Optional run identifier stamped into the manifest.
         generated_at:  Optional timestamp string.  Left ``None`` by default so
                        the function is deterministic — the caller supplies a
@@ -207,6 +362,11 @@ def emit_provenance(
         "experiments": summarized,
         "figures": figures,
     }
+    # Key omitted when empty — an agent that emits no coefficients writes exactly
+    # the manifest it wrote before this section existed.
+    normalized_coefficients = normalize_coefficients(coefficients)
+    if normalized_coefficients:
+        payload[COEFFICIENTS_KEY] = normalized_coefficients
 
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -354,6 +514,19 @@ def build_cell_provenance(
         "generated_at": generated_at,
         "experiments": {k: _summarize_experiment(v) for k, v in experiments.items()},
     }
+
+    # PRESERVE the agent's top-level coefficients block. This function OVERWRITES
+    # code/provenance.json, and the harness cannot re-derive a paper-declared
+    # coefficient from cells.json/metrics.json (nothing mechanical knows what β is).
+    # Without this the cell route would silently DESTROY the only record of the
+    # algorithmic constants the agent emitted — the rubric leaf would then resolve
+    # to `provenance_missing` and fall back to the LLM, quietly deleting exactly the
+    # evidence this contract exists to capture.
+    if isinstance(existing, dict):
+        preserved = normalize_coefficients(existing.get(COEFFICIENTS_KEY))
+        if preserved:
+            payload[COEFFICIENTS_KEY] = preserved
+
     lr_search = _summarize_lr_search(search, per_model)
     if lr_search:
         payload["lr_search"] = lr_search
@@ -534,5 +707,11 @@ __all__ = [
     "emit_provenance",
     "emit_figure_sidecar",
     "assert_provenance",
+    "build_cell_provenance",
     "SCHEMA_VERSION",
+    # Paper-declared coefficients — the namespace + its one address builder.
+    "COEFFICIENTS_KEY",
+    "canonical_coefficient_name",
+    "coefficient_field",
+    "normalize_coefficients",
 ]

@@ -215,3 +215,264 @@ def test_estimate_route_is_mounted(monkeypatch, tmp_path):
         "POST /paper/estimate must be mounted in create_app(). "
         f"OpenAPI paths with 'estimate': {estimate_paths}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Security fix (2026-07-13): demo-secret gate now applies to /paper/estimate
+# ---------------------------------------------------------------------------
+
+def test_json_request_rejected_without_demo_secret_when_configured(monkeypatch, tmp_path):
+    """The route previously never applied the demo-secret gate at all --
+    an unauthenticated caller must now be rejected with 401 when a secret
+    is configured, exactly like POST /runs and POST /runs/upload."""
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+    monkeypatch.setenv("OPENRESEARCH_DEMO_SECRET", "topsecret")
+    app = _fresh_app(monkeypatch, runs_root)
+
+    with patch(
+        "backend.routes.estimate.estimate_paper_budget",
+        new=AsyncMock(return_value=_fake_estimate("gated")),
+    ) as mock_estimate:
+        client = TestClient(app)
+        resp = client.post(
+            "/paper/estimate",
+            json={"source_kind": "arxiv_id", "source": "1234.5678"},
+        )
+
+    assert resp.status_code == 401
+    mock_estimate.assert_not_called()
+
+
+def test_json_request_rejected_with_wrong_demo_secret(monkeypatch, tmp_path):
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+    monkeypatch.setenv("OPENRESEARCH_DEMO_SECRET", "topsecret")
+    app = _fresh_app(monkeypatch, runs_root)
+
+    with patch(
+        "backend.routes.estimate.estimate_paper_budget",
+        new=AsyncMock(return_value=_fake_estimate("gated")),
+    ) as mock_estimate:
+        client = TestClient(app)
+        resp = client.post(
+            "/paper/estimate",
+            json={"source_kind": "arxiv_id", "source": "1234.5678"},
+            headers={"X-Demo-Secret": "wrong"},
+        )
+
+    assert resp.status_code == 401
+    mock_estimate.assert_not_called()
+
+
+def test_json_request_succeeds_with_correct_demo_secret(monkeypatch, tmp_path):
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+    monkeypatch.setenv("OPENRESEARCH_DEMO_SECRET", "topsecret")
+    app = _fresh_app(monkeypatch, runs_root)
+
+    with patch(
+        "backend.routes.estimate.estimate_paper_budget",
+        new=AsyncMock(return_value=_fake_estimate("gated-ok")),
+    ):
+        client = TestClient(app)
+        resp = client.post(
+            "/paper/estimate",
+            json={"source_kind": "arxiv_id", "source": "1234.5678"},
+            headers={"X-Demo-Secret": "topsecret"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["paper"]["id"] == "gated-ok"
+
+
+# ---------------------------------------------------------------------------
+# Security fix (2026-07-13): pdf_path containment (unauthenticated arbitrary
+# file read). runs_root is the allowed root; anything outside it is a 400,
+# never a 200-with-error-string, and the file must never be opened.
+# ---------------------------------------------------------------------------
+
+def test_pdf_path_outside_runs_root_rejected_and_not_read(monkeypatch, tmp_path):
+    """The vulnerability, verbatim: {"source_kind": "pdf_path", "source":
+    "<path outside runs_root>"} must be rejected with a 4xx BEFORE the file
+    is ever opened, and the rejection must not echo the file back."""
+    monkeypatch.delenv("OPENRESEARCH_DEMO_SECRET", raising=False)
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+    app = _fresh_app(monkeypatch, runs_root)
+
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    secret_file = outside_dir / "secret.env"
+    secret_file.write_text("API_KEY=super-secret-value\n")
+
+    with patch(
+        "backend.routes.estimate.estimate_paper_budget",
+        new=AsyncMock(return_value=_fake_estimate("should-not-run")),
+    ) as mock_estimate:
+        client = TestClient(app)
+        resp = client.post(
+            "/paper/estimate",
+            json={"source_kind": "pdf_path", "source": str(secret_file)},
+        )
+
+    assert 400 <= resp.status_code < 500
+    assert resp.status_code != 200
+    mock_estimate.assert_not_called()
+    assert "super-secret-value" not in resp.text
+
+
+def test_pdf_path_traversal_outside_runs_root_rejected(monkeypatch, tmp_path):
+    """A '..'-traversal path must resolve before the containment check runs
+    (a naive startswith(str(runs_root)) string check would be fooled by
+    this; Path.resolve() is not)."""
+    monkeypatch.delenv("OPENRESEARCH_DEMO_SECRET", raising=False)
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+    app = _fresh_app(monkeypatch, runs_root)
+
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    (outside_dir / "secret.pdf").write_bytes(b"%PDF-1.4\n%%EOF")
+    traversal_source = str(runs_root / ".." / "outside" / "secret.pdf")
+
+    with patch(
+        "backend.routes.estimate.estimate_paper_budget",
+        new=AsyncMock(return_value=_fake_estimate("should-not-run")),
+    ) as mock_estimate:
+        client = TestClient(app)
+        resp = client.post(
+            "/paper/estimate",
+            json={"source_kind": "pdf_path", "source": traversal_source},
+        )
+
+    assert resp.status_code == 400
+    mock_estimate.assert_not_called()
+
+
+def test_pdf_path_inside_runs_root_succeeds(monkeypatch, tmp_path):
+    """A legitimate in-root pdf_path must still work end-to-end."""
+    monkeypatch.delenv("OPENRESEARCH_DEMO_SECRET", raising=False)
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+    app = _fresh_app(monkeypatch, runs_root)
+
+    project_dir = runs_root / "prj_test"
+    project_dir.mkdir()
+    pdf_path = project_dir / "paper.pdf"
+    pdf_path.write_bytes(_minimal_pdf_bytes())
+
+    with patch(
+        "backend.routes.estimate.estimate_paper_budget",
+        new=AsyncMock(return_value=_fake_estimate("in-root")),
+    ) as mock_estimate:
+        client = TestClient(app)
+        resp = client.post(
+            "/paper/estimate",
+            json={"source_kind": "pdf_path", "source": str(pdf_path)},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["paper"]["id"] == "in-root"
+    mock_estimate.assert_called_once()
+    called_source = mock_estimate.call_args.args[0]
+    assert Path(called_source).resolve() == pdf_path.resolve()
+
+
+def test_pdf_path_in_root_estimator_failure_still_returns_200(monkeypatch, tmp_path):
+    """Invariant 10, precisely distinguished from the fix above: once a
+    pdf_path passes containment, a genuine estimator failure (not a security
+    rejection) still returns 200 + error, never a 500 or a 400."""
+    monkeypatch.delenv("OPENRESEARCH_DEMO_SECRET", raising=False)
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+    app = _fresh_app(monkeypatch, runs_root)
+
+    project_dir = runs_root / "prj_test"
+    project_dir.mkdir()
+    pdf_path = project_dir / "paper.pdf"
+    pdf_path.write_bytes(_minimal_pdf_bytes())
+
+    async def _raise(*args, **kw):
+        raise RuntimeError("Simulated parse failure")
+
+    with patch("backend.routes.estimate.estimate_paper_budget", new=_raise):
+        client = TestClient(app)
+        resp = client.post(
+            "/paper/estimate",
+            json={"source_kind": "pdf_path", "source": str(pdf_path)},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "error" in data
+    assert data["fallback_available"] is True
+
+
+# ---------------------------------------------------------------------------
+# Multipart upload path still works under the new gate + containment
+# ---------------------------------------------------------------------------
+
+def test_multipart_upload_rejected_without_demo_secret_when_configured(monkeypatch, tmp_path):
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+    monkeypatch.setenv("OPENRESEARCH_DEMO_SECRET", "topsecret")
+    app = _fresh_app(monkeypatch, runs_root)
+
+    with patch(
+        "backend.routes.estimate.estimate_paper_budget",
+        new=AsyncMock(return_value=_fake_estimate("uploaded")),
+    ) as mock_estimate:
+        client = TestClient(app)
+        resp = client.post(
+            "/paper/estimate",
+            files={"paper": ("paper.pdf", _minimal_pdf_bytes(), "application/pdf")},
+        )
+
+    assert resp.status_code == 401
+    mock_estimate.assert_not_called()
+
+
+def test_multipart_upload_succeeds_with_correct_demo_secret(monkeypatch, tmp_path):
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+    monkeypatch.setenv("OPENRESEARCH_DEMO_SECRET", "topsecret")
+    app = _fresh_app(monkeypatch, runs_root)
+
+    with patch(
+        "backend.routes.estimate.estimate_paper_budget",
+        new=AsyncMock(return_value=_fake_estimate("uploaded-ok")),
+    ):
+        client = TestClient(app)
+        resp = client.post(
+            "/paper/estimate",
+            files={"paper": ("paper.pdf", _minimal_pdf_bytes(), "application/pdf")},
+            headers={"X-Demo-Secret": "topsecret"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["estimate_id"]
+
+
+def test_multipart_temp_upload_is_cleaned_up(monkeypatch, tmp_path):
+    """The server-generated scratch file under runs_root/.estimate_uploads
+    must not survive past the request (no litter in the runs directory)."""
+    monkeypatch.delenv("OPENRESEARCH_DEMO_SECRET", raising=False)
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+    app = _fresh_app(monkeypatch, runs_root)
+
+    with patch(
+        "backend.routes.estimate.estimate_paper_budget",
+        new=AsyncMock(return_value=_fake_estimate("uploaded")),
+    ):
+        client = TestClient(app)
+        resp = client.post(
+            "/paper/estimate",
+            files={"paper": ("paper.pdf", _minimal_pdf_bytes(), "application/pdf")},
+        )
+
+    assert resp.status_code == 200
+    uploads_dir = runs_root / ".estimate_uploads"
+    leftover = list(uploads_dir.glob("*.pdf")) if uploads_dir.exists() else []
+    assert leftover == [], f"Temp upload(s) not cleaned up: {leftover}"

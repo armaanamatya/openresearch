@@ -183,6 +183,13 @@ def _make_fake_settings(**overrides: Any) -> MagicMock:
     # _default_gpu_sku() silently inject a garbage nodeSelector into every test that
     # doesn't care about it. Tests exercising the fallback override this explicitly.
     s.gcp_gpu_skus = []
+    # Same auto-vivification trap for the GPU-pool preflight's AUTHORITATIVE tier:
+    # make_gke_pool_lister() needs project+region+cluster, and a truthy MagicMock for
+    # any of them would build a lister that attempts a REAL GKE API call. Empty here
+    # => tier 1 is OFF by default (live-Node heuristic only), which is exactly what
+    # the pre-existing tests below assert. Tier-1 tests set all three explicitly.
+    s.gcp_region = ""
+    s.gcp_gke_cluster = ""
     for k, v in overrides.items():
         setattr(s, k, v)
     return s
@@ -1161,3 +1168,204 @@ class TestGkeRunBudgetCap:
         with pytest.raises(BudgetExhausted):
             asyncio.run(backend.exec(sandbox, "echo x", timeout=10))
         assert batch_api.created_jobs == []  # no Job submitted
+
+
+# ---------------------------------------------------------------------------
+# GPU SKU / node-pool preflight wiring (create_sandbox is the once-per-run hook;
+# see backend/services/runtime/gpu_pool_preflight.py for the actual check).
+# ---------------------------------------------------------------------------
+
+
+class _NodePoolCoreApi(FakeCoreApi):
+    """FakeCoreApi + list_node(), for the GPU-pool-preflight wiring tests only."""
+
+    def __init__(
+        self,
+        *,
+        node_skus: list[str] | None = None,
+        raise_on_list_node: Exception | None = None,
+        **kw: Any,
+    ) -> None:
+        super().__init__(**kw)
+        self._node_skus = node_skus if node_skus is not None else []
+        self._raise_on_list_node = raise_on_list_node
+        self.list_node_call_count = 0
+
+    def list_node(self) -> Any:
+        self.list_node_call_count += 1
+        if self._raise_on_list_node is not None:
+            raise self._raise_on_list_node
+        from types import SimpleNamespace
+        nodes = [
+            SimpleNamespace(metadata=SimpleNamespace(labels={"reprolab/sku": s}))
+            for s in self._node_skus
+        ]
+        return SimpleNamespace(items=nodes)
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_raises_on_drifted_gpu_sku(tmp_path: Path):
+    """The exact hazard: OPENRESEARCH_GCP_GPU_SKUS names a SKU with no live node
+    pool -> create_sandbox refuses to start (before any Job/upload happens),
+    naming the drifting SKU in an actionable message."""
+    core_api = _NodePoolCoreApi(node_skus=["gcp_a100_80", "gcp_a100_80x8"])
+    fake_settings = _make_fake_settings(gcp_gpu_skus=["gcp_a100_80x2", "gcp_a100_80x8"])
+    backend = _make_backend(core_api=core_api, settings=fake_settings)
+
+    with patch.object(backend, "_upload_project_sync", return_value=None):
+        with pytest.raises(SandboxRuntimeError) as exc_info:
+            await backend.create_sandbox(_make_config(tmp_path))
+
+    assert exc_info.value.cause_kind == RuntimeCauseKind.backend_unavailable
+    assert "gcp_a100_80x2" in str(exc_info.value)
+    assert core_api.list_node_call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_passes_silently_when_all_gpu_skus_provisioned(tmp_path: Path):
+    """All configured SKUs observed live -> create_sandbox succeeds unchanged."""
+    core_api = _NodePoolCoreApi(node_skus=["gcp_a100_80", "gcp_a100_80x8"])
+    fake_settings = _make_fake_settings(gcp_gpu_skus=["gcp_a100_80", "gcp_a100_80x8"])
+    backend = _make_backend(core_api=core_api, settings=fake_settings)
+
+    with patch.object(backend, "_upload_project_sync", return_value=None):
+        sandbox = await backend.create_sandbox(_make_config(tmp_path))
+
+    assert isinstance(sandbox, Sandbox)
+    assert core_api.list_node_call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_warns_not_raises_when_cluster_unreachable(tmp_path: Path):
+    """A transient query failure (auth/network) must NOT become a hard block."""
+    core_api = _NodePoolCoreApi(raise_on_list_node=ConnectionError("no route to host"))
+    fake_settings = _make_fake_settings(gcp_gpu_skus=["gcp_a100_80"])
+    backend = _make_backend(core_api=core_api, settings=fake_settings)
+
+    with patch.object(backend, "_upload_project_sync", return_value=None):
+        sandbox = await backend.create_sandbox(_make_config(tmp_path))  # must NOT raise
+
+    assert isinstance(sandbox, Sandbox)
+    assert core_api.list_node_call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_cold_cluster_warns_not_raises(tmp_path: Path):
+    """No node currently carries ANY reprolab/sku label (idle, scale-to-zero) —
+    inconclusive, not "every configured SKU confirmed absent"."""
+    core_api = _NodePoolCoreApi(node_skus=[])
+    fake_settings = _make_fake_settings(gcp_gpu_skus=["gcp_a100_80", "gcp_a100_80x8"])
+    backend = _make_backend(core_api=core_api, settings=fake_settings)
+
+    with patch.object(backend, "_upload_project_sync", return_value=None):
+        sandbox = await backend.create_sandbox(_make_config(tmp_path))  # must NOT raise
+
+    assert isinstance(sandbox, Sandbox)
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_skips_preflight_when_no_gpu_skus_configured(tmp_path: Path):
+    """Default settings (gcp_gpu_skus=[]) -> the cluster is never queried at all
+    (byte-identical to before this change for the common unconfigured case)."""
+    core_api = _NodePoolCoreApi(node_skus=["gcp_a100_80"])
+    backend = _make_backend(core_api=core_api)  # default settings: gcp_gpu_skus=[]
+
+    with patch.object(backend, "_upload_project_sync", return_value=None):
+        await backend.create_sandbox(_make_config(tmp_path))
+
+    assert core_api.list_node_call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Authoritative tier-1 (GKE node-pool API) through create_sandbox: a COLD
+# scale-to-zero cluster has NO Node objects, so the live-Node heuristic is blind
+# — the pool API is what makes the first-run-of-the-day case catchable.
+# ---------------------------------------------------------------------------
+
+
+def _addressable_settings(**overrides: Any) -> MagicMock:
+    """Fake settings with project+region+cluster set, so tier 1 is addressable."""
+    return _make_fake_settings(
+        gcp_project="my-gcp-project",
+        gcp_region="us-central1",
+        gcp_gke_cluster="repro-gke",
+        **overrides,
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_cold_cluster_with_drift_hard_blocks_via_pool_api(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """THE GAP: zero live nodes (idle scale-to-zero) + a drifted SKU. The node
+    heuristic sees nothing; the node-pool API still sees the pools -> HARD BLOCK."""
+    import backend.services.runtime.gpu_pool_preflight as gpp
+
+    monkeypatch.setattr(
+        gpp,
+        "list_gke_node_pools",
+        lambda **kw: [
+            {"name": "default-pool", "config": {"labels": {}}},
+            {"name": "repro-a100", "config": {"labels": {"reprolab/sku": "gcp_a100_80"}}},
+            {"name": "repro-a100x8", "config": {"labels": {"reprolab/sku": "gcp_a100_80x8"}}},
+        ],
+    )
+    core_api = _NodePoolCoreApi(node_skus=[])  # COLD: no nodes at all
+    settings = _addressable_settings(gcp_gpu_skus=["gcp_a100_80x2", "gcp_a100_80x8"])
+    backend = _make_backend(core_api=core_api, settings=settings)
+
+    with patch.object(backend, "_upload_project_sync", return_value=None):
+        with pytest.raises(SandboxRuntimeError) as exc_info:
+            await backend.create_sandbox(_make_config(tmp_path))
+
+    assert exc_info.value.cause_kind == RuntimeCauseKind.backend_unavailable
+    assert "gcp_a100_80x2" in str(exc_info.value)
+    # Tier 1 answered, so the (blind) heuristic was never consulted.
+    assert core_api.list_node_call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_cold_cluster_no_drift_passes_via_pool_api(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import backend.services.runtime.gpu_pool_preflight as gpp
+
+    monkeypatch.setattr(
+        gpp,
+        "list_gke_node_pools",
+        lambda **kw: [
+            {"name": "repro-a100", "config": {"labels": {"reprolab/sku": "gcp_a100_80"}}},
+            {"name": "repro-a100x8", "config": {"labels": {"reprolab/sku": "gcp_a100_80x8"}}},
+        ],
+    )
+    core_api = _NodePoolCoreApi(node_skus=[])  # cold
+    settings = _addressable_settings(gcp_gpu_skus=["gcp_a100_80", "gcp_a100_80x8"])
+    backend = _make_backend(core_api=core_api, settings=settings)
+
+    with patch.object(backend, "_upload_project_sync", return_value=None):
+        sandbox = await backend.create_sandbox(_make_config(tmp_path))
+
+    assert isinstance(sandbox, Sandbox)
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_pool_api_permission_denied_degrades_to_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The in-cluster orchestrator GSA has no container.clusters.get today -> 403.
+    On a cold cluster that must WARN and proceed, never error the run."""
+    import backend.services.runtime.gpu_pool_preflight as gpp
+
+    def _denied(**kw):
+        raise RuntimeError("GKE nodePools API returned HTTP 403: permission denied")
+
+    monkeypatch.setattr(gpp, "list_gke_node_pools", _denied)
+    core_api = _NodePoolCoreApi(node_skus=[])  # cold => heuristic also blind
+    settings = _addressable_settings(gcp_gpu_skus=["gcp_a100_80x2"])
+    backend = _make_backend(core_api=core_api, settings=settings)
+
+    with patch.object(backend, "_upload_project_sync", return_value=None):
+        sandbox = await backend.create_sandbox(_make_config(tmp_path))  # must NOT raise
+
+    assert isinstance(sandbox, Sandbox)
+    assert core_api.list_node_call_count == 1  # fell back to the heuristic

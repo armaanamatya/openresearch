@@ -27,6 +27,7 @@ warnings.filterwarnings(
     category=RuntimeWarning,
 )
 
+from backend.agents.runtime import credential_vault
 from backend.agents.runtime.base import (
     AgentRuntimeSpec,
     ProviderConfigurationError,
@@ -39,6 +40,38 @@ from backend.agents.runtime.base import (
 )
 from backend.agents.telemetry import coerce_usage
 from backend.services.context.workspace.tools.rlm_query import default_oauth_model
+
+
+def _subprocess_env(subprocess_env: Any) -> dict[str, str]:
+    """Build the ``ClaudeAgentOptions(env=...)`` dict for the ``claude`` CLI subprocess.
+
+    The claude-agent-sdk spawns the ``claude`` CLI as a child process, which
+    authenticates from its OWN environment. Historically it picked up
+    ``ANTHROPIC_API_KEY`` purely by **inheriting the parent's ``os.environ``** —
+    which is precisely why the orchestrator kept live API keys in its own process
+    env, where root-written REPL code could read them (pivot brief §7).
+
+    So pass the key EXPLICITLY here instead. ``credential_vault.get`` returns the
+    vaulted value while the REPL window has the key scrubbed out of ``os.environ``,
+    and plain ``os.environ`` otherwise — so the executor authenticates identically
+    whether or not the vault is armed.
+
+    Two invariants this must not break:
+
+    * **OAuth stays OAuth.** An absent/empty ``ANTHROPIC_API_KEY`` is NOT injected.
+      That is the subscription path (the SDK falls back to the ``claude`` CLI login),
+      and injecting an empty or dead key would break it — a no-credit key does NOT
+      fall back to OAuth, it 400s (the documented trap in the RLM CLAUDE.md).
+    * **Foundry wins.** ``run.py::_resolve_agent_runtime`` already attaches a
+      per-subprocess ``ANTHROPIC_API_KEY``/``ANTHROPIC_BASE_URL`` for the
+      Anthropic-on-Foundry executor. An explicit value there is never overwritten.
+    """
+    env = dict(subprocess_env or {})
+    if not env.get("ANTHROPIC_API_KEY"):
+        api_key = credential_vault.get("ANTHROPIC_API_KEY")
+        if api_key:
+            env["ANTHROPIC_API_KEY"] = api_key
+    return env
 
 
 class ClaudeAgentRuntime:
@@ -89,11 +122,14 @@ class ClaudeAgentRuntime:
             # per-subprocess env override (ANTHROPIC_BASE_URL/ANTHROPIC_API_KEY)
             # so the `claude` CLI subprocess authenticates against the Foundry
             # endpoint WITHOUT ever touching process-global os.environ (which
-            # would hijack a co-resident claude-oauth path). Absent (the
-            # default/plain-anthropic runtime) this is {} — byte-identical to
-            # not passing env at all, since the SDK merges it onto the
-            # inherited environment rather than replacing it.
-            env=dict(getattr(self, "subprocess_env", None) or {}),
+            # would hijack a co-resident claude-oauth path). The SDK merges this
+            # onto the inherited environment rather than replacing it.
+            #
+            # _subprocess_env additionally injects the plain ANTHROPIC_API_KEY
+            # EXPLICITLY (from the credential vault) so the executor no longer
+            # depends on the parent process keeping a live key in os.environ,
+            # where the RLM REPL could read it. OAuth (no key) is unchanged.
+            env=_subprocess_env(getattr(self, "subprocess_env", None)),
             **_agent_options_kwargs(agent, mcp_servers, mcp_tool_extensions),
         )
 

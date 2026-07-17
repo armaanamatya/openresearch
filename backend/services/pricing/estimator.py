@@ -77,16 +77,88 @@ def _classify_paper(text: str) -> str:
     return "nlp_seq"  # safe default
 
 
-async def _fetch_pdf_bytes(source_kind: str, source: str) -> tuple[bytes, str]:
+class PdfPathNotAllowedError(ValueError):
+    """Raised when a ``source_kind="pdf_path"`` source resolves outside every
+    allowed root.
+
+    Security-review fix: this is a REJECTION, not an estimator failure.
+    Invariant 10 (docs/superpowers/specs/2026-05-25-budget-estimation-design.md
+    §HTTP API) says estimator FAILURES return HTTP 200 + error_message so the
+    UI can offer "skip estimate" -- but a path-containment violation is an
+    attempted arbitrary-file-read, not a failure to estimate. The HTTP layer
+    (backend/routes/estimate.py) catches this specific type and returns a
+    clean 400, and must never fold it into the 200-with-error-string
+    fallback that covers genuine estimator failures.
+    """
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    """Mirrors the containment helper of the same name in
+    backend/services/events/live_runs.py (used there to guard the
+    source-PDF download route against path escape)."""
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def resolve_allowed_pdf_path(source: str, allowed_roots: tuple[Path, ...]) -> Path:
+    """Resolve a ``pdf_path`` source and enforce that it stays inside an
+    allowed root.
+
+    Before this fix, ``_fetch_pdf_bytes`` called ``Path(source).read_bytes()``
+    directly with ZERO containment check, so an unauthenticated
+    ``POST /paper/estimate`` with
+    ``{"source_kind": "pdf_path", "source": "/home/user/.env"}`` would read an
+    arbitrary file off the server's disk. Both ``source`` and every candidate
+    root are resolved (symlinks and ``..`` segments collapsed) before
+    comparison, so a symlink planted inside an allowed root that points
+    outside it cannot be used to escape -- same approach as
+    ``live_runs.py``'s ``_is_relative_to`` guard on the source-PDF download
+    route.
+
+    Raises ``PdfPathNotAllowedError`` when ``source`` does not resolve inside
+    any of ``allowed_roots``. Never reads file content.
+    """
+    try:
+        candidate = Path(source).expanduser().resolve()
+    except (OSError, ValueError) as exc:
+        raise PdfPathNotAllowedError("pdf_path could not be resolved.") from exc
+
+    for root in allowed_roots:
+        try:
+            resolved_root = Path(root).expanduser().resolve()
+        except (OSError, ValueError):
+            continue
+        if _is_relative_to(candidate, resolved_root):
+            return candidate
+
+    raise PdfPathNotAllowedError(
+        "pdf_path must resolve to a location inside the runs directory."
+    )
+
+
+async def _fetch_pdf_bytes(
+    source_kind: str,
+    source: str,
+    *,
+    allowed_pdf_roots: tuple[Path, ...] = (),
+) -> tuple[bytes, str]:
     """Return (pdf_bytes, paper_id).
 
-    For arxiv_id / arxiv_url: fetch from arXiv.  For pdf_path: read from disk.
-    Returns the raw bytes and a stable paper_id string.
+    For arxiv_id / arxiv_url: fetch from arXiv.  For pdf_path: read from disk
+    -- but ONLY after ``resolve_allowed_pdf_path`` confirms the path resolves
+    inside one of ``allowed_pdf_roots``. When the caller passes none, this
+    defaults to ``Path("runs")`` (matching ``estimate_paper_budget``'s own
+    runs_root fallback) so the check is fail-closed even for a caller that
+    forgets to pass the kwarg explicitly. Returns the raw bytes and a stable
+    paper_id string.
     """
     import httpx
 
     if source_kind == "pdf_path":
-        path = Path(source)
+        path = resolve_allowed_pdf_path(source, allowed_pdf_roots or (Path("runs"),))
         return path.read_bytes(), path.stem
 
     if source_kind == "arxiv_id":
@@ -363,7 +435,11 @@ async def estimate_paper_budget(
         runs_root = Path(settings.runs_root) if settings.runs_root else Path("runs")
 
     # --- 1. Resolve paper identity
-    pdf_bytes, paper_id = await _fetch_pdf_bytes(source_kind, source)
+    # allowed_pdf_roots=(runs_root,): containment check for source_kind=
+    # "pdf_path" -- see resolve_allowed_pdf_path / PdfPathNotAllowedError above.
+    pdf_bytes, paper_id = await _fetch_pdf_bytes(
+        source_kind, source, allowed_pdf_roots=(runs_root,)
+    )
     sha256 = hashlib.sha256(pdf_bytes).hexdigest()
 
     # Normalise recipe_mode: "both" → compute strict then compressed; cache separately.

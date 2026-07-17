@@ -260,3 +260,149 @@ async def test_api_table_covers_all_pricing_entries(runs_root: Path, monkeypatch
     }
     for key in MODEL_PRICING:
         assert key in returned_model_ids, f"{key} missing from API cost table"
+
+
+# ---------------------------------------------------------------------------
+# Security fix (2026-07-13): pdf_path containment
+#
+# _fetch_pdf_bytes used to call Path(source).read_bytes() directly with zero
+# containment check -- an unauthenticated caller (backend/routes/estimate.py
+# had no demo-secret gate either) could read any file the server process
+# could see. resolve_allowed_pdf_path / PdfPathNotAllowedError close that at
+# the estimator layer too, as defense in depth behind the route's own check.
+# ---------------------------------------------------------------------------
+
+def test_resolve_allowed_pdf_path_allows_path_inside_root(tmp_path):
+    from backend.services.pricing.estimator import resolve_allowed_pdf_path
+
+    root = tmp_path / "runs"
+    (root / "prj").mkdir(parents=True)
+    pdf_path = root / "prj" / "paper.pdf"
+    pdf_path.write_bytes(_minimal_pdf_bytes())
+
+    resolved = resolve_allowed_pdf_path(str(pdf_path), (root,))
+    assert resolved == pdf_path.resolve()
+
+
+def test_resolve_allowed_pdf_path_rejects_path_outside_root(tmp_path):
+    from backend.services.pricing.estimator import (
+        PdfPathNotAllowedError,
+        resolve_allowed_pdf_path,
+    )
+
+    root = tmp_path / "runs"
+    root.mkdir()
+    outside = tmp_path / "outside" / "secret.env"
+    outside.parent.mkdir()
+    outside.write_text("API_KEY=leaked\n")
+
+    with pytest.raises(PdfPathNotAllowedError):
+        resolve_allowed_pdf_path(str(outside), (root,))
+
+
+def test_resolve_allowed_pdf_path_rejects_dotdot_traversal(tmp_path):
+    """A '..'-based escape must be caught by resolve(), not a naive prefix
+    string comparison."""
+    from backend.services.pricing.estimator import (
+        PdfPathNotAllowedError,
+        resolve_allowed_pdf_path,
+    )
+
+    root = tmp_path / "runs"
+    root.mkdir()
+    outside = tmp_path / "outside" / "secret.pdf"
+    outside.parent.mkdir()
+    outside.write_bytes(b"%PDF-1.4\n%%EOF")
+
+    traversal_source = str(root / ".." / "outside" / "secret.pdf")
+    with pytest.raises(PdfPathNotAllowedError):
+        resolve_allowed_pdf_path(traversal_source, (root,))
+
+
+def test_resolve_allowed_pdf_path_rejects_symlink_escape(tmp_path):
+    """A symlink planted *inside* the allowed root that points *outside* it
+    must not be usable to escape -- resolve() follows the symlink before the
+    containment comparison, mirroring live_runs.py's _is_relative_to guard."""
+    from backend.services.pricing.estimator import (
+        PdfPathNotAllowedError,
+        resolve_allowed_pdf_path,
+    )
+
+    root = tmp_path / "runs"
+    root.mkdir()
+    outside = tmp_path / "outside" / "secret.pdf"
+    outside.parent.mkdir()
+    outside.write_bytes(b"%PDF-1.4\n%%EOF")
+
+    symlink_path = root / "escape.pdf"
+    symlink_path.symlink_to(outside)
+
+    with pytest.raises(PdfPathNotAllowedError):
+        resolve_allowed_pdf_path(str(symlink_path), (root,))
+
+
+@pytest.mark.asyncio
+async def test_fetch_pdf_bytes_rejects_pdf_path_outside_allowed_root(tmp_path):
+    import backend.services.pricing.estimator as est_mod
+
+    root = tmp_path / "runs"
+    root.mkdir()
+    outside = tmp_path / "outside" / "secret.env"
+    outside.parent.mkdir()
+    outside.write_text("API_KEY=leaked\n")
+
+    with pytest.raises(est_mod.PdfPathNotAllowedError):
+        await est_mod._fetch_pdf_bytes(
+            "pdf_path", str(outside), allowed_pdf_roots=(root,)
+        )
+
+
+@pytest.mark.asyncio
+async def test_fetch_pdf_bytes_allows_pdf_path_inside_allowed_root(tmp_path):
+    import backend.services.pricing.estimator as est_mod
+
+    root = tmp_path / "runs"
+    (root / "prj").mkdir(parents=True)
+    pdf_path = root / "prj" / "paper.pdf"
+    pdf_bytes = _minimal_pdf_bytes()
+    pdf_path.write_bytes(pdf_bytes)
+
+    result_bytes, paper_id = await est_mod._fetch_pdf_bytes(
+        "pdf_path", str(pdf_path), allowed_pdf_roots=(root,)
+    )
+    assert result_bytes == pdf_bytes
+    assert paper_id == "paper"
+
+
+@pytest.mark.asyncio
+async def test_estimate_paper_budget_rejects_pdf_path_outside_runs_root(runs_root: Path, tmp_path, monkeypatch):
+    """End-to-end (no mocking of _fetch_pdf_bytes): estimate_paper_budget
+    itself must refuse a pdf_path outside runs_root, and never reach the
+    LLM/GPU-resolution steps that follow the read."""
+    import backend.services.pricing.estimator as est_mod
+
+    outside = tmp_path / "outside" / "secret.env"
+    outside.parent.mkdir()
+    outside.write_text("API_KEY=leaked\n")
+
+    llm_called = {"n": 0}
+
+    async def _count_llm(*args, **kw):
+        llm_called["n"] += 1
+        return {
+            "experiment_count": 1,
+            "total_epochs_across_all_experiments": 1,
+            "avg_epoch_seconds_on_target_gpu": 1.0,
+            "confidence": "low",
+        }
+
+    monkeypatch.setattr(est_mod, "_llm_estimate_workload", _count_llm)
+
+    with pytest.raises(est_mod.PdfPathNotAllowedError):
+        await est_mod.estimate_paper_budget(
+            str(outside),
+            source_kind="pdf_path",
+            recipe_mode="strict",
+            runs_root=runs_root,
+        )
+    assert llm_called["n"] == 0, "LLM must not be called once containment rejects the path"

@@ -631,3 +631,199 @@ def test_codex1_result_keys_not_excluded_by_config_fix():
         f"Config-key exclusion dropped result keys; expected {len(sdar_keys)} values, "
         f"got {len(vals)}.  Metrics: {metrics}"
     )
+
+
+# ---------------------------------------------------------------------------
+# P0 (2026-07-13): NON-FINITE (NaN / ±Inf) result metrics — the automatic veto
+#
+# IEEE-754 self-inequality made BOTH veto predicates False for NaN
+# (nan == 0.0 → False; nan == values[0] → False even against itself), so a model
+# whose loss/reward DIVERGED sailed straight through the guard built to catch
+# degenerate results. Non-finite is now strictly worse than zero: an automatic,
+# unconditional veto that no provenance manifest and no missing GPU claim exempts.
+# ---------------------------------------------------------------------------
+
+NAN = float("nan")
+POS_INF = float("inf")
+NEG_INF = float("-inf")
+
+# A diverged SDAR-shaped run: real GPU training, real keys, NaN values.
+FIXTURE_NAN_DIVERGED = {
+    "loss": NAN,
+    "mean_reward": NAN,
+    "accuracy_avg": NAN,
+}
+
+# The nested cells-route shape with a diverged cell.
+FIXTURE_NESTED_NAN = {
+    "status": "ok",
+    "per_model": {
+        "qwen3-1.7b": {"alfworld": {"grpo": {"metric": NAN, "reward_mean": 0.42}}},
+    },
+}
+
+
+class TestNonFiniteDetection:
+    def test_nan_is_detected(self):
+        from backend.agents.rlm.zero_metrics_detection import (
+            has_non_finite_metric,
+            non_finite_metric_keys,
+        )
+        assert has_non_finite_metric(FIXTURE_NAN_DIVERGED) is True
+        assert set(non_finite_metric_keys(FIXTURE_NAN_DIVERGED)) == {
+            "loss", "mean_reward", "accuracy_avg",
+        }
+
+    def test_inf_is_detected(self):
+        from backend.agents.rlm.zero_metrics_detection import has_non_finite_metric
+        assert has_non_finite_metric({"loss": POS_INF, "accuracy": 0.9}) is True
+        assert has_non_finite_metric({"loss": NEG_INF, "accuracy": 0.9}) is True
+
+    def test_nan_string_form_is_detected(self):
+        # metrics.json round-trips: json.dumps writes bare NaN/Infinity, and a
+        # stringified "nan" coerces through float() — both must be caught.
+        from backend.agents.rlm.zero_metrics_detection import has_non_finite_metric
+        assert has_non_finite_metric({"loss": "nan"}) is True
+        assert has_non_finite_metric({"loss": "Infinity"}) is True
+
+    def test_nan_survives_json_round_trip(self):
+        import json as _json
+        from backend.agents.rlm.zero_metrics_detection import has_non_finite_metric
+        blob = _json.dumps({"loss": NAN, "reward": 0.3})
+        assert has_non_finite_metric(_json.loads(blob)) is True
+
+    def test_nested_nan_is_detected(self):
+        from backend.agents.rlm.zero_metrics_detection import non_finite_metric_keys
+        assert non_finite_metric_keys(FIXTURE_NESTED_NAN) == ["metric"]
+
+    def test_healthy_metrics_have_no_non_finite(self):
+        from backend.agents.rlm.zero_metrics_detection import has_non_finite_metric
+        assert has_non_finite_metric(FIXTURE_LEGIT_MIXED) is False
+        assert has_non_finite_metric(FIXTURE_SDAR_V6) is False  # all-zero, but finite
+        assert has_non_finite_metric({}) is False
+        assert has_non_finite_metric(object()) is False  # fail-soft
+
+
+class TestNonFiniteVeto:
+    """The core P0: a diverged run must not evade the anti-fabrication veto."""
+
+    def test_nan_loss_vetoes(self, monkeypatch):
+        monkeypatch.setenv("OPENRESEARCH_ZERO_METRICS_GUARD", "1")
+        assert looks_like_zero_metrics(FIXTURE_NAN_DIVERGED) is True
+        assert zero_metrics_should_veto(
+            FIXTURE_NAN_DIVERGED, gpu_claim=True, provenance_present=False
+        ) is True
+
+    def test_nan_reward_vetoes_even_alongside_real_values(self, monkeypatch):
+        # NOT all-zero and NOT constant — the ONLY degenerate signal is the NaN.
+        monkeypatch.setenv("OPENRESEARCH_ZERO_METRICS_GUARD", "1")
+        assert zero_metrics_should_veto(
+            {"mean_reward": NAN, "accuracy": 0.83, "loss": 1.2},
+            gpu_claim=True, provenance_present=False,
+        ) is True
+
+    def test_pos_inf_vetoes(self, monkeypatch):
+        monkeypatch.setenv("OPENRESEARCH_ZERO_METRICS_GUARD", "1")
+        assert zero_metrics_should_veto(
+            {"loss": POS_INF, "accuracy": 0.5}, gpu_claim=True, provenance_present=False
+        ) is True
+
+    def test_neg_inf_vetoes(self, monkeypatch):
+        monkeypatch.setenv("OPENRESEARCH_ZERO_METRICS_GUARD", "1")
+        assert zero_metrics_should_veto(
+            {"loss": NEG_INF, "accuracy": 0.5}, gpu_claim=True, provenance_present=False
+        ) is True
+
+    def test_nan_vetoes_despite_provenance(self, monkeypatch):
+        """NEVER EXEMPT: provenance is the fake-0-vs-real-0 discriminator — there is no
+        honest reading of a NaN result, so a manifest cannot launder one."""
+        monkeypatch.setenv("OPENRESEARCH_ZERO_METRICS_GUARD", "1")
+        assert zero_metrics_should_veto(
+            FIXTURE_NAN_DIVERGED, gpu_claim=True, provenance_present=True
+        ) is True
+
+    def test_nan_vetoes_without_gpu_claim(self, monkeypatch):
+        monkeypatch.setenv("OPENRESEARCH_ZERO_METRICS_GUARD", "1")
+        assert zero_metrics_should_veto(
+            FIXTURE_NAN_DIVERGED, gpu_claim=False, provenance_present=False
+        ) is True
+
+    def test_nested_nan_cell_vetoes(self, monkeypatch):
+        monkeypatch.setenv("OPENRESEARCH_ZERO_METRICS_GUARD", "1")
+        assert zero_metrics_should_veto(
+            FIXTURE_NESTED_NAN, gpu_claim=True, provenance_present=False
+        ) is True
+
+    def test_flag_off_stays_byte_identical(self, monkeypatch):
+        """Default-OFF contract: the fix is inside the guard, not a new always-on gate."""
+        monkeypatch.delenv("OPENRESEARCH_ZERO_METRICS_GUARD", raising=False)
+        assert zero_metrics_should_veto(
+            FIXTURE_NAN_DIVERGED, gpu_claim=True, provenance_present=False
+        ) is False
+
+    def test_repair_message_names_divergence_and_keys(self):
+        msg = zero_metrics_repair_message(FIXTURE_NAN_DIVERGED)
+        assert "fabrication_suspected" in msg
+        assert "non-finite" in msg
+        assert "NaN" in msg
+        assert "diverged" in msg.lower()
+        assert "loss" in msg  # names the offending key
+
+
+class TestNonFiniteNoFalsePositives:
+    """Every conservative exemption survives: the guard must not widen into
+    false-positive territory (see learn.md 2026-07-07 — an over-broad guard hard-blocked
+    a FAITHFUL alpha=0.0 ablation)."""
+
+    def test_legit_zero_with_provenance_still_not_vetoed(self, monkeypatch):
+        """No regression: a real failing baseline that honestly scored 0 and emitted a
+        provenance manifest is still NOT vetoed."""
+        monkeypatch.setenv("OPENRESEARCH_ZERO_METRICS_GUARD", "1")
+        assert zero_metrics_should_veto(
+            {"success_rate": 0.0, "mean_reward": 0.0},
+            gpu_claim=True, provenance_present=True,
+        ) is False
+
+    def test_alpha_zero_ablation_still_not_vetoed(self, monkeypatch):
+        """prj_618 (UCPO): alpha=0.0 is a FAITHFUL sharpening ablation, not a fabrication
+        (learn.md 2026-07-07 — an over-broad LR guard hard-blocked it for a full run).
+
+        A legitimate 0.0 is FINITE, so the new non-finite branch must never touch it, and
+        the all-zero branch still requires EVERY result value to be zero — a real
+        accuracy/reward alongside it keeps the run clean.
+        """
+        monkeypatch.setenv("OPENRESEARCH_ZERO_METRICS_GUARD", "1")
+        metrics = {"alpha": 0.0, "accuracy": 0.71, "mean_reward": 0.42}
+        assert 0.0 in normalize_metric_values(metrics)  # alpha is not silently dropped
+        assert looks_like_zero_metrics(metrics) is False
+        assert zero_metrics_should_veto(
+            metrics, gpu_claim=True, provenance_present=False
+        ) is False
+        # Same for the other coefficient names an RL/regularization config uses.
+        for name in ("alpha", "beta", "lambda", "gamma", "tau", "eta"):
+            assert zero_metrics_should_veto(
+                {name: 0.0, "accuracy": 0.71}, gpu_claim=True, provenance_present=False
+            ) is False, f"{name}=0.0 alongside a real result must never be vetoed"
+
+    def test_non_finite_in_an_excluded_key_does_not_veto(self, monkeypatch):
+        """A NaN parked in a denominator/config/structural key is not a RESULT claim.
+        Only result-claiming metrics veto."""
+        monkeypatch.setenv("OPENRESEARCH_ZERO_METRICS_GUARD", "1")
+        for excluded in ({"samples_n": NAN}, {"learning_rate": NAN}, {"wall_time_s": NAN}):
+            metrics = {**excluded, "accuracy": 0.71, "mean_reward": 0.42}
+            assert zero_metrics_should_veto(
+                metrics, gpu_claim=True, provenance_present=False
+            ) is False, f"excluded key must not veto: {excluded}"
+
+    def test_boolean_status_flag_is_not_a_metric(self, monkeypatch):
+        monkeypatch.setenv("OPENRESEARCH_ZERO_METRICS_GUARD", "1")
+        assert zero_metrics_should_veto(
+            {"converged": True, "success": False, "accuracy": 0.71, "loss": 1.2},
+            gpu_claim=True, provenance_present=False,
+        ) is False
+
+    def test_healthy_run_never_vetoed(self, monkeypatch):
+        monkeypatch.setenv("OPENRESEARCH_ZERO_METRICS_GUARD", "1")
+        assert zero_metrics_should_veto(
+            FIXTURE_LEGIT_MIXED, gpu_claim=True, provenance_present=False
+        ) is False

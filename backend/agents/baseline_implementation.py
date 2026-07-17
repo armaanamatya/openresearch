@@ -1168,6 +1168,76 @@ _PROVENANCE_BLOCK = (
 )
 
 
+def _coefficient_contract_block(project_dir: Path | None) -> str:
+    """Instruct the implementer to record the paper's ALGORITHMIC COEFFICIENTS.
+
+    The list is DERIVED, never improvised: it is read straight off this run's own
+    ``generated_rubric.json`` — every leaf the rubric will grade with a
+    ``coefficients.<name>`` assertion (``rubric_gen.coefficient_fields``). The
+    rubric is persisted before the RLM loop starts, so it is always on disk by the
+    time ``implement_baseline`` runs. The agent is therefore told to emit exactly
+    the coefficients it will be graded on — no more, no fewer, and never a set it
+    invented for itself.
+
+    Gated on ``OPENRESEARCH_DETERMINISTIC_LEAVES``: with the flag off nothing
+    annotates coefficients, so the contract is empty and this block is absent —
+    the prompt is byte-identical to today.
+
+    Returns ``""`` when the flag is off, no rubric exists, or the rubric pins no
+    coefficients (the common case for a paper with no declared constants).
+    """
+    try:
+        from backend.agents.rlm.rubric_gen import (
+            coefficient_fields,
+            deterministic_leaves_enabled,
+        )
+
+        if not deterministic_leaves_enabled() or project_dir is None:
+            return ""
+        rubric_path = Path(project_dir) / "generated_rubric.json"
+        if not rubric_path.is_file():
+            return ""
+        tree = json.loads(rubric_path.read_text(encoding="utf-8"))
+        coefficients = coefficient_fields(tree)
+        if not coefficients:
+            return ""
+    except Exception:  # noqa: BLE001 — guidance assembly must never fail the run.
+        return ""
+
+    # Bounded: the prompt carries the contract, not an essay.
+    items = sorted(coefficients.items())[:12]
+    lines = "\n".join(
+        f"      {name!r}: {value:g},".ljust(28) + f"# paper declares {value:g}"
+        for name, value in items
+    )
+    return (
+        "\n\nPAPER-DECLARED COEFFICIENTS — record these in the provenance manifest:\n"
+        "This paper's rubric grades the algorithmic constants below MECHANICALLY, by\n"
+        "reading them out of provenance.json. They are the constants that define the\n"
+        "METHOD (a gate sharpness, a loss weight, a temperature) — not bookkeeping\n"
+        "knobs — so they are exactly what a surrogate implementation gets wrong.\n"
+        "Pass them to emit_provenance under `coefficients`, using these EXACT names:\n"
+        "  from provenance import emit_provenance\n"
+        "  emit_provenance(OUTPUT_DIR, experiments={...}, coefficients={\n"
+        f"{lines}\n"
+        "  })\n"
+        "RULES:\n"
+        "  1. Emit the value your code ACTUALLY USES — pass the SAME Python variable\n"
+        "     your loss/model reads (`coefficients={'beta': BETA}`), never a re-typed\n"
+        "     literal. This manifest is EVIDENCE, not a restatement of the paper: a\n"
+        "     manifest that disagrees with the code it claims to describe is fabrication.\n"
+        "  2. If you deliberately deviate from the paper's value (a scope reduction, an\n"
+        "     ablation), still emit what you REALLY RAN and explain it in README.md. An\n"
+        "     honest mismatch is a scoped finding; a copied number that the code does not\n"
+        "     use is a lie the grader will catch against your source.\n"
+        "  3. If one cell overrides a coefficient (an ablation sweeping lambda), put that\n"
+        "     cell's value in that experiment's own 'coefficients' sub-dict as well.\n"
+        "  4. Omitting a coefficient is NOT scored as a failure — the leaf simply falls\n"
+        "     back to a slower, noisier human-style read of your code. Emitting it is how\n"
+        "     you get exact credit for getting it right.\n"
+    )
+
+
 # FIX 6 — eval-metric provenance guidance (2026-06-24, always-on, self-gating).
 # Instructs the agent to compute held-out eval metrics via record_eval() instead of
 # deriving accuracy from training reward (the SDAR reward×100 anti-pattern).
@@ -2570,6 +2640,12 @@ def _compute_constraint_guidance(
     guidance += _OUTPUT_DISCIPLINE_BLOCK
     guidance += _ARTIFACT_COMPLETENESS_BLOCK
     guidance += _PROVENANCE_BLOCK
+    # 5.72. Paper-declared coefficients (OPENRESEARCH_DETERMINISTIC_LEAVES).
+    # The names come from THIS run's generated_rubric.json — the same assertions the
+    # grader will resolve — so the emit-contract and the grading contract are the same
+    # list by construction; the agent never improvises it. Empty (and therefore absent)
+    # when the flag is off or the paper declares no constants → byte-identical prompt.
+    guidance += _coefficient_contract_block(project_dir)
     # 5.75. Eval-metric provenance — always-on, self-gating (only matters when
     # the cell reports a rate metric; cells that emit only RL reward are unaffected).
     # Teaches the agent to use record_eval() for a verifiable held-out measurement

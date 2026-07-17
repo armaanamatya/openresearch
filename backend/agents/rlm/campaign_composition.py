@@ -13,11 +13,21 @@ v1 simplifications:
     double-extraction passes always agree -- UNDERSTAND never blocks
     attempt 1 in v1 (the gate machinery is live for a future span-grounded
     extractor).
-  - ``runs_dir_hint`` (the seed-pointer source for DECIDE/lineage_arms) only
-    ever contains the LATEST assessed attempt: an attempt's ``code/`` is
-    only unambiguously identifiable while it is the CURRENT ``run_dir/code``
-    (before the next launch's force-quarantine archives it away). An older
-    arm's hint is absent, so ``lineage_arms`` degrades it to ``fresh``.
+
+``runs_dir_hint`` (the seed-pointer source for DECIDE/lineage_arms) resolves
+EVERY assessed attempt, not just the latest. It used to carry only the latest,
+on the reasoning that an attempt's ``code/`` is unambiguously identifiable only
+while it is the current ``run_dir/code`` -- but that made a non-latest champion
+structurally unseedable (``lineage_arms`` drops an arm with no pointer, so the
+champion arm silently degraded to ``fresh``), and the champion is routinely not
+the latest attempt. The driver now records each attempt's ``code/`` under its
+attempt number in ``campaign/attempt_code_index.json`` as the pre-launch archive
+moves it (``attempt_driver.rotate_attempt_code_index``), so an archived
+attempt stays addressable; :func:`_gather_campaign_view` reads that index --
+per attempt's OWN launch run dir, so width children (``<id>_w<k>``) resolve
+correctly too -- and falls back to the live ``code/`` for campaigns that predate
+the index. An attempt whose code is genuinely gone still has no hint and still
+degrades to ``fresh``.
 """
 
 from __future__ import annotations
@@ -40,6 +50,8 @@ from backend.agents.rlm.attempt_driver import (
     LiveCliDriver,
     PairedDriver,
     UnifiedRunDriver,
+    resolve_attempt_code_dir,
+    rotate_attempt_code_index,
 )
 from backend.agents.rlm.campaign_directives import AttemptDirectives, synthesize_directives
 from backend.agents.rlm.campaign_policy import (
@@ -322,13 +334,33 @@ def _understand_impl(run_dir: Path, opts: CampaignOptions) -> dict[str, Any]:
 # --- plan_attempt ------------------------------------------------------------
 
 
+def _launch_run_dir_by_attempt(rows: Sequence[Mapping[str, Any]]) -> dict[int, Path]:
+    """Each attempt's OWN launch run dir, off its ``launched`` ledger row.
+
+    Usually the campaign's own run dir, but a budget-gated width attempt
+    (spec §8.3) launches under ``<project_id>_w<k>`` and writes its ``code/``
+    -- and its attempt-code index -- there, not under the campaign's
+    top-level dir. Resolving an attempt's code against the campaign run dir
+    would silently miss every width child's tree.
+    """
+    out: dict[int, Path] = {}
+    for row in rows:
+        if not isinstance(row, dict) or row.get("status") != "launched":
+            continue
+        attempt_n, raw_dir = row.get("attempt_n"), row.get("run_dir")
+        if isinstance(attempt_n, int) and isinstance(raw_dir, str) and raw_dir:
+            out[attempt_n] = Path(raw_dir)
+    return out
+
+
 def _gather_campaign_view(
     run_dir: Path, rows: Sequence[Mapping[str, Any]]
 ) -> tuple[list[AttemptAssessment], dict[int, str], dict[int, int], dict[int, str]]:
     """Rebuild assessments (latest-per-attempt), lineage_by_attempt /
     scope_rung_by_attempt (read off the PRIOR attempt's decided
-    ``next_plan``; attempt 1 starts at rung 0), and ``runs_dir_hint`` (v1:
-    latest assessed attempt only, see module docstring)."""
+    ``next_plan``; attempt 1 starts at rung 0), and ``runs_dir_hint`` (EVERY
+    assessed attempt whose code still exists -- live or archived; see the
+    module docstring)."""
     attempt_ns = sorted(
         {row.get("attempt_n") for row in rows if isinstance(row, dict) and isinstance(row.get("attempt_n"), int)}
     )
@@ -355,10 +387,29 @@ def _gather_campaign_view(
         if isinstance(next_plan.get("scope_rung"), int):
             scope_rung_by_attempt[n + 1] = next_plan["scope_rung"]
 
+    # Seed pointers for EVERY assessed attempt, resolved through the
+    # driver-maintained attempt-code index (live tree while it is live, the
+    # archived tree afterwards). A champion that is not the latest assessed
+    # attempt used to have no pointer at all, so lineage_arms dropped its arm
+    # and campaign_policy's guard-filtered champion could never actually be
+    # seeded -- every attempt cold-started.
+    launch_dirs = _launch_run_dir_by_attempt(rows)
     latest_assessed_n = max((a.attempt_n for a in assessments), default=None)
     runs_dir_hint: dict[int, str] = {}
-    if latest_assessed_n is not None:
-        runs_dir_hint[latest_assessed_n] = str(run_dir / "code")
+    for assessment in assessments:
+        n = assessment.attempt_n
+        resolved = resolve_attempt_code_dir(launch_dirs.get(n, run_dir), n)
+        if resolved is not None:
+            runs_dir_hint[n] = resolved
+
+    # Back-compat: a campaign that launched before the index existed has no
+    # index to read, but its latest assessed attempt's code is still live at
+    # the un-archived run_dir/code -- exactly the one pointer the old
+    # latest-only hint carried, so a resumed pre-index campaign keeps working.
+    if latest_assessed_n is not None and latest_assessed_n not in runs_dir_hint:
+        legacy_code = launch_dirs.get(latest_assessed_n, run_dir) / "code"
+        if legacy_code.is_dir():
+            runs_dir_hint[latest_assessed_n] = str(legacy_code)
 
     return assessments, lineage_by_attempt, scope_rung_by_attempt, runs_dir_hint
 
@@ -734,7 +785,19 @@ def _quarantine_impl(opts: CampaignOptions, project_id: str, in_flight: InFlight
         resolved_run_dir = Path(in_flight.run_dir).resolve()
         if resolved_run_dir.parent == opts.runs_root.resolve():
             target_project_id = resolved_run_dir.name
-    force_archive_incomplete(target_project_id, opts.runs_root, reason="campaign_resume_quarantine")
+    archived = force_archive_incomplete(
+        target_project_id, opts.runs_root, reason="campaign_resume_quarantine"
+    )
+    # Keep the attempt-code index truthful about the code this just MOVED.
+    # The residue belongs to whichever attempt the index still calls "live"
+    # -- NOT to in_flight.attempt_n, which on the orphaned-intent path is the
+    # attempt whose launch never fired (its predecessor owns the residue).
+    # new_live_attempt_n=None: nothing is live in that dir once it is
+    # quarantined. Skipping this would strand the quarantined attempt's code
+    # in an unindexed archive and make it unseedable.
+    rotate_attempt_code_index(
+        opts.runs_root / target_project_id, archived=archived, new_live_attempt_n=None
+    )
 
 
 # --- distill -------------------------------------------------------------------

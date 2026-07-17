@@ -21,7 +21,12 @@ import math
 from datetime import datetime, timezone
 
 from backend.agents.schemas import GpuPlan, GpuRequirements
-from backend.services.runtime.gpu_catalog import GpuSku, effective_vram_gb, find_ladder
+from backend.services.runtime.gpu_catalog import (
+    GpuSku,
+    effective_vram_gb,
+    find_ladder,
+    usd_per_gpu_hr,
+)
 
 # Confidence threshold below which we treat the LLM estimate as unusable.
 _CONFIDENCE_FLOOR: float = 0.4
@@ -48,6 +53,7 @@ def _provisioned_default_sku(
     provider: str,
     fallback_short_name: str,
     provisioned_skus: tuple[str, ...] | None,
+    force_single_gpu: bool = False,
 ) -> "GpuSku":
     """Default SKU for the no-/low-confidence fallback on a provisioned cloud.
 
@@ -55,6 +61,17 @@ def _provisioned_default_sku(
     fallback Job targets a node pool that actually exists); otherwise the global
     cheapest-single-GPU fallback for ``provider``. Fixes the unschedulable-pool
     hang when only a larger SKU is provisioned (azure AKS / gcp GKE alike).
+
+    ``force_single_gpu`` narrows the candidates to single-GPU pools FIRST, so a
+    deployment that provisions both a 1-GPU and an 8-GPU pool falls back to the
+    1-GPU one instead of leasing an 8-GPU node for a single-GPU paper. When no
+    single-GPU pool is provisioned we still return the cheapest provisioned SKU
+    rather than raising — the caller clamps ``gpu_count`` to 1, so we request one
+    GPU on a bigger node (schedulable, and never a silent 8-GPU over-provision).
+
+    Ranking is by PER-GPU rate (``usd_per_gpu_hr``); ranking by the whole-machine
+    ``approx_usd_per_hr`` would always prefer the smallest node even when a
+    bigger one is cheaper per GPU.
     """
     if provisioned_skus:
         candidates: list[GpuSku] = []
@@ -63,8 +80,12 @@ def _provisioned_default_sku(
                 candidates.append(_by_short_name(name, provider=provider))
             except GpuResolutionError:
                 pass
+        if force_single_gpu:
+            single = [s for s in candidates if s.gpu_count == 1]
+            if single:
+                candidates = single
         if candidates:
-            return min(candidates, key=lambda s: (s.approx_usd_per_hr, s.short_name))
+            return min(candidates, key=lambda s: (usd_per_gpu_hr(s), s.short_name))
     return _by_short_name(fallback_short_name, provider=provider)
 
 
@@ -288,9 +309,13 @@ def _resolve_provisioned_cloud(
     label = provider.upper()
 
     # Dynamic disabled → informational from cheapest SKU.
+    # force_single_gpu MUST clamp the count here too: without the clamp an
+    # 8-GPU machine SKU silently yielded an 8-GPU plan (and an 8× bill) even
+    # though the operator explicitly asked for one GPU.
     if not dynamic_gpu_enabled:
         sku = _by_short_name(fallback_short_name, provider=provider)
-        return _build_plan(sku, gpu_count=sku.gpu_count, source="informational",
+        return _build_plan(sku, gpu_count=1 if force_single_gpu else sku.gpu_count,
+                           source="informational",
                            requirements=requirements, ladder=(), now_iso=now_iso)
 
     estimate = requirements.estimated_vram_gb
@@ -299,8 +324,14 @@ def _resolve_provisioned_cloud(
     # Fallback path: no estimate OR confidence too low → cheapest SKU, but honor
     # provisioned_skus so the fallback Job targets an existing node pool (the
     # generic fallback_short_name may be a SKU the cluster never provisioned).
+    # Same force_single_gpu clamp as above — this was THE silent-8×A100 path on
+    # GKE: an unestimatable paper fell back to the only provisioned pool
+    # (gcp_a100_80x8) and got gpu_count=8 despite force_single_gpu defaulting True.
     if estimate is None or confidence < _CONFIDENCE_FLOOR:
-        sku = _provisioned_default_sku(provider, fallback_short_name, provisioned_skus)
+        sku = _provisioned_default_sku(
+            provider, fallback_short_name, provisioned_skus,
+            force_single_gpu=force_single_gpu,
+        )
         full_ladder = _provisioned_ladder(provider=provider,
                                           min_effective_vram=sku.vram_gb * sku.gpu_count,
                                           max_per_gpu_usd=None,
@@ -308,7 +339,8 @@ def _resolve_provisioned_cloud(
                                           provisioned_skus=provisioned_skus)
         remaining = tuple(s.short_name for s in full_ladder
                           if s.short_name != sku.short_name)
-        return _build_plan(sku, gpu_count=sku.gpu_count, source="fallback",
+        return _build_plan(sku, gpu_count=1 if force_single_gpu else sku.gpu_count,
+                           source="fallback",
                            requirements=requirements, ladder=remaining, now_iso=now_iso)
 
     # Apply headroom multiplier (against per-GPU estimate; same logic as RunPod).
@@ -330,10 +362,14 @@ def _resolve_provisioned_cloud(
                                             provisioned_skus=provisioned_skus)
         if unconstrained:
             cheapest = unconstrained[0]
+            # Quote the PER-GPU rate — that is the quantity the cap is compared
+            # against, so quoting the whole-machine price here would send the
+            # operator chasing a cap value that isn't the one being enforced.
             raise GpuResolutionError(
                 f"Paper requires >= {needed_vram} GB effective VRAM (after {headroom_multiplier}x headroom on "
                 f"estimate={estimate}). Cheapest {label} SKU is {cheapest.short_name} at "
-                f"${cheapest.approx_usd_per_hr:.2f}/hr, but `max_gpu_usd_per_hour` cap is "
+                f"${usd_per_gpu_hr(cheapest):.2f}/GPU-hr (${cheapest.approx_usd_per_hr:.2f}/hr for the "
+                f"{cheapest.gpu_count}-GPU machine), but `max_gpu_usd_per_hour` cap is "
                 f"${max_gpu_usd_per_hour}. Raise the cap or set --vram-gb to a lower override."
             )
         raise GpuResolutionError(
@@ -384,8 +420,15 @@ def _provisioned_ladder(
         - cloud_type == "ONDEMAND"
         - effective_vram_gb(sku) >= min_effective_vram
         - if force_single_gpu: only gpu_count == 1 rows
-        - if max_per_gpu_usd: rate <= cap
+        - if max_per_gpu_usd: PER-GPU rate <= cap
         - if provisioned_skus is not None: only SKUs whose short_name ∈ provisioned_skus
+
+    The cap is compared against ``usd_per_gpu_hr(sku)``, NOT the whole-machine
+    ``approx_usd_per_hr``: ``max_gpu_usd_per_hour`` is defined per-GPU, so
+    comparing it against a machine price wrongly excluded every multi-GPU node
+    (an 8×A100-80 at $31.44/machine = $3.93/GPU failed the default $10/GPU cap,
+    making a genuine multi-GPU paper unresolvable). Single-GPU rows are
+    unaffected (per-GPU == machine rate).
     """
     from backend.services.runtime.gpu_catalog import CATALOG
     cap = max_per_gpu_usd if max_per_gpu_usd and max_per_gpu_usd > 0 else None
@@ -395,7 +438,7 @@ def _provisioned_ladder(
         and sku.cloud_type == "ONDEMAND"
         and effective_vram_gb(sku) >= min_effective_vram
         and (not force_single_gpu or sku.gpu_count == 1)
-        and (cap is None or sku.approx_usd_per_hr <= cap)
+        and (cap is None or usd_per_gpu_hr(sku) <= cap)
         and (provisioned_skus is None or sku.short_name in provisioned_skus)
     ]
     return sorted(filtered, key=lambda s: (effective_vram_gb(s), s.approx_usd_per_hr))
@@ -421,14 +464,27 @@ def _build_plan(
     ladder: tuple[str, ...],
     now_iso: str,
 ) -> GpuPlan:
+    # GpuPlan's schema defines sku_usd_per_hr as the PER-GPU rate and
+    # total_usd_per_hr as (per-GPU × gpu_count). The catalog's approx_usd_per_hr
+    # is the WHOLE-MACHINE rate, so feeding it in raw double-counted every
+    # multi-GPU node: an a2-ultragpu-8g ($31.44/machine) reported
+    # total_usd_per_hr = 31.44 × 8 = $251.52/hr — an 8× phantom cost that
+    # spuriously trips the run-USD budget cap. Divide once, here, at the single
+    # place a GpuPlan is minted.
+    #
+    # Byte-identical for every gpu_count == 1 catalog row (ALL RunPod rows and
+    # the single-GPU azure/gcp rows), so the RunPod path is untouched. On the
+    # RunPod path gpu_count may exceed sku.gpu_count (N separate 1-GPU pods),
+    # and per-GPU × N remains exactly right.
+    per_gpu_usd = usd_per_gpu_hr(sku)
     return GpuPlan(
         runpod_id=sku.runpod_id,
         short_name=sku.short_name,
         vram_gb=sku.vram_gb,
         gpu_count=gpu_count,
         cloud_type=sku.cloud_type,
-        sku_usd_per_hr=sku.approx_usd_per_hr,
-        total_usd_per_hr=round(sku.approx_usd_per_hr * gpu_count, 4),
+        sku_usd_per_hr=round(per_gpu_usd, 4),
+        total_usd_per_hr=round(per_gpu_usd * gpu_count, 4),
         container_disk_gb=max(50, sku.vram_gb),
         volume_gb=max(20, sku.vram_gb // 4),
         source=source,

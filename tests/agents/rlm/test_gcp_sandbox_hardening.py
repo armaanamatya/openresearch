@@ -164,8 +164,22 @@ def _fake_gcp_settings(**overrides) -> Any:
     return SimpleNamespace(**defaults)
 
 
-class TestGcpFilesCacheDefaultEmptyDir:
-    """Fix 5: gcp_files_cache_enabled defaults False → cache volume is emptyDir, not PVC.
+class TestGcpFilesCachePersistentByDefault:
+    """gcp_files_cache_enabled defaults TRUE → the cache volume is a persistent PVC.
+
+    SUPERSEDES the original "Fix 5" invariant, which defaulted this False so cells
+    "never block on a missing optional Filestore PVC". That traded a startup risk
+    for a permanent, recurring COST bug: an emptyDir is per-pod and destroyed on
+    exit, so EVERY cell -- and every re-run -- re-downloaded multi-GB model
+    weights, datasets, and pip wheels while an A100 metered. A 6-cell grid paid the
+    model download 6 times.
+
+    The blocking risk that motivated the old default is now handled properly rather
+    than by giving up the cache: k8s_job_cell_runner does ONE live PVC existence
+    check per run and, if the cache is configured-on but genuinely unprovisioned,
+    falls back to emptyDir with a LOUD run_warning naming the cost impact (see
+    tests/agents/rlm/test_gke_cache_and_credentials.py). So a missing PVC still
+    never strands a pod -- it just stops being silent.
 
     Two complementary test layers:
     A) _cache_volume_spec and config default — conftest-immune, tests the plumbing
@@ -200,13 +214,28 @@ class TestGcpFilesCacheDefaultEmptyDir:
         assert "persistentVolumeClaim" in vol, f"Expected PVC for enabled cache, got {vol}"
         assert "emptyDir" not in vol
 
-    def test_config_gcp_files_cache_enabled_default_is_false(self):
-        """Fix 5: gcp_files_cache_enabled field defaults to False in config.py."""
-        from backend.config import Settings
-        s = Settings()
-        assert s.gcp_files_cache_enabled is False, (
-            "gcp_files_cache_enabled should default to False so GCP cells use "
-            "emptyDir and never block on a missing optional Filestore PVC"
+    def test_config_gcp_files_cache_enabled_default_is_true(self, monkeypatch):
+        """gcp_files_cache_enabled defaults TRUE — the persistent cache is the default.
+
+        A cost fix that ships default-OFF saves nothing. Self-isolating: config.py
+        sets env_file=".env" AND a pytest plugin load_dotenv()s the repo .env into
+        os.environ, so without the delenv this could assert the developer's ambient
+        config instead of the shipped code default.
+        """
+        for name in (
+            "OPENRESEARCH_GCP_FILES_CACHE_ENABLED",
+            "REPROLAB_GCP_FILES_CACHE_ENABLED",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        import backend.config as _config
+        monkeypatch.setattr(_config, "_settings_cache", None, raising=False)
+
+        s = _config.Settings(_env_file=None)
+        assert s.gcp_files_cache_enabled is True, (
+            "gcp_files_cache_enabled must default True so GKE cells mount the shared "
+            "persistent cache; with an emptyDir every cell re-downloads multi-GB "
+            "weights while the GPU meters. A missing PVC is handled by the live "
+            "check + loud run_warning, not by defaulting the cache off."
         )
 
     # --- Layer B: manifest builder integration ---

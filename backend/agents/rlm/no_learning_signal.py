@@ -14,11 +14,22 @@ Design mirrors zero_metrics_detection.py and eval_provenance.py:
     learned somewhere, so it is a real (if weak) result.
   - Both the nested cells-route shape (per_model[m][e][b]=leaf) and the flat
     per_model[model]=leaf shape are handled.
+
+DIVERGED CURVES (NaN/±Inf — P0 fix): non-finite readings used to be FILTERED OUT
+of the curve, so a run whose loss went NaN and stayed NaN read as "no curve → not
+judgeable → no data" — the single most degenerate training outcome was invisible to
+the trend guard.  Non-finite points are now KEPT, and a curve that ENDS non-finite
+is reported as DIVERGED (a no-learning leaf, with a "diverged" detail).  Deliberately
+conservative — it is the TAIL that decides, so a transient early NaN/Inf (fp16
+overflow that the grad-scaler recovers from) that returns to finite values is NOT
+flagged, and the rise/descent math still runs on the finite sub-curve exactly as
+before.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -51,22 +62,58 @@ def no_learning_signal_enabled() -> bool:
 # ---------------------------------------------------------------------------
 
 def _coerce_float_list(raw: Any) -> list[float]:
-    """Coerce a raw value to a list of finite floats.  Fail-soft → []."""
+    """Coerce a raw value to a list of floats, NaN/±Inf INCLUDED.  Fail-soft → [].
+
+    Non-finite readings are deliberately preserved: dropping them is what made an
+    all-NaN (diverged) curve indistinguishable from "no curve at all".  Callers use
+    :func:`_curve_diverged` to classify and :func:`_finite` for the trend math.
+    """
     try:
         if not isinstance(raw, (list, tuple)):
             return []
         out: list[float] = []
         for v in raw:
+            if isinstance(v, bool):
+                continue  # structural flag, not a curve point
             try:
-                fv = float(v)
-                import math
-                if math.isfinite(fv):
-                    out.append(fv)
+                out.append(float(v))
             except (TypeError, ValueError):
                 pass
         return out
     except Exception:  # noqa: BLE001
         return []
+
+
+def _finite(curve: list[float]) -> list[float]:
+    """The finite sub-curve — what the rise/descent math is computed over.
+
+    Keeps the trend semantics byte-identical to the pre-NaN-fix behaviour for every
+    curve that has no non-finite readings, and keeps ``max``/``min`` sound (NaN makes
+    them order-dependent) for curves that do.
+    """
+    return [v for v in curve if math.isfinite(v)]
+
+
+def _curve_diverged(curve: list[float]) -> bool:
+    """True iff the curve ENDS in a non-finite (NaN/±Inf) reading.
+
+    "Went NaN and STAYED NaN" — the training blew up and never recovered, so the run
+    has no result.  Keying on the TAIL (not "any non-finite point anywhere") is the
+    conservative choice: a transient NaN/Inf that later returns to finite values is a
+    recovered run, not a diverged one, and must never be flagged.
+    """
+    try:
+        return bool(curve) and not math.isfinite(curve[-1])
+    except (TypeError, ValueError):  # noqa: BLE001
+        return False
+
+
+def _leaf_diverged(leaf: dict[str, Any]) -> bool:
+    """True iff either of this leaf's persisted curves ends non-finite."""
+    try:
+        return _curve_diverged(_reward_curve(leaf)) or _curve_diverged(_loss_curve(leaf))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _reward_curve(leaf: dict[str, Any]) -> list[float]:
@@ -127,8 +174,8 @@ def _leaf_no_learning(leaf: dict[str, Any]) -> bool | None:
 
     Returns:
         None   — not judgeable (no curve with >= _MIN_POINTS points).
-        True   — the leaf shows no learning: reward did NOT rise AND
-                 (loss absent OR did NOT descend).
+        True   — the leaf shows no learning: it DIVERGED (a curve ends NaN/±Inf), or
+                 reward did NOT rise AND (loss absent OR did NOT descend).
         False  — the leaf shows learning (reward rose OR loss descended).
 
     Reward "rose" means: max(curve) > first*(1+eps) for nonzero first, OR
@@ -139,6 +186,16 @@ def _leaf_no_learning(leaf: dict[str, Any]) -> bool | None:
     try:
         reward = _reward_curve(leaf)
         loss = _loss_curve(leaf)
+
+        # DIVERGED (P0): a curve that ends non-finite is a degenerate result, not
+        # missing data — judgeable regardless of length (there is no "too short to
+        # tell" about a NaN) and never a learning signal.  Checked BEFORE the trend
+        # math, which is only defined over finite readings.
+        if _curve_diverged(reward) or _curve_diverged(loss):
+            return True
+
+        reward = _finite(reward)
+        loss = _finite(loss)
 
         has_reward = len(reward) >= _MIN_POINTS
         has_loss = len(loss) >= _MIN_POINTS
@@ -238,11 +295,13 @@ def detect_no_learning_signal(code_dir: Any) -> tuple[bool, str | None]:
         ``(False, None)`` when:
           - the gate is disabled (default),
           - ``code/metrics.json`` is absent or unreadable,
-          - no judgeable leaf exists (no curve with >= _MIN_POINTS points),
+          - no judgeable leaf exists (no curve with >= _MIN_POINTS points, and no
+            diverged curve),
           - at least one judgeable leaf shows learning.
         ``(True, detail)`` iff there is ≥1 judgeable leaf AND EVERY judgeable
-          leaf shows no learning signal.  ``detail`` names up to 3 flat leaves
-          with their first/best reward values.
+          leaf shows no learning signal — flat OR DIVERGED (a curve ending in
+          NaN/±Inf).  ``detail`` names up to 3 leaves, with their first/best
+          values (flat) or the non-finite tail reading (diverged).
     """
     if not no_learning_signal_enabled():
         return (False, None)
@@ -292,18 +351,26 @@ def detect_no_learning_signal(code_dir: Any) -> tuple[bool, str | None]:
         # All judgeable leaves show no learning.  Build a detail string.
         detail_parts: list[str] = []
         for leaf in no_learning_leaves[:3]:
-            rc = _reward_curve(leaf)
+            label = leaf.get("cell_id") or leaf.get("model_key") or leaf.get("model") or "leaf"
+            # DIVERGED first — its curves contain NaN/±Inf, over which max()/min()
+            # are order-dependent nonsense, so never run the trend summary on them.
+            if _leaf_diverged(leaf):
+                raw_r, raw_l = _reward_curve(leaf), _loss_curve(leaf)
+                which, tail = (
+                    ("reward", raw_r[-1]) if _curve_diverged(raw_r) else ("loss", raw_l[-1])
+                )
+                detail_parts.append(f"{label}(diverged: {which} curve ends {tail})")
+                continue
+            rc = _finite(_reward_curve(leaf))
             if rc:
                 first_r = rc[0]
                 best_r = max(rc)
-                label = leaf.get("cell_id") or leaf.get("model_key") or leaf.get("model") or "leaf"
                 detail_parts.append(f"{label}(first_reward={first_r:.4g}, best_reward={best_r:.4g})")
             else:
-                lc = _loss_curve(leaf)
+                lc = _finite(_loss_curve(leaf))
                 if lc:
                     first_l = lc[0]
                     best_l = min(lc)
-                    label = leaf.get("cell_id") or leaf.get("model_key") or leaf.get("model") or "leaf"
                     detail_parts.append(f"{label}(first_loss={first_l:.4g}, best_loss={best_l:.4g})")
                 else:
                     detail_parts.append("leaf(no curve)")
@@ -320,9 +387,23 @@ def detect_no_learning_signal(code_dir: Any) -> tuple[bool, str | None]:
 # ---------------------------------------------------------------------------
 
 def no_learning_repair_message(detail: str) -> str:
-    """A run_warning-style message for the no-learning-signal veto."""
+    """A run_warning-style message for the no-learning-signal veto.
+
+    Covers both shapes the detector reports: FLAT curves (under-powered/mis-wired)
+    and DIVERGED curves (loss/reward ended NaN/±Inf — a numerical blow-up, whose
+    repair is different, so the message names it explicitly when it applies).
+    """
     try:
         detail_str = str(detail).strip() if detail else "(no detail)"
+        if "diverged" in detail_str:
+            return (
+                f"no_learning_signal: {detail_str} — training DIVERGED: the reward/loss "
+                f"curve ends in a non-finite value (NaN/Inf), so no reported metric from "
+                f"this run is a real measurement. replication_verdict is forced to "
+                f"'inconclusive'. Fix the numerical instability (learning rate too high, "
+                f"missing gradient clipping, log/div by zero, fp16 overflow, un-normalized "
+                f"reward) and re-run until the curves stay finite."
+            )
         return (
             f"no_learning_signal: {detail_str} — training ran but reward/loss show "
             f"no improvement; the run is under-powered or training is mis-wired. "

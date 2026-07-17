@@ -4,10 +4,18 @@ The All-CNN 2026-06-09 case: ``base_a``/``convpool_a`` cells ran the full 350 ep
 with ``train_loss`` pinned at ln(10)=2.3026 and test_acc=0.1, while ``strided_a``
 learned (0.80). These tests pin the four-condition signature so a healthy converging
 run is NEVER flagged and a dead flat-and-high run always is.
+
+Second signature (P0, 2026-07-13): a cell can also die by BLOWING UP. ``loss=nan``
+did not even parse (the number regex matched digits only) and any non-finite reading
+that did arrive was DISCARDED — so a diverged cell exited 0 and was recorded ``ok``.
+The tests below pin: nan/inf parse, N consecutive non-finite readings early-stop the
+cell as ``training diverged``, a transient NaN that recovers does NOT, and the
+finite-stream flat-and-high behaviour is unchanged.
 """
 
 from __future__ import annotations
 
+import math
 
 from backend.agents.rlm.dead_training_guard import (
     DeadTrainingDetector,
@@ -34,9 +42,76 @@ def test_extract_loss_colon_form():
 def test_extract_loss_absent():
     assert extract_loss("downloading cifar-10 ... 100%") is None
 
-def test_extract_loss_ignores_nan_inf():
-    assert extract_loss("epoch 5 loss=nan") is None
-    assert extract_loss("epoch 5 train_loss=inf") is None
+def test_extract_loss_parses_nan_and_inf():
+    """P0: a non-finite reading is a REAL reading and must reach the detector.
+
+    It used to be dropped twice over — the regex only matched digits, and extract_loss
+    then filtered non-finite values to None, making a diverged cell indistinguishable
+    from a line carrying no loss at all.
+    """
+    assert math.isnan(extract_loss("epoch 5 loss=nan"))
+    assert extract_loss("epoch 5 train_loss=inf") == math.inf
+    assert extract_loss("epoch 5 train_loss=-inf") == -math.inf
+    assert math.isnan(extract_loss("epoch 5 loss=NaN"))
+    assert extract_loss("epoch 5 loss: Infinity") == math.inf
+    # None still means exactly one thing: no loss reading on this line.
+    assert extract_loss("epoch 5 acc=0.1") is None
+
+
+# --------------------------------------------------------------------------- #
+# DeadTrainingDetector — the DIVERGED (non-finite) signature
+# --------------------------------------------------------------------------- #
+
+def test_nan_loss_run_is_flagged_as_diverged():
+    """A loss that goes NaN and STAYS NaN early-stops as training diverged."""
+    det = DeadTrainingDetector(window=40, nonfinite_window=3)
+    for v in [2.3, 1.9, 1.5]:            # healthy start
+        assert det.observe_loss(v) is None
+    assert det.observe_loss(float("nan")) is None   # 1 — could still be transient
+    assert det.observe_loss(float("nan")) is None   # 2
+    out = det.observe_loss(float("nan"))            # 3 — decisive
+    assert out is not None
+    assert "training diverged" in out               # same repairable class as flat-and-high
+    assert "non-finite" in out
+
+def test_inf_loss_run_is_flagged_as_diverged():
+    det = DeadTrainingDetector(window=40, nonfinite_window=3)
+    out = None
+    for _ in range(3):
+        out = det.observe_loss(float("inf"))
+    assert out is not None
+    assert "training diverged" in out
+
+def test_nan_loss_flagged_through_observe_line():
+    """End-to-end through the line reader the cell runner actually calls."""
+    det = DeadTrainingDetector(window=40, nonfinite_window=2)
+    assert det.observe("epoch 1/50 train_loss=2.3000") is None
+    assert det.observe("epoch 2/50 train_loss=nan") is None
+    out = det.observe("epoch 3/50 train_loss=nan")
+    assert out is not None and "training diverged" in out
+
+def test_transient_nan_that_recovers_is_not_flagged():
+    """Conservative: an fp16 overflow the grad-scaler recovers from must NOT kill a
+    healthy cell — a finite reading resets the consecutive-non-finite counter."""
+    det = DeadTrainingDetector(window=40, nonfinite_window=3)
+    flagged = False
+    loss = 2.30
+    for i in range(60):
+        loss *= 0.97
+        # every 5th step spikes to NaN, then recovers on the next step
+        v = float("nan") if i % 5 == 0 else loss
+        if det.observe_loss(v) is not None:
+            flagged = True
+    assert not flagged
+
+def test_nonfinite_readings_do_not_poison_the_flat_signature():
+    """A NaN must never enter _recent/_first/_best — otherwise max/min comparisons go
+    order-dependent and silently disable the flat-and-high detector."""
+    det = DeadTrainingDetector(window=5, flat_eps=1e-3, min_loss=0.2,
+                               descent_frac=0.9, nonfinite_window=99)
+    det.observe_loss(float("nan"))   # ignored by the flat statistics
+    out = [det.observe_loss(2.3027) for _ in range(5)]
+    assert out[-1] is not None and "flat at 2.3027" in out[-1]
 
 
 # --------------------------------------------------------------------------- #
@@ -159,6 +234,30 @@ def test_run_matrix_early_stops_dead_cell(tmp_path, monkeypatch):
     out = gcr.run_matrix(cells, script, output_root=tmp_path / "out",
                          per_cell_timeout_s=120, max_parallel=1)
     assert out["dead_a"]["status"] == "training_diverged"
+
+
+def test_run_matrix_early_stops_nan_cell(tmp_path, monkeypatch):
+    """P0 end-to-end: a cell whose loss diverges to NaN is killed and recorded as
+    training_diverged — NOT 'ok'. Before the fix the NaN never parsed, the cell ran to
+    completion, exited 0, and the matrix returned success with fabricated-looking
+    metrics."""
+    monkeypatch.setenv("OPENRESEARCH_DEAD_LOSS_EARLYSTOP", "1")
+    from backend.agents.rlm import gpu_cell_runner as gcr
+
+    script = tmp_path / "nan_cell.py"
+    script.write_text(
+        "import time\n"
+        "print('epoch 0/50 train_loss=2.3000', flush=True)\n"
+        "for i in range(1, 100):\n"
+        "    print(f'epoch {i}/50 train_loss=nan', flush=True)\n"
+        "    time.sleep(0.02)\n"
+        "time.sleep(600)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gcr, "discover_visible_gpus", lambda: ["0"])
+    out = gcr.run_matrix([{"id": "nan_a"}], script, output_root=tmp_path / "out",
+                         per_cell_timeout_s=120, max_parallel=1)
+    assert out["nan_a"]["status"] == "training_diverged"
 
 
 def test_run_matrix_healthy_cell_not_flagged(tmp_path, monkeypatch):

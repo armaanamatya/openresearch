@@ -439,3 +439,90 @@ def test_run_dir_accepts_str(run_dir: Path) -> None:
 def test_check_kinds_constant_is_the_three_kinds() -> None:
     assert DETERMINISTIC_CHECK_KINDS == frozenset({
         "deterministic:hparam", "deterministic:artifact", "deterministic:numeric"})
+
+
+# --------------------------------------------------------------------------- #
+# Contract extensions for AUTO-GENERATED (pre-run, therefore *predicted*)
+# annotations. Each closes a false-negative that would fail a FAITHFUL run.
+# The defaults are unchanged — everything above still holds byte-for-byte.
+# --------------------------------------------------------------------------- #
+def test_bare_lr_resolves_inside_per_optimizer(run_dir: Path) -> None:
+    """The agent emitter nests lr as per_optimizer.<opt>.lr; the cell route writes
+    a flat top-level lr. A bare `lr` assertion must resolve against BOTH — it must
+    not be a coin flip on which route produced the manifest."""
+    _provenance(run_dir, {"e1": {"baseline": "adamw",
+                                 "per_optimizer": {"adamw": {"lr": 1e-4, "betas": [0.9, 0.999]}}}})
+    leaf = {"id": "lr", "check_kind": "deterministic:hparam",
+            "assertion": {"field": "lr", "op": "~=", "value": 1e-4, "tolerance": 1e-9}}
+    assert check_leaf(leaf, run_dir)["score"] == 1.0
+
+
+def test_hparam_any_experiment_may_satisfy_the_assertion(run_dir: Path) -> None:
+    """A hyperparameter SEARCH writes one record per candidate. Grading whichever
+    record happens to come first would fail a faithful run whose paper-valued cell
+    simply is not first."""
+    _provenance(run_dir, {
+        "cand_a": {"lr": 3e-4},   # a search candidate, listed first
+        "cand_b": {"lr": 1e-4},   # the paper's value
+    })
+    leaf = {"id": "lr", "check_kind": "deterministic:hparam",
+            "assertion": {"field": "lr", "op": "~=", "value": 1e-4, "tolerance": 1e-9}}
+    assert check_leaf(leaf, run_dir)["score"] == 1.0
+
+
+def test_hparam_not_equal_is_universal_not_existential(run_dir: Path) -> None:
+    """`!=` is a PROHIBITION — it must hold for every record, or a search grid
+    would trivially satisfy it."""
+    _provenance(run_dir, {"a": {"lr": 0.0}, "b": {"lr": 1e-4}})
+    leaf = {"id": "lr", "check_kind": "deterministic:hparam",
+            "assertion": {"field": "lr", "op": "!=", "value": 0.0}}
+    assert check_leaf(leaf, run_dir)["score"] == 0.0
+
+
+def test_on_missing_llm_routes_absent_provenance_to_the_llm(run_dir: Path) -> None:
+    """emit_provenance is fail-soft and OPTIONAL. Under the valve, a faithful run
+    that skipped the manifest falls through to the LLM instead of being zeroed."""
+    leaf = {"id": "ep", "check_kind": "deterministic:hparam",
+            "assertion": {"field": "epochs", "op": "==", "value": 45,
+                          "on_missing": "llm"}}
+    assert check_leaf(leaf, run_dir) is None  # → LLM, not a 0.0
+
+
+def test_on_missing_llm_routes_absent_field_to_the_llm(run_dir: Path) -> None:
+    _provenance(run_dir, {"e1": {"seed": 42}})  # manifest exists, lacks the field.
+    leaf = {"id": "wd", "check_kind": "deterministic:hparam",
+            "assertion": {"field": "weight_decay", "op": "==", "value": 5e-4,
+                          "on_missing": "llm"}}
+    assert check_leaf(leaf, run_dir) is None
+
+
+def test_on_missing_llm_does_not_defang_a_real_mismatch(run_dir: Path) -> None:
+    """The valve fires only when the value cannot be LOCATED. A located value that
+    misses is still a real, deterministic 0.0."""
+    _provenance(run_dir, {"e1": {"epochs": 3}})
+    leaf = {"id": "ep", "check_kind": "deterministic:hparam",
+            "assertion": {"field": "epochs", "op": "==", "value": 45,
+                          "on_missing": "llm"}}
+    rec = check_leaf(leaf, run_dir)
+    assert rec is not None and rec["score"] == 0.0
+
+
+def test_on_missing_llm_routes_unnamed_metric_to_the_llm(run_dir: Path) -> None:
+    """metrics.json exists with real measured cells but carries no key by the
+    PREDICTED name. That is a naming mismatch, not an absence of evidence — and
+    'no evidence' is the only thing a 0.0 is entitled to assert."""
+    _metrics_with_metric(run_dir, 0.9)  # has 'metric', not 'top1_accuracy'
+    leaf = {"id": "acc", "check_kind": "deterministic:numeric",
+            "assertion": {"metric_key": "top1_accuracy", "target": 0.9,
+                          "direction": "higher_better", "on_missing": "llm"}}
+    assert check_leaf(leaf, run_dir) is None
+
+
+def test_on_missing_defaults_to_fail_unchanged(run_dir: Path) -> None:
+    """The default is UNCHANGED: a hand-authored annotation with no on_missing key
+    still grades a 0.0 on missing evidence, exactly as before."""
+    leaf = {"id": "ep", "check_kind": "deterministic:hparam",
+            "assertion": {"field": "epochs", "op": "==", "value": 45}}
+    rec = check_leaf(leaf, run_dir)
+    assert rec is not None and rec["score"] == 0.0
+    assert rec["justification"] == "provenance_missing:epochs"

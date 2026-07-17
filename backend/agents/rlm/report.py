@@ -716,6 +716,11 @@ _DEGRADATION_WARNING_CODES: frozenset[str] = frozenset({
     "paper_grounding_failed", "disk_headroom_thin", "degenerate_pool",
     "compute_scope_invalid", "sdk_pre_emit_stall", "knowledge_channel_strict_violation",
     "forced_iteration", "finalize_regrade_skipped",
+    # REPRODUCTION_MODE=auto wanted the authors' published code (the high-evidence
+    # path) and had to reimplement from scratch instead — a real degrade in EVIDENCE
+    # QUALITY even when the run otherwise succeeds, and the single fact a downstream
+    # patent-triage consumer most needs in order to weigh the result.
+    "execute_mode_no_repo",
 })
 
 
@@ -1469,13 +1474,63 @@ def _adaptation_delta(repo_dir: Path, code_dir: Path) -> dict:
     return {"files_changed": changed, "files_added": added, "files_removed": removed}
 
 
+def _reproduction_mode_md_lines(project_dir: "Path | None") -> list[str]:
+    """Markdown disclosure of the RESOLVED reproduction mode, for `auto` runs only.
+
+    Returns ``[]`` — i.e. renders nothing, byte-identical to the pre-`auto` report —
+    unless ``rlm_state/repo_spec.json`` carries ``requested_mode`` (written only when
+    OPENRESEARCH_REPRODUCTION_MODE=auto). Fail-soft: any I/O or parse error renders
+    nothing rather than breaking the report.
+    """
+    if project_dir is None:
+        return []
+    try:
+        spec_path = Path(project_dir) / "rlm_state" / "repo_spec.json"
+        if not spec_path.exists():
+            return []
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+        if not isinstance(spec, dict) or not spec.get("requested_mode"):
+            return []
+        if spec.get("fallback_from_execute"):
+            return [
+                "**Evidence provenance — FROM-SCRATCH FALLBACK.** Execute mode was "
+                "requested, but this paper has no usable author repository "
+                f"({spec.get('reason') or 'no usable author repo'}), so the run "
+                "reimplemented the paper from scratch. The authors' published code did "
+                "NOT run: these results carry lower evidence weight than an execute-mode "
+                "reproduction and must not be read as one.",
+                "",
+            ]
+        return [
+            "**Evidence provenance — EXECUTE MODE.** The authors' published code was "
+            f"cloned ({spec.get('url')}"
+            + (f" @ {spec['commit_sha'][:12]}" if spec.get("commit_sha") else "")
+            + ") and run behind a value-preserving metrics shim, rather than "
+            "reimplemented by the model.",
+            "",
+        ]
+    except (OSError, ValueError, TypeError, KeyError):
+        return []
+
+
 def _build_reproduction_block(project_dir: Path) -> dict | None:
     """Build final_report.reproduction, or None when no repo was used / flag off.
 
     ``execution.ran`` is sourced from the EVIDENCE layer (_has_experiment_evidence)
     so it cannot be forged by a green-looking report. Returns None unless
     OPENRESEARCH_USE_AUTHOR_REPO is on AND rlm_state/repo_spec.json carries a
-    non-null url (a real repo run).
+    non-null url (a real repo run) — OR the run is an ``auto``-mode from-scratch
+    FALLBACK, which gets a block precisely so the fallback is not invisible.
+
+    ``mode`` is always the RESOLVED mode from repo_spec.json (ground truth for what
+    ran), never the requested one. **This is the field that separates evidence
+    qualities:** ``execute`` means the authors' own published code ran behind a
+    value-preserving metrics shim; ``scratch`` means the LLM reimplemented the paper
+    (from-scratch SDAR scored 0.0 where the authors' trainer scored 0.456). A
+    patent-triage consumer must never conflate the two — so on a fallback the block
+    also carries ``requested_mode`` and an explicit ``fallback`` sub-dict, and
+    ``degradations_taken[]`` independently records the ``execute_mode_no_repo``
+    warning.
     """
     from backend.agents.rlm.feature_flags import use_author_repo as _use_author_repo
 
@@ -1489,12 +1544,46 @@ def _build_reproduction_block(project_dir: Path) -> dict | None:
         spec = json.loads(spec_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(spec, dict) or not spec.get("url") or not spec.get("clone_succeeded"):
+    if not isinstance(spec, dict):
+        return None
+
+    # `auto` asked for the authors' code and could not get it. Emit a block anyway:
+    # omitting it (the pre-auto behavior for a repo-less run) would make a
+    # from-scratch result indistinguishable from an execute-mode one at the top
+    # level of the report. Only `auto` ever sets this key, so every other mode keeps
+    # its exact prior early-return below.
+    _is_fallback = bool(spec.get("fallback_from_execute"))
+    if not _is_fallback and (not spec.get("url") or not spec.get("clone_succeeded")):
         return None
 
     ran = _has_experiment_evidence(project_dir)
     status = "success" if ran else "failed"
-    return {
+
+    if _is_fallback:
+        return {
+            "mode": spec.get("mode") or "scratch",
+            "requested_mode": spec.get("requested_mode") or "auto",
+            "repo_url": spec.get("url"),
+            "commit_sha": None,
+            "provider": None,
+            "execution": {
+                "ran": ran,
+                "status": status,
+                "metrics_produced": ran,
+            },
+            "fallback": {
+                "from": "execute",
+                "to": spec.get("mode") or "scratch",
+                "reason": spec.get("reason") or "no usable author repo",
+                "evidence_note": (
+                    "the authors' published code did NOT run; these results come from a "
+                    "from-scratch reimplementation and carry lower evidence weight"
+                ),
+            },
+            "adaptation": None,
+        }
+
+    block = {
         "mode": spec.get("mode") or "adapt",
         "repo_url": spec.get("url"),
         "commit_sha": spec.get("commit_sha"),
@@ -1506,6 +1595,11 @@ def _build_reproduction_block(project_dir: Path) -> dict | None:
         },
         "adaptation": _adaptation_delta(project_dir / "repo", project_dir / "code"),
     }
+    # Present only on an `auto` run (resolved to execute) — records that the mode was
+    # harness-decided, not operator-pinned. Absent for adapt/reference/execute.
+    if spec.get("requested_mode"):
+        block["requested_mode"] = spec["requested_mode"]
+    return block
 
 
 def _has_partial_timeout_evidence(project_dir: Path) -> bool:
@@ -2230,6 +2324,69 @@ def write_final_report_rlm(
     except Exception:  # noqa: BLE001 — claim gate is best-effort, never blocks the write
         logger.warning("report: report_claim_gate failed (non-fatal)", exc_info=True)
 
+    # --- Tier ceiling on the terminal verdict (2026-07-13) ------------------
+    # THE LAST WORD ON `verdict`. Runs after every other verdict mutation (the
+    # evidence gate, the best-of-run floor, the two-axis clamp, the report-claim
+    # gate) so nothing can re-upgrade past the ceiling afterwards.
+    #
+    # A screening-tier run must not be able to certify a paper as `reproduced` —
+    # a false `reproduced` is the catastrophic error for patent-viability triage.
+    # The scope-rung rule in campaign_policy CANNOT deliver that guarantee: it is
+    # unreachable from the plain `reproduce` path (which is exactly what a cheap
+    # Tier-1 screen is), it collapses on a default single-rung ladder, and a
+    # multi-attempt campaign climbs to the full rung anyway. So the ceiling is
+    # enforced here, at the write chokepoint every finalize path routes through.
+    #
+    # Unlike its fail-soft neighbours (which are additive stamps), this is a TRUST
+    # gate and therefore fails CLOSED — see verdict_ceiling.py. Unset flag ⇒ no
+    # cap ⇒ byte-identical. The measured score is never touched: it is the Tier-1
+    # ranking signal.
+    try:
+        from backend.agents.rlm.verdict_ceiling import apply_verdict_ceiling
+
+        _vc_dict = json.loads(json_content)
+        _vc_dict, _vc_warning = apply_verdict_ceiling(_vc_dict)
+        json_content = json.dumps(_vc_dict, indent=2)
+        if _vc_warning:
+            try:
+                report.verdict = _vc_dict.get("verdict", report.verdict)
+            except Exception:  # noqa: BLE001 — model may be frozen; the dict stays authoritative
+                pass
+            try:
+                import json as _json_vc
+                from backend.agents.rlm.sse_bridge import build_run_warning_event as _bwe_vc
+
+                _ev = _bwe_vc(code="verdict_ceiling", message=_vc_warning)
+                with open(project_dir / "dashboard_events.jsonl", "a", encoding="utf-8") as _ef:
+                    _ef.write(_json_vc.dumps(_ev) + "\n")
+            except Exception:  # noqa: BLE001 — the warning event is best-effort
+                logger.warning("report: verdict_ceiling warning emit failed", exc_info=True)
+    except Exception:  # noqa: BLE001
+        # Import/parse failure here means the ceiling could not be consulted at
+        # all. Fail CLOSED: if a ceiling is configured we must not ship an
+        # uncapped verdict, so force the verdict down rather than proceeding.
+        logger.error("report: verdict ceiling could not be applied", exc_info=True)
+        try:
+            from backend.agents.rlm.verdict_ceiling import configured_ceiling
+
+            _ceiling = configured_ceiling()
+            if _ceiling:
+                _d = json.loads(json_content)
+                _d["verdict"] = _ceiling
+                _d["verdict_ceiling"] = {
+                    "applied": True,
+                    "ceiling": _ceiling,
+                    "uncapped_verdict": None,
+                    "reason": "ceiling block errored; verdict forced to ceiling (fail-closed)",
+                }
+                json_content = json.dumps(_d, indent=2)
+                try:
+                    report.verdict = _ceiling
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001
+            logger.error("report: verdict ceiling fail-closed path ALSO failed", exc_info=True)
+
     # --- Experiment-arm stamp (A/B observability, 2026-06-11) ---------------
     # Label every report with its with/without-BES arm + flag snapshot so
     # paired runs are explicit for scripts/ab_compare.py and the leaderboard.
@@ -2586,6 +2743,14 @@ def _render_markdown(report: RLMFinalReport, project_dir: Path | None = None) ->
     summary = report.reproduction_summary.strip()
     lines.append(summary if summary else "_No summary provided._")
     lines.append("")
+
+    # Evidence-provenance disclosure for `auto`-mode runs (repo_spec.json is the
+    # resolved ground truth). Rendered ONLY when the mode was harness-decided, so
+    # adapt/reference/execute reports stay byte-identical. Whether the AUTHORS' code
+    # ran or the LLM reimplemented the paper is the single biggest lever on how much
+    # a triage reader should trust the score above — never leave it implicit.
+    for _line in _reproduction_mode_md_lines(project_dir):
+        lines.append(_line)
 
     # --- Scope ---
     # Only render when the root populated at least one of requested/ran/gaps.

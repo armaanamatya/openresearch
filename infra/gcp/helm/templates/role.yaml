@@ -33,6 +33,19 @@ rules:
     resources: ["pods/log"]
     verbs: ["get"]
 
+  # PersistentVolumeClaims — read-only. The cell runner does ONE `get` per run
+  # (k8s_job_cell_runner._cache_pvc_exists) to confirm the shared cache PVC
+  # ("reprolab-cache") actually exists before referencing it as a Job volume.
+  # WITHOUT this verb the get 403s, the runner treats the cache as unavailable
+  # (fail-closed), and every cell silently degrades to an ephemeral emptyDir —
+  # re-downloading multi-GB model weights on every cell while the GPU meters.
+  # So this rule is load-bearing for the persistent-cache cost fix, not optional.
+  # create/delete are deliberately OMITTED — the PVC is Helm-owned (pvc-cache.yaml),
+  # never orchestrator-managed.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list"]
+
   # Events — read cluster events for richer error messages (OOM killer, image
   # pull failures, scheduling failures) surfaced as run_warning SSE events.
   - apiGroups: [""]

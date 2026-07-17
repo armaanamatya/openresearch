@@ -12,13 +12,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+import types
 from pathlib import Path
 
 import pytest
 
+from backend.agents.rlm import attempt_driver as ad
 from backend.agents.rlm import campaign_composition as cc
 from backend.agents.rlm.attempt_assessment import rubric_sha256
 from backend.agents.rlm.attempt_driver import LiveCliDriver, PairedDriver, UnifiedRunDriver
+from backend.agents.rlm.best_attempt import REFERENCE_DIR_NAME, seed_reference_code
+from backend.agents.rlm.campaign_directives import DirectiveContractError
 from backend.agents.rlm.campaign_composition import CampaignOptions, build_campaign
 from backend.agents.rlm.reproduction_campaign import (
     CampaignInitError,
@@ -291,6 +295,12 @@ def test_profile_and_driver_env_keys_disjoint(tmp_path):
 
 
 def _seeded_rows(run_dir: Path) -> list[dict]:
+    # Attempt 1 really ran, so its code/ tree really exists -- the decided
+    # next_plan below points a champion seed at it. runs_dir_hint only hints
+    # code that is actually THERE (a dangling pointer is the cold-start bug),
+    # so the tree must exist for attempt 1 to be seedable at all.
+    (run_dir / "code").mkdir(parents=True, exist_ok=True)
+    (run_dir / "code" / "train.py").write_text("# attempt 1's working tree")
     return [
         {"attempt_n": 1, "status": "launched", "directives_sha256": "dsha-1", "envelope": {},
          "driver": "live", "project_id": "prj_t", "run_dir": str(run_dir), "launched_at": 1.0},
@@ -476,12 +486,69 @@ def test_plan_attempt_budget_floor_refusal(tmp_path):
     assert planned == {"refusal": "budget_floor:llm_usd", "downgrade_to_checkpoint": False}
 
 
-def test_seed_hint_only_latest_attempt(tmp_path):
-    # Documented v1 limitation: only the LATEST assessed attempt is seedable
-    # by pointer (its code/ is still live at run_dir/code; older attempts'
-    # trees are archived by the next launch's force-quarantine).
+def test_seed_hint_resolves_archived_non_latest_attempt(tmp_path):
+    """The v1 limitation is GONE: an older attempt whose code/ the pre-launch
+    archive already moved is still resolvable BY ATTEMPT NUMBER through the
+    driver-maintained attempt-code index. Without this, a champion that is not
+    the latest assessed attempt has no seed pointer, lineage_arms drops its
+    arm, and the campaign silently cold-starts (campaign_policy.py:601-603)."""
     opts = _opts(tmp_path)
     run_dir = opts.runs_root / "prj_t"
+
+    # Attempt 1's code was archived by attempt 2's pre-launch force-quarantine;
+    # attempt 2's is still live at run_dir/code. This is exactly the on-disk
+    # shape LiveCliDriver.launch leaves behind.
+    archived_code = run_dir / "attempts" / "20260713T000000-000000-aaaaaa" / "code"
+    archived_code.mkdir(parents=True)
+    (archived_code / "train.py").write_text("# attempt 1")
+    live_code = run_dir / "code"
+    live_code.mkdir(parents=True)
+    (live_code / "train.py").write_text("# attempt 2")
+    ad.rotate_attempt_code_index(run_dir, archived=None, new_live_attempt_n=1)
+    ad.rotate_attempt_code_index(
+        run_dir,
+        archived={"attempt_dir": str(archived_code.parent), "moved": ["code/"]},
+        new_live_attempt_n=2,
+    )
+
+    rows = [
+        {"attempt_n": 1, "status": "launched", "directives_sha256": "d1", "envelope": {},
+         "driver": "live", "project_id": "prj_t", "run_dir": str(run_dir), "launched_at": 1.0},
+        {"attempt_n": 1, "status": "assessed", "assessment": _assessment_dict(1), "assessed_at": 1.0},
+        {"attempt_n": 2, "status": "launched", "directives_sha256": "d2", "envelope": {},
+         "driver": "live", "project_id": "prj_t", "run_dir": str(run_dir), "launched_at": 2.0},
+        {"attempt_n": 2, "status": "assessed", "assessment": _assessment_dict(2), "assessed_at": 2.0},
+    ]
+
+    _assessments, _lineage, _rungs, hint = cc._gather_campaign_view(run_dir, rows)
+    assert hint == {1: str(archived_code), 2: str(live_code)}
+
+
+def test_seed_hint_omits_attempt_whose_code_is_gone(tmp_path):
+    """A hint means "this tree EXISTS and can be seeded". An attempt that
+    never wrote code (or whose archive was pruned) is left OUT rather than
+    hinted with a dangling path -- a dangling pointer is what made every
+    marker name an emptied directory and fail closed."""
+    opts = _opts(tmp_path)
+    run_dir = opts.runs_root / "prj_t"
+    run_dir.mkdir(parents=True)
+    rows = [
+        {"attempt_n": 1, "status": "assessed", "assessment": _assessment_dict(1), "assessed_at": 1.0},
+    ]
+
+    _assessments, _lineage, _rungs, hint = cc._gather_campaign_view(run_dir, rows)
+    assert hint == {}
+
+
+def test_seed_hint_falls_back_to_live_code_for_pre_index_campaign(tmp_path):
+    """Back-compat: a campaign that launched before the attempt-code index
+    existed has no index to read, but its latest assessed attempt's code is
+    still live at the un-archived run_dir/code -- exactly the one pointer the
+    old latest-only hint carried, so a resumed pre-index campaign keeps
+    seeding."""
+    opts = _opts(tmp_path)
+    run_dir = opts.runs_root / "prj_t"
+    (run_dir / "code").mkdir(parents=True)
     rows = [
         {"attempt_n": 1, "status": "assessed", "assessment": _assessment_dict(1), "assessed_at": 1.0},
         {"attempt_n": 2, "status": "assessed", "assessment": _assessment_dict(2), "assessed_at": 2.0},
@@ -489,6 +556,155 @@ def test_seed_hint_only_latest_attempt(tmp_path):
 
     _assessments, _lineage, _rungs, hint = cc._gather_campaign_view(run_dir, rows)
     assert hint == {2: str(run_dir / "code")}
+
+
+def test_seed_hint_resolves_width_child_run_dir(tmp_path):
+    """A width attempt launches under <project_id>_w<k> and writes its code/
+    (and its index) THERE. Resolving against the campaign's own run dir would
+    miss it entirely."""
+    opts = _opts(tmp_path)
+    run_dir = opts.runs_root / "prj_t"
+    child_dir = opts.runs_root / "prj_t_w1"
+    child_code = child_dir / "code"
+    child_code.mkdir(parents=True)
+    ad.rotate_attempt_code_index(child_dir, archived=None, new_live_attempt_n=1)
+
+    rows = [
+        {"attempt_n": 1, "status": "launched", "directives_sha256": "d1", "envelope": {},
+         "driver": "live", "project_id": "prj_t_w1", "run_dir": str(child_dir), "launched_at": 1.0},
+        {"attempt_n": 1, "status": "assessed", "assessment": _assessment_dict(1), "assessed_at": 1.0},
+    ]
+
+    _assessments, _lineage, _rungs, hint = cc._gather_campaign_view(run_dir, rows)
+    assert hint == {1: str(child_code)}
+
+
+def test_non_latest_champion_is_resolvable_and_actually_seeded(tmp_path, neutral_profile, monkeypatch):
+    """The whole point, end to end: DECIDE -> PLAN -> LAUNCH -> the child's
+    seed, with a champion that is NOT the latest assessed attempt.
+
+    Attempt 2 (the latest) tripped the fabrication guard, so the guard-filtered
+    champion is attempt 1 -- whose code the pre-launch archive moved out of
+    run_dir/code long ago. Before the fix this arm was skipped outright (no
+    pointer for a non-latest attempt), so the campaign cold-started even though
+    it had a proven champion sitting on disk.
+    """
+    opts = _opts(tmp_path, run_spec_path=str(neutral_profile))
+    run_dir = opts.runs_root / "prj_t"
+
+    # Attempt 1: the champion. Its code was archived by attempt 2's launch.
+    archived_code = run_dir / "attempts" / "20260713T000000-000000-aaaaaa" / "code"
+    archived_code.mkdir(parents=True)
+    (archived_code / "train.py").write_text("# attempt 1: the proven champion")
+    # Attempt 2: the latest, fabrication-quarantined; its code is still live.
+    live_code = run_dir / "code"
+    live_code.mkdir(parents=True)
+    (live_code / "train.py").write_text("# attempt 2: fabricated")
+    (run_dir / "final_report.json").write_text(json.dumps({"rubric": {"overall_score": 0.9}}))
+
+    ad.rotate_attempt_code_index(run_dir, archived=None, new_live_attempt_n=1)
+    ad.rotate_attempt_code_index(
+        run_dir,
+        archived={"attempt_dir": str(archived_code.parent), "moved": ["code/"]},
+        new_live_attempt_n=2,
+    )
+
+    quarantined = _assessment_dict(
+        2,
+        hard_quarantined=True,
+        quarantine_reasons=["guard:fabrication:zero_metrics"],
+        guard_flags={"fabrication": True},
+    )
+    rows = [
+        {"attempt_n": 1, "status": "launched", "directives_sha256": "d1", "envelope": {},
+         "driver": "live", "project_id": "prj_t", "run_dir": str(run_dir), "launched_at": 1.0},
+        {"attempt_n": 1, "status": "assessed", "assessment": _assessment_dict(1), "assessed_at": 2.0},
+        {"attempt_n": 2, "status": "launched", "directives_sha256": "d2", "envelope": {},
+         "driver": "live", "project_id": "prj_t", "run_dir": str(run_dir), "launched_at": 3.0},
+        {"attempt_n": 2, "status": "assessed", "assessment": quarantined, "assessed_at": 4.0},
+    ]
+
+    # DECIDE: the guard-filtered champion is attempt 1 (attempt 2 is
+    # hard-quarantined), and it now carries a REAL seed pointer.
+    decision = cc._decide_impl(run_dir, opts, _state(next_attempt_n=3), rows)
+    assert decision["kind"] == "CONTINUE"
+    next_plan = decision["next_plan"]
+    assert next_plan["lineage"] == "champion"
+    assert next_plan["seed_attempt_n"] == 1          # NOT the latest attempt
+    assert next_plan["seed_pointer"] == str(archived_code)
+
+    # PLAN attempt 3 off that decision.
+    rows.append({"attempt_n": 2, "status": "decided", "decision": decision})
+    planned = cc._plan_attempt_impl(run_dir, opts, "prj_t", _state(next_attempt_n=3), rows)
+    assert planned["refusal"] is None
+    directives = planned["launch_payload"]
+    assert directives.seed_lineage == "champion"
+    assert directives.seed_pointer == str(archived_code)
+
+    # LAUNCH: archives attempt 2's live code; attempt 1's archived tree is
+    # untouched, so the marker still names a directory that EXISTS.
+    driver = LiveCliDriver(
+        runs_root=opts.runs_root, repo_root=opts.repo_root,
+        popen=lambda argv, **kw: types.SimpleNamespace(pid=4242),
+    )
+    driver.launch(directives)
+
+    marker = json.loads((run_dir / "campaign" / "seed_staging.json").read_text())
+    assert marker["source_code_dir"] == str(archived_code)
+    assert Path(marker["source_code_dir"]).is_dir()
+
+    # The child seeds the CHAMPION's code -- not the fabricating latest one.
+    monkeypatch.setenv("OPENRESEARCH_SEED_BEST_ATTEMPT", "1")
+    assert seed_reference_code(run_dir) == f"code/{REFERENCE_DIR_NAME}"
+    seeded = (run_dir / "code" / REFERENCE_DIR_NAME / "train.py").read_text()
+    assert seeded == "# attempt 1: the proven champion"
+
+
+def test_ccrm_transcript_shaped_input_still_fails_the_build(tmp_path):
+    """The clean-context contract is untouched by the seed re-sequencing: a
+    transcript-shaped path in ANY directive input still FAILS the build
+    (CCRM, spec §9) rather than being silently filtered."""
+    opts = _opts(tmp_path, run_spec_path=str(tmp_path / "dashboard_events.jsonl"))
+    run_dir = opts.runs_root / "prj_t"
+    (run_dir / "campaign").mkdir(parents=True)
+
+    with pytest.raises(DirectiveContractError, match="dashboard_events.jsonl"):
+        cc._plan_attempt_impl(run_dir, opts, "prj_t", _state(), [])
+
+
+def test_archived_seed_pointer_does_not_trip_the_ccrm_attempt_marker(tmp_path, neutral_profile):
+    """Guard against a false positive from the fix itself: archived code lives
+    under ``attempts/<ts>/code``, and ``attempt_`` is a forbidden CCRM marker.
+    ``attempts/`` must not trip it -- otherwise seeding an archived champion
+    would fail the directive build outright."""
+    opts = _opts(tmp_path, run_spec_path=str(neutral_profile))
+    run_dir = opts.runs_root / "prj_t"
+
+    archived_code = run_dir / "attempts" / "20260713T000000-000000-bbbbbb_incomplete" / "code"
+    archived_code.mkdir(parents=True)
+    (archived_code / "train.py").write_text("# champion")
+    ad.rotate_attempt_code_index(run_dir, archived=None, new_live_attempt_n=1)
+    ad.rotate_attempt_code_index(
+        run_dir,
+        archived={"attempt_dir": str(archived_code.parent), "moved": ["code/"]},
+        new_live_attempt_n=2,
+    )
+
+    rows = [
+        {"attempt_n": 1, "status": "launched", "directives_sha256": "d1", "envelope": {},
+         "driver": "live", "project_id": "prj_t", "run_dir": str(run_dir), "launched_at": 1.0},
+        {"attempt_n": 1, "status": "assessed", "assessment": _assessment_dict(1), "assessed_at": 2.0},
+        {"attempt_n": 1, "status": "decided", "decision": {
+            "kind": "CONTINUE", "rule": "continue", "stop_reason": None,
+            "next_plan": {"lineage": "champion", "seed_attempt_n": 1,
+                          "seed_pointer": str(archived_code), "scope_rung": 0, "width": 1},
+            "champion_attempt_n": 1,
+        }},
+    ]
+
+    planned = cc._plan_attempt_impl(run_dir, opts, "prj_t", _state(next_attempt_n=2), rows)
+    assert planned["refusal"] is None
+    assert planned["launch_payload"].seed_pointer == str(archived_code)
 
 
 # --------------------------------------------------------------------------- #

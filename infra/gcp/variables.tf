@@ -128,10 +128,13 @@ variable "operator_iam_members" {
 # QUOTA: Each entry consumes per-region A100 quota in the matching family.
 #   nvidia-tesla-a100 (40 GB) → "NVIDIA A100 GPUs" quota in the region.
 #   nvidia-a100-80gb          → "NVIDIA A100 80GB GPUs" quota in the region.
-# The required GPU count per pool = gpu_count × max_nodes.  The default 8×A100-80
-# pool (gpu_count=8, max_nodes=4) needs 32 "NVIDIA A100 80GB GPUs".
-# START with max_nodes=1 (8 GPUs) until the quota request is granted — fresh
-# projects ship with 0 A100 quota and approval can take hours to days.
+# The required GPU count per pool = gpu_count × max_nodes.  The default pool set
+# is 1×A100-80 (gpu_count=1, max_nodes=4 → 4 GPUs) PLUS 8×A100-80 (gpu_count=8,
+# max_nodes=4 → 32 GPUs) = 36 "NVIDIA A100 80GB GPUs" total (both pools share
+# the same nvidia-a100-80gb quota family, so it's one quota request, not two).
+# START with max_nodes=1 on both entries (5 GPUs total) until the quota request
+# is granted — fresh projects ship with 0 A100 quota and approval can take
+# hours to days.
 #
 # Each entry may set use_spot = true to back the pool with GKE Spot nodes
 # (~60-91% cheaper; ~15-30 s reclaim notice).  Default false = on-demand.
@@ -159,9 +162,14 @@ variable "gpu_skus" {
                          cloud.google.com/gke-spot=true:NoSchedule taint, matched
                          by the runtime spot toleration). Default false =
                          on-demand.
-    Default: a single 8×A100-80 pool (a2-ultragpu-8g) — ONE quota ask.  Add 40GB
-    / other multi-GPU entries (each needing its own per-region quota) to enable
-    the escalation ladder.  See the comment block above for the full catalog.
+    Default: a 1×A100-80 pool (a2-ultragpu-1g — the common single-GPU case)
+    PLUS an 8×A100-80 pool (a2-ultragpu-8g — for genuine multi-GPU papers).
+    Both are nvidia-a100-80gb, so they share ONE quota family: 36 GPUs total
+    at max_nodes=4 each (see the QUOTA comment above). Reduce max_nodes on
+    either entry (or drop the x8 entry) to shrink the quota ask while
+    bootstrapping. Add 40GB / other multi-GPU entries (each needing its own
+    per-region quota) to extend the escalation ladder further. See the
+    comment block above for the full catalog.
   EOT
   type = list(object({
     short_name       = string
@@ -173,6 +181,14 @@ variable "gpu_skus" {
     use_spot         = optional(bool, false)
   }))
   default = [
+    {
+      short_name       = "gcp_a100_80"
+      machine_type     = "a2-ultragpu-1g"
+      accelerator_type = "nvidia-a100-80gb"
+      gpu_count        = 1
+      max_nodes        = 4
+      disk_size_gb     = 256
+    },
     {
       short_name       = "gcp_a100_80x8"
       machine_type     = "a2-ultragpu-8g"
@@ -230,17 +246,30 @@ variable "filestore_capacity_gb" {
 
 variable "filestore_enabled" {
   description = <<-EOT
-    false (default): no Filestore instance is created — identical to Azure's
-    files_premium being opt-in.  Jobs use an emptyDir / GCS-only cache (each
-    fresh node re-downloads model weights).  Zero extra cost.
+    true (default): provision a Filestore instance and a RWX (NFS) cache PVC
+    so model weights/datasets/pip wheels download ONCE per cluster lifetime,
+    shared across all cells. Without it, every cell (and every re-run) pays
+    for a fresh multi-GB download while an A100 meters — pure wasted GPU
+    spend on a wide grid, which is why this now defaults on. Filestore is
+    billed for its reserved capacity regardless of usage (BASIC_HDD enforces
+    a 1024 GiB / 1 TiB minimum — see filestore_capacity_gb / filestore_tier);
+    budget for that fixed monthly cost.
 
-    true: provision a Filestore instance and a RWX (NFS) cache PVC so model
-    weights download once per cluster lifetime, shared across all cells.
-    Filestore is provisioned/GiB (charged for reserved capacity regardless of
-    usage) — enable for high-parallelism runs, leave off otherwise.
+    Also requires the matching Helm values (storage.filestoreShare /
+    storage.filestoreIp, sourced from the filestore_share / filestore_ip
+    outputs below — see README.md step 7): Terraform alone provisions the
+    instance, the L2 Helm chart renders the PVC/StorageClass. If either half
+    is missing, the runtime backend detects the PVC is unreachable and falls
+    back to an ephemeral emptyDir with a loud run_warning naming the cost
+    impact, instead of failing silently.
+
+    false: no Filestore instance is created. Jobs use an emptyDir / GCS-only
+    cache (each fresh node re-downloads model weights). Zero extra cost — set
+    this when the fixed Filestore cost isn't worth it for your workload (e.g.
+    a single infrequent paper run).
   EOT
   type        = bool
-  default     = false
+  default     = true
 }
 
 # ─── Workload Identity ───────────────────────────────────────────────────────

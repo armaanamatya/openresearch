@@ -70,6 +70,14 @@ def write_campaign_report(
         _render_budget_table(state),
         _render_attempt_table(grouped, attempt_ns),
         _render_evidence_trajectory(grouped, attempt_ns),
+    ]
+    # Emitted ONLY when at least one attempt was actually killed, so a campaign
+    # that never cut its losses (incl. every campaign with the flag off)
+    # renders a byte-identical report to before this feature existed.
+    stopped_early = _render_stopped_early(grouped, attempt_ns)
+    if stopped_early is not None:
+        sections.append(stopped_early)
+    sections += [
         _render_exclusions(rows),
         _render_claims_vs_measured(rows),
         _render_champion(state, grouped),
@@ -359,9 +367,25 @@ def _meets_and_verdicts(final_report: Mapping[str, Any] | None) -> tuple[str, st
     return meets, verdicts
 
 
+def _doomed_kill_of(assessment: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    """The doomed-kill evidence packet stamped onto a killed attempt's
+    assessment by ``reproduction_campaign._apply_doomed_kill``, if any."""
+    if not isinstance(assessment, Mapping):
+        return None
+    kill = assessment.get("doomed_kill")
+    return kill if isinstance(kill, Mapping) else None
+
+
 def _trust_str(assessment: Mapping[str, Any]) -> str:
     reasons = assessment.get("quarantine_reasons")
     first_reason = reasons[0] if isinstance(reasons, (list, tuple)) and reasons else None
+    # Checked BEFORE the quarantine flags (a kill also sets hard_quarantined, to
+    # keep the attempt out of champion/seeding). Rendering it as
+    # "hard-quarantined" would say the attempt is UNTRUSTWORTHY, when the truth
+    # is that we never let it finish — "we stopped paying" and "the science
+    # failed" must never read the same in the deliverable.
+    if _doomed_kill_of(assessment) is not None:
+        return "stopped-early (doomed)"
     if assessment.get("hard_quarantined"):
         return f"hard-quarantined: {first_reason}" if first_reason else "hard-quarantined"
     if assessment.get("soft_quarantined"):
@@ -427,6 +451,61 @@ def _render_evidence_trajectory(
         best_pred = pred_pass if best_pred is None else max(best_pred, pred_pass)
         if leaf_val is not None:
             best_leaves = leaf_val if best_leaves is None else max(best_leaves, leaf_val)
+    return "\n".join(lines)
+
+
+# Stopped early (doomed-run early kill, spec §10.3) ----------------------------
+
+
+def _render_stopped_early(
+    grouped: Mapping[int, Mapping[str, Mapping[str, Any]]],
+    attempt_ns: Sequence[int],
+) -> str | None:
+    """The cut-losses disclosure: which attempts the campaign KILLED, on what
+    measured evidence, and what it cost. ``None`` (section omitted entirely)
+    when nothing was killed.
+
+    This exists because a killed attempt must never be silently indistinguish-
+    able from a failed one. A reader of this report — human or downstream
+    triage consumer — has to be able to tell "we chose to stop paying for this"
+    apart from "this paper did not reproduce", because only one of those is
+    evidence about the paper.
+    """
+    killed: list[tuple[int, Mapping[str, Any], Mapping[str, Any]]] = []
+    for n in attempt_ns:
+        assessment = _assessment_of(grouped[n])
+        kill = _doomed_kill_of(assessment)
+        if kill is not None and assessment is not None:
+            killed.append((n, kill, assessment))
+    if not killed:
+        return None
+
+    lines = [
+        "## Stopped early (doomed)",
+        "",
+        "These attempts were killed mid-flight to cut losses — the campaign stopped paying.",
+        "They are NOT science failures: they are excluded from the champion, from lineage",
+        "seeding, and from the plateau/exclusion counters, and no lesson was distilled from",
+        "them. Their real spend is still charged to the budget above.",
+        "",
+    ]
+    for n, kill, assessment in killed:
+        baseline = kill.get("baseline_attempt_n")
+        lines.append(
+            f"- **Attempt {n}** — {_disp(kill.get('reason'))} vs attempt {_disp(baseline)} "
+            f"(cost {_cost_str(assessment.get('cost'))})"
+        )
+        margin, polls = kill.get("margin"), kill.get("polls_required")
+        if margin is not None or polls is not None:
+            lines.append(
+                f"  - thresholds: margin {_fmt(margin, 2)}, "
+                f"{_disp(polls)} consecutive advancing polls, "
+                f"progress floor {_fmt(kill.get('min_progress'), 2)}; "
+                f"{_disp(kill.get('observations'))} observations taken"
+            )
+        detail = kill.get("detail")
+        if isinstance(detail, (list, tuple)):
+            lines.extend(f"  - evidence: {item}" for item in detail)
     return "\n".join(lines)
 
 

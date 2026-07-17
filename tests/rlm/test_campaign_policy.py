@@ -32,12 +32,14 @@ from backend.agents.rlm.campaign_policy import (
     decide,
     derive_envelope,
     directives_fingerprint,
+    is_doomed_killed,
     lineage_arms,
     next_scope_rung,
     seeding_pool,
     select_champion,
     width_for_next,
 )
+from backend.agents.rlm.doomed_run_comparator import DOOMED_KILLED_CLASS
 
 # The historical GCP VM control-plane ``max-run-duration`` default (28h) that
 # the enforcement plan must never silently depend on (rule 5 / spec §10.2).
@@ -807,14 +809,120 @@ def test_plateau_reset_by_evidence_improvement():
     assert decision.kind == "CONTINUE"
 
 
-def test_plateau_reset_by_new_failure_signature():
+def test_plateau_fires_even_when_every_failure_signature_is_novel():
+    """REGRESSION (2026-07-13): a NOVEL failure signature must NOT reset plateau.
+
+    ``_plateaued`` used to bail out the moment the latest attempt carried a
+    failure_signature never seen before. An agent that failed a DIFFERENT way
+    each attempt therefore never plateaued and never stopped -- it ran to
+    max_attempts / budget exhaustion while its measured evidence never moved
+    (campaign prj_09047604e591d969: $24.23 LLM, 4.5h, EXHAUSTED, score 0.000).
+
+    Evidence -- not the novelty of a failure LABEL -- is the fitness signal.
+    Flat evidence across the window is a plateau however inventively the agent
+    keeps failing.
+    """
     assessments = (
         _assessment(1, meets_target=False, evidence_predicates=_predicates(3), failure_signature="sig_a"),
-        _assessment(2, meets_target=False, evidence_predicates=_predicates(3), failure_signature="sig_a"),
-        _assessment(3, meets_target=False, evidence_predicates=_predicates(3), failure_signature="sig_b"),
+        _assessment(2, meets_target=False, evidence_predicates=_predicates(3), failure_signature="sig_b"),
+        _assessment(3, meets_target=False, evidence_predicates=_predicates(3), failure_signature="sig_c"),
+    )
+    decision = _decide(assessments, config=_config(plateau_k=2))
+    assert decision.kind == "EXHAUSTED"
+    assert decision.rule == "plateau"
+    assert decision.stop_reason == "plateau"
+
+
+def test_plateau_still_reset_by_evidence_improvement_under_novel_signatures():
+    """The other half of the same rule: evidence improvement -- and ONLY
+    evidence improvement -- is what keeps a campaign alive. Same all-novel
+    signatures as above, but attempt 3 measurably improved, so CONTINUE."""
+    assessments = (
+        _assessment(1, meets_target=False, evidence_predicates=_predicates(2), failure_signature="sig_a"),
+        _assessment(2, meets_target=False, evidence_predicates=_predicates(2), failure_signature="sig_b"),
+        _assessment(3, meets_target=False, evidence_predicates=_predicates(3), failure_signature="sig_c"),
     )
     decision = _decide(assessments, config=_config(plateau_k=2))
     assert decision.kind == "CONTINUE"
+
+
+# ---------------------------------------------------------------------------
+# DECIDE — doomed-killed attempts are not observations of the science (§10.3)
+# ---------------------------------------------------------------------------
+
+
+def _killed(attempt_n: int, **kwargs) -> AttemptAssessment:
+    """An attempt the campaign KILLED mid-flight: exactly the marks
+    ``reproduction_campaign._apply_doomed_kill`` stamps on."""
+    return _assessment(
+        attempt_n,
+        final_report=None,
+        evidence_predicates=_predicates(0),
+        failure_class=DOOMED_KILLED_CLASS,
+        failure_signature=DOOMED_KILLED_CLASS,
+        failure_scope=None,
+        hard_quarantined=True,
+        quarantine_reasons=(f"{DOOMED_KILLED_CLASS}:curve_below_best_completed_attempt",),
+        **kwargs,
+    )
+
+
+def test_doomed_killed_attempt_is_recognised():
+    assert is_doomed_killed(_killed(2)) is True
+    assert is_doomed_killed(_assessment(1)) is False
+
+
+def test_doomed_killed_attempt_can_never_become_champion():
+    """A killed attempt must NEVER be shipped as the champion -- we stopped it,
+    so nothing about it was ever evaluated."""
+    killed = _killed(2)
+    clean = _assessment(1, evidence_predicates=_predicates(3))
+    assert select_champion((clean, killed)) is not None
+    assert select_champion((clean, killed)).attempt_n == 1
+    # ...and with NOTHING but killed attempts, there is simply no champion.
+    assert select_champion((killed,)) is None
+    assert select_champion((_killed(1), _killed(2))) is None
+
+
+def test_doomed_killed_attempt_never_seeds_a_lineage_and_never_floors_the_score():
+    killed = _killed(2)
+    assert seeding_pool((killed,)) == []
+    assert campaign_floor((killed,)) is None
+
+
+def test_doomed_killed_attempts_do_not_poison_the_plateau_counter():
+    """Two REAL attempts either side of a kill, with the second improving:
+    the campaign is progressing and must CONTINUE. If the (evidence-less)
+    killed attempt were counted as a window member, the window would be
+    [killed, attempt3] and plateau would misfire on our own kill."""
+    assessments = (
+        _assessment(1, meets_target=False, evidence_predicates=_predicates(2)),
+        _killed(2),
+        _assessment(3, meets_target=False, evidence_predicates=_predicates(3)),  # improved
+    )
+    decision = _decide(assessments, config=_config(plateau_k=2))
+    assert decision.kind == "CONTINUE"
+
+
+def test_doomed_killed_attempts_do_not_fake_a_report_missing_terminal():
+    """A killed child writes no final_report. Without the exclusion, two kills
+    in a row would terminate the campaign as ``report_missing_twice`` -- i.e.
+    blame the harness for a report WE prevented from being written."""
+    decision = _decide((_killed(1), _killed(2)), config=_config(plateau_k=99))
+    assert decision.stop_reason != "report_missing_twice"
+    assert decision.kind == "CONTINUE"
+
+
+def test_doomed_killed_attempts_still_count_toward_max_attempts():
+    """The kill must stay BOUNDED: killed attempts really did spend money, so
+    they still consume attempt slots (this, plus the budget floor, is what
+    stops a campaign from killing forever)."""
+    decision = _decide(
+        (_killed(1), _killed(2), _killed(3)), config=_config(max_attempts=3, plateau_k=99)
+    )
+    assert decision.kind == "EXHAUSTED"
+    assert decision.rule == "max_attempts"
+    assert decision.champion_attempt_n is None
 
 
 # ---------------------------------------------------------------------------

@@ -28,7 +28,12 @@ from backend.services.runtime.gpu_catalog import CATALOG
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _VARIABLES_TF = _REPO_ROOT / "infra" / "gcp" / "variables.tf"
 
-_EXPECTED_DEFAULT = ["gcp_a100_80x8"]
+# A 1-GPU pool (gcp_a100_80 / a2-ultragpu-1g) PLUS the 8-GPU pool
+# (gcp_a100_80x8 / a2-ultragpu-8g). The 1-GPU pool is load-bearing: force_single_gpu
+# defaults True, so without a gpu_count==1 pool every single-GPU paper either raised
+# GpuResolutionError or was silently over-provisioned onto an 8xA100 node. Both pools
+# are nvidia-a100-80gb => ONE quota family, not two.
+_EXPECTED_DEFAULT = ["gcp_a100_80", "gcp_a100_80x8"]
 
 
 def _reset_settings_cache():
@@ -85,8 +90,8 @@ def _tf_gpu_skus_short_names() -> set[str]:
     )
 
 
-def test_config_default_is_the_x8_pool():
-    """Settings().gcp_gpu_skus defaults to the TF default pool label."""
+def test_config_default_is_the_shipped_pool_set():
+    """Settings().gcp_gpu_skus defaults to the TF default pool labels."""
     s = Settings(_env_file=None)
     assert s.gcp_gpu_skus == _EXPECTED_DEFAULT, (
         "config.gcp_gpu_skus default must match the Terraform default pool "

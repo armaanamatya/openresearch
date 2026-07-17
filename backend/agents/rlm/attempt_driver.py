@@ -7,6 +7,21 @@ spawns ``backend.cli reproduce`` as a detached per-attempt child, force-
 quarantining stale residue before every launch so the warm-retry heuristic is
 structurally unreachable under a campaign (Codex F6), and asserts every
 per-attempt env key it sets actually lands in the env sink (Codex F15).
+
+**The archive MOVES the code the seed points at.** ``force_archive_incomplete``
+``shutil.move``s ``run_dir/code`` into ``attempts/<ts>/``, and the plan-time
+``seed_pointer`` is (for the latest assessed attempt) exactly that live
+``run_dir/code`` path. Staging the seed marker before capturing where the
+archive PUT the code left every marker pointing at a directory the archive had
+just emptied -- ``seed_reference_code`` then fails closed and every campaign
+attempt cold-starts, which is precisely the Adam regression the rail exists to
+prevent (``best_attempt`` module docstring). ``_prepare_launch`` therefore
+archives FIRST, follows the code to its archived path, and only then stages the
+marker. The same rotation records ``attempts/<ts>/code`` under the archived
+attempt's number in ``campaign/attempt_code_index.json``, so an attempt stays
+addressable by attempt_n long after it stops being the live one -- that index
+is what lets a champion that is NOT the latest assessed attempt be seeded at
+all (see ``campaign_composition._gather_campaign_view``).
 """
 
 from __future__ import annotations
@@ -33,6 +48,14 @@ from backend.services.runs.attempt_isolation import force_archive_incomplete
 # the campaign module map), so both modules independently agree on this
 # literal string instead of one importing the other.
 _SEED_MARKER_RELPATH = "campaign/seed_staging.json"
+
+# Relative-to-run-dir attempt -> code-dir index. Lives under ``campaign/`` for
+# the same reason the seed marker does: attempt_isolation never archives that
+# directory, so the index survives the very archive whose effects it records.
+_ATTEMPT_INDEX_RELPATH = "campaign/attempt_code_index.json"
+
+# The one directory attempt_isolation moves wholesale (``_CODE_DIR`` there).
+_CODE_DIR_NAME = "code"
 
 # Mirrors backend/services/events/live_runs.py::RunStatus's terminal subset
 # (BUG-NEW-045) — duplicated here for the same import-boundary reason as
@@ -161,7 +184,7 @@ def build_attempt_env(directives: Any, base_env: Mapping[str, str]) -> dict[str,
     return env
 
 
-def _stage_seed_marker(run_dir: Path, directives: Any) -> None:
+def _stage_seed_marker(run_dir: Path, directives: Any, *, source_code_dir: str | None) -> None:
     """Write ``campaign/seed_staging.json`` whenever the campaign has
     EITHER a seed pointer OR a target floor for this attempt -- a
     fresh-lineage attempt (no seed_pointer) can still carry a campaign
@@ -171,6 +194,13 @@ def _stage_seed_marker(run_dir: Path, directives: Any) -> None:
     no-campaign-guidance-at-all case. Shared by every driver kind (spec
     §7): whichever driver's ``launch`` calls this, the marker lands under
     THIS CALL's ``run_dir`` (the attempt's own dir, width-child or not).
+
+    ``source_code_dir`` is the POST-ARCHIVE seed source resolved by
+    :func:`resolve_seed_source` -- never ``directives.seed_pointer`` read
+    straight off the plan, which for the latest assessed attempt names the
+    live ``run_dir/code`` the pre-launch archive has by now moved away. It
+    is a required keyword precisely so no future caller can reintroduce
+    that ordering bug by simply forgetting it.
     """
     seed_pointer = getattr(directives, "seed_pointer", None)
     target_floor = getattr(directives, "target_floor", None)
@@ -180,7 +210,7 @@ def _stage_seed_marker(run_dir: Path, directives: Any) -> None:
         return
     marker = {
         "attempt_n": directives.attempt_n,
-        "source_code_dir": str(seed_pointer) if seed_pointer else None,
+        "source_code_dir": source_code_dir,
         "target_floor": target_floor,
         "lineage": getattr(directives, "seed_lineage", None),
     }
@@ -188,6 +218,163 @@ def _stage_seed_marker(run_dir: Path, directives: Any) -> None:
     tmp = marker_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(marker), encoding="utf-8")
     tmp.replace(marker_path)
+
+
+# ---------------------------------------------------------------------------
+# Attempt -> code-dir index: surviving the pre-launch archive
+# ---------------------------------------------------------------------------
+
+
+def _same_path(a: Path, b: Path) -> bool:
+    """Path identity that still works once *a* has been moved away (the whole
+    point here) -- ``resolve()`` is non-strict, so a vanished path still
+    normalizes."""
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:  # pragma: no cover — pathological fs
+        return os.path.normpath(str(a)) == os.path.normpath(str(b))
+
+
+def _archived_code_dir(archived: Mapping[str, Any] | None) -> Path | None:
+    """The ``code/`` tree the just-run archive created, or None when it
+    archived nothing at all (no residue) or moved no ``code/``.
+
+    Reads ``force_archive_incomplete``'s RETURN VALUE -- the pointer that
+    used to be discarded, and whose loss is what killed cross-attempt
+    learning.
+    """
+    if not isinstance(archived, Mapping):
+        return None
+    attempt_dir = archived.get("attempt_dir")
+    if not attempt_dir:
+        return None
+    candidate = Path(str(attempt_dir)) / _CODE_DIR_NAME
+    return candidate if candidate.is_dir() else None
+
+
+def _read_attempt_code_index(run_dir: Path) -> dict[str, Any]:
+    """``{"live": {"attempt_n": int, "code_dir": str} | None,
+    "archived": {"<attempt_n>": "<code dir>"}}``; empty on absent/torn."""
+    data = _read_json_dict(run_dir / _ATTEMPT_INDEX_RELPATH)
+    if data is None:
+        return {"live": None, "archived": {}}
+    archived = data.get("archived")
+    return {
+        "live": data.get("live") if isinstance(data.get("live"), Mapping) else None,
+        "archived": dict(archived) if isinstance(archived, Mapping) else {},
+    }
+
+
+def rotate_attempt_code_index(
+    run_dir: Path, *, archived: Mapping[str, Any] | None, new_live_attempt_n: int | None
+) -> None:
+    """Roll the per-run-dir attempt -> code-dir index forward across an archive.
+
+    The archive that just ran moved the LIVE attempt's ``code/`` into
+    ``attempts/<ts>/code``; the index's ``live`` entry names which attempt
+    that was, so the moved tree stays addressable BY ATTEMPT NUMBER once it
+    is no longer the live one. Without it only the newest attempt's code is
+    ever locatable, so a champion that is not the latest assessed attempt has
+    no seed pointer and its arm is skipped outright
+    (``campaign_policy.lineage_arms`` drops an arm whose attempt_n is absent
+    from ``runs_dir_hint``).
+
+    ``new_live_attempt_n=None`` clears ``live`` -- the resume-quarantine case,
+    where residue is archived with no replacement attempt launching into the
+    dir. Fail-soft: index bookkeeping must never abort a launch.
+    """
+    run_dir = Path(run_dir)
+    try:
+        index = _read_attempt_code_index(run_dir)
+        live = index.get("live")
+        archived_code = _archived_code_dir(archived)
+        if archived_code is not None and isinstance(live, Mapping):
+            owner = live.get("attempt_n")
+            if isinstance(owner, int):
+                index["archived"][str(owner)] = str(archived_code)
+        index["live"] = (
+            {"attempt_n": int(new_live_attempt_n), "code_dir": str(run_dir / _CODE_DIR_NAME)}
+            if new_live_attempt_n is not None
+            else None
+        )
+        _atomic_write_json(run_dir / _ATTEMPT_INDEX_RELPATH, index)
+    except Exception:  # noqa: BLE001 — index bookkeeping never blocks a launch
+        return
+
+
+def resolve_attempt_code_dir(run_dir: Path, attempt_n: int) -> str | None:
+    """The EXISTING ``code/`` tree of attempt *attempt_n* under *run_dir* --
+    the live one while it is still live, else the archived one the pre-launch
+    rotation recorded. ``None`` when neither exists (a pruned archive, an
+    attempt that never wrote code, or a campaign predating the index), which
+    degrades that attempt's lineage arm to ``fresh`` exactly as before.
+    """
+    run_dir = Path(run_dir)
+    index = _read_attempt_code_index(run_dir)
+    live = index.get("live")
+    if isinstance(live, Mapping) and live.get("attempt_n") == attempt_n:
+        code_dir = Path(str(live.get("code_dir") or (run_dir / _CODE_DIR_NAME)))
+        if code_dir.is_dir():
+            return str(code_dir)
+    candidate = index["archived"].get(str(attempt_n))
+    if candidate and Path(str(candidate)).is_dir():
+        return str(candidate)
+    return None
+
+
+def resolve_seed_source(
+    seed_pointer: Any, *, live_code_dir: Path, archived: Mapping[str, Any] | None
+) -> str | None:
+    """Follow the plan-time seed pointer through the pre-launch archive.
+
+    Three cases, in order:
+
+    1. The pointer still resolves (an already-archived attempt's code, or a
+       different project's live code under width) -- used verbatim.
+    2. The pointer named THIS run dir's live ``code/`` and the archive just
+       moved it -- remapped onto the archive's actual returned path. This is
+       the fix: previously the marker kept naming the emptied live dir.
+    3. Neither -- returned UNCHANGED, so ``seed_reference_code`` still fails
+       CLOSED on it (spec/Codex F5: a marker with a missing source never
+       silently falls back to the score-ranked scan). Fail-closed is a
+       property of the child; this function never invents a source.
+    """
+    if not seed_pointer:
+        return None
+    src = Path(str(seed_pointer))
+    if src.is_dir():
+        return str(src)
+    archived_code = _archived_code_dir(archived)
+    if archived_code is not None and _same_path(src, live_code_dir):
+        return str(archived_code)
+    return str(src)
+
+
+def _prepare_launch(run_dir: Path, runs_root: Path, directives: Any) -> None:
+    """The pre-spawn sequence every driver shares (spec §7): force-quarantine
+    residue, rotate the attempt-code index over what the archive moved, then
+    stage the seed marker at the seed's ACTUAL post-archive location.
+
+    Order is load-bearing -- see the module docstring. The archive is
+    unconditional (Codex F6 review LOW-1): ``force_archive_incomplete``
+    already no-ops safely via its own ``_has_attempt_residue``, which covers
+    the FULL manifest (incl. cost_ledger/user_messages/rlm_state sidecars) --
+    a narrower pre-check here could miss residue the full manifest would catch
+    (e.g. a lone ``rlm_state/gpu_escalation_state.json`` with no ``code/`` and
+    none of the three top-level markers).
+    """
+    archived = force_archive_incomplete(
+        str(directives.project_id), runs_root, reason="campaign_pre_launch",
+    )
+    rotate_attempt_code_index(
+        run_dir, archived=archived, new_live_attempt_n=directives.attempt_n
+    )
+    seed_source = resolve_seed_source(
+        getattr(directives, "seed_pointer", None),
+        live_code_dir=run_dir / _CODE_DIR_NAME,
+        archived=archived,
+    )
+    _stage_seed_marker(run_dir, directives, source_code_dir=seed_source)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -260,19 +447,9 @@ class LiveCliDriver(AttemptDriver):
         run_dir = self._runs_root / str(directives.project_id)
         (run_dir / "campaign").mkdir(parents=True, exist_ok=True)
 
-        # Unconditional (Codex F6 review LOW-1): force_archive_incomplete
-        # already no-ops safely via its own _has_attempt_residue, which
-        # covers the FULL manifest (incl. cost_ledger/user_messages/
-        # rlm_state sidecars) -- a narrower pre-check here could miss
-        # residue the full manifest would catch (e.g. a lone
-        # rlm_state/gpu_escalation_state.json with no code/ and none of the
-        # three top-level markers).
-        force_archive_incomplete(
-            str(directives.project_id), self._runs_root,
-            reason="campaign_pre_launch",
-        )
-
-        _stage_seed_marker(run_dir, directives)
+        # Archive -> index-rotate -> seed-marker, in that order (the marker
+        # must name where the archive PUT the code, not where it found it).
+        _prepare_launch(run_dir, self._runs_root, directives)
 
         argv = build_reproduce_argv(directives, python_exe=self._python_exe)
         env = build_attempt_env(directives, os.environ)
@@ -433,11 +610,8 @@ class UnifiedRunDriver(AttemptDriver):
         run_dir = self._runs_root / str(directives.project_id)
         (run_dir / "campaign").mkdir(parents=True, exist_ok=True)
 
-        force_archive_incomplete(
-            str(directives.project_id), self._runs_root,
-            reason="campaign_pre_launch",
-        )
-        _stage_seed_marker(run_dir, directives)
+        # Same ordered pre-spawn contract as LiveCliDriver (spec §7).
+        _prepare_launch(run_dir, self._runs_root, directives)
 
         from backend.agents.resilience.budget import RunBudget
         from backend.agents.rlm.unified_run import build_reproduction_run
@@ -581,4 +755,7 @@ __all__ = [
     "UnifiedRunDriver",
     "build_attempt_env",
     "build_reproduce_argv",
+    "resolve_attempt_code_dir",
+    "resolve_seed_source",
+    "rotate_attempt_code_index",
 ]

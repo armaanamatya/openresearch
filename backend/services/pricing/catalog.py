@@ -87,6 +87,45 @@ MODEL_PRICING: dict[str, ModelPriceEntry] = {
         usd_per_1m_output=15.0,
         last_audited_utc=_AUDITED,
     ),
+    # Anthropic-on-Azure-Foundry — opus-foundry / sonnet-foundry root models
+    # (real Claude Opus 4.8 / Sonnet 5 weights served through the Azure AI
+    # Foundry Anthropic Messages endpoint; see
+    # backend/agents/runtime/foundry_anthropic.py). A distinct "azure-foundry."
+    # provider prefix from "anthropic." (direct API billing) because Foundry is
+    # a separate paid resource/invoice even though the served weights are
+    # identical to their non-Foundry siblings above.
+    #
+    # ASSUMPTION (flag for verification): rates below are ASSUMED equal to the
+    # direct-API siblings (claude-opus-4-7 / claude-sonnet-4-6) — the same
+    # assumption already encoded in backend/agents/resilience/pricing.py (the
+    # table backend/agents/rlm/run.py's cost-ledger drain actually prices
+    # against), not an independently re-verified Azure Foundry rate card. Not
+    # a guess invented for this entry — inherited from that existing table for
+    # internal consistency across both pricing surfaces. Confirm against
+    # Azure's published Foundry rate on the next audit pass in case Foundry
+    # carries a markup/discount vs. the direct Anthropic API.
+    "azure-foundry.claude-opus-4-8": ModelPriceEntry(
+        usd_per_1m_input=15.0,
+        usd_per_1m_output=75.0,
+        last_audited_utc=_AUDITED,
+    ),
+    "azure-foundry.claude-sonnet-5": ModelPriceEntry(
+        usd_per_1m_input=3.0,
+        usd_per_1m_output=15.0,
+        last_audited_utc=_AUDITED,
+    ),
+    # NOTE: the generic "azure-foundry"/"grok" root (backend/agents/rlm/models.py
+    # AZURE_FOUNDRY_KEY) deploys an ARBITRARY operator-chosen model behind
+    # AZURE_FOUNDRY_DEPLOYMENT (e.g. "grok-4.3") — deliberately given NO catalog
+    # row here. A hardcoded key would either (a) silently mis-price the moment
+    # an operator points the deployment at a different model, or (b) require
+    # guessing an unverified third-party rate and presenting it as audited —
+    # exactly the silent-$0-or-silent-wrong-number failure mode this whole
+    # effort exists to close. Per-run visibility instead comes from the
+    # cost-ledger drain (backend/agents/rlm/run.py::_drain_foundry_root_usage_to_ledger),
+    # which fires a loud "unpriced_root_tokens" run_warning naming the exact
+    # token count whenever a Foundry-routed model has no pricing entry — never
+    # a silent $0.
 }
 
 # Keys mirror GpuSku.short_name from gpu_catalog.py so GpuPlan.short_name can
