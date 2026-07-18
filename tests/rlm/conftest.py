@@ -23,6 +23,21 @@ def _allow_lossy_stub_papers(monkeypatch):
     monkeypatch.setenv("OPENRESEARCH_ALLOW_LOSSY_PAPER_TEXT", "true")
 
 
+@pytest.fixture(autouse=True)
+def _disk_gate_host_independent(monkeypatch):
+    """Pin the disk-headroom preflight OFF for RLM mechanics tests so the socket-
+    hermetic suite is also DISK-hermetic. The full-run path reads
+    ``OPENRESEARCH_MIN_DISK_GB`` (default 10) at run.py and aborts when the runs root
+    is near-full — which on a low-disk dev host (the 2026-06-22 5.1 GB-free machine)
+    fails ~10 run-pipeline tests that have nothing to do with disk safety. The gate's
+    own behavior is covered directly in tests/rlm/test_disk_headroom.py, which calls
+    ``_assert_disk_headroom(min_gb=...)`` explicitly and never reads this env var, so
+    pinning it here cannot mask the gate's real coverage. A test that wants the gate
+    active simply re-sets the env after this autouse fixture runs.
+    """
+    monkeypatch.setenv("OPENRESEARCH_MIN_DISK_GB", "0")
+
+
 class FakeLlmClient:
     """Counting fake LlmClient. Returns scripted responses in order (last repeats)."""
 

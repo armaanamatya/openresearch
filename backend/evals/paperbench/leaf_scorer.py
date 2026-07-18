@@ -310,7 +310,22 @@ def _latest_metrics_path(run_dir: Path) -> Path | None:
     experiment leaves are graded against a superseded outcome. Selecting by
     mtime reads the actual most-recent result. Returns ``None`` when no
     metrics.json exists.
+
+    Canonical evidence bundle (OPENRESEARCH_CANONICAL_EVIDENCE_BUNDLE, default
+    OFF): when the flag is on AND a coherent receipt resolves, the bundle's
+    metrics coordinate REPLACES this independent newest-by-mtime pick so the
+    scorer + report agree on one attempt. Off / incoherent / any error ⇒ falls
+    through to the legacy mtime selection below (byte-for-byte unchanged).
     """
+    try:
+        from backend.agents.rlm import evidence_bundle as _eb
+
+        _bundle_mp = _eb.resolve_metrics_path(run_dir)
+        if _bundle_mp is not None:
+            return _bundle_mp
+    except Exception:  # noqa: BLE001 — bundle resolution never breaks scoring
+        pass
+
     cands: list[Path] = []
     outputs = run_dir / "code" / "outputs"
     if outputs.exists():

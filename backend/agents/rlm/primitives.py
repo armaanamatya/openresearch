@@ -1752,6 +1752,11 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
     _payload = {"method_spec": method_spec, "env_spec": env_spec}
     _cached = _cache.maybe_get(ctx.project_dir, "plan_reproduction", payload=_payload)
     if _cached is not None:
+        try:
+            from backend.agents.rlm.reproduction_contract_store import activate as _activate_contract
+            _activate_contract(ctx, _cached)
+        except Exception:  # noqa: BLE001 -- optional migration must not affect cache hits
+            pass
         return _with_outcome(_cached, PrimitiveOutcome.ok)
 
     # β3: extend the planning prompt when compute is clipped.
@@ -1875,6 +1880,11 @@ def plan_reproduction(method_spec: dict, env_spec: dict, *, ctx: "RunContext") -
             data["data_recipes"] = []
 
         contract_out = ReproductionContract(**data).model_dump()
+        try:
+            from backend.agents.rlm.reproduction_contract_store import activate as _activate_contract
+            _activate_contract(ctx, contract_out)
+        except Exception:  # noqa: BLE001 -- optional migration must not affect planning
+            pass
         # ReproductionContract is extra="ignore" — re-attach harness feedback
         # (e.g. the compute_scope shape correction) AFTER the dump so the agent
         # actually sees it on the returned plan instead of it being silently
@@ -4250,6 +4260,38 @@ def _persist_experiment_result(
     if _fclass and _fclass != "ok":
         result.setdefault("failure_class", _fclass)
         result.setdefault("suggested_fix", _fsuggest)
+
+    # Durable failure capsule (default OFF via OPENRESEARCH_FAILURE_CAPSULES).
+    # On a failure, atomically persist a bounded/redacted capsule of the REAL
+    # evidence (traceback tail, log tail, command + env fingerprints, artifact
+    # paths, error signature) and stamp its rendered text onto the result dict.
+    # The root sets plan['repair_context'] to this failed result, so the text
+    # flows into the next implementer prompt — the agent repairs from concrete
+    # evidence, not a generic message. Fully fail-soft: never breaks the run.
+    if not result.get("success"):
+        try:
+            from backend.agents.rlm import failure_capsule as _fcap
+            if _fcap.capsules_enabled():
+                _cap = _fcap.build_capsule(
+                    result,
+                    command=str(result.get("command") or "") or None,
+                    env=dict(os.environ),
+                    artifacts=[
+                        str(p) for p in (
+                            (result.get("metrics") or {}).get("artifact_paths")
+                            or result.get("artifacts")
+                            or []
+                        )
+                    ] or None,
+                    project_id=getattr(ctx, "project_id", None),
+                )
+                _fcap.persist_capsule(ctx.project_dir, _cap)
+                _cap_text = _fcap.render_capsule_text(_cap)
+                if _cap_text:
+                    result.setdefault("failure_capsule_text", _cap_text)
+        except Exception:  # noqa: BLE001 — capsule path must NEVER break the run
+            logger.debug("failure_capsule: build/persist failed", exc_info=True)
+
     _with_outcome(result, _classify_run_experiment_outcome(result))
 
     # P2 manifest: bind metric→artifact (metrics_sha256) + name the backend.
@@ -8178,7 +8220,27 @@ def recommend_next_tool(situation: str, *, ctx: "RunContext") -> dict:
 
     The root calls this when uncertain about how to proceed. The recommendation
     comes from a single llm_query call (no recursion, bounded cost).
+
+    Deterministic next-action card (feature #18, ``OPENRESEARCH_ACTION_CARDS``,
+    default OFF): when the next action is mechanically determined by lifecycle
+    state (e.g. no baseline yet → ``implement_baseline``), short-circuit the PAID
+    LLM call and return a deterministic card instead. Fail-soft: any error or an
+    ambiguous state falls through to today's LLM path (byte-for-byte unchanged
+    when the flag is off).
     """
+    try:
+        from backend.agents.rlm.action_card import (
+            action_cards_enabled,
+            build_action_card,
+        )
+
+        if action_cards_enabled():
+            card = build_action_card(situation, ctx)
+            if card is not None:
+                return card
+    except Exception:  # noqa: BLE001 — short-circuit must never break the primitive
+        pass
+
     prompt = (
         "You are advising an RLM root model on which tool to use next.\n\n"
         f"CURRENT SITUATION:\n{situation}\n\n"
