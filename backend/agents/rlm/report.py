@@ -1569,6 +1569,7 @@ def _apply_evidence_gate(
     run_experiment_calls: int | None = None,
     run_experiment_ok_calls: int | None = None,
     run_experiment_partial_timeout_calls: int | None = None,
+    run_experiment_partial_cell_error_calls: int | None = None,
 ) -> RLMFinalReport:
     """Downgrade a success-ish verdict that has NO experiment evidence (FM-004).
 
@@ -1815,6 +1816,29 @@ def run_experiment_partial_timeout_count(ctx: RunContext) -> int | None:
         return None
 
 
+def run_experiment_partial_cell_error_count(ctx: RunContext) -> int | None:
+    """In-process ``run_experiment`` calls stamped ``partial_cell_error`` (a real
+    cell executed then errored with real partial metrics on disk). The cell-error
+    salvage tier keys on this — a REPL-forged cell_execution_error row cannot mint
+    one. ``None`` when no ledger is available. Mirrors
+    ``run_experiment_partial_timeout_count``."""
+    ledger = getattr(ctx, "cost_ledger", None)
+    if ledger is None:
+        return None
+    try:
+        counter = getattr(ledger, "session_partial_cell_error_count", None)
+        if callable(counter):
+            return counter("run_experiment")
+        return sum(
+            1
+            for e in ledger.entries
+            if getattr(e, "agent_id", None) == "run_experiment"
+            and getattr(e, "outcome", "") == "partial_cell_error"
+        )
+    except Exception:  # noqa: BLE001 — a gate input must never crash finalization
+        return None
+
+
 def run_experiment_success_count(ctx: RunContext) -> int | None:
     """In-process ``run_experiment`` calls whose per-row ``outcome`` stamp is
     success-compatible ("ok" or unknown ""). See
@@ -1845,6 +1869,7 @@ def write_final_report_rlm(
     run_experiment_calls: int | None = None,
     run_experiment_ok_calls: int | None = None,
     run_experiment_partial_timeout_calls: int | None = None,
+    run_experiment_partial_cell_error_calls: int | None = None,
     no_learning_signal: bool = False,
 ) -> tuple[Path, Path]:
     """Write `final_report.json` and `final_report.md` atomically.
@@ -1880,6 +1905,7 @@ def write_final_report_rlm(
         run_experiment_calls=run_experiment_calls,
         run_experiment_ok_calls=run_experiment_ok_calls,
         run_experiment_partial_timeout_calls=run_experiment_partial_timeout_calls,
+        run_experiment_partial_cell_error_calls=run_experiment_partial_cell_error_calls,
     )
     # Did the gate veto (downgrade) anything? Both of _apply_evidence_gate's
     # downgrade branches (forged/no-evidence -> "failed"; reproduced -> capped
