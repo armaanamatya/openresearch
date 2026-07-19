@@ -775,6 +775,10 @@ def _maybe_attach_asha_advisory(
     result: dict[str, Any],
     assessments: list,
     current_rung: int,
+    *,
+    max_gpu_usd: float | None = None,
+    gpu_usd_spent: float = 0.0,
+    max_gpu_count: int | None = None,
 ) -> None:
     """SHADOW-MODE ASHA scheduler (``OPENRESEARCH_SCHEDULER_TREE``, default OFF).
 
@@ -783,7 +787,17 @@ def _maybe_attach_asha_advisory(
     campaign decision, so an operator can compare the scheduler's advice against the
     live deterministic decision before the tree is ever made authoritative. Off ⇒
     no-op, byte-identical. Fail-soft: any error leaves ``result`` untouched (the
-    advisory must NEVER perturb the fail-closed decide path)."""
+    advisory must NEVER perturb the fail-closed decide path).
+
+    ``current_rung`` is the FIDELITY meter (optimizer-step ladder). The optional
+    ``max_gpu_usd`` / ``gpu_usd_spent`` / ``max_gpu_count`` feed the *independent*
+    WIDTH meter (GPU-$ budget + hard A100 cap) — the two are never merged. Absent ⇒
+    the width meter degrades to the geometric ``eta`` fallback (prior behaviour), so
+    every existing OFF/positional call stays byte-identical. Per-attempt GPU-$ is a
+    **uniform estimate** (``gpu_usd_spent / n``): the campaign tracks only cumulative
+    spend, not per-attempt, so this is a documented approximation used solely for the
+    advisory's ``k`` — never a live decision. All the width arithmetic runs *after*
+    the env-gate short-circuit, so OFF adds zero work to the fail-closed path."""
     import os
 
     if os.environ.get("OPENRESEARCH_SCHEDULER_TREE", "").strip().lower() not in (
@@ -796,12 +810,41 @@ def _maybe_attach_asha_advisory(
         )
         from backend.agents.rlm.asha_scheduler import RungConfig
 
+        # WIDTH meter (independent of the fidelity rung): remaining GPU-$ budget +
+        # hard A100 cap. Only built when a $ ceiling is supplied; else None ⇒ the
+        # core falls back to the geometric eta width (unchanged legacy behaviour).
+        gpu_usd_budget: float | None = None
+        gpu_usd_by_attempt: dict[int, float] | None = None
+        if max_gpu_usd is not None:
+            gpu_usd_budget = max(0.0, float(max_gpu_usd) - float(gpu_usd_spent))
+            n_assess = len(assessments)
+            if n_assess and gpu_usd_spent > 0:
+                per_attempt = float(gpu_usd_spent) / n_assess  # uniform estimate
+                gpu_usd_by_attempt = {
+                    int(getattr(a, "attempt_n", i)): per_attempt
+                    for i, a in enumerate(assessments)
+                }
+
         decisions = asha_decide_for_assessments(
             assessments,
-            RungConfig(rung=int(current_rung), higher_is_better=True, noise_floor=0.0067),
+            RungConfig(
+                rung=int(current_rung),
+                higher_is_better=True,
+                noise_floor=0.0067,
+                gpu_usd_budget=gpu_usd_budget,
+                a100_cap=max_gpu_count,
+            ),
+            gpu_usd_by_attempt=gpu_usd_by_attempt,
         )
         result["asha_advisory"] = {
             "rung": int(current_rung),
+            "width_meter": {
+                "gpu_usd_budget": gpu_usd_budget,
+                "a100_cap": max_gpu_count,
+                "gpu_usd_spent": (
+                    float(gpu_usd_spent) if max_gpu_usd is not None else None
+                ),
+            },
             "decisions": [
                 {"branch_id": d.branch_id, "action": d.action, "reason": d.reason}
                 for d in decisions
@@ -847,7 +890,18 @@ def _decide_impl(run_dir: Path, opts: CampaignOptions, state: CampaignState, row
         blocking_gap=None,  # no live probe-confirmed-gap source wired in v1
     )
     result = decision.to_dict()
-    _maybe_attach_asha_advisory(result, assessments, state.scope_rung)
+    # Shadow advisory: fidelity meter = state.scope_rung; width meter = remaining
+    # GPU-$ (opts.max_gpu_usd − spent.gpu_usd) + hard A100 cap (ctx.max_gpu_count,
+    # already resolved by _enforcement_ctx). OFF ⇒ byte-identical (helper returns
+    # before touching any of these).
+    _maybe_attach_asha_advisory(
+        result,
+        assessments,
+        state.scope_rung,
+        max_gpu_usd=opts.max_gpu_usd,
+        gpu_usd_spent=spent.gpu_usd,
+        max_gpu_count=ctx.max_gpu_count,
+    )
     return result
 
 
