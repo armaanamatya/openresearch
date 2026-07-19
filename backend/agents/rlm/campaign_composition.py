@@ -771,6 +771,46 @@ def _distill_impl(run_dir: Path, opts: CampaignOptions, _assessment: Mapping[str
 # --- decide --------------------------------------------------------------------
 
 
+def _maybe_attach_asha_advisory(
+    result: dict[str, Any],
+    assessments: list,
+    current_rung: int,
+) -> None:
+    """SHADOW-MODE ASHA scheduler (``OPENRESEARCH_SCHEDULER_TREE``, default OFF).
+
+    When on, attach the ASHA promote/freeze/kill advisory over the current
+    assessments to ``result["asha_advisory"]`` — additive metadata that changes NO
+    campaign decision, so an operator can compare the scheduler's advice against the
+    live deterministic decision before the tree is ever made authoritative. Off ⇒
+    no-op, byte-identical. Fail-soft: any error leaves ``result`` untouched (the
+    advisory must NEVER perturb the fail-closed decide path)."""
+    import os
+
+    if os.environ.get("OPENRESEARCH_SCHEDULER_TREE", "").strip().lower() not in (
+        "1", "true", "yes", "on",
+    ):
+        return
+    try:
+        from backend.agents.rlm.asha_campaign_adapter import (
+            asha_decide_for_assessments,
+        )
+        from backend.agents.rlm.asha_scheduler import RungConfig
+
+        decisions = asha_decide_for_assessments(
+            assessments,
+            RungConfig(rung=int(current_rung), higher_is_better=True, noise_floor=0.0067),
+        )
+        result["asha_advisory"] = {
+            "rung": int(current_rung),
+            "decisions": [
+                {"branch_id": d.branch_id, "action": d.action, "reason": d.reason}
+                for d in decisions
+            ],
+        }
+    except Exception:  # noqa: BLE001 — advisory must never break the fail-closed decide
+        pass
+
+
 def _decide_impl(run_dir: Path, opts: CampaignOptions, state: CampaignState, rows: list) -> dict[str, Any]:
     assessments, lineage_by_attempt, scope_rung_by_attempt, runs_dir_hint = _gather_campaign_view(run_dir, rows)
     budget = CampaignBudget(**state.budget)
@@ -806,7 +846,9 @@ def _decide_impl(run_dir: Path, opts: CampaignOptions, state: CampaignState, row
         current_rung=state.scope_rung,
         blocking_gap=None,  # no live probe-confirmed-gap source wired in v1
     )
-    return decision.to_dict()
+    result = decision.to_dict()
+    _maybe_attach_asha_advisory(result, assessments, state.scope_rung)
+    return result
 
 
 # --- write_reports ---------------------------------------------------------------
