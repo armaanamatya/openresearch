@@ -1744,6 +1744,16 @@ def _evidence_gate_flag_enabled() -> bool:
     }
 
 
+def _cell_error_salvage_enabled() -> bool:
+    """OPENRESEARCH_CELL_ERROR_SALVAGE (default OFF): salvage a run whose cells
+    executed-then-errored with real graded metrics to 'partial' instead of
+    'failed'. Off ⇒ the hard-downgrade tier stands (byte-identical today)."""
+    import os as _os
+    return _os.environ.get("OPENRESEARCH_CELL_ERROR_SALVAGE", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 def _apply_evidence_gate(
     report: RLMFinalReport,
     project_dir: Path,
@@ -1904,6 +1914,39 @@ def _apply_evidence_gate(
                 logger.warning(
                     "report: evidence gate capped verdict 'reproduced' -> 'partial' "
                     "(only timeout-finalized partial evidence)"
+                )
+                report.verdict = "partial"
+            report.reproduction_summary = (
+                report.reproduction_summary or ""
+            ).rstrip() + note
+            return report
+        elif (
+            _cell_error_salvage_enabled()
+            and (run_experiment_calls is None or run_experiment_calls >= 1)
+            and (
+                run_experiment_partial_cell_error_calls is None
+                or run_experiment_partial_cell_error_calls >= 1
+            )
+            and _has_cell_manifest_error_receipt(project_dir)
+        ):
+            # Cell-error salvage tier (2026-07-18, OPENRESEARCH_CELL_ERROR_SALVAGE):
+            # a cell EXECUTED then errored (cell_execution_error) after writing real
+            # partial metrics the harness recorded (cell_manifest.json status=error)
+            # AND a session-scoped partial_cell_error ledger stamp proves a real
+            # in-process run_experiment call — so the graded best-of-run metrics are
+            # backed by an OBSERVED cell run, not a REPL forgery. Cap at 'partial'
+            # (never a full-reproduction claim), mirroring the partial_timeout tier.
+            note = (
+                " [evidence_cap] Verdict capped at 'partial': the experiment "
+                "evidence is a cell that executed then errored "
+                "(cell_execution_error) after real partial metrics were written "
+                "and the harness recorded the execution (cell_manifest.json); no "
+                "cleanly-successful run backs a full reproduction claim."
+            )
+            if report.verdict == "reproduced":
+                logger.warning(
+                    "report: evidence gate capped verdict 'reproduced' -> 'partial' "
+                    "(cell-error salvage: observed cell execution + real partial metrics)"
                 )
                 report.verdict = "partial"
             report.reproduction_summary = (
