@@ -57,6 +57,7 @@ from backend.agents.rlm.report import (
     build_final_report,
     run_experiment_call_count,
     run_experiment_partial_timeout_count,
+    run_experiment_partial_cell_error_count,
     run_experiment_success_count,
     write_final_report_rlm,
 )
@@ -2303,7 +2304,8 @@ def _finalize_fatal_primitive_abort(
     json_path, _md_path = write_final_report_rlm(
         report, project_dir, run_experiment_calls=run_experiment_call_count(ctx),
         run_experiment_ok_calls=run_experiment_success_count(ctx),
-        run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx)
+        run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx),
+        run_experiment_partial_cell_error_calls=run_experiment_partial_cell_error_count(ctx),
     )
     _apply_minimal_viable_reproduction(project_dir, ctx)
     _notify_run_terminal(project_dir)
@@ -2482,6 +2484,7 @@ def _hard_stop_with_report(
             run_experiment_calls=run_experiment_call_count(ctx) if ctx is not None else None,
             run_experiment_ok_calls=run_experiment_success_count(ctx),
         run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx) if ctx is not None else None,
+        run_experiment_partial_cell_error_calls=run_experiment_partial_cell_error_count(ctx) if ctx is not None else None,
         )
     except Exception:  # noqa: BLE001
         logger.exception("run_pipeline_rlm: hard-stop could not write final report")
@@ -5293,6 +5296,7 @@ def _finalize(
         report, project_dir, run_experiment_calls=run_experiment_call_count(ctx),
         run_experiment_ok_calls=run_experiment_success_count(ctx),
         run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx),
+        run_experiment_partial_cell_error_calls=run_experiment_partial_cell_error_count(ctx),
         no_learning_signal=_no_learning_signal,
     )
     _apply_minimal_viable_reproduction(project_dir, ctx)

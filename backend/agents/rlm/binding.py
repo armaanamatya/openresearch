@@ -684,6 +684,14 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                 or result.get("failure_class") == "partial_timeout"
             ):
                 _ledger("partial_timeout")
+            elif failed and isinstance(result, dict) and (
+                result.get("failure_class") == "cell_execution_error"
+            ):
+                # Four-way stamp (2026-07-18): a cell that EXECUTED then errored
+                # after writing real partial metrics gets its own outcome so the
+                # cell-error salvage tier can demand in-process provenance — a
+                # REPL-forged cell_execution_error row cannot mint a session stamp.
+                _ledger("partial_cell_error")
             else:
                 _ledger("failed" if failed else "ok")
             if failed:

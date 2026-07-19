@@ -1744,6 +1744,16 @@ def _evidence_gate_flag_enabled() -> bool:
     }
 
 
+def _cell_error_salvage_enabled() -> bool:
+    """OPENRESEARCH_CELL_ERROR_SALVAGE (default OFF): salvage a run whose cells
+    executed-then-errored with real graded metrics to 'partial' instead of
+    'failed'. Off ⇒ the hard-downgrade tier stands (byte-identical today)."""
+    import os as _os
+    return _os.environ.get("OPENRESEARCH_CELL_ERROR_SALVAGE", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 def _apply_evidence_gate(
     report: RLMFinalReport,
     project_dir: Path,
@@ -1751,6 +1761,7 @@ def _apply_evidence_gate(
     run_experiment_calls: int | None = None,
     run_experiment_ok_calls: int | None = None,
     run_experiment_partial_timeout_calls: int | None = None,
+    run_experiment_partial_cell_error_calls: int | None = None,
 ) -> RLMFinalReport:
     """Downgrade a success-ish verdict that has NO experiment evidence (FM-004).
 
@@ -1909,6 +1920,39 @@ def _apply_evidence_gate(
                 report.reproduction_summary or ""
             ).rstrip() + note
             return report
+        elif (
+            _cell_error_salvage_enabled()
+            and (run_experiment_calls is None or run_experiment_calls >= 1)
+            and (
+                run_experiment_partial_cell_error_calls is None
+                or run_experiment_partial_cell_error_calls >= 1
+            )
+            and _has_cell_manifest_error_receipt(project_dir)
+        ):
+            # Cell-error salvage tier (2026-07-18, OPENRESEARCH_CELL_ERROR_SALVAGE):
+            # a cell EXECUTED then errored (cell_execution_error) after writing real
+            # partial metrics the harness recorded (cell_manifest.json status=error)
+            # AND a session-scoped partial_cell_error ledger stamp proves a real
+            # in-process run_experiment call — so the graded best-of-run metrics are
+            # backed by an OBSERVED cell run, not a REPL forgery. Cap at 'partial'
+            # (never a full-reproduction claim), mirroring the partial_timeout tier.
+            note = (
+                " [evidence_cap] Verdict capped at 'partial': the experiment "
+                "evidence is a cell that executed then errored "
+                "(cell_execution_error) after real partial metrics were written "
+                "and the harness recorded the execution (cell_manifest.json); no "
+                "cleanly-successful run backs a full reproduction claim."
+            )
+            if report.verdict == "reproduced":
+                logger.warning(
+                    "report: evidence gate capped verdict 'reproduced' -> 'partial' "
+                    "(cell-error salvage: observed cell execution + real partial metrics)"
+                )
+                report.verdict = "partial"
+            report.reproduction_summary = (
+                report.reproduction_summary or ""
+            ).rstrip() + note
+            return report
         else:
             note = (
                 " [evidence_gap] Downgraded to 'failed': no cleanly-successful "
@@ -1997,6 +2041,29 @@ def run_experiment_partial_timeout_count(ctx: RunContext) -> int | None:
         return None
 
 
+def run_experiment_partial_cell_error_count(ctx: RunContext) -> int | None:
+    """In-process ``run_experiment`` calls stamped ``partial_cell_error`` (a real
+    cell executed then errored with real partial metrics on disk). The cell-error
+    salvage tier keys on this — a REPL-forged cell_execution_error row cannot mint
+    one. ``None`` when no ledger is available. Mirrors
+    ``run_experiment_partial_timeout_count``."""
+    ledger = getattr(ctx, "cost_ledger", None)
+    if ledger is None:
+        return None
+    try:
+        counter = getattr(ledger, "session_partial_cell_error_count", None)
+        if callable(counter):
+            return counter("run_experiment")
+        return sum(
+            1
+            for e in ledger.entries
+            if getattr(e, "agent_id", None) == "run_experiment"
+            and getattr(e, "outcome", "") == "partial_cell_error"
+        )
+    except Exception:  # noqa: BLE001 — a gate input must never crash finalization
+        return None
+
+
 def run_experiment_success_count(ctx: RunContext) -> int | None:
     """In-process ``run_experiment`` calls whose per-row ``outcome`` stamp is
     success-compatible ("ok" or unknown ""). See
@@ -2036,6 +2103,34 @@ def run_experiment_success_count(ctx: RunContext) -> int | None:
         return None
 
 
+_CELL_ERROR_STATUSES = frozenset({"error", "oom_failed", "timeout", "training_diverged"})
+
+
+def _has_cell_manifest_error_receipt(project_dir: "Path") -> bool:
+    """True iff a harness-written ``cell_manifest.json`` under ``code/outputs/``
+    records a cell that EXECUTED then failed (status in the error family). The
+    root REPL is not in the cell-run loop (``cell_scheduler.write_cell_manifest``
+    / the gpu_cell_runner error path), so an error-status manifest ties graded
+    partial metrics to an OBSERVED cell execution. Handles a single manifest dict
+    or a list of cell dicts. Fail-soft: any read error ⇒ False."""
+    outputs = Path(project_dir) / "code" / "outputs"
+    if not outputs.exists():
+        return False
+    try:
+        for manifest in outputs.glob("**/cell_manifest.json"):
+            try:
+                doc = json.loads(manifest.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, ValueError, OSError):
+                continue
+            rows = doc if isinstance(doc, list) else [doc]
+            for row in rows:
+                if isinstance(row, dict) and row.get("status") in _CELL_ERROR_STATUSES:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 def write_final_report_rlm(
     report: RLMFinalReport,
     project_dir: Path,
@@ -2043,6 +2138,7 @@ def write_final_report_rlm(
     run_experiment_calls: int | None = None,
     run_experiment_ok_calls: int | None = None,
     run_experiment_partial_timeout_calls: int | None = None,
+    run_experiment_partial_cell_error_calls: int | None = None,
     no_learning_signal: bool = False,
 ) -> tuple[Path, Path]:
     """Write `final_report.json` and `final_report.md` atomically.
@@ -2078,6 +2174,7 @@ def write_final_report_rlm(
         run_experiment_calls=run_experiment_calls,
         run_experiment_ok_calls=run_experiment_ok_calls,
         run_experiment_partial_timeout_calls=run_experiment_partial_timeout_calls,
+        run_experiment_partial_cell_error_calls=run_experiment_partial_cell_error_calls,
     )
     # Did the gate veto (downgrade) anything? Both of _apply_evidence_gate's
     # downgrade branches (forged/no-evidence -> "failed"; reproduced -> capped
