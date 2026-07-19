@@ -2060,6 +2060,34 @@ def run_experiment_success_count(ctx: RunContext) -> int | None:
         return None
 
 
+_CELL_ERROR_STATUSES = frozenset({"error", "oom_failed", "timeout", "training_diverged"})
+
+
+def _has_cell_manifest_error_receipt(project_dir: "Path") -> bool:
+    """True iff a harness-written ``cell_manifest.json`` under ``code/outputs/``
+    records a cell that EXECUTED then failed (status in the error family). The
+    root REPL is not in the cell-run loop (``cell_scheduler.write_cell_manifest``
+    / the gpu_cell_runner error path), so an error-status manifest ties graded
+    partial metrics to an OBSERVED cell execution. Handles a single manifest dict
+    or a list of cell dicts. Fail-soft: any read error ⇒ False."""
+    outputs = Path(project_dir) / "code" / "outputs"
+    if not outputs.exists():
+        return False
+    try:
+        for manifest in outputs.glob("**/cell_manifest.json"):
+            try:
+                doc = json.loads(manifest.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, ValueError, OSError):
+                continue
+            rows = doc if isinstance(doc, list) else [doc]
+            for row in rows:
+                if isinstance(row, dict) and row.get("status") in _CELL_ERROR_STATUSES:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 def write_final_report_rlm(
     report: RLMFinalReport,
     project_dir: Path,
