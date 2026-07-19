@@ -105,3 +105,5 @@ def test_cell_execution_error_stamps_partial_cell_error(make_context, tmp_path):
     assert _last_row(ctx).outcome == "partial_cell_error"
     # Still NOT success-compatible — it cannot back a success verdict.
     assert ctx.cost_ledger.session_success_compatible_count("run_experiment") == 0
+    # ...but it IS counted for the cell-error salvage tier (session-scoped).
+    assert ctx.cost_ledger.session_partial_cell_error_count("run_experiment") == 1
