@@ -215,6 +215,18 @@ class RunCostLedger:
             if entry.agent_id == agent_id and entry.outcome == "partial_timeout"
         )
 
+    def session_partial_cell_error_count(self, agent_id: str) -> int:
+        """In-process entries stamped ``partial_cell_error`` by the orchestrator
+        (a real run_experiment call executed a cell that ERRORED after emitting
+        real partial metrics). The cell-error salvage tier requires >=1 of these
+        — a REPL-forged cell_execution_error row (forgeable via open()) no longer
+        reaches that tier. Mirrors ``session_partial_timeout_count``."""
+        return sum(
+            1
+            for entry in self.entries[self._seeded_len :]
+            if entry.agent_id == agent_id and entry.outcome == "partial_cell_error"
+        )
+
     def total_by_provider(self) -> dict[ProviderName, ProviderTotals]:
         raw: dict[ProviderName, dict[str, Any]] = {}
         for entry in self.entries:
