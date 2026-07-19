@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import shutil
 from collections.abc import Mapping, MutableMapping, Sequence
@@ -864,11 +865,11 @@ def _maybe_attach_asha_advisory(
     ``max_gpu_usd`` / ``gpu_usd_spent`` / ``max_gpu_count`` feed the *independent*
     WIDTH meter (GPU-$ budget + hard A100 cap) — the two are never merged. Absent ⇒
     the width meter degrades to the geometric ``eta`` fallback (prior behaviour), so
-    every existing OFF/positional call stays byte-identical. Per-attempt GPU-$ is a
-    **uniform estimate** (``gpu_usd_spent / n``): the campaign tracks only cumulative
-    spend, not per-attempt, so this is a documented approximation used solely for the
-    advisory's ``k`` — never a live decision. All the width arithmetic runs *after*
-    the env-gate short-circuit, so OFF adds zero work to the fail-closed path."""
+    every existing OFF/positional call stays byte-identical. Per-attempt GPU-$ comes
+    from each deterministic ``AttemptAssessment.cost.gpu_usd``; it is used solely
+    for the advisory's width meter, never a live decision. All the width arithmetic
+    runs *after* the env-gate short-circuit, so OFF adds zero work to the fail-closed
+    path."""
     import os
 
     if os.environ.get("OPENRESEARCH_SCHEDULER_TREE", "").strip().lower() not in (
@@ -888,13 +889,24 @@ def _maybe_attach_asha_advisory(
         gpu_usd_by_attempt: dict[int, float] | None = None
         if max_gpu_usd is not None:
             gpu_usd_budget = max(0.0, float(max_gpu_usd) - float(gpu_usd_spent))
-            n_assess = len(assessments)
-            if n_assess and gpu_usd_spent > 0:
-                per_attempt = float(gpu_usd_spent) / n_assess  # uniform estimate
-                gpu_usd_by_attempt = {
-                    int(getattr(a, "attempt_n", i)): per_attempt
-                    for i, a in enumerate(assessments)
-                }
+            gpu_usd_by_attempt = {}
+            for assessment in assessments:
+                try:
+                    attempt_n = getattr(assessment, "attempt_n", None)
+                    cost = getattr(assessment, "cost", None)
+                    gpu_usd = getattr(cost, "gpu_usd", None)
+                except Exception:  # noqa: BLE001 -- a bad cost must not drop the advisory
+                    continue
+                if (
+                    not isinstance(attempt_n, int)
+                    or isinstance(attempt_n, bool)
+                    or not isinstance(gpu_usd, (int, float))
+                    or isinstance(gpu_usd, bool)
+                ):
+                    continue
+                observed_gpu_usd = float(gpu_usd)
+                if math.isfinite(observed_gpu_usd) and observed_gpu_usd >= 0.0:
+                    gpu_usd_by_attempt[attempt_n] = observed_gpu_usd
 
         decisions = asha_decide_for_assessments(
             assessments,
