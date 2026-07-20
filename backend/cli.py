@@ -2277,21 +2277,6 @@ def cmd_campaign(args: argparse.Namespace) -> int:
         RegisterProject(source=source),
         project_id_override=(getattr(args, "project_id", None) or None),
     )
-    if getattr(args, "project_id", None):
-        # Mirrors cmd_reproduce's mismatch guard: the override may only
-        # mirror the source-derived id (register_project already ingests it
-        # verbatim), so an arbitrary value is rejected here with an
-        # actionable message rather than failing opaquely at fetch_paper.
-        if args.project_id != project_id:
-            print(
-                f"                       ERROR: --project-id={args.project_id!r} does not match "
-                f"the source-derived project id {project_id!r}. The override may only mirror the "
-                f"source-derived id; an arbitrary value breaks ingest (fetch_paper -> "
-                f"UnknownProject). Omit --project-id to use the source-derived id.",
-                file=sys.stderr,
-            )
-            return 1
-        project_id = args.project_id
     print(f"                       project_id={project_id}", file=sys.stderr)
 
     project_dir = runs_root / project_id
@@ -2883,6 +2868,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "campaign", help="Repeat-until-reproduced campaign: launch, assess, decide, repeat."
     )
     campaign.add_argument("source", help="PDF path, arXiv id/URL, or DOI/doi.org URL.")
+    campaign.add_argument(
+        "--project-id", dest="project_id", default=None,
+        help=(
+            "Explicit project id for an independent campaign lineage. Required "
+            "when the same paper is run as multiple A/B arms."
+        ),
+    )
     campaign.add_argument(
         "--max-llm-usd", dest="max_llm_usd", type=float, required=True,
         help="Campaign-wide cap on LLM/SDK spend (never GPU dollars; spec §10.1).",

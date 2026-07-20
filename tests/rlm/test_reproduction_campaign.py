@@ -222,6 +222,40 @@ def test_write_ahead_intent_row_precedes_launch(tmp_path):
     assert rec.count("launch") == 1
 
 
+def test_default_launch_row_omits_scheduler_metadata_and_tree_marker_is_durable(tmp_path, monkeypatch):
+    rec = _Recorder()
+    run_dir = tmp_path / "run"
+
+    defaults = _make_stages(run_dir, rec)
+    default_campaign = _campaign(tmp_path, defaults)
+    default_campaign.run()
+    default_rows = CampaignLedger(run_dir / "campaign").read_rows()
+    default_launch = next(row for row in default_rows if row["status"] == "launched")
+    assert "branch_type" not in default_launch
+    assert "is_safety_bracket" not in default_launch
+
+    def _tree_plan(state, _rows):
+        return {
+            "attempt_n": state.next_attempt_n,
+            "directives_sha256": "tree-dsha",
+            "envelope": {"llm_usd": 1.0, "gpu_usd": 1.0, "gpu_hours": 0.1, "wall_s": 600.0, "vm_ceiling_s": 900.0},
+            "project_id": state.project_id,
+            "run_dir": str(run_dir / "tree_attempt"),
+            "refusal": None,
+            "downgrade_to_checkpoint": False,
+            "launch_payload": {"attempt_n": state.next_attempt_n},
+            "is_safety_bracket": True,
+        }
+
+    monkeypatch.setenv("OPENRESEARCH_SCHEDULER_TREE", "1")
+    tree_stages = _make_stages(run_dir, _Recorder(), plan_attempt=_tree_plan)
+    tree_campaign = _campaign(tmp_path, tree_stages, run_dir=tmp_path / "tree_run")
+    tree_campaign.run()
+    tree_rows = CampaignLedger(tmp_path / "tree_run" / "campaign").read_rows()
+    tree_launch = next(row for row in tree_rows if row["status"] == "launched")
+    assert tree_launch["is_safety_bracket"] is True
+
+
 def test_ledger_error_on_intent_halts_and_never_launches(tmp_path, monkeypatch):
     rec = _Recorder()
     stages = _make_stages(tmp_path / "run", rec)

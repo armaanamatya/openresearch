@@ -703,9 +703,42 @@ def test_to_dict_from_dict_roundtrip() -> None:
 
 def test_to_dict_from_dict_roundtrip_with_none_report() -> None:
     original = _bare_assessment(hard_quarantined=True, soft_quarantined=False)
-    restored = AttemptAssessment.from_dict(json.loads(json.dumps(original.to_dict())))
+    payload = json.loads(json.dumps(original.to_dict()))
+    assert "branch_type" not in payload
+    assert "is_safety_bracket" not in payload
+    restored = AttemptAssessment.from_dict(payload)
     assert restored == original
     assert restored.final_report is None
+
+
+def test_scheduler_assessment_metadata_is_strict_and_legacy_absence_defaults() -> None:
+    original = _bare_assessment(hard_quarantined=False, soft_quarantined=False)
+    typed = AttemptAssessment(
+        **{**original.__dict__, "branch_type": "ambiguity"}
+    )
+    assert AttemptAssessment.from_dict(typed.to_dict()) == typed
+    assert typed.to_dict()["branch_type"] == "ambiguity"
+
+    safety = AttemptAssessment(
+        **{**original.__dict__, "is_safety_bracket": True}
+    )
+    assert safety.to_dict()["is_safety_bracket"] is True
+    assert AttemptAssessment.from_dict(safety.to_dict()) == safety
+
+    legacy = original.to_dict()
+    assert AttemptAssessment.from_dict(legacy).branch_type == "faithful"
+    assert AttemptAssessment.from_dict(legacy).is_safety_bracket is False
+
+    malformed_branch = {**legacy, "branch_type": "grade-derived"}
+    malformed_safety = {**legacy, "is_safety_bracket": "true"}
+    with pytest.raises(ValueError):
+        AttemptAssessment.from_dict(malformed_branch)
+    with pytest.raises(ValueError):
+        AttemptAssessment.from_dict(malformed_safety)
+    with pytest.raises(ValueError):
+        AttemptAssessment(
+            **{**original.__dict__, "branch_type": "discovery", "is_safety_bracket": True}
+        )
 
 
 # ---------------------------------------------------------------------------

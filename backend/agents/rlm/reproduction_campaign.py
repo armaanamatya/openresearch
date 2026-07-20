@@ -893,12 +893,31 @@ class ReproductionCampaign:
             allow_supersede = False
 
             now = time.time()
-            self.ledger.append_row({
+            launched_row = {
                 "attempt_n": attempt_n, "status": "launched",
                 "directives_sha256": planned["directives_sha256"], "envelope": planned["envelope"],
                 "driver": self.driver, "project_id": planned["project_id"],
                 "run_dir": planned["run_dir"], "launched_at": now,
-            })
+            }
+            # Scheduler enrichments are durable only when explicitly enabled
+            # by PLAN. Leaving the faithful/False defaults absent preserves
+            # historical write-ahead rows byte-for-byte; ASSESS-on-resume
+            # consumes this ledger copy rather than mutable directives.
+            if "branch_type" in planned:
+                if planned["branch_type"] not in {"faithful", "ambiguity", "discovery"}:
+                    raise CampaignLedgerError(f"invalid planned branch_type: {planned['branch_type']!r}")
+                launched_row["branch_type"] = planned["branch_type"]
+            if "is_safety_bracket" in planned:
+                if type(planned["is_safety_bracket"]) is not bool:
+                    raise CampaignLedgerError("planned is_safety_bracket must be bool")
+                if planned["is_safety_bracket"] and planned.get("branch_type", "faithful") != "faithful":
+                    raise CampaignLedgerError("planned is_safety_bracket requires branch_type='faithful'")
+                if planned["is_safety_bracket"] and os.environ.get(
+                    "OPENRESEARCH_SCHEDULER_TREE", ""
+                ).strip().lower() not in ("1", "true", "yes"):
+                    raise CampaignLedgerError("planned is_safety_bracket requires OPENRESEARCH_SCHEDULER_TREE")
+                launched_row["is_safety_bracket"] = planned["is_safety_bracket"]
+            self.ledger.append_row(launched_row)
             state.in_flight = InFlight(
                 attempt_n=attempt_n, driver=self.driver, run_dir=planned["run_dir"],
                 pid=None, lease_ref=None, launched_at=now,

@@ -23,6 +23,14 @@ def test_off_is_byte_identical(monkeypatch):
     assert result == {"kind": "CONTINUE", "rule": "x"}  # no advisory key added
 
 
+def test_noncanonical_tree_tokens_are_off_and_byte_identical(monkeypatch):
+    for token in ("on", "0", "false", "junk"):
+        monkeypatch.setenv("OPENRESEARCH_SCHEDULER_TREE", token)
+        result = {"kind": "CONTINUE", "rule": "x"}
+        _maybe_attach_asha_advisory(result, [_assess(1, 0.9)], 0)
+        assert result == {"kind": "CONTINUE", "rule": "x"}
+
+
 def test_off_does_not_read_attempt_cost(monkeypatch):
     class _UnreadableCost:
         @property
@@ -69,6 +77,15 @@ def test_on_is_fail_soft(monkeypatch):
     result = {"kind": "CONTINUE"}
     _maybe_attach_asha_advisory(result, [_assess(1, 0.9)], 0)
     assert result == {"kind": "CONTINUE"}  # advisory failed → decision untouched
+
+
+def test_on_suppresses_advisory_for_explicit_invalid_scheduler_metadata(monkeypatch):
+    monkeypatch.setenv("OPENRESEARCH_SCHEDULER_TREE", "1")
+    result = {"kind": "CONTINUE"}
+    invalid = _assess(1, 0.9)
+    invalid.branch_type = "free-text"
+    _maybe_attach_asha_advisory(result, [invalid], 0)
+    assert result == {"kind": "CONTINUE"}
 
 
 def _cohort4():
