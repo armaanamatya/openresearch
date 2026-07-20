@@ -105,6 +105,37 @@ a subsequent explicit project listing showed no clusters and no
 `gke-deepinv-gke-smoke*` Compute Engine nodes. The diagnostic is closed and
 left no running GKE or node resource.
 
+### Why the historical GPU runs worked — configuration comparison
+
+The repository retains records for two different, now-deleted GKE generations;
+they must not be conflated with a persistent Claude credential.
+
+- The older `openresearch-gpu` cluster (deleted 2026-07-11) used the legacy
+  node-service-account plus `storage-rw`-scope route against
+  `deepinvent-ext-ut-sdar-runs`.
+- The later `deepinv-gke` cluster ran `prj_resnetgcp4` through
+  `prj_resnetgcp12` on 2026-07-17. Its validated L4 path used
+  `reprolab/reprolab-sa`,
+  `deepinv-workload@deepinvent-ext-ut.iam.gserviceaccount.com`, and Workload
+  Identity to upload to `deepinvent-ext-ut-reprolab-artifacts`. It was deleted
+  externally around 2026-07-17 22:00 UTC.
+
+The current decisive difference is on the latter path's GSA policy: a live
+read returned only `{\"etag\": \"ACAB\"}` — no
+`roles/iam.workloadIdentityUser` member for
+`serviceAccount:deepinvent-ext-ut.svc.id.goog[reprolab/reprolab-sa]`. Cluster
+deletion does not remove a GSA IAM policy, so either that policy was overwritten
+or the GSA was recreated after the validated run. The available records do not
+attribute which actor or automation made that mutation.
+
+The old node-service-account route is not a reusable fallback: its cluster is
+gone, it targets a different bucket, and current inspection finds neither a
+project-level nor either current artifact-bucket write role for
+`deepinv-gke-node@deepinvent-ext-ut.iam.gserviceaccount.com`. More importantly,
+the scheduler's evidence contract does not permit substituting node credentials
+for the current provenance identity. Recreating a cluster or re-authenticating
+the same user cannot recreate the missing GSA policy binding.
+
 AWS is not launch-ready: the AWS CLI is absent, `AWS_PROFILE` and
 `AWS_WEB_IDENTITY_TOKEN_FILE` are unset. `boto3` was installed into the local
 repository venv for the hermetic controller path, and the bounded
