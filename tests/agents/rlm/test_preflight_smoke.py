@@ -105,6 +105,14 @@ def test_smoke_command_carries_marker(tmp_path: Path):
     assert 'CUDA_VISIBLE_DEVICES=""' in cmd  # GPU hidden for the probe
 
 
+def test_smoke_command_uses_existing_remote_workdir_without_host_path(tmp_path: Path):
+    code_dir = tmp_path / "code"
+    cmd = preflight_smoke.smoke_command(code_dir, uses_sandbox_workdir=True)
+
+    assert f'cd "{code_dir}"' not in cmd
+    assert "_preflight_smoke.py" in cmd
+
+
 def test_smoke_ignores_lazy_in_function_imports(tmp_path: Path):
     # A copied harness helper (mirror of search_qa_env.py / alfworld_env.py) lazy-imports
     # a heavy dep INSIDE a function. Importing the helper module never runs that import,

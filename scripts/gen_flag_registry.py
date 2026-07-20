@@ -174,7 +174,10 @@ def main() -> int:
                          else f"| `{f}` | {cfg} | {doc} | {sites or ''} | |")
         lines.append("")
 
-    content = "\n".join(lines) + "\n"
+    # Each section deliberately appends a separator row.  Trim the final one so
+    # a regeneration is clean under ``git diff --check`` as well as semantically
+    # fresh under ``--check``.
+    content = "\n".join(lines).rstrip() + "\n"
 
     if args.check:
         existing = OUT.read_text() if OUT.exists() else ""

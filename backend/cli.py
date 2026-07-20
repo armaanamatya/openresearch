@@ -1279,20 +1279,36 @@ def _cmd_reproduce_sanity(args: argparse.Namespace, runs_root: Path) -> int:
     )
     project_dir = runs_root / project_id
     code_dir = project_dir / "code"
+    sandbox_mode = resolve_sandbox_mode(
+        getattr(args, "sandbox", "auto"), pipeline_mode="rlm"
+    )
+    requested_gpu_mode = str(getattr(args, "gpu_mode", "auto") or "auto").lower()
+    require_gpu = sandbox_mode.value == "runpod" and requested_gpu_mode != "off"
     code_dir.mkdir(parents=True, exist_ok=True)
     (project_dir / "cost_ledger.jsonl").touch(exist_ok=True)
     (code_dir / "sanity.py").write_text(
-        "import json, os\n"
+        "import json, os, shutil, subprocess\n"
+        "REQUIRE_GPU = " + repr(require_gpu) + "\n"
         "out = os.environ.get('OUTPUT_DIR') or '.'\n"
         "os.makedirs(out, exist_ok=True)\n"
+        "gpu_name = ''\n"
+        "if shutil.which('nvidia-smi'):\n"
+        "    try:\n"
+        "        gpu_name = subprocess.check_output(\n"
+        "            ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],\n"
+        "            text=True, timeout=10,\n"
+        "        ).strip()\n"
+        "    except (OSError, subprocess.SubprocessError):\n"
+        "        pass\n"
+        "if REQUIRE_GPU and not gpu_name:\n"
+        "    raise RuntimeError('RunPod sanity requested a GPU but nvidia-smi found none')\n"
         "with open(os.path.join(out, 'metrics.json'), 'w', encoding='utf-8') as fh:\n"
-        "    json.dump({'sanity_ok': 1.0}, fh)\n"
-        "print('reprolab sanity ok')\n",
+        "    json.dump({'sanity_ok': 1.0, 'gpu_visible': float(bool(gpu_name))}, fh)\n"
+        "print('reprolab sanity ok' + (': ' + gpu_name if gpu_name else ''))\n",
         encoding="utf-8",
     )
     (code_dir / "commands.json").write_text(json.dumps(["python sanity.py"]), encoding="utf-8")
 
-    sandbox_mode = resolve_sandbox_mode(getattr(args, "sandbox", "auto"), pipeline_mode="rlm")
     try:
         ensure_sandbox_mode_available(sandbox_mode)
     except SandboxRuntimeError as exc:
@@ -1328,6 +1344,7 @@ def _cmd_reproduce_sanity(args: argparse.Namespace, runs_root: Path) -> int:
         provider="none",
         model="sanity-template",
         sandbox_mode=sandbox_mode,
+        gpu_mode=requested_gpu_mode,
         run_budget=run_budget,
         arxiv_id=source,
     )

@@ -60,3 +60,40 @@ def test_cmd_reproduce_sanity_writes_stable_artifacts(tmp_path, monkeypatch):
     assert (run_dir / "code" / "commands.json").exists()
     assert (run_dir / "cost_ledger.jsonl").exists()
     assert (run_dir / "demo_status.json").exists()
+    assert "REQUIRE_GPU = False" in (run_dir / "code" / "sanity.py").read_text()
+
+
+def test_cmd_reproduce_sanity_requires_and_threads_runpod_gpu(tmp_path, monkeypatch):
+    import backend.cli as cli
+    import backend.agents.execution as execution
+    import backend.agents.rlm.primitives as primitives
+
+    monkeypatch.setattr(
+        execution,
+        "resolve_sandbox_mode",
+        lambda sandbox, pipeline_mode: SimpleNamespace(value="runpod"),
+    )
+    monkeypatch.setattr(execution, "ensure_sandbox_mode_available", lambda mode: None)
+    observed = {}
+
+    def fake_run_experiment(code_path, env_id, *, model_id, eval_env, ctx):
+        observed["script"] = (tmp_path / "prj_runpod_sanity" / "code" / "sanity.py").read_text()
+        observed["gpu_mode"] = ctx.gpu_mode
+        return {"success": True, "metrics": {"sanity_ok": 1.0, "gpu_visible": 1.0}}
+
+    monkeypatch.setattr(primitives, "run_experiment", fake_run_experiment)
+
+    result = cli._cmd_reproduce_sanity(Namespace(
+        source="2512.24601",
+        project_id="prj_runpod_sanity",
+        sandbox="runpod",
+        gpu_mode="prefer",
+        max_usd=None,
+        max_wall_clock=1800,
+        max_pod_seconds=900,
+        max_run_gpu_usd=1.0,
+    ), tmp_path)
+
+    assert result == 0
+    assert "REQUIRE_GPU = True" in observed["script"]
+    assert observed["gpu_mode"] == "prefer"

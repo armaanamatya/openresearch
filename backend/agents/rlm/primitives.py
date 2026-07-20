@@ -4457,17 +4457,19 @@ async def _execute_in_sandbox(
     # modules — so a missing dep (the matplotlib ModuleNotFoundError class) fails in
     # seconds; the command loop then short-circuits the GPU training and the import
     # error becomes the next iteration's repair_context.
-    # Gated off remote k8s sandboxes (gcp/azure): smoke_command() bakes a
-    # host-absolute `cd "<code_dir>"` into the shell string, which is never valid
-    # inside a remote GKE/AKS pod (the orchestrator host's path doesn't exist
-    # there) — a straight bug fix, not flag-gated. local/docker/runpod keep the
-    # smoke bootstrap exactly as before.
+    # Gated off remote k8s sandboxes (gcp/azure): their cell routes do not use
+    # this monolithic sandbox command. RunPod does; it receives a command with
+    # no host-path cd because RunpodBackend already enters its uploaded workdir.
     if "gcp" not in _mode_str and "azure" not in _mode_str:
         try:
             from backend.agents.rlm import preflight_smoke as _preflight_smoke
             if _preflight_smoke.is_enabled():
                 _preflight_smoke.emit(code_dir)
-                bootstrap_commands.append(_preflight_smoke.smoke_command(code_dir))
+                bootstrap_commands.append(
+                    _preflight_smoke.smoke_command(
+                        code_dir, uses_sandbox_workdir="runpod" in _mode_str
+                    )
+                )
         except Exception:  # noqa: BLE001 — preflight smoke wiring must never block the run
             logger.exception("_execute_in_sandbox: preflight smoke wiring failed")
 
@@ -4478,8 +4480,8 @@ async def _execute_in_sandbox(
     # line in seconds, short-circuits the GPU training, and becomes repair_context — the
     # exact class that cost a 25-min run 0.12 of its score. A script that ignores the
     # smoke env is killed by `timeout` (exit 124) and treated as a soft pass (no block).
-    # Same remote-k8s gate as the preflight smoke above — smoke_command() also
-    # bakes a host-absolute `cd "<code_dir>"`, invalid inside a remote gcp/azure pod.
+    # Same remote-k8s gate as the preflight smoke above. The RunPod form relies
+    # on its guaranteed uploaded workdir rather than a host-path cd.
     if "gcp" not in _mode_str and "azure" not in _mode_str:
         try:
             from backend.agents.rlm import execution_smoke as _execution_smoke
@@ -4491,7 +4493,11 @@ async def _execute_in_sandbox(
                 )
                 if _entry is not None:
                     bootstrap_commands.append(
-                        _execution_smoke.smoke_command(code_dir, entry_script=_entry)
+                        _execution_smoke.smoke_command(
+                            code_dir,
+                            entry_script=_entry,
+                            uses_sandbox_workdir="runpod" in _mode_str,
+                        )
                     )
                 else:
                     logger.info("_execute_in_sandbox: execution smoke skipped — no known entry script")

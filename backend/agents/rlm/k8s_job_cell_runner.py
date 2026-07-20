@@ -713,8 +713,9 @@ def _collision_guard_enabled() -> bool:
     ownership protocol.  GKE/AKS opt in with the explicit default-OFF flag;
     their existing default manifests and 409 behaviour remain byte-identical.
     """
-    return _get_settings_prefix() == "aws" or env_truthy(
-        "OPENRESEARCH_K8S_COLLISION_GUARD"
+    return _get_settings_prefix() == "aws" or (
+        os.environ.get("OPENRESEARCH_K8S_COLLISION_GUARD", "").strip().lower()
+        in ("1", "true", "yes")
     )
 
 

@@ -119,3 +119,33 @@ def test_runpod_preflight_fails_fast_without_api_key(monkeypatch) -> None:
 
     assert excinfo.value.cause_kind is RuntimeCauseKind.backend_unavailable
     assert "RUNPOD_API_KEY" in str(excinfo.value)
+
+
+def test_runpod_cli_credentials_are_explicit_opt_in(monkeypatch, tmp_path) -> None:
+    """A runpodctl login must not change application behavior until enabled."""
+    config = tmp_path / "config.toml"
+    config.write_text('apikey = "cli-only-test-key"\n', encoding="utf-8")
+    monkeypatch.delenv("OPENRESEARCH_RUNPOD_API_KEY", raising=False)
+    monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
+    monkeypatch.delenv("OPENRESEARCH_RUNPOD_USE_CLI_CREDENTIALS", raising=False)
+    monkeypatch.setattr(
+        "backend.services.runtime.runpod_backend._runpod_cli_config_path",
+        lambda: config,
+    )
+
+    assert RunpodBackend(ssh_key_path="/dev/null").api_key == ""
+
+
+def test_runpod_cli_credentials_load_only_when_enabled(monkeypatch, tmp_path) -> None:
+    """The opt-in accepts the standard runpodctl TOML key without exposing it."""
+    config = tmp_path / "config.toml"
+    config.write_text('apikey = "cli-only-test-key"\n', encoding="utf-8")
+    monkeypatch.delenv("OPENRESEARCH_RUNPOD_API_KEY", raising=False)
+    monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
+    monkeypatch.setenv("OPENRESEARCH_RUNPOD_USE_CLI_CREDENTIALS", "yes")
+    monkeypatch.setattr(
+        "backend.services.runtime.runpod_backend._runpod_cli_config_path",
+        lambda: config,
+    )
+
+    assert RunpodBackend(ssh_key_path="/dev/null").api_key == "cli-only-test-key"
