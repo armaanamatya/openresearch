@@ -473,20 +473,19 @@ def test_cmd_campaign_project_id_override_is_none_when_omitted(tmp_path, monkeyp
     assert captured == [None]
 
 
-def test_cmd_campaign_project_id_mismatch_is_rejected(tmp_path, monkeypatch, capsys):
-    # Mirrors cmd_reproduce's mismatch guard: an override that does not equal
-    # what register_project resolves to (here the fake's fixed "prj_fake")
-    # must fail loudly (exit 1) rather than silently diverging and dying
-    # later at fetch_paper with an opaque UnknownProject.
-    _install_fakes(monkeypatch, project_id="prj_fake")
-    built: list = []
-    monkeypatch.setattr(cli, "build_campaign", lambda pid, opts: built.append(pid))
+def test_cmd_campaign_independent_project_id_is_allowed(tmp_path, monkeypatch):
+    # A paired A/B arm needs its own EventStore aggregate even when it shares
+    # the source paper. Registration must therefore retain the override.
+    intake, *_ = _install_fakes(monkeypatch, project_id="prj_fake")
+    _install_fake_campaign(
+        monkeypatch, {"kind": "EXHAUSTED", "rule": "r", "stop_reason": None,
+                      "champion_attempt_n": None, "spent": {}}
+    )
 
     args = cli._build_parser().parse_args(
         _campaign_argv("--project-id", "prj_other", runs_root=str(tmp_path / "runs"))
     )
     rc = cli.cmd_campaign(args)
 
-    assert rc == 1
-    assert not built
-    assert "prj_other" in capsys.readouterr().err
+    assert rc == 0
+    assert intake.registered[0][1] == "prj_other"

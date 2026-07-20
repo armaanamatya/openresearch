@@ -1593,9 +1593,10 @@ class TestJobName:
         name = kjcr._job_name("c0")
         assert name.startswith("reprolab-cell-")
 
-    def test_full_run_identity_prevents_long_prefix_collision(self):
+    def test_full_run_identity_prevents_long_prefix_collision(self, monkeypatch):
         # Historical names kept only the first 16 run-id characters, so a
         # controller retry could collide with an old terminal Job.
+        monkeypatch.setenv("OPENRESEARCH_K8S_COLLISION_GUARD", "1")
         a = kjcr._job_name("monolithic", "prj_resnetgcp12-aaaaaaaa")
         b = kjcr._job_name("monolithic", "prj_resnetgcp12-bbbbbbbb")
         assert a != b
@@ -1665,6 +1666,7 @@ def _owned_conflict_job_for(*, run_id: str, cell_id: str, terminal: str | None =
 
 class TestConflictRecovery:
     def _run(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, batch: _ConflictBatch) -> dict:
+        monkeypatch.setenv("OPENRESEARCH_K8S_COLLISION_GUARD", "1")
         k8s = _K8sClients(batch=batch, core=FakeK8sCore(pods=[_FakePod(exit_code=0)]), watch_cls=None)
         kjcr._k8s_clients_override = k8s
         _patch_blob(monkeypatch, metrics={"metric": 0.5})
@@ -1735,6 +1737,7 @@ class TestConflictRecovery:
         assert len(batch.created_jobs) == 1
 
     def test_409_changed_trainer_bytes_with_stable_run_and_cell_are_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENRESEARCH_K8S_COLLISION_GUARD", "1")
         trainer = tmp_path / "train_cell.py"
         trainer.write_text("print('old trainer')\n", encoding="utf-8")
         old_k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
