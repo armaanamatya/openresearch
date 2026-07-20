@@ -56,9 +56,9 @@ GPU node pool autoscales 0→N, Azure Blob is the code/artifact bus, Azure Files
 
 | # | Doc | Use it for |
 |---|---|---|
-| 1 | `docs/superpowers/specs/2026-06-03-azure-aks-gpu-backend-design.md` | **The design.** Decision table (§1), end-to-end architecture (§2), 3-layer split (§3), the file change-map (§4), the runner contract (§5), Terraform tree (§6), auth flow (§7), budget mapping (§8), phased plan + gates (§11). |
+| 1 | `docs/history/specs/2026-06-03-azure-aks-gpu-backend-design.md` | **The design.** Decision table (§1), end-to-end architecture (§2), 3-layer split (§3), the file change-map (§4), the runner contract (§5), Terraform tree (§6), auth flow (§7), budget mapping (§8), phased plan + gates (§11). |
 | 2 | `docs/runbooks/2026-06-03-azure-aks-gpu-backend-handoff.md` | **The how.** Prereqs, the quota commands (§1), per-phase standup commands, the CPU-stub fallback (§6), the troubleshooting matrix (§7), cost notes (§8). |
-| 3 | `docs/superpowers/specs/2026-05-31-oom-gpu-capacity-remediation-design.md` | The **cell-matrix model** this extends: `describe_capacity`, `run_matrix`, `aggregate_cell_metrics`, the cell status vocabulary, the in-cell OOM shrink ladder you mirror in-Job. |
+| 3 | `docs/history/specs/2026-05-31-oom-gpu-capacity-remediation-design.md` | The **cell-matrix model** this extends: `describe_capacity`, `run_matrix`, `aggregate_cell_metrics`, the cell status vocabulary, the in-cell OOM shrink ladder you mirror in-Job. |
 | 4 | `CLAUDE.md` | §Sandboxes, §One-GPU-per-cell execution, §Dynamic GPU selection; the **shell-vs-`.env` precedence** pitfall (prefix the CLI with `env -u OPENAI_API_KEY …`). |
 
 ---

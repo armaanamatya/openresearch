@@ -3,7 +3,7 @@
 These tokens route the executor/verifier/grader sub-roles onto the Azure AI
 Foundry Anthropic-compatible endpoint (``.../anthropic/v1/messages``) while
 still being classified as the Claude family — the validated sub-role baseline,
-so no fidelity warning fires. See ``docs/superpowers/plans/2026-07-05-
+so no fidelity warning fires. See ``docs/history/plans/2026-07-05-
 reliable-autonomous-reproduction-foundation.md`` Task 5.
 """
 from __future__ import annotations

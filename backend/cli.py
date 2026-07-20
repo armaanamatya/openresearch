@@ -1596,7 +1596,7 @@ def _cmd_reproduce_resume_cells(args: argparse.Namespace, runs_root: Path) -> in
 def cmd_reproduce(args: argparse.Namespace) -> int:
     """Full pipeline: ingest a paper, build workspace, run agent pipeline."""
     # BUG-LR-014: warn early if shell API-key vars shadow .env — see
-    # docs/superpowers/specs/2026-05-28-rlm-stability-remediation-design.md
+    # docs/history/specs/2026-05-28-rlm-stability-remediation-design.md
     _warn_on_shell_env_override()
     args = _with_reproduce_defaults(args)
     # Cross-platform path normalization — converts Windows paths to WSL mount
@@ -2281,7 +2281,7 @@ def _campaign_driver_type(value: str) -> str:
 def cmd_campaign(args: argparse.Namespace) -> int:
     """Repeat-until-reproduced campaign: launch, assess, decide, repeat until
     a terminal verdict or an operator checkpoint (spec
-    docs/superpowers/specs/2026-07-01-reproduction-campaign-and-self-
+    docs/history/specs/2026-07-01-reproduction-campaign-and-self-
     improving-harness-design.md). Thin route: mirrors cmd_reproduce's ingest
     chain, then hands off to campaign_composition.build_campaign.
     """

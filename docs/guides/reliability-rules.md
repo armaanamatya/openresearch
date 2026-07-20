@@ -8,7 +8,7 @@
 >
 > Incident *narratives* (symptom → root cause → fix, with the specific
 > `prj_*` run and commit) live in per-bug memory files and
-> `docs/superpowers/specs/` — this file cites them but doesn't retell them.
+> `docs/history/specs/` — this file cites them but doesn't retell them.
 > The pre-2026-06 postmortem log (`Symptom → Root cause → Fix → Lesson →
 > Guardrail` shape) is frozen and archived at
 > [`docs/archive/learn.md`](../archive/learn.md).

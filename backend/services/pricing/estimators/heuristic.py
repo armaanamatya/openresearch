@@ -4,7 +4,7 @@ Always available (no data, no LLM call).  Uses a per-category × model-size
 table seeded from public reproduction runtimes.  Conservative sigma = 50% of
 mean — a wide safety net for the cold-start regime.
 
-Spec: docs/superpowers/specs/2026-05-25-three-source-budget-estimator-design.md §heuristic
+Spec: docs/history/specs/2026-05-25-three-source-budget-estimator-design.md §heuristic
 """
 
 from __future__ import annotations

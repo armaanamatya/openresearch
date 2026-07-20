@@ -8,7 +8,7 @@
 >
 > This doc is self-contained. Read it top to bottom. The detailed evidence for each finding
 > lives in `docs/audits/2026-05-31-backend-core-opportunity-backlog.{md,json}` and the runnable
-> per-finding prompts in `docs/superpowers/specs/2026-06-01-backend-core-task-prompts.md`
+> per-finding prompts in `docs/history/specs/2026-06-01-backend-core-task-prompts.md`
 > (both already committed on `harden/root-harness`). Memory: `[[backend-core-audit]]`,
 > `[[root-harness-hardening]]`, `[[commit-attribution-preference]]`.
 
@@ -208,7 +208,7 @@ and skip F-30. Same end state, smaller conflict blasts.
 ## 4. Remaining backlog (do AFTER the merge, against merged code)
 
 Re-read each finding's evidence in `docs/audits/2026-05-31-backend-core-opportunity-backlog.md` and
-its copy-paste prompt in `docs/superpowers/specs/2026-06-01-backend-core-task-prompts.md` **before
+its copy-paste prompt in `docs/history/specs/2026-06-01-backend-core-task-prompts.md` **before
 touching it** (line anchors will have drifted post-merge — match on unique content, not line numbers).
 
 ### Phase B remainder (5 findings) — finish this first

@@ -8,7 +8,7 @@
 > finishes Release 1 without re-doing recon.
 >
 > **Source-of-truth design spec (read second):**
-> `docs/superpowers/specs/2026-07-05-openscience-skill-library-and-harness-enhancements-design.md`
+> `docs/history/specs/2026-07-05-openscience-skill-library-and-harness-enhancements-design.md`
 > **Original design handoff (background):**
 > `docs/runbooks/2026-07-05-openscience-skill-library-handoff.md`
 > **OpenScience reference clone (read-only, Apache-2.0):** `/home/abheekp/openscience-ref`
@@ -381,7 +381,7 @@ addenda. Report the diff + the ON-flag placeholder count."
 ## 6. Commit guidance (only when the user asks)
 
 - The **spec + BOTH handoffs are currently UNCOMMITTED** — commit them WITH the Release-1 code in
-  one milestone commit (or when asked). Files: `docs/superpowers/specs/2026-07-05-openscience-*.md`,
+  one milestone commit (or when asked). Files: `docs/history/specs/2026-07-05-openscience-*.md`,
   `docs/runbooks/2026-07-05-openscience-skill-library-handoff.md`, THIS doc, all `skills/`,
   `skill_catalog.py`, `skill_matcher.py`, `literature_claim_gate.py`, `backend/services/knowledge/`,
   and the edits to `primitives.py`/`system_prompt.py`/`baseline_implementation.py`/`report.py`/

@@ -326,7 +326,7 @@ and the rules for not creating stale docs:
 
 Historical material (engineering journals, old run logs, superseded notes) lives
 in [`docs/archive/`](docs/archive/) and under dated `docs/runbooks/` /
-`docs/superpowers/` files — each carries its date or an `ARCHIVED` banner and is
+`docs/history/` files — each carries its date or an `ARCHIVED` banner and is
 **never** presented as current.
 
 ### Generated artifacts

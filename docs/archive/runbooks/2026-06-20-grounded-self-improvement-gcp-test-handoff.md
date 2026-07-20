@@ -11,8 +11,8 @@
 > the new guards**, with root = **Opus via OAuth**, executor = **GPT-5.5-thinking
 > via Azure OpenAI**, validator = **OAuth-Claude** (cross-family from the GPT executor).
 >
-> Authoritative refs: spec `docs/superpowers/specs/2026-06-20-grounded-self-improvement-and-harness-reliability-redesign-design.md`,
-> plan `docs/superpowers/plans/2026-06-20-grounded-self-improvement-implementation-plan.md`,
+> Authoritative refs: spec `docs/history/specs/2026-06-20-grounded-self-improvement-and-harness-reliability-redesign-design.md`,
+> plan `docs/history/plans/2026-06-20-grounded-self-improvement-implementation-plan.md`,
 > operator checklist `docs/runbooks/2026-06-20-grounded-self-improvement-operator-checklist.md`.
 
 ---

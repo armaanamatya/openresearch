@@ -2,7 +2,7 @@
 
 - **Date:** 2026-07-11
 - **Branch:** `feat/gke-gpu-path-reproduction-reliability` (55 ahead of `main`, **unpushed, no PR**)
-- **Master spec:** `docs/superpowers/specs/2026-07-11-unified-reproduction-platform-parallel-build.md`
+- **Master spec:** `docs/history/specs/2026-07-11-unified-reproduction-platform-parallel-build.md`
 - **Status:** Track E eval scorecard **wired end-to-end + validated on real data**; WS3 Phase-1
   durability primitives + WS5 grounding module built. All flag-gated **default-OFF**, byte-identical
   off, **verdict-inert**. Remaining WS3/WS4 cluster wiring + WS2 flips + WS1-H1 + WS-Ext are deferred
@@ -204,10 +204,10 @@ couple the eval to the verdict and violate the invariant; Phase 2 deliberately d
 
 ## 7. Source specs / plans (detail refs — read on demand)
 
-- Master orchestration + clobber-safe model: `docs/superpowers/specs/2026-07-11-unified-reproduction-platform-parallel-build.md`
-- WS3 durability design: `docs/superpowers/specs/2026-07-10-durable-cloud-native-orchestration-ws3-design.md`
-- WS2 cloud-reliability (Track D): `docs/superpowers/specs/2026-07-09-cloud-reliability-track-d-design.md`
-- Eval-integrity (Track A): `docs/superpowers/specs/2026-07-09-eval-integrity-track-a-design.md`
-- Track E impl plan (full task interfaces + provided tests): `docs/superpowers/plans/2026-07-10-track-e-eval-scorecard.md`
-- Track E/G master design: `docs/superpowers/specs/2026-07-10-reproduction-eval-framework-design.md`
+- Master orchestration + clobber-safe model: `docs/history/specs/2026-07-11-unified-reproduction-platform-parallel-build.md`
+- WS3 durability design: `docs/history/specs/2026-07-10-durable-cloud-native-orchestration-ws3-design.md`
+- WS2 cloud-reliability (Track D): `docs/history/specs/2026-07-09-cloud-reliability-track-d-design.md`
+- Eval-integrity (Track A): `docs/history/specs/2026-07-09-eval-integrity-track-a-design.md`
+- Track E impl plan (full task interfaces + provided tests): `docs/history/plans/2026-07-10-track-e-eval-scorecard.md`
+- Track E/G master design: `docs/history/specs/2026-07-10-reproduction-eval-framework-design.md`
 </content>

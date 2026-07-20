@@ -177,7 +177,7 @@ Root cause: BUG-LR-011 — `rlm._SAFE_BUILTINS["globals"] = None` made `globals(
 
 Secondary: BUG-LR-014 — the first CLI attempt died at iter 0 with a 401 because a stale shell `OPENAI_API_KEY=sk-svcacct-…` shadowed the valid `sk-proj-…` in `.env`. Resubmitted with `env -u OPENAI_API_KEY` prefix.
 
-Full forensics + fix designs: `docs/superpowers/specs/2026-05-28-rlm-stability-remediation-design.md`.
+Full forensics + fix designs: `docs/history/specs/2026-05-28-rlm-stability-remediation-design.md`.
 
 **BUG-LR-011 + BUG-LR-012 + BUG-LR-013 + BUG-LR-014 + BUG-LR-015 resolved in `271df91`.** The rerun command above is now safe — same env vars, same flags. No `env -u` prefix needed (the boot-time validator will warn if a shadow is detected).
 

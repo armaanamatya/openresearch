@@ -9,10 +9,10 @@
 
 ## 0. How this was run
 `ultracode` Workflows. A read-only recon Workflow verified every anchor + extracted the helper contracts
-(→ `.superpowers/sdd/phase3-recon/*.md`); the lead authored anchored briefs (→ `.superpowers/sdd/phase3-*.md`
+(→ `.history/sdd/phase3-recon/*.md`); the lead authored anchored briefs (→ `.history/sdd/phase3-*.md`
 + `phase3-contract.md`); a Wave-B Workflow ran 5 concurrent **disjoint-file** owner chains
 (implement→adversarial-review→bounded-fix, Sonnet); the lead (Opus) reviewed **every diff**, re-ran the
-baseline, and **owns all commits** (subagents never touched git). SDD ledger: `.superpowers/sdd/progress.md`.
+baseline, and **owns all commits** (subagents never touched git). SDD ledger: `.history/sdd/progress.md`.
 
 ## 1. What landed (6 commits)
 | Commit | What |
@@ -92,7 +92,7 @@ ambiguous).
 `runs/prj_adam_local_1` primary (genuinely ambiguous) **stays `inconclusive`**; **no false `contradicted`**;
 the existing `test_normalize_lifts_..._real_adam` (asserts `"kind" not in` the *frozen* artifact) stays green
 (the frozen artifact is untouched — only new extractions gain `kind`). Recon:
-`.superpowers/sdd/phase3-recon/run_py_repro_spec_extractor_py.md`.
+`.history/sdd/phase3-recon/run_py_repro_spec_extractor_py.md`.
 
 ## 4. Drill-gated / operator items (an agent cannot do these — real GKE + money)
 - **The WS3 durability drill (headline validation):** `sandbox=gcp` run → kill the controller pod
@@ -124,7 +124,7 @@ the existing `test_normalize_lifts_..._real_adam` (asserts `"kind" not in` the *
   Premature; needs its own design + infra.
 
 ## 6. Where the material lives
-- Recon (verbatim anchors + helper contracts): `.superpowers/sdd/phase3-recon/*.md`
-- Owner briefs + shared contract: `.superpowers/sdd/phase3-*.md`
-- SDD progress ledger: `.superpowers/sdd/progress.md` (Phase-3 section at the end)
-- WS3 design: `docs/superpowers/specs/2026-07-10-durable-cloud-native-orchestration-ws3-design.md`
+- Recon (verbatim anchors + helper contracts): `.history/sdd/phase3-recon/*.md`
+- Owner briefs + shared contract: `.history/sdd/phase3-*.md`
+- SDD progress ledger: `.history/sdd/progress.md` (Phase-3 section at the end)
+- WS3 design: `docs/history/specs/2026-07-10-durable-cloud-native-orchestration-ws3-design.md`

@@ -4,7 +4,7 @@ Scans `runs/<id>/final_report.json` (+ `demo_status.json` for sandbox /
 status fallback) and returns ranked rows. Read-only; not gated by
 OPENRESEARCH_DEMO_SECRET per spec §3 #10.
 
-Spec: docs/superpowers/specs/2026-05-23-rubric-climb-leaderboard.md §4.4–§4.5.
+Spec: docs/history/specs/2026-05-23-rubric-climb-leaderboard.md §4.4–§4.5.
 """
 
 from __future__ import annotations

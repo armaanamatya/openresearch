@@ -1556,7 +1556,7 @@ _RL_SCAFFOLD_BLOCK = (
 # SDAR baseline-coverage guidance block (opt-in: OPENRESEARCH_SDAR_BASELINES=1)
 # ---------------------------------------------------------------------------
 # BES Phase 1 — Coverage Completion (spec
-# docs/superpowers/specs/2026-06-07-bes-integration/phase-1-coverage-completion.md).
+# docs/history/specs/2026-06-07-bes-integration/phase-1-coverage-completion.md).
 # A "baseline" is purely agent-side: the generated train.py maps a baseline
 # STRING to two flags (opsd_enabled, gate_type) inside train_one_run(baseline=...),
 # so emitting more baselines is GUIDANCE, not a harness change. The SDAR paper

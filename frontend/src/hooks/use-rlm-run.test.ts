@@ -252,7 +252,7 @@ describe("fold — the tree", () => {
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Phase-4-forward-compat extensions
-// Spec: docs/superpowers/specs/2026-05-23-rubric-climb-leaderboard.md §4.2
+// Spec: docs/history/specs/2026-05-23-rubric-climb-leaderboard.md §4.2
 // ──────────────────────────────────────────────────────────────────────────────
 
 import type { RubricScoreEvent } from "../lib/events/rlm-events";

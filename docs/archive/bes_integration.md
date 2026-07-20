@@ -7,7 +7,7 @@ pipeline runs **bit-for-bit as before**.
 
 > **Provenance.** Whiteboard walkthrough `IMG_5104.MOV` (2026-06-05) → reconstructed brief
 > (`origin/bes:paper-repro-bes-docs.zip`) → grilling + 4-agent codebase recon → the phased
-> design at `docs/superpowers/specs/2026-06-07-bes-integration/`. This file is the executive
+> design at `docs/history/specs/2026-06-07-bes-integration/`. This file is the executive
 > summary of what actually landed.
 
 ---
@@ -76,7 +76,7 @@ OPENRESEARCH_BES_ENABLED=true OPENRESEARCH_BES_CANDIDATES_PER_CLUSTER=3 \
 
 ## Change map
 
-Definitions in `backend/config.py`; design in `docs/superpowers/specs/2026-06-07-bes-integration/`.
+Definitions in `backend/config.py`; design in `docs/history/specs/2026-06-07-bes-integration/`.
 
 | Phase | Source | Tests |
 |:---:|---|---|

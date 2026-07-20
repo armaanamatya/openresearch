@@ -1,6 +1,6 @@
 """Pre-flight invariants for the pricing catalog.
 
-Spec: docs/superpowers/specs/2026-05-25-budget-estimation-design.md
+Spec: docs/history/specs/2026-05-25-budget-estimation-design.md
 §Pre-flight invariants 1, 2, 3, 4, 5, 6
 """
 

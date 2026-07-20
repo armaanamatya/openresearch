@@ -58,9 +58,9 @@ Commit on `feat/azure-bicep-canonical-aoai-hardening` (HEAD), author `lolout1`:
 - **Helm:** `pvc-cache.yaml` + `storageclass-files.yaml` gated behind
   `storage.filesCache.enabled` (`values.yaml` default true).
 - **Scripts:** `scripts/azure_sdar_{preflight,bootstrap_cluster,run,monitor}.sh`.
-- **Docs:** spec `docs/superpowers/specs/2026-06-14-sdar-on-azure-run-design.md`,
+- **Docs:** spec `docs/history/specs/2026-06-14-sdar-on-azure-run-design.md`,
   operator runbook `docs/runbooks/2026-06-14-sdar-on-azure-run.md`, plan
-  `docs/superpowers/plans/2026-06-14-sdar-on-azure-run.md`.
+  `docs/history/plans/2026-06-14-sdar-on-azure-run.md`.
 - **Verified:** 138 backend tests green, ruff clean, `helm lint`/`bicep build` pass,
   scripts syntax-checked, Codex-reviewed (its findings are all folded in).
 
@@ -166,11 +166,11 @@ and `OPENRESEARCH_AZURE_FILES_CACHE_ENABLED=false` (blob-only).
 ## 9. Canonical docs
 
 - Operator command reference: `docs/runbooks/2026-06-14-sdar-on-azure-run.md`
-- Design spec: `docs/superpowers/specs/2026-06-14-sdar-on-azure-run-design.md`
-- Implementation plan: `docs/superpowers/plans/2026-06-14-sdar-on-azure-run.md`
+- Design spec: `docs/history/specs/2026-06-14-sdar-on-azure-run-design.md`
+- Implementation plan: `docs/history/plans/2026-06-14-sdar-on-azure-run.md`
 - IaC deploy + redeploy: `docs/runbooks/2026-06-13-azure-aionic-deploy-handoff.md`
 - Paper detail + debug history: `docs/runbooks/2026-05-23-sdar-baseline-handoff.md`
-- Azure backend design: `docs/superpowers/specs/2026-06-03-azure-aks-gpu-backend-design.md`
+- Azure backend design: `docs/history/specs/2026-06-03-azure-aks-gpu-backend-design.md`
 - Backend entry points: `backend/services/runtime/aks_job_backend.py`,
   `backend/agents/rlm/k8s_job_cell_runner.py`, `backend/agents/rlm/executor.py`.
 

@@ -12,7 +12,7 @@ RLM paper-reproduction harness. The operator approved the full scope. **Design d
 truth):**
 
 ```
-docs/superpowers/specs/2026-07-05-openscience-skill-library-and-harness-enhancements-design.md
+docs/history/specs/2026-07-05-openscience-skill-library-and-harness-enhancements-design.md
 ```
 
 **Immediate next step:** run the `writing-plans` skill to produce the **Release-1** implementation
@@ -263,7 +263,7 @@ Later releases (2-5): spec §7. Native cloud (§5.E seams above) is Release 2.
 ## 8. Pointers
 
 - **Spec (source of truth):**
-  `docs/superpowers/specs/2026-07-05-openscience-skill-library-and-harness-enhancements-design.md`
+  `docs/history/specs/2026-07-05-openscience-skill-library-and-harness-enhancements-design.md`
 - **OpenScience clone:** `/home/abheekp/openscience-ref` (Apache-2.0).
 - **openresearch:** `/home/abheekp/openresearch`, branch `reconcile/grounded-self-improvement-on-main`.
 - **Memory:** `project_openscience_skill_port` (index in `MEMORY.md`); related

@@ -1,7 +1,7 @@
 # Rubric climb + leaderboard — screen captures (2026-05-23)
 
 Visual evidence for the rubric-climb panel + leaderboard delivery
-(`docs/superpowers/specs/2026-05-23-rubric-climb-leaderboard.md`).
+(`docs/history/specs/2026-05-23-rubric-climb-leaderboard.md`).
 
 Captured against `npm run dev` on port 3001. The lab captures use the existing
 `?rlmFixture=1` URL (an instant-replayed fixture). The leaderboard captures

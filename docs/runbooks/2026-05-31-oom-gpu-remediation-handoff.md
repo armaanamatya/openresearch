@@ -3,7 +3,7 @@
 **Goal:** make the RLM reproduction harness *never* OOM-loop again. Use **all** free local GPUs, split the training matrix across them (one GPU per cell), drop work that can't fit one card (honest gap), and on unrecoverable OOM **stop cleanly + report** instead of burning iterations. Backend-agnostic (local now; runpod/brev share the shape; azure = adapter stub).
 
 **Canonical refs (read in order):**
-1. `docs/superpowers/specs/2026-05-31-oom-gpu-capacity-remediation-design.md` — the locked design + root causes (the "why").
+1. `docs/history/specs/2026-05-31-oom-gpu-capacity-remediation-design.md` — the locked design + root causes (the "why").
 2. **This doc** — status, exact execution plan, ops, resume prompt.
 
 **Design is LOCKED via `/grill-me` — do NOT re-litigate the 7 decisions below.** Resume by executing §4.
@@ -165,6 +165,6 @@ Capacity-gate clamp (24 GB drops 7B, 80 GB keeps it); env-ABC rejects incomplete
 
 ## 8. Resume prompt (paste into a fresh session)
 
-> Read `docs/runbooks/2026-05-31-oom-gpu-remediation-handoff.md` and `docs/superpowers/specs/2026-05-31-oom-gpu-capacity-remediation-design.md`. The design is locked (grilled) — do not re-litigate. Components 1 (`gpu_capacity.py`) and 6 (forced_iteration terminal-OOM bypass) are DONE + tested. Execute the remaining components **2 → 3 → 4 → 5 → 7** per §4, landing each with tests green before the next. Component 4 is risk-H: validate the metrics aggregation shape against a real `runs/*/code/outputs/*/metrics.json` sample and `leaf_scorer.py`. Match surrounding code style; tests alongside each component; do not restore eval/exec in the REPL patch; update both the spec and `CLAUDE.md` when you add the new primitive contract/SSE behavior. Run `pytest tests/ -q` at the end.
+> Read `docs/runbooks/2026-05-31-oom-gpu-remediation-handoff.md` and `docs/history/specs/2026-05-31-oom-gpu-capacity-remediation-design.md`. The design is locked (grilled) — do not re-litigate. Components 1 (`gpu_capacity.py`) and 6 (forced_iteration terminal-OOM bypass) are DONE + tested. Execute the remaining components **2 → 3 → 4 → 5 → 7** per §4, landing each with tests green before the next. Component 4 is risk-H: validate the metrics aggregation shape against a real `runs/*/code/outputs/*/metrics.json` sample and `leaf_scorer.py`. Match surrounding code style; tests alongside each component; do not restore eval/exec in the REPL patch; update both the spec and `CLAUDE.md` when you add the new primitive contract/SSE behavior. Run `pytest tests/ -q` at the end.
 
 **Best practices to carry:** small tested increments in dependency order; the harness-owned cell runner and `_resolve_distributed_launch` are mutually exclusive; clamp config at the harness (don't trust agent-written code to be OOM-safe); honest gaps over silent drops; OOM → stop+report, never loop. **Skills used:** `/grill-me` (design locked — don't redo), superpowers spec-driven (spec is the source of truth). Commit messages end with the `Co-Authored-By: Claude Opus 4.8 (1M context)` trailer; branch off `main` before committing.

@@ -2,7 +2,7 @@
 
 > **Doc status:** Current · runbook · last verified 2026-06-17.
 > Companion to the design spec
-> [`docs/superpowers/specs/2026-06-17-multi-cloud-production-gpu-execution-design.md`](../superpowers/specs/2026-06-17-multi-cloud-production-gpu-execution-design.md)
+> [`docs/history/specs/2026-06-17-multi-cloud-production-gpu-execution-design.md`](../history/specs/2026-06-17-multi-cloud-production-gpu-execution-design.md)
 > (Streams C + D). Covers the **shipped** knobs only; everything here is opt-in
 > and default-off (an unset flag = the prior on-demand behavior, byte-identical).
 

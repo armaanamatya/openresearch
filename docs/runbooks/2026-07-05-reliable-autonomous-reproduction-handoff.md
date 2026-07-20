@@ -6,9 +6,9 @@
 > fix live, wrote the spec + the 16-task plan, and was about to execute. Read this, then the two
 > committed artifacts it points at. **Do NOT re-derive; execute.**
 >
-> - **Spec** (approved): `docs/superpowers/specs/2026-07-05-reliable-autonomous-reproduction-design.md` — commit `a9cbb32b`
-> - **Plan** (16 TDD tasks): `docs/superpowers/plans/2026-07-05-reliable-autonomous-reproduction-foundation.md` — commit `a96911e5`
-> - **Ledger:** `.superpowers/sdd/progress.md` → section "Reliable Autonomous Reproduction — Foundation"
+> - **Spec** (approved): `docs/history/specs/2026-07-05-reliable-autonomous-reproduction-design.md` — commit `a9cbb32b`
+> - **Plan** (16 TDD tasks): `docs/history/plans/2026-07-05-reliable-autonomous-reproduction-foundation.md` — commit `a96911e5`
+> - **Ledger:** `.history/sdd/progress.md` → section "Reliable Autonomous Reproduction — Foundation"
 > - **Memory:** `reference-azure-foundry-anthropic-endpoint`, `project-reliable-autonomous-reproduction`, `project_lifecycle_driver`, `project_sdar_gcp_rl_smoke_fix`, `feedback_*`.
 
 ---
@@ -16,10 +16,10 @@
 ## 0. TL;DR + first action
 
 **First action:** invoke `superpowers:subagent-driven-development` and execute the plan
-(`docs/superpowers/plans/2026-07-05-reliable-autonomous-reproduction-foundation.md`) from **Task 1**,
+(`docs/history/plans/2026-07-05-reliable-autonomous-reproduction-foundation.md`) from **Task 1**,
 base commit **`a96911e5`**. Sonnet implementers, file-disjoint, **synchronous**; **you (Opus) review
 every diff inline** — never a Sonnet reviewer. The Task-1 brief is already generated at
-`.superpowers/sdd/task-1-brief.md`.
+`.history/sdd/task-1-brief.md`.
 
 **The one-line story:** both SDAR Phase-1 execute runs failed (root churned + execute mode was never
 wired — *not* "proven" as the older handoff claims). The fix is a **reliable Opus-4.8 root + a
@@ -83,7 +83,7 @@ Anthropic's own +90.2% pattern (spec §5.E).
 
 ## 3. Task inventory — execute IN ORDER
 
-All in the plan (`docs/superpowers/plans/2026-07-05-reliable-autonomous-reproduction-foundation.md`),
+All in the plan (`docs/history/plans/2026-07-05-reliable-autonomous-reproduction-foundation.md`),
 each a TDD task with real code + tests. Every change **default-OFF / byte-identical** when its
 flag/field is absent.
 
@@ -174,9 +174,9 @@ session — check `git log`.
 
 ## 6. How to resume the plan (Subagent-Driven Development)
 
-1. `cat .superpowers/sdd/progress.md` → the "Reliable Autonomous Reproduction — Foundation" section is
+1. `cat .history/sdd/progress.md` → the "Reliable Autonomous Reproduction — Foundation" section is
    the checklist; tasks marked `[x]` are DONE (do not re-dispatch). Base commit `a96911e5`.
-2. Per task: `scripts/task-brief docs/superpowers/plans/2026-07-05-reliable-autonomous-reproduction-foundation.md N`
+2. Per task: `scripts/task-brief docs/history/plans/2026-07-05-reliable-autonomous-reproduction-foundation.md N`
    (helper at the subagent-driven-development skill dir) → dispatch a **Sonnet** implementer with the
    brief path + report path + the interfaces from earlier tasks. Implementer does TDD + commits.
 3. **Review each diff inline (Opus):** `scripts/review-package <BASE> <HEAD>` → read the printed file →

@@ -116,6 +116,6 @@ cost is only the 500GB boot disk (preserves the v5 run evidence) — left intact
 
 - Canonical procedure: `docs/runbooks/2026-06-16-sdar-on-gcp-a100-vm.md`
 - Prior run + deferred lever: `docs/local/2026-06-19-kimi-sdar-run-handoff.md` (local working note)
-- Guardrails design + status: `docs/superpowers/plans/2026-06-19-gptchat-rlm-root-optimization.md`,
+- Guardrails design + status: `docs/history/plans/2026-06-19-gptchat-rlm-root-optimization.md`,
   memory `reasoning-chat-root-guardrails`, `foundry-gptchat-root-not-executor`
 - SDAR baseline (scope, invariants): `docs/runbooks/2026-05-23-sdar-baseline-handoff.md`

@@ -56,7 +56,7 @@ ddc82113 ──┬── 5daaff5b (Foundry) ── 8f4944bf (skills R1) ── 1
   `detect_environment` (the one trigger, no new primitive — count stays **19**), `consult_skill()`
   index focus, and the verifier via `leaf_scorer.score_reproduction(skill_context=…)`. Flag
   `OPENRESEARCH_SKILL_SELECT` (+ `_DETERMINISTIC`/`_CANDIDATES_MAX`/`_VERIFIER_BODIES`), default-OFF.
-  26 new tests. Spec: `docs/superpowers/specs/2026-07-06-relevance-gated-skill-activation-design.md`.
+  26 new tests. Spec: `docs/history/specs/2026-07-06-relevance-gated-skill-activation-design.md`.
 - `cbcd75af` — SDAR execute-mode prereqs: `run.py` Foundry beta-header disable (+ the matching
   `test_coresidency_guard` update), `provisioner.py` symlink-preserve, and
   `configs/sdar_execute_run_spec.json` (REPO_COMMIT re-pin + `OPENRESEARCH_SKILLS`/`_SKILL_SELECT=1`).
@@ -117,7 +117,7 @@ git push deepinvent reconcile/grounded-self-improvement-on-main
 gh pr create --repo Deepinvent/scientific_article_generator \
   --base main --head reconcile/grounded-self-improvement-on-main \
   --title "Relevance-gated skill selection + SDAR execute-mode prereqs" \
-  --body-file docs/superpowers/specs/2026-07-06-relevance-gated-skill-activation-design.md
+  --body-file docs/history/specs/2026-07-06-relevance-gated-skill-activation-design.md
 ```
 Verified `git merge-tree --write-tree deepinvent/main cbcd75af` → **no conflicts**. Merge-commit
 strategy (preserves the flag-by-flag trail the A/B gate references).
@@ -152,7 +152,7 @@ git push deepinvent feat/autonomous-upload-ui
 gh pr create --repo Deepinvent/scientific_article_generator \
   --base main --head feat/autonomous-upload-ui \
   --title "Autonomous-upload UI + live-reproduction session view + spec_validator" \
-  --body-file docs/superpowers/specs/2026-07-05-autonomous-upload-ui-and-live-reproduction-design.md
+  --body-file docs/history/specs/2026-07-05-autonomous-upload-ui-and-live-reproduction-design.md
 ```
 
 ## 6. Conflict-resolution playbook (the `run.py` merge — the only real work)
@@ -209,8 +209,8 @@ Fix a stray author with `git commit --amend --reset-author` (local config only �
 `-c user.email=…`).
 
 ## 10. Cross-references
-- Skill-selection design + implementation notes: `docs/superpowers/specs/2026-07-06-relevance-gated-skill-activation-design.md` (§11).
-- UI design + plan: `docs/superpowers/specs/2026-07-05-autonomous-upload-ui-and-live-reproduction-design.md`, `docs/superpowers/plans/2026-07-05-autonomous-upload-ui-implementation-plan.md`.
+- Skill-selection design + implementation notes: `docs/history/specs/2026-07-06-relevance-gated-skill-activation-design.md` (§11).
+- UI design + plan: `docs/history/specs/2026-07-05-autonomous-upload-ui-and-live-reproduction-design.md`, `docs/history/plans/2026-07-05-autonomous-upload-ui-implementation-plan.md`.
 - The prior reconcile→main merge cadence + OUT-list: `docs/runbooks/2026-07-05-reconcile-to-main-merge-and-pr-handoff.md`.
 - SDAR run readiness (post-merge, separate): the skills-ON A/B is staged on `reconcile` — VM
   `sdar-2model-a` (4×A100-80GB, us-central1-a), launch `scripts/sdar_phase1_foundry.sh`; OFF-arm

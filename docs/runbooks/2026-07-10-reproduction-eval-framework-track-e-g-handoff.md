@@ -3,9 +3,9 @@
 
 > **Purpose.** Resume the approved 3-track build in a fresh session and finish it end-to-end.
 > This doc carries the exact file:line anchors, interfaces, and gotchas so you do **not** re-recon.
-> **Design spec (approved):** [`docs/superpowers/specs/2026-07-10-reproduction-eval-framework-design.md`](../superpowers/specs/2026-07-10-reproduction-eval-framework-design.md)
-> **Track E plan (executable):** [`docs/superpowers/plans/2026-07-10-track-e-eval-scorecard.md`](../superpowers/plans/2026-07-10-track-e-eval-scorecard.md)
-> **Track A plan (context):** [`docs/superpowers/plans/2026-07-10-track-a-eval-integrity.md`](../superpowers/plans/2026-07-10-track-a-eval-integrity.md)
+> **Design spec (approved):** [`docs/history/specs/2026-07-10-reproduction-eval-framework-design.md`](../history/specs/2026-07-10-reproduction-eval-framework-design.md)
+> **Track E plan (executable):** [`docs/history/plans/2026-07-10-track-e-eval-scorecard.md`](../history/plans/2026-07-10-track-e-eval-scorecard.md)
+> **Track A plan (context):** [`docs/history/plans/2026-07-10-track-a-eval-integrity.md`](../history/plans/2026-07-10-track-a-eval-integrity.md)
 
 ## 0. Start here (30-second orientation)
 

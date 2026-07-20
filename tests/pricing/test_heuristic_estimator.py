@@ -1,6 +1,6 @@
 """Tests for estimators/heuristic.py.
 
-Spec: docs/superpowers/specs/2026-05-25-three-source-budget-estimator-design.md §heuristic
+Spec: docs/history/specs/2026-05-25-three-source-budget-estimator-design.md §heuristic
 """
 
 from __future__ import annotations

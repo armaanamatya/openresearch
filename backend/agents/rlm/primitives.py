@@ -3699,7 +3699,7 @@ def _metrics_completeness_violation(result: dict) -> tuple[str, str] | None:
     the loop must re-run to REAL measured numbers before it can score or finalize.
     Opt out with ``OPENRESEARCH_METRICS_COMPLETENESS_CHECK=0``. Returns
     ``(failure_class, message)`` or ``None``. See
-    docs/superpowers/specs/2026-05-30-rubric-scoring-fidelity-design.md.
+    docs/history/specs/2026-05-30-rubric-scoring-fidelity-design.md.
     """
     import os as _os
 

@@ -2,7 +2,7 @@
 
 > **Doc status:** Operator runbook · 2026-07-01 · the cutover procedure for the
 > paper-agnostic multi-cloud reproduction stack (Phases 1a–1f). Spec:
-> `docs/superpowers/specs/2026-07-01-paper-agnostic-multicloud-reproduction-and-self-improvement-design.md`.
+> `docs/history/specs/2026-07-01-paper-agnostic-multicloud-reproduction-and-self-improvement-design.md`.
 
 This is the **strangler-fig cutover** from the bespoke SDAR-on-GCP bash to the
 unified `ReproductionRun` controller. Phases 1a–1e are **code-complete and merged**

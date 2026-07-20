@@ -38,7 +38,7 @@ None of the three success criteria were met on any attempt this session.
    → evidence gate (correctly) downgrades verdict to `failed`
 ```
 
-This is the **FM-001 bundled-CLI / orphaned-child transport wedge** named in `CLAUDE.md` and `docs/superpowers/plans/2026-05-30-rlm-wedge-hardening-and-evolution.md`. This session **reproduced its tipping point** for the first time (Section 4).
+This is the **FM-001 bundled-CLI / orphaned-child transport wedge** named in `CLAUDE.md` and `docs/history/plans/2026-05-30-rlm-wedge-hardening-and-evolution.md`. This session **reproduced its tipping point** for the first time (Section 4).
 
 ---
 

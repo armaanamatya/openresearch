@@ -2,7 +2,7 @@
 
 Pure, no I/O beyond reading files under ``code_path`` — no LLM, no network, no
 GPU. This is the first stage of the deterministic execute-mode pipeline (see
-``docs/superpowers/specs/2026-07-07-deterministic-any-paper-execute-mode-design.md``
+``docs/history/specs/2026-07-07-deterministic-any-paper-execute-mode-design.md``
 §3/§5): before any launch/reward extraction is attempted, decide WHICH framework
 adapter (if any) applies to a cloned repo.
 

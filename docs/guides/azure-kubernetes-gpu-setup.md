@@ -300,4 +300,4 @@ kubectl logs -n reprolab job/<job-name> --follow
 | [`infra/azure/README.md`](../../infra/azure/README.md) | L1 Terraform module tree + variables |
 | [`infra/azure/helm/README.md`](../../infra/azure/helm/README.md) | L2 Helm values ↔ Terraform output mapping |
 | [`docker/aks-cell-base/README.md`](../../docker/aks-cell-base/README.md) | Cell image env-var + exit-code contract |
-| [`docs/superpowers/specs/2026-06-03-azure-aks-gpu-backend-design.md`](../superpowers/specs/2026-06-03-azure-aks-gpu-backend-design.md) | Full design rationale |
+| [`docs/history/specs/2026-06-03-azure-aks-gpu-backend-design.md`](../history/specs/2026-06-03-azure-aks-gpu-backend-design.md) | Full design rationale |

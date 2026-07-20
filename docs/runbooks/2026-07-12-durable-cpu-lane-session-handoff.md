@@ -4,8 +4,8 @@
 - **What this session did:** made the durable GKE controller *real* (was a `NotImplementedError` stub),
   added a *CPU cloud lane* so CPU-class papers run on cloud with no laptop, added the WS1-H1 demo_status
   guard, and fixed a lease-fence correctness bug. All flag-gated **default-OFF, byte-identical off**.
-- **Predecessors:** design `docs/superpowers/specs/2026-07-12-cloud-native-durable-and-cpu-lane-design.md`
-  (Codex-reviewed, Revision 2); plan `docs/superpowers/plans/2026-07-12-cloud-native-durable-and-cpu-lane.md`;
+- **Predecessors:** design `docs/history/specs/2026-07-12-cloud-native-durable-and-cpu-lane-design.md`
+  (Codex-reviewed, Revision 2); plan `docs/history/plans/2026-07-12-cloud-native-durable-and-cpu-lane.md`;
   operator drill `docs/runbooks/2026-07-12-cpu-lane-and-durable-drill-operator-checklist.md`; prior wave
   `docs/runbooks/2026-07-12-phase3-ws3-ws2-implementation-handoff.md` (whose deferred items §5/§3a this finished).
 

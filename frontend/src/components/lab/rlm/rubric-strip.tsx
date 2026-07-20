@@ -213,7 +213,7 @@ function statusGlyph(status: "pass" | "partial" | "fail"): string {
  * Honesty rule: when rubric.current is null, the placeholder "—" is rendered
  * instead of a fabricated number.
  *
- * Spec: docs/superpowers/specs/2026-05-23-rubric-climb-leaderboard.md §4.1, §4.3.
+ * Spec: docs/history/specs/2026-05-23-rubric-climb-leaderboard.md §4.1, §4.3.
  */
 export function RubricStrip({ rubric, computeAdjustedScore, computeScopeIsClipped }: RubricStripProps) {
   const { current, baseline, best, target, series, areas, previousAreas, attributableCandidate } = rubric;

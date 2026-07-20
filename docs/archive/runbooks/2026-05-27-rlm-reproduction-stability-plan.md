@@ -7,7 +7,7 @@ Status: fix plan from the `2512.24601` sanity run and prior trace-mining audit.
 > never even reached `build_environment` because of a REPL-sandbox bug
 > (`globals()` shadowed as `None`). The continuation plan with concrete code-level
 > diffs is in
-> [`docs/superpowers/specs/2026-05-28-rlm-stability-remediation-design.md`](../superpowers/specs/2026-05-28-rlm-stability-remediation-design.md).
+> [`docs/history/specs/2026-05-28-rlm-stability-remediation-design.md`](../history/specs/2026-05-28-rlm-stability-remediation-design.md).
 > Land that spec's P0 fixes first; the items in this doc remain valid for the
 > "after the root model can actually run" regime.
 

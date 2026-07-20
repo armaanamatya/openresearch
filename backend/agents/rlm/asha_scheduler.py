@@ -9,7 +9,7 @@ campaign's ``AttemptAssessment`` onto ``BranchObservation``; this module stays
 inert until then.
 
 Design (locked — see
-``docs/superpowers/specs/2026-07-18-dynamic-reproduction-scheduler-design.md``):
+``docs/history/specs/2026-07-18-dynamic-reproduction-scheduler-design.md``):
 
 - **Two meters, never merged.** The fidelity LADDER is metered in optimizer steps
   and is owned by the caller (this module sees one rung at a time). The promotion

@@ -10,9 +10,9 @@ with zero re-derivation. Everything hard-won this session is captured below.
 - **HEAD = `ee311db3`** (T3 done). Base of the feature = `06e6f3e1` (spec/plan commit) atop foundation `ed086edb`.
 - **Done:** T1 `e53506bc`, T2 `df8497d6`, T3 `ee311db3` — all review-clean, no Critical/Important.
 - **NEXT: T3b** (or jump to T4 — T3b is P1/deferrable). Then T4→T5→T6→T7→T8 (backend), then T9a→T14 (frontend).
-- **Ledger (durable progress):** `.superpowers/sdd/progress.md` — trust it + `git log` after any resume.
-- **Plan:** `docs/superpowers/plans/2026-07-05-autonomous-upload-ui-implementation-plan.md` (14 tasks, TDD, `file:line` anchors).
-- **Spec:** `docs/superpowers/specs/2026-07-05-autonomous-upload-ui-and-live-reproduction-design.md`.
+- **Ledger (durable progress):** `.history/sdd/progress.md` — trust it + `git log` after any resume.
+- **Plan:** `docs/history/plans/2026-07-05-autonomous-upload-ui-implementation-plan.md` (14 tasks, TDD, `file:line` anchors).
+- **Spec:** `docs/history/specs/2026-07-05-autonomous-upload-ui-and-live-reproduction-design.md`.
 - **Original pre-T1 handoff:** `docs/runbooks/2026-07-05-autonomous-upload-ui-handoff.md` (still valid for env/invariants).
 
 ## 1. Environment (already provisioned — do not redo)
@@ -41,13 +41,13 @@ with zero re-derivation. Everything hard-won this session is captured below.
 
 ## 3. Tooling + the task-brief gotcha
 
-- **Skill dir:** `/home/abheekp/.claude/plugins/cache/claude-plugins-official/superpowers/6.1.1/skills/subagent-driven-development/`
-  - `scripts/task-brief PLAN_FILE N` → writes `.superpowers/sdd/task-N-brief.md`, prints the path.
-  - `scripts/review-package BASE HEAD` → writes `.superpowers/sdd/review-<base7>..<head7>.diff` (commit list + stat + full diff w/ context), prints the path. Reviewer reads it in one call; it never enters your context.
+- **Skill dir:** `/home/abheekp/.claude/plugins/cache/claude-plugins-official/history/6.1.1/skills/subagent-driven-development/`
+  - `scripts/task-brief PLAN_FILE N` → writes `.history/sdd/task-N-brief.md`, prints the path.
+  - `scripts/review-package BASE HEAD` → writes `.history/sdd/review-<base7>..<head7>.diff` (commit list + stat + full diff w/ context), prints the path. Reviewer reads it in one call; it never enters your context.
 - **⚠️ AWK GOTCHA:** `task-brief`'s awk matches a NUMERIC prefix, so `Task 3`/`Task 3b` and `Task 9a`/`Task 9b` **collide** (the script would merge them). For sub-lettered tasks, extract manually:
-  - T3b: `awk '/^## Task 3b/{f=1} /^## Task 4/{f=0} f' PLAN > .superpowers/sdd/task-3b-brief.md`
-  - T9a: `awk '/^## Task 9a/{f=1} /^## Task 9b/{f=0} f' PLAN > .superpowers/sdd/task-9a-brief.md`
-  - T9b: `awk '/^## Task 9b/{f=1} /^## Task 10/{f=0} f' PLAN > .superpowers/sdd/task-9b-brief.md`
+  - T3b: `awk '/^## Task 3b/{f=1} /^## Task 4/{f=0} f' PLAN > .history/sdd/task-3b-brief.md`
+  - T9a: `awk '/^## Task 9a/{f=1} /^## Task 9b/{f=0} f' PLAN > .history/sdd/task-9a-brief.md`
+  - T9b: `awk '/^## Task 9b/{f=1} /^## Task 10/{f=0} f' PLAN > .history/sdd/task-9b-brief.md`
   - Numeric-only tasks (**4, 5, 6, 7, 8, 10, 11, 12, 13, 14**) use `scripts/task-brief PLAN N` directly (verified clean: e.g. `Task 1` doesn't grab `Task 10` because the boundary regex is `Task N([^0-9]|$)`).
 - **Prompt templates:** `implementer-prompt.md`, `task-reviewer-prompt.md` in the skill dir; final review = `../requesting-code-review/code-reviewer.md`.
 
@@ -121,11 +121,11 @@ Each task's implementer still reads its brief + does detailed recon. This front-
 
 ## 7. Accumulated Minor findings roll-up → feed to the FINAL whole-branch review
 
-(Full list in `.superpowers/sdd/progress.md`.) Highlights: T1 coercion-helper + HTTP-path coverage gaps; T2 brittle substring assertion (drop it) + `_extract_common` regex fragility; T3 OFF-state `is r OR == r` (tighten to `is r`) + untested non-override-field preservation. Plus the two cross-cutting risks (Landmines #4, #5) — decide whether either needs a follow-up task before merge.
+(Full list in `.history/sdd/progress.md`.) Highlights: T1 coercion-helper + HTTP-path coverage gaps; T2 brittle substring assertion (drop it) + `_extract_common` regex fragility; T3 OFF-state `is r OR == r` (tighten to `is r`) + untested non-override-field preservation. Plus the two cross-cutting risks (Landmines #4, #5) — decide whether either needs a follow-up task before merge.
 
 ## 8. Start here (fresh session)
 
-1. `cd /home/abheekp/openresearch-autonomous-ui` — `cat .superpowers/sdd/progress.md` and `git log --oneline -6` (confirm HEAD `ee311db3`, T1–T3 done). Trust the ledger over any recollection.
+1. `cd /home/abheekp/openresearch-autonomous-ui` — `cat .history/sdd/progress.md` and `git log --oneline -6` (confirm HEAD `ee311db3`, T1–T3 done). Trust the ledger over any recollection.
 2. Read the **plan** + **this handoff** (+ the spec/original handoff if needed).
 3. Invoke `superpowers:subagent-driven-development`. `BASE=$(git rev-parse HEAD)`. Extract the next brief (T3b: manual awk per §3; or start at T4 via the script). Ground the task (§5–§6), then dispatch a **Sonnet** implementer (TDD) with resolved ambiguities.
 4. `review-package BASE HEAD` → dispatch an **Opus** reviewer with the binding constraints as the lens. Fix loop for Critical/Important. Mark the ledger.

@@ -52,7 +52,7 @@ redesign). For the "why it fits together" narrative see `system_overview.md` and
 ## Part 2 — What we added/changed (2026-05-31 → 2026-06-01)
 
 ### A. OOM + GPU-capacity remediation — the one-GPU-per-cell route (the headline)
-**Why:** an SDAR baseline run (`prj_09047604e591d969`) died 11×: every cell stacked on `cuda:0` and OOM'd, fp32 full-vocab log-probs blew ~20 GB even on the 1.7B, and a re-OOM forced-iteration loop burned ~$10. Spec: `docs/superpowers/specs/2026-05-31-oom-gpu-capacity-remediation-design.md`; handoff: `docs/runbooks/2026-05-31-oom-gpu-remediation-handoff.md`.
+**Why:** an SDAR baseline run (`prj_09047604e591d969`) died 11×: every cell stacked on `cuda:0` and OOM'd, fp32 full-vocab log-probs blew ~20 GB even on the 1.7B, and a re-OOM forced-iteration loop burned ~$10. Spec: `docs/history/specs/2026-05-31-oom-gpu-capacity-remediation-design.md`; handoff: `docs/runbooks/2026-05-31-oom-gpu-remediation-handoff.md`.
 
 | Commit | What |
 |---|---|
@@ -77,7 +77,7 @@ redesign). For the "why it fits together" narrative see `system_overview.md` and
 | `fix(lab-ui): unique run keys + real paper title + run_N + graph always visible` / `truly-unique run key via backend runDir` | fixed the duplicate-React-key crash (was keying on the paper-locked `projectId`; now the unique run-dir name from `_list_runs`), real titles + `run N` numbering, and score panels capped so they never occlude the `ConstellationCanvas`. |
 
 ### D. Fidelity-scoring redesign (designed; build in a worktree)
-- `docs: semantic invariant verification design` — diagnosis that the **regex invariant gate** (Part 1 §3) soft-caps correct-but-differently-named code (Goodhart, false-negatives, per-paper hand-coded, doesn't generalize). Proposes a **semantic, paper-derived, runtime-corroborated** verifier: invariants as data (yaml or LLM-extracted), an LLM `SemanticInvariantVerifier` (naming-agnostic), runtime-derived anti-surrogate, regex demoted to a positive fast-path. Drop-in behind `score_reproduction`. Spec: `docs/superpowers/specs/2026-06-01-semantic-invariant-verification-design.md`.
+- `docs: semantic invariant verification design` — diagnosis that the **regex invariant gate** (Part 1 §3) soft-caps correct-but-differently-named code (Goodhart, false-negatives, per-paper hand-coded, doesn't generalize). Proposes a **semantic, paper-derived, runtime-corroborated** verifier: invariants as data (yaml or LLM-extracted), an LLM `SemanticInvariantVerifier` (naming-agnostic), runtime-derived anti-surrogate, regex demoted to a positive fast-path. Drop-in behind `score_reproduction`. Spec: `docs/history/specs/2026-06-01-semantic-invariant-verification-design.md`.
 - **In flight (worktree `feat/rubric-ui-clarity`, not on this branch yet):** enrich the `rubric_score` SSE event with per-area `leaves` (`label, score, status, why`) + `weak_leaves` + `recent_errors`, and a frontend best-of-run headline + expandable, clearly-labeled rubric breakdown (which leaves fail, why, the specific errors).
 
 ### E. Live validation (the proof)

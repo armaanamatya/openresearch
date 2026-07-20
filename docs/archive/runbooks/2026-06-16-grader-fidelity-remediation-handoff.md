@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-16 · **Branch:** `feat/azure-aks-gpu` · **Status:** design locked, implementation not started
 
-**Purpose.** Self-contained kickoff for a fresh session to fix **every** issue found in the 2026-06-16 four-agent audit of orchestration, the execution harness, grading/self-improvement, and BES. The detailed design lives in `docs/superpowers/specs/2026-06-16-grader-fidelity-and-harness-remediation-design.md` (grilled to ground, Q1–Q6). This handoff repeats every issue inline so nothing is lost if you only read this file.
+**Purpose.** Self-contained kickoff for a fresh session to fix **every** issue found in the 2026-06-16 four-agent audit of orchestration, the execution harness, grading/self-improvement, and BES. The detailed design lives in `docs/history/specs/2026-06-16-grader-fidelity-and-harness-remediation-design.md` (grilled to ground, Q1–Q6). This handoff repeats every issue inline so nothing is lost if you only read this file.
 
 **How to use:** paste the *Kickoff Prompt* block below into a new session (or just tell the session "follow `docs/runbooks/2026-06-16-grader-fidelity-remediation-handoff.md`"). The *Issue Register* is the work-list; the *Rollout / Validation / Done* sections are the process.
 
@@ -13,7 +13,7 @@
 ```
 Implement the 2026-06-16 Grader-Fidelity & Harness Remediation. Fix ALL issues in the register at
 docs/runbooks/2026-06-16-grader-fidelity-remediation-handoff.md. Detailed design (LOCKED, grilled Q1–Q6):
-docs/superpowers/specs/2026-06-16-grader-fidelity-and-harness-remediation-design.md — implement it, do not
+docs/history/specs/2026-06-16-grader-fidelity-and-harness-remediation-design.md — implement it, do not
 re-design.
 
 REPO: /home/sww35/openresearch. Branch off feat/azure-aks-gpu (e.g. feat/grader-fidelity).
@@ -165,6 +165,6 @@ The rollout above is the **dependency truth**; this is the **execution strategy*
 
 ## References
 
-- Design spec (detail): `docs/superpowers/specs/2026-06-16-grader-fidelity-and-harness-remediation-design.md`
+- Design spec (detail): `docs/history/specs/2026-06-16-grader-fidelity-and-harness-remediation-design.md`
 - Memories: `grader-fidelity-design`, `feat-azure-aks-gpu-merge-debt`; related `grading-evidence-budget-fixes`, `model-wedge-fable5-fix`, `scoring-fairness-spec`, `recurring-failures-remediation`
 - Prior alignment audit (on `m2`): `docs/audits/2026-06-07-bes-doc-alignment-audit.md`

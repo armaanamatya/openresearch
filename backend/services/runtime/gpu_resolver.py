@@ -12,7 +12,7 @@ that multi-GPU VM sizes (NC48/NC96) are eligible when a paper needs >80 GB aggre
 The returned GpuPlan.runpod_id carries the Azure VM size string (the opaque provider
 identifier reused in that field) rather than a RunPod gpu_type string.
 
-See `docs/superpowers/specs/2026-05-23-dynamic-gpu-selection-design.md` §Resolver.
+See `docs/history/specs/2026-05-23-dynamic-gpu-selection-design.md` §Resolver.
 """
 
 from __future__ import annotations

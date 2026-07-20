@@ -4,8 +4,8 @@
 - **Applies to:** the durable-controller + CPU-lane implementation on
   `feat/gke-gpu-path-reproduction-reliability` (commits `c4a2fb6a`, `2eac72f4`, `f5b09f94`,
   `c12462b9`, `04406fd0`).
-- **Design/plan:** `docs/superpowers/specs/2026-07-12-cloud-native-durable-and-cpu-lane-design.md`,
-  `docs/superpowers/plans/2026-07-12-cloud-native-durable-and-cpu-lane.md`.
+- **Design/plan:** `docs/history/specs/2026-07-12-cloud-native-durable-and-cpu-lane-design.md`,
+  `docs/history/plans/2026-07-12-cloud-native-durable-and-cpu-lane.md`.
 - **Scope:** everything below is an OPERATOR step (live GKE + real A100 money) that an agent cannot
   run. The code is landed, flag-gated default-OFF, and hermetically tested; these steps activate and
   certify it.

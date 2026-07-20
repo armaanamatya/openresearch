@@ -5,8 +5,8 @@ fresh session needs is committed to the branch or noted below. No re-derivation 
 
 ## What to build
 
-Spec: `docs/superpowers/specs/2026-07-05-autonomous-upload-ui-and-live-reproduction-design.md`
-Plan: `docs/superpowers/plans/2026-07-05-autonomous-upload-ui-implementation-plan.md` (14 tasks, TDD, exact
+Spec: `docs/history/specs/2026-07-05-autonomous-upload-ui-and-live-reproduction-design.md`
+Plan: `docs/history/plans/2026-07-05-autonomous-upload-ui-implementation-plan.md` (14 tasks, TDD, exact
 `file:line` anchors — authored from a full backend + frontend recon this session; you do NOT need to re-run
 Explore).
 

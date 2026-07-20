@@ -10,7 +10,7 @@ store + optimistic concurrency). These are the persistence backbone for:
   *existing* novelty fingerprint (campaign F10 machinery); this module does NOT
   compute a new fingerprint.
 
-Design: ``docs/superpowers/specs/2026-07-18-dynamic-reproduction-scheduler-design.md`` §7.1.
+Design: ``docs/history/specs/2026-07-18-dynamic-reproduction-scheduler-design.md`` §7.1.
 With ``OPENRESEARCH_SCHEDULER_TREE`` enabled, the serial campaign emits only a
 durable root ``BranchSpawned`` after its write-ahead launch row has recorded the
 existing F10 fingerprint.  The remaining transition types (including `DedupHit`,

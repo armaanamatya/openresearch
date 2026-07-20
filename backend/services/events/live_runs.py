@@ -973,7 +973,7 @@ class FileLiveRunService:
     def _should_use_durable_controller(self, request: StartRunRequest) -> bool:
         """Pure decision: durable-controller cluster submit vs. local Popen.
 
-        WS3 seam (docs/superpowers/specs/2026-07-10-durable-cloud-native-
+        WS3 seam (docs/history/specs/2026-07-10-durable-cloud-native-
         orchestration-ws3-design.md §4.4). True only when
         ``OPENRESEARCH_DURABLE_CONTROLLER`` is enabled AND the request targets
         GCP or Azure in the campaign-backed RLM mode. ``request.sandbox`` (post the override
@@ -2676,7 +2676,7 @@ try:
             )
     # 2026-05-23: write "completed" BEFORE finalize_benchmark so a downstream
     # hang (claude-agent-sdk atexit subprocess.wait on WSL2 — Defect 2 in
-    # docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md) cannot
+    # docs/history/specs/2026-05-22-sdk-aclose-investigation.md) cannot
     # leave the UI stuck on "running" with a fully-written final_report.json
     # already on disk. The prj_6b9acbfd8afcd789 bug: pipeline returned cleanly,
     # rubric 0.244, but demo_status stayed "running" because finalize_benchmark

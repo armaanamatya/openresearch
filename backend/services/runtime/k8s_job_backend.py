@@ -10,8 +10,8 @@ installed.  Tests inject fake ``batch_api``, ``core_api``, and ``blob_client``
 via the constructor.
 
 Design reference:
-  - Azure AKS: docs/superpowers/specs/2026-06-03-azure-aks-gpu-backend-design.md
-  - GCP GKE:   docs/superpowers/specs/2026-06-16-gcp-gke-execution-backend-design.md
+  - Azure AKS: docs/history/specs/2026-06-03-azure-aks-gpu-backend-design.md
+  - GCP GKE:   docs/history/specs/2026-06-16-gcp-gke-execution-backend-design.md
 """
 
 from __future__ import annotations
@@ -168,7 +168,7 @@ def _extract_exit_code(job: Any) -> int | None:
         return None
 
 
-# WS2 guard (docs/superpowers/specs — Phase-3 durable-controller fan-out):
+# WS2 guard (docs/history/specs — Phase-3 durable-controller fan-out):
 # ``exec()`` submits the base image with NO code-staging step (the
 # ``blob_prefix`` uploaded in ``create_sandbox`` is never read back here) — see
 # the module docstring gap this closes. This predicate decides, conservatively,

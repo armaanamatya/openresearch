@@ -2,7 +2,7 @@
 
 Validate the BES conversion + archival-correctness work
 (branch `feat/bes-conversion-correctness`, spec
-`docs/superpowers/specs/2026-06-17-bes-evidence-first-and-conversion-remediation-design.md`)
+`docs/history/specs/2026-06-17-bes-evidence-first-and-conversion-remediation-design.md`)
 on **real GPU evidence** via `--sandbox runpod`, and run the **A1 kill-experiment**
 that decides whether static LLM SELECT is signal or noise.
 

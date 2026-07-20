@@ -1,6 +1,6 @@
 """Tests for calibration.py zero-token-skip behavior (PR-ε.7).
 
-Spec: docs/superpowers/specs/2026-05-25-three-source-budget-estimator-design.md §calibration
+Spec: docs/history/specs/2026-05-25-three-source-budget-estimator-design.md §calibration
 """
 
 from __future__ import annotations

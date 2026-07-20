@@ -1,6 +1,6 @@
 # SESSION HANDOFF — 2026-06-01 (SDAR remediation + harness fairness/full-scope)
 
-**Read this first, then resume from §9.** Companion refs: `docs/harness-breakdown.md` (the 4 layers + this session's changelog), the spec docs under `docs/superpowers/specs/2026-06-0{1}-*`, and `CLAUDE.md`.
+**Read this first, then resume from §9.** Companion refs: `docs/harness-breakdown.md` (the 4 layers + this session's changelog), the spec docs under `docs/history/specs/2026-06-0{1}-*`, and `CLAUDE.md`.
 
 ## 0. How to work (carry this forward)
 **Use sub-agents and work in parallel — be efficient WITHOUT sacrificing quality.** What worked this session: carve work into **disjoint-file streams** and fan them out (`Agent`, `run_in_background: true`), keep same-file edits on the main thread, define a **shared contract** before parallel agents build against it, and **verify every agent's output yourself** (tests/tsc/py_compile) before committing. Use **worktrees** for anything that must not disturb the live run. Hand substantial design+impl tasks to **Codex** (`codex:codex-rescue`) with strict, robust, elegant, scalability-minded prompts. Don't solo what fans out cleanly; don't fan out trivial edits.
@@ -39,7 +39,7 @@ OOM/GPU cell-runner remediation (comp 1–7), env robustness (`--system-site-pac
 Dispatched via `codex:codex-rescue`. Brief = **two parts** (both required):
 - **Part A — dynamic, verified rubric exclusion:** `Exclusion {item, axis, kind: capacity_vram|dataset_dead|oom_shrink_exhausted|env_setup_failed|operator_scope, reason, verified, evidence}`; fix `cell_matrix.aggregate_cell_metrics` to stop losing the scope declaration; leaf_scorer **excludes** (num+denom) leaves matched by **requirement TEXT** (not hash id); **anti-gaming: only `verified:true` (harness-confirmed) drops are excluded** — agent-chosen skips stay scored.
 - **Part B — cached, scalable ALFWorld+WebShop:** `EnvCacheManager` (`backend/services/runtime/env_cache.py`); `alfworld-download` once + one shared WebShop server in `batch_reproduce.py`; SDAR guidance so the agent writes ALFWorld/WebShop envs (subclass `BaseEnv`) + adds their cells; `env_setup_failed → Exclusion` fallback.
-- Design doc → `docs/superpowers/specs/2026-06-01-dynamic-exclusion-and-cached-envs-design.md`. Commit on `feat/full-scope-envs`, author lolout1, NO trailer.
+- Design doc → `docs/history/specs/2026-06-01-dynamic-exclusion-and-cached-envs-design.md`. Commit on `feat/full-scope-envs`, author lolout1, NO trailer.
 - **ON RESUME: verify BOTH parts landed** (Part A marked priority → risk B is under-built). If Part B is short, **re-dispatch Part B to Codex** on its own. Run touched-area tests; then push the branch.
 
 ## 7. Remaining error-prevention levers (analyzed, not yet built)

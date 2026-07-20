@@ -19,7 +19,7 @@ separates current operating guidance from historical evidence.
 
 ## Historical material
 
-- `runbooks/2026-*` and `superpowers/` are dated decisions and session
+- `runbooks/2026-*` and [history/](history/) are dated decisions and session
   handoffs. Consult them for provenance, not as the default operating path.
 - `archive/` is frozen historical material.
 - `runbooks/artifacts/`, `runs/`, and `best_runs/` are point-in-time evidence.

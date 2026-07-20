@@ -15,7 +15,7 @@ between iterations), per-primitive deadlines carried on :class:`RunContext`
 (the real bound on a hung primitive), and a process-level wall-clock watchdog
 here (the hard backstop — a thread cannot be killed, only the process).
 
-Design contract: ``docs/superpowers/specs/2026-05-21-rlm-phase3-orchestrator-design.md`` §8.
+Design contract: ``docs/history/specs/2026-05-21-rlm-phase3-orchestrator-design.md`` §8.
 """
 
 from __future__ import annotations

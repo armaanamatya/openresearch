@@ -11,7 +11,7 @@ If you are triaging a run **right now**, start at §1 (UI signal interpretation)
 | # | Issue | Severity | Status | Where fixed / Where to look |
 |---|---|---|---|---|
 | 1 | SDK `aclose()` deadlock kills RLM root (Defect 1) | blocker | **resolved 2026-05-23** | `backend/services/context/workspace/tools/rlm_query.py::ClaudeLlmClient.complete` — always thread-isolates now |
-| 2 | SDK `transport.close()` futex hang on WSL2 (Defect 2) | blocker on WSL | mitigated | Same fix as #1 contains it. See `docs/superpowers/specs/2026-05-26-runtime-resilience-design.md` §sdk_aclose. |
+| 2 | SDK `transport.close()` futex hang on WSL2 (Defect 2) | blocker on WSL | mitigated | Same fix as #1 contains it. See `docs/history/specs/2026-05-26-runtime-resilience-design.md` §sdk_aclose. |
 | 3 | SSR↔client hydration mismatch in resize handles | dev-mode warning | **resolved 2026-05-23** | `frontend/src/hooks/use-resizable-panels.ts` — `useState` seeds with `defaultSizes`, storage hydrated in post-mount `useEffect` |
 | 4 | UI "no signal Xs" chip false-alarms during long primitives | UX | resolved 2026-05-23 | `RlmHeader` now shows the in-flight primitive instead |
 | 5 | Sub-RLM root strategy queries the same paper slice repeatedly | run quality | **open** | `rlms` PyPI library — root prompt or `primitives.py` cache |
@@ -28,7 +28,7 @@ If you are triaging a run **right now**, start at §1 (UI signal interpretation)
 | 16 | Path normalization for Windows ↔ WSL ↔ macOS | gotcha | resolved (F3) | `backend/services/paths.py` |
 | 17 | `resolve_root_model` rejected `sonnet` / `claude-sonnet-4-6` UI aliases | blocker | resolved (F4) | `backend/agents/rlm/models.py::resolve_root_model` |
 | 18 | `use-rdr-artifacts` polled forever on non-RDR runs (proxy 502/404 spam) | UX | resolved (F2/F7) | `frontend/src/app/api/demo/runs/[projectId]/...` route + hook |
-| 19 | rlm `_SAFE_BUILTINS` shadows `globals`/`locals` as `None` → bare `NoneType` death-spiral (BUG-LR-011) | blocker | resolved (`271df91`) | `backend/agents/rlm/safe_builtins_patch.py`; spec: `docs/superpowers/specs/2026-05-28-rlm-stability-remediation-design.md` |
+| 19 | rlm `_SAFE_BUILTINS` shadows `globals`/`locals` as `None` → bare `NoneType` death-spiral (BUG-LR-011) | blocker | resolved (`271df91`) | `backend/agents/rlm/safe_builtins_patch.py`; spec: `docs/history/specs/2026-05-28-rlm-stability-remediation-design.md` |
 | 20 | `LocalREPL.execute_code` swallows traceback → model can't diagnose its own bugs (BUG-LR-012) | high | resolved (`271df91`) | `backend/agents/rlm/safe_repl_traceback_patch.py`; same spec as #19 |
 | 21 | Forced-iteration (Lane H) accepts FINAL_VAR when `rubric_score is None` (BUG-LR-013) | high | resolved (`271df91`) | `backend/agents/rlm/forced_iteration.py` predicate; same spec |
 | 22 | Shell `OPENAI_API_KEY` silently overrides `.env` → 401 at iter 0 (BUG-LR-014) | blocker on stale shell vars | resolved (`271df91`) | Boot-time warning in `backend/cli.py`. Spec: same as #19 |
@@ -339,7 +339,7 @@ r = repl.execute_code('globals().get("x", 1)')
 print(r.stderr)  # \nTypeError: 'NoneType' object is not callable
 ```
 
-**Remediation:** import-time monkey-patch via `backend/agents/rlm/safe_builtins_patch.py` restoring `globals`/`locals` to the real builtins. Genuine blocks on `eval/exec/compile/input` stay. Design + tests: `docs/superpowers/specs/2026-05-28-rlm-stability-remediation-design.md` (Fix 1).
+**Remediation:** import-time monkey-patch via `backend/agents/rlm/safe_builtins_patch.py` restoring `globals`/`locals` to the real builtins. Genuine blocks on `eval/exec/compile/input` stay. Design + tests: `docs/history/specs/2026-05-28-rlm-stability-remediation-design.md` (Fix 1).
 
 **Operator workaround until fix lands:** none — runs blocked.
 
@@ -587,8 +587,8 @@ echo "SDK workers: $(pgrep -fa 'claude_agent_sdk/_bundled' | wc -l)"
 - **UI walkthrough + happy path:** `docs/runbooks/e2e-testing.md`
 - **Preflight gates:** `docs/runbooks/readiness.md`
 - **RLM pivot rationale:** `docs/design/rlm-pivot-brief.md`
-- **Locked launch decisions:** `docs/superpowers/specs/2026-05-23-cleanup-condensation-leaderboard-design.md`
-- **SDK aclose deep-dive (Defect 1 + 2):** `docs/superpowers/specs/2026-05-26-runtime-resilience-design.md` §sdk_aclose
+- **Locked launch decisions:** `docs/history/specs/2026-05-23-cleanup-condensation-leaderboard-design.md`
+- **SDK aclose deep-dive (Defect 1 + 2):** `docs/history/specs/2026-05-26-runtime-resilience-design.md` §sdk_aclose
 - **Source of truth for events:** `runs/<project_id>/dashboard_events.jsonl`
 - **Source of truth for status snapshot:** `runs/<project_id>/demo_status.json` (lossy; see §3.6)
 - **SSE egress chokepoint:** `backend/agents/rlm/sse_bridge.py`

@@ -587,7 +587,7 @@ class ClaudeLlmClient:
         Always thread-isolated: the bundled claude-agent-sdk has a reliable
         nested-generator ``aclose()`` race (Defect 1) and a separate futex
         hang in ``transport.close()`` (Defect 2) — see
-        ``docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md``.
+        ``docs/history/specs/2026-05-22-sdk-aclose-investigation.md``.
         Running ``asyncio.run`` in a dedicated worker thread with
         ``shutdown(wait=False)`` contains both defects: the SDK's loop-bound
         async generators are created and torn down inside the worker's own
@@ -740,7 +740,7 @@ class ClaudeLlmClient:
         # Consume the SDK stream and BREAK as soon as the ResultMessage arrives.
         # We deliberately do NOT drain to exhaustion and do NOT call agen.aclose()
         # ourselves. The bundled claude-agent-sdk has a transport.close() futex
-        # hang (Defect 2 — docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md):
+        # hang (Defect 2 — docs/history/specs/2026-05-22-sdk-aclose-investigation.md):
         # draining awaits a next message that never arrives after the subprocess
         # exits, and an explicit aclose() can trip that futex hang. Either wedges
         # this worker thread, and complete()'s future.result() has NO timeout, so

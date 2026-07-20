@@ -162,7 +162,7 @@ def test_aclose_noise_suppressed() -> None:
     module is imported.
 
     Background: CLAUDE.md (search "aclose") and
-    docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md document
+    docs/history/specs/2026-05-22-sdk-aclose-investigation.md document
     why this fires and why suppression (Option B) is the correct fix.
     """
     # ``claude_runtime`` was already imported at module level above; the

@@ -231,4 +231,4 @@ stop sdar-a100-8g --zone us-central1-c` as soon as results are captured** (8×A1
 - Launch path: `scripts/gcp_sdar_preflight.sh` (lifecycle) + `scripts/sdar_gcp_run.sh` (the CLI invocation; sources `sdar_gcp.env`).
 - Build hooks: `backend/agents/rlm/{evidence_gate,external_validator,zero_metrics_detection,report,run}.py`.
 - Prior handoff + spec: `docs/runbooks/2026-06-20-grounded-self-improvement-gcp-test-handoff.md`,
-  `docs/superpowers/specs/2026-06-20-grounded-self-improvement-and-harness-reliability-redesign-design.md`.
+  `docs/history/specs/2026-06-20-grounded-self-improvement-and-harness-reliability-redesign-design.md`.

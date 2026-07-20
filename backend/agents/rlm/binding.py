@@ -8,7 +8,7 @@ appends a row to `cost_ledger.jsonl`.
 Phase 6 (Task 13) additive wiring: after successful `propose_improvements` and
 `verify_against_rubric` calls, and for `record_candidate_outcome`, emit the three
 additional events described in the handoff spec
-(docs/superpowers/specs/2026-05-21-rlm-phase4-backend-events-handoff.md §3–5).
+(docs/history/specs/2026-05-21-rlm-phase4-backend-events-handoff.md §3–5).
 All new events route through `ctx.emit` (the `make_emit`-produced thread-safe
 closure) — never through `dashboard._emit` directly.
 """

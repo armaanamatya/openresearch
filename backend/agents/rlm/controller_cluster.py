@@ -6,7 +6,7 @@ testable with a fake — no GCS/K8s/network. ``live_runs`` builds the manifest
 and does the file-backed I/O; this module owns *when* to acquire, submit, wait,
 reap, and when it is safe to fall back.
 
-Design: ``docs/superpowers/specs/2026-07-12-cloud-native-durable-and-cpu-lane-design.md`` §3.2, §7.
+Design: ``docs/history/specs/2026-07-12-cloud-native-durable-and-cpu-lane-design.md`` §3.2, §7.
 """
 
 from __future__ import annotations

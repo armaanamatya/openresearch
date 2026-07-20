@@ -1,4 +1,4 @@
-<!-- doc-meta: status=archived; archived=2026-06-03; superseded-by=docs/superpowers/specs/ -->
+<!-- doc-meta: status=archived; archived=2026-06-03; superseded-by=docs/history/specs/ -->
 > ⚠️ **ARCHIVED — historical UI-work log, not current-state documentation.**
 > Frozen 2026-06-03 (last entry 2026-05-23). For the current UI architecture see
 > [`README.md`](../../README.md) (UI Pages) and
@@ -15,7 +15,7 @@ _Append-only log of UI-facing work. Newest first. Each entry: **what shipped →
 - **Format**: one entry per landed PR/commit cluster, dated, with a fixed shape (`Shipped` / `Why it broke` / `Root cause` / `Fix` / `Guardrail`).
 - **Append-only**: never rewrite past entries; if a fix later regresses, add a NEW entry that references the old one.
 - **Token-thrifty**: one-liners over paragraphs. Code snippets only when the rule is non-obvious. Tables for parallel facts.
-- **No status theatre**: only landed work. WIP belongs in `docs/superpowers/plans/`.
+- **No status theatre**: only landed work. WIP belongs in `docs/history/plans/`.
 - **Cross-link**: `(see learn.md §X)` for full RCAs, `CLAUDE.md` for live architecture, `docs/runbooks/e2e-testing.md` for ops.
 
 ---

@@ -21,7 +21,7 @@ and only after listing exactly what it did.
 | `main` ↔ `5.30.26_sdar` | **independent forks of `1522579`, never merged** |
 
 `main` and our line are **parallel re-integrations of largely the same project.**
-- **`main` uniquely has:** ReproLab→OpenResearch rename, CLAUDE.md compaction (41→25 KB), `.mailmap`, teammate merge-PRs, the azure *scope* doc (`docs/superpowers/specs/2026-06-02-azure-gpu-compute-backend-scope.md`) — **but no azure implementation.**
+- **`main` uniquely has:** ReproLab→OpenResearch rename, CLAUDE.md compaction (41→25 KB), `.mailmap`, teammate merge-PRs, the azure *scope* doc (`docs/history/specs/2026-06-02-azure-gpu-compute-backend-scope.md`) — **but no azure implementation.**
 - **Our line uniquely has:** the **Azure AKS GPU backend** (impl of main's scope doc), scoring-fairness layer, env-reliability fixes (`env_pin`/libcupti), and the BES/full-scope work folded into `5.30.26_sdar`.
 - **Shared & integrated on BOTH lines (the conflict source):** harden/root-harness, F-03…F-35 fixes, recent-runs panel + leaderboard, SDAR core.
 
@@ -189,9 +189,9 @@ Spot-check: azure backend still imports (`python -c "import backend.services.run
 ## 8. Reference docs & memory
 
 **Project:** `CLAUDE.md` · `system_overview.md` · `docs/design/rlm-pivot-brief.md` · `docs/runbooks/running-the-project.md`
-**Azure (this deliverable):** `docs/superpowers/specs/2026-06-03-azure-aks-gpu-backend-design.md` (§1–§14) · `docs/superpowers/specs/2026-06-02-azure-gpu-compute-backend-scope.md` (on `main`) · memory `azure-aks-gpu-backend`
-**Concurrent / adjacent workstreams:** `docs/superpowers/specs/2026-06-07-rubric-scoring-harness-fairness-design.md` + memory `scoring-fairness-spec` · memory `harness-env-reliability-fixes` · memory `bes-integration-design` · memory `full-scope-agentic-envs`
-**Shared-fix provenance (conflict tie-breaks):** `docs/audits/2026-05-31-backend-core-opportunity-backlog.md` + memory `backend-core-audit` · memory `root-harness-hardening` · `docs/superpowers/specs/2026-05-31-oom-gpu-capacity-remediation-design.md` · `docs/runbooks/2026-06-01-backend-core-merge-and-continuation-handoff.md` (prior merge precedent)
+**Azure (this deliverable):** `docs/history/specs/2026-06-03-azure-aks-gpu-backend-design.md` (§1–§14) · `docs/history/specs/2026-06-02-azure-gpu-compute-backend-scope.md` (on `main`) · memory `azure-aks-gpu-backend`
+**Concurrent / adjacent workstreams:** `docs/history/specs/2026-06-07-rubric-scoring-harness-fairness-design.md` + memory `scoring-fairness-spec` · memory `harness-env-reliability-fixes` · memory `bes-integration-design` · memory `full-scope-agentic-envs`
+**Shared-fix provenance (conflict tie-breaks):** `docs/audits/2026-05-31-backend-core-opportunity-backlog.md` + memory `backend-core-audit` · memory `root-harness-hardening` · `docs/history/specs/2026-05-31-oom-gpu-capacity-remediation-design.md` · `docs/runbooks/2026-06-01-backend-core-merge-and-continuation-handoff.md` (prior merge precedent)
 **Consolidation big-picture:** memory `worktree-consolidation-plan`
 **Conventions:** memory `commit-attribution-preference` (lolout1, no Claude trailer) · `run-walltime-preference` · `best-runs-coworker-showcase`
 **Memory dir:** `/home/sww35/.claude/projects/-home-sww35-openresearch/memory/` (`MEMORY.md` index)

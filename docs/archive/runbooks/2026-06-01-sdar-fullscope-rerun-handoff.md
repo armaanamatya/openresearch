@@ -145,5 +145,5 @@ Run is **done** when `final_report.{json,md}` exists and the `batch_reproduce` p
 
 - Build + Codex-fix history: memory `full-scope-agentic-envs.md`, commits `58ce554`, `24772fb`,
   `40fdc3d` (PATH fix), `5781cb7` (this fix).
-- Agentic env design + OOM/capacity: `docs/superpowers/specs/2026-05-31-oom-gpu-capacity-remediation-design.md`.
+- Agentic env design + OOM/capacity: `docs/history/specs/2026-05-31-oom-gpu-capacity-remediation-design.md`.
 - SDAR baseline context: `docs/runbooks/2026-05-23-sdar-baseline-handoff.md`, CLAUDE.md "Baseline test paper".

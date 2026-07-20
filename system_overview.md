@@ -66,7 +66,7 @@ SQLite (`OPENRESEARCH_DATABASE_URL`) is the event/persistence store.
 PLAN→LAUNCH→AWAIT→ASSESS→DISTILL→DECIDE → honest terminal
 `REPRODUCED`/`CONTRADICTED`/`INFEASIBLE`/`EXHAUSTED`) that replaces the human
 babysitting `kill_and_restart.sh`. Spec:
-`docs/superpowers/specs/2026-07-01-reproduction-campaign-and-self-improving-harness-design.md`
+`docs/history/specs/2026-07-01-reproduction-campaign-and-self-improving-harness-design.md`
 (v2, all 16 Codex findings resolved). Design invariants, all structural:
 
 - **Evidence, not grade** — the campaign layer adds no LLM judgment; a recorded
@@ -174,7 +174,7 @@ for environment, scoring, reporting.
 
 `rdr` targets PaperBench bundle papers (the official rubric is required); arXiv
 papers can use it secondarily with a generated rubric. The design spec is
-`docs/superpowers/specs/2026-05-22-rubric-driven-harness-design.md`; the package
+`docs/history/specs/2026-05-22-rubric-driven-harness-design.md`; the package
 is `backend/agents/rdr/` (`models`, `decomposer`, `context_engineer`, `agent`,
 `controller`, `run`); the launcher is `scripts/rdr_paperbench.py`.
 
@@ -195,7 +195,7 @@ non-applicable by construction. Default-OFF + fail-soft: with `AZURE_FOUNDRY_*`
 unset, every tier is byte-for-byte the prior path. The shell-shadow validator
 (`cli.py`) also grew to cover `AZURE_FOUNDRY_*` and the Azure-OpenAI
 endpoint/deployment, since a stale shell endpoint 401s a run exactly like a stale
-key. Plan: `docs/superpowers/plans/2026-06-20-foundry-provider-unification.md`.
+key. Plan: `docs/history/plans/2026-06-20-foundry-provider-unification.md`.
 
 ## Run lifecycle (UI ↔ backend)
 
@@ -236,7 +236,7 @@ import time via `backend/agents/rlm/safe_builtins_patch.py` (restore
 `LocalREPL.execute_code` to emit `traceback.format_exc()` in stderr so the
 model can diagnose its own bugs). The eval/exec/compile/input blocks remain
 in place. Born from the 2026-05-28 `prj_09047604e591d969` death-spiral —
-see `docs/superpowers/specs/2026-05-28-rlm-stability-remediation-design.md`.
+see `docs/history/specs/2026-05-28-rlm-stability-remediation-design.md`.
 
 ## Dynamic GPU selection (spec 2026-05-23)
 
@@ -244,7 +244,7 @@ When `OPENRESEARCH_DYNAMIC_GPU=true` (the default), the root model calls the `re
 
 ## GKE / GCP execution backend
 
-The cloud GPU backends are RunPod (pods over SSH), Azure AKS (`AksJobBackend`), and Google GKE (`GkeJobBackend`) — both K8s backends dispatch one training cell per Job. `--sandbox gke` is a **first-class alias for `gcp`**: the aliasing lives at the `SandboxMode._missing_` enum boundary (the literal `gke`→the `gcp` member), so the gcp path stays byte-for-byte and every downstream `_sb_key == "gcp"` check, `OPENRESEARCH_FORCE_SANDBOX=gke`, and `OPENRESEARCH_DEFAULT_SANDBOX=gke` resolve to the same backend with no further branching. (Caveat: CLI (`--sandbox gke`) + env (`OPENRESEARCH_DEFAULT_SANDBOX`/`_FORCE_SANDBOX`) are the supported `gke` surfaces; the HTTP `POST /runs` body field is typed `SandboxMode` and Pydantic rejects `gke` with 422 — the UI emits `gcp`.) The catalog gained GCP L4 + H100 SKUs (`gcp_l4_24`, `gcp_h100_80`, `gcp_h100_80x8`) so a paper's hardware clue can resolve to a GCP machine type; A100 stays the default ladder and H100 is an opt-in step-up bounded by the same per-GPU $/hr cap. A multi-GPU GKE cell torchrun-shards: the standalone in-pod entrypoint (`docker/gke-cell-base/gke_cell_entrypoint.py`) reimplements the `_resolve_distributed_launch` marker-gated logic inline (`build_cell_launch_argv`) and wraps a >1-GPU distributed cell in `torchrun --nproc_per_node=N`, fed the leased count via the `OPENRESEARCH_CELL_GPU_COUNT` env var the cell-Job manifest injects. `scripts/gke_check.sh` (gcloud ADC + cluster reachability + GPU-node quota) is the free preflight, wired into `start.sh`; the live GKE GPU smoke is operator-gated and never runs in CI. Spec: `docs/superpowers/specs/2026-06-16-gcp-gke-execution-backend-design.md`.
+The cloud GPU backends are RunPod (pods over SSH), Azure AKS (`AksJobBackend`), and Google GKE (`GkeJobBackend`) — both K8s backends dispatch one training cell per Job. `--sandbox gke` is a **first-class alias for `gcp`**: the aliasing lives at the `SandboxMode._missing_` enum boundary (the literal `gke`→the `gcp` member), so the gcp path stays byte-for-byte and every downstream `_sb_key == "gcp"` check, `OPENRESEARCH_FORCE_SANDBOX=gke`, and `OPENRESEARCH_DEFAULT_SANDBOX=gke` resolve to the same backend with no further branching. (Caveat: CLI (`--sandbox gke`) + env (`OPENRESEARCH_DEFAULT_SANDBOX`/`_FORCE_SANDBOX`) are the supported `gke` surfaces; the HTTP `POST /runs` body field is typed `SandboxMode` and Pydantic rejects `gke` with 422 — the UI emits `gcp`.) The catalog gained GCP L4 + H100 SKUs (`gcp_l4_24`, `gcp_h100_80`, `gcp_h100_80x8`) so a paper's hardware clue can resolve to a GCP machine type; A100 stays the default ladder and H100 is an opt-in step-up bounded by the same per-GPU $/hr cap. A multi-GPU GKE cell torchrun-shards: the standalone in-pod entrypoint (`docker/gke-cell-base/gke_cell_entrypoint.py`) reimplements the `_resolve_distributed_launch` marker-gated logic inline (`build_cell_launch_argv`) and wraps a >1-GPU distributed cell in `torchrun --nproc_per_node=N`, fed the leased count via the `OPENRESEARCH_CELL_GPU_COUNT` env var the cell-Job manifest injects. `scripts/gke_check.sh` (gcloud ADC + cluster reachability + GPU-node quota) is the free preflight, wired into `start.sh`; the live GKE GPU smoke is operator-gated and never runs in CI. Spec: `docs/history/specs/2026-06-16-gcp-gke-execution-backend-design.md`.
 
 ## Chat steering surface (2026-05-23)
 
@@ -310,17 +310,17 @@ the JSON and the re-rendered `final_report.md` served by `GET /runs/{id}/final-r
 
 - `docs/design/rlm-pivot-brief.md` — the canonical architecture reference and design rationale.
 - `docs/runbooks/e2e-testing.md` — canonical end-to-end testing and debug reference.
-- `docs/superpowers/specs/2026-05-23-cleanup-condensation-leaderboard-design.md` —
+- `docs/history/specs/2026-05-23-cleanup-condensation-leaderboard-design.md` —
   locked launch decisions, including the hybrid default and leaderboard surface.
-- `docs/superpowers/specs/2026-05-28-rlm-stability-remediation-design.md` —
+- `docs/history/specs/2026-05-28-rlm-stability-remediation-design.md` —
   REPL safe-builtins patch, traceback surfacing, shell-env precedence warning,
   forced-iteration None-rubric extension, premature-exit detector. P0 fixes
   must land before the next SDAR attempt.
-- `docs/superpowers/specs/2026-05-28-subscription-cost-reduction-design.md` —
+- `docs/history/specs/2026-05-28-subscription-cost-reduction-design.md` —
   sub-agent token-burn measurement + retry-burst elimination (sibling track).
 - `docs/archive/learn.md` — **archived** post-mortems (bugs shipped + guardrail
   for each), frozen 2026-06-03; current incident narratives live in
-  `docs/superpowers/specs/` + per-bug memory files.
+  `docs/history/specs/` + per-bug memory files.
 - `docs/guides/setup-guide.md`, `docs/guides/deployment.md`, `README.md` — setup
   and deployment. README.md also documents the two-surfaces LLM auth model
   and the empty-`ANTHROPIC_API_KEY` + Claude Code OAuth pattern preferred for

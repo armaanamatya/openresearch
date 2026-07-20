@@ -1,6 +1,6 @@
 """Tests for paper_features.py — category classification and feature extraction.
 
-Spec: docs/superpowers/specs/2026-05-25-three-source-budget-estimator-design.md §paper_features
+Spec: docs/history/specs/2026-05-25-three-source-budget-estimator-design.md §paper_features
 """
 
 from __future__ import annotations

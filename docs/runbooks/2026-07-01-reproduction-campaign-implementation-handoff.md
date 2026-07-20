@@ -2,7 +2,7 @@
 
 > **Doc status:** Implementation handoff · 2026-07-01 · written for a fresh
 > Claude (Fable 5) session implementing the Codex-reviewed spec
-> `docs/superpowers/specs/2026-07-01-reproduction-campaign-and-self-improving-harness-design.md`.
+> `docs/history/specs/2026-07-01-reproduction-campaign-and-self-improving-harness-design.md`.
 
 ## What this is
 
@@ -38,8 +38,8 @@ the operator; the locked decisions in spec §2 are not up for relitigation.
 
 ## Required reading, in order
 
-1. `docs/superpowers/specs/2026-07-01-reproduction-campaign-and-self-improving-harness-design.md` — THE spec (v2, Codex-resolved). §20's resolutions are load-bearing implementation requirements, not commentary.
-2. `docs/superpowers/specs/2026-07-01-paper-agnostic-multicloud-reproduction-and-self-improvement-design.md` — the Phase-1 substrate (esp. §5.2–§5.5 compute tiering, §7 memory red line).
+1. `docs/history/specs/2026-07-01-reproduction-campaign-and-self-improving-harness-design.md` — THE spec (v2, Codex-resolved). §20's resolutions are load-bearing implementation requirements, not commentary.
+2. `docs/history/specs/2026-07-01-paper-agnostic-multicloud-reproduction-and-self-improvement-design.md` — the Phase-1 substrate (esp. §5.2–§5.5 compute tiering, §7 memory red line).
 3. `docs/runbooks/2026-07-01-sdar-unified-run-cutover.md` — Phase-1f A/B discipline the campaign's paired mode conducts.
 4. `CLAUDE.md` (auto-loaded) — invariants, flags, test commands.
 

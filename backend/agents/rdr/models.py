@@ -6,7 +6,7 @@ of ``RubricLeaf``s; the Context Engineer turns a cluster into an
 ``AgentContext``; the Reproduction Agent returns ``Artifacts``; the Controller
 returns an ``RdrResult``.
 
-See ``docs/superpowers/specs/2026-05-22-rubric-driven-harness-design.md`` §4.
+See ``docs/history/specs/2026-05-22-rubric-driven-harness-design.md`` §4.
 """
 
 from __future__ import annotations

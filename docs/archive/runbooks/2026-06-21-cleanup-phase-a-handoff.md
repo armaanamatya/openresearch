@@ -5,7 +5,7 @@
 > branch. Deleting someone else's remote branches, closing their PR, or moving their
 > tracked working files are unilateral outward-facing acts on another person's work —
 > so they are left for the owner(s) to run. Commands are copy-paste ready; each is
-> annotated with its owner and a safety note. Design: `docs/superpowers/specs/2026-06-21-project-cleanup-design.md`.
+> annotated with its owner and a safety note. Design: `docs/history/specs/2026-06-21-project-cleanup-design.md`.
 
 ## A1 — prune merged branches (no open PR)
 All three are merged into the trunk `feat/bes-conversion-correctness`. **Safety:** their

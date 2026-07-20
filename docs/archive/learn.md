@@ -1,7 +1,7 @@
-<!-- doc-meta: status=archived; archived=2026-06-03; superseded-by=docs/superpowers/specs/ -->
+<!-- doc-meta: status=archived; archived=2026-06-03; superseded-by=docs/history/specs/ -->
 > ⚠️ **ARCHIVED — historical engineering postmortem log, not current-state documentation.**
 > Frozen 2026-06-03 (last substantive entry 2026-05-23). No longer appended:
-> incident narratives now live in `docs/superpowers/specs/` and per-bug memory
+> incident narratives now live in `docs/history/specs/` and per-bug memory
 > files (see `CLAUDE.md` → "Maintaining this doc"). Kept for provenance only.
 > Canonical current docs: [`README.md`](../../README.md) ·
 > [`system_overview.md`](../../system_overview.md) · [`CLAUDE.md`](../../CLAUDE.md).

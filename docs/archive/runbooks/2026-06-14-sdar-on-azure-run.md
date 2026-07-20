@@ -3,7 +3,7 @@
 - **Date:** 2026-06-14
 - **Status:** Ready for operator (pending §2 admin gates)
 - **Pairs with:**
-  - `docs/superpowers/specs/2026-06-14-sdar-on-azure-run-design.md` (source of truth)
+  - `docs/history/specs/2026-06-14-sdar-on-azure-run-design.md` (source of truth)
   - `docs/runbooks/2026-06-13-azure-aionic-deploy-handoff.md` (IaC + redeploy)
   - `docs/runbooks/2026-05-23-sdar-baseline-handoff.md` (paper details + debug cycle)
 

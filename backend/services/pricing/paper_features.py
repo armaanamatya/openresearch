@@ -4,7 +4,7 @@ All three estimators (heuristic, k-NN, LLM) consume a `PaperFeatures`
 instance produced by `extract_features`.  The extraction does one LLM call
 (shared with the LLM estimator) plus a regex pass — no second round-trip.
 
-Spec: docs/superpowers/specs/2026-05-25-three-source-budget-estimator-design.md
+Spec: docs/history/specs/2026-05-25-three-source-budget-estimator-design.md
 """
 
 from __future__ import annotations

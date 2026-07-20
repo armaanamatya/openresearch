@@ -1,7 +1,7 @@
 # Azure AKS GPU backend — standup runbook & handoff
 
 - **Date:** 2026-06-03 · IaC update: 2026-06-12 (Bicep sole IaC)
-- **Pairs with:** `docs/superpowers/specs/2026-06-03-azure-aks-gpu-backend-design.md` (the *why* and the decision table). This doc is the *how* — stand it up, run it, debug it.
+- **Pairs with:** `docs/history/specs/2026-06-03-azure-aks-gpu-backend-design.md` (the *why* and the decision table). This doc is the *how* — stand it up, run it, debug it.
 - **Status:** Design locked, implementation not started. This runbook is written ahead of the code so the **quota request (the critical-path blocker) can start immediately**.
 
 ---
@@ -164,13 +164,13 @@ Prove L1/L2/1b plumbing on CPU: point the cell Job at a CPU node pool with a **f
 
 ## 9. Next-session resume prompt
 
-> Implementing the Azure AKS GPU backend per `docs/superpowers/specs/2026-06-03-azure-aks-gpu-backend-design.md`. Design is locked (decision table §1). Start by confirming the change-map (§4) against the live tree, then implement in phase order (§11): Phase 1a Bicep/Helm (`infra/azure/bicep/infra.bicep`, `infra/azure/helm/`) + base image (via `scripts/azure_build_cell_image.sh`), gated on the hello-GPU smoke; then Phase 1b the `k8s_job_cell_runner.run_matrix` drop-in (identical signature/return to `gpu_cell_runner.run_matrix`, §5) + the four wiring edits (`SandboxMode`, `cli.py:1605` choices, `config.py` Literals+`azure_*` block, `_backend_for_sandbox_mode`, `_execute_cell_matrix` runner-select, `_describe_azure` fill, `build_environment` no-op). Keep `local`/`runpod` byte-for-byte unchanged — that's the acceptance bar. ⚠️ Check GPU quota status first (§1); if still pending, validate wiring on the CPU stub (§6) and leave the real-GPU gate open. Commit as `lolout1`, no co-author trailer.
+> Implementing the Azure AKS GPU backend per `docs/history/specs/2026-06-03-azure-aks-gpu-backend-design.md`. Design is locked (decision table §1). Start by confirming the change-map (§4) against the live tree, then implement in phase order (§11): Phase 1a Bicep/Helm (`infra/azure/bicep/infra.bicep`, `infra/azure/helm/`) + base image (via `scripts/azure_build_cell_image.sh`), gated on the hello-GPU smoke; then Phase 1b the `k8s_job_cell_runner.run_matrix` drop-in (identical signature/return to `gpu_cell_runner.run_matrix`, §5) + the four wiring edits (`SandboxMode`, `cli.py:1605` choices, `config.py` Literals+`azure_*` block, `_backend_for_sandbox_mode`, `_execute_cell_matrix` runner-select, `_describe_azure` fill, `build_environment` no-op). Keep `local`/`runpod` byte-for-byte unchanged — that's the acceptance bar. ⚠️ Check GPU quota status first (§1); if still pending, validate wiring on the CPU stub (§6) and leave the real-GPU gate open. Commit as `lolout1`, no co-author trailer.
 
 ---
 
 ## Cross-references
 
-- Spec: `docs/superpowers/specs/2026-06-03-azure-aks-gpu-backend-design.md`
-- Cell-matrix model: `docs/superpowers/specs/2026-05-31-oom-gpu-capacity-remediation-design.md`
+- Spec: `docs/history/specs/2026-06-03-azure-aks-gpu-backend-design.md`
+- Cell-matrix model: `docs/history/specs/2026-05-31-oom-gpu-capacity-remediation-design.md`
 - SDAR smallest-two scope + run command: `docs/runbooks/2026-05-23-sdar-baseline-handoff.md`
 - Shell-vs-`.env` precedence + auth pitfalls: `CLAUDE.md` (RLM auth section).

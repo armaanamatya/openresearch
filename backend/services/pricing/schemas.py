@@ -1,6 +1,6 @@
 """Pydantic schemas for the budget-estimation feature.
 
-Spec: docs/superpowers/specs/2026-05-25-budget-estimation-design.md
+Spec: docs/history/specs/2026-05-25-budget-estimation-design.md
 """
 
 from __future__ import annotations

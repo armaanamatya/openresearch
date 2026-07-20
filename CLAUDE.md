@@ -127,7 +127,7 @@ header (`hmac.compare_digest`). Empty/unset disables the gate — local-dev beha
   `frontend/` · `tests/`.
 - **Tier-1 "why":** `system_overview.md`, `docs/design/rlm-pivot-brief.md`,
   `docs/design/project-rebuild-spec.md`.
-- **Specs / runbooks:** `docs/superpowers/specs/` (design specs, cited from the nested files),
+- **Specs / runbooks:** `docs/history/specs/` (design specs, cited from the nested files),
   `docs/runbooks/` (setup, ops, dated handoffs).
 - **Reliability rules:** [`docs/guides/reliability-rules.md`](docs/guides/reliability-rules.md) — active cross-cutting *Rule/How/Why* log
   (pre-2026-06 postmortems archived at `docs/archive/learn.md`).

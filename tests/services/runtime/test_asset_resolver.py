@@ -1,6 +1,6 @@
 """Unit tests for the generic AssetResolver (Phase 1d, Unit B).
 
-Verbatim from ``docs/superpowers/plans/2026-07-01-phase-1d-credentials-assets-cpu-tier.md``
+Verbatim from ``docs/history/plans/2026-07-01-phase-1d-credentials-assets-cpu-tier.md``
 (Unit B). Hermetic: every fetcher (``hf_snapshot``/``url_fetch``/``recipe_lookup``)
 is injected — no real network, no real HuggingFace Hub call.
 """

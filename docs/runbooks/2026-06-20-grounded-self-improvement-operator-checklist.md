@@ -1,8 +1,8 @@
 # Grounded self-improvement + harness reliability — operator checklist
 
 > **Status:** Current · runbook · authored 2026-06-20. Companion to the design
-> spec `docs/superpowers/specs/2026-06-20-grounded-self-improvement-and-harness-reliability-redesign-design.md`
-> and the implementation plan `docs/superpowers/plans/2026-06-20-grounded-self-improvement-implementation-plan.md`.
+> spec `docs/history/specs/2026-06-20-grounded-self-improvement-and-harness-reliability-redesign-design.md`
+> and the implementation plan `docs/history/plans/2026-06-20-grounded-self-improvement-implementation-plan.md`.
 >
 > Everything below ships **flag-gated, default-OFF**. With every flag unset the
 > harness is byte-identical to its prior baseline. The code + hermetic tests are

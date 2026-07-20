@@ -65,7 +65,7 @@ See §3 for the plan. P0 first (§5), then P1 flags + cost-ledger + durability.
 
 ### PLANNED (user's broader `/iterate` asks this session, not yet started)
 - **`/gcp` skill** — a GCP/GKE ops-troubleshooting playbook skill (node pools, storage-rw scope, WI-disabled reality, SKU-label matching, stray-node cost check, `gke-gcloud-auth-plugin` no-sudo install, JSON-array `GPU_SKUS`). None exists today (`~/.claude/skills/` has: iterate, ml-code-quality, ml-experiment-rigor, scientific-data-viz, token). User asked to "create skills such as /gcp".
-- **Self-improvement `learn.md`** — repo `learn.md` is **archived** (`docs/archive/learn.md`, frozen 2026-06-03; convention moved to per-bug memory + `docs/superpowers/specs/`). User asked for an active `learn.md`. **Open question (§8):** revive active `learn.md` for cross-cutting RULES vs. keep memory/specs only.
+- **Self-improvement `learn.md`** — repo `learn.md` is **archived** (`docs/archive/learn.md`, frozen 2026-06-03; convention moved to per-bug memory + `docs/history/specs/`). User asked for an active `learn.md`. **Open question (§8):** revive active `learn.md` for cross-cutting RULES vs. keep memory/specs only.
 - **CLAUDE.md succinctness pass** — user: *"ensure u are updating claude.md and making it more succinct / optimized aswell so i dont repeat prompts"*. Capture standing prefs (Opus-designs/Sonnet-executes, push-only-to-deepinvent, GCP-node-SA-not-WI, cost-ledger-blindness, faithful-not-surrogate) so they stop being re-prompted.
 - **Re-run a paper end-to-end on GPU + live-monitor** — the ultimate goal. Candidates in resume-readiness order: `618` (UCPO, fullest cache + cells.json/train_cell.py workaround already in place), `c912` (tool-RL), `23f0` (SDAR, needs the 2 flags ON).
 

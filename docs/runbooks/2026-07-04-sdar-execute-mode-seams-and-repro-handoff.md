@@ -5,7 +5,7 @@
 > **Read these three, in order, before doing anything:**
 > 1. **This handoff** (the executable sequence).
 > 2. [`docs/audits/2026-07-04-sdar-gcp-runs-log-analysis.md`](../audits/2026-07-04-sdar-gcp-runs-log-analysis.md) — the evidence (all run outcomes, error signatures, the execute-mode gap analysis). **Source of truth for the diagnosis.**
-> 3. [`docs/superpowers/specs/2026-07-04-execute-mode-verl-seams-and-sdar-repro-design.md`](../superpowers/specs/2026-07-04-execute-mode-verl-seams-and-sdar-repro-design.md) — the design (the seam interfaces, tests, risks).
+> 3. [`docs/history/specs/2026-07-04-execute-mode-verl-seams-and-sdar-repro-design.md`](../history/specs/2026-07-04-execute-mode-verl-seams-and-sdar-repro-design.md) — the design (the seam interfaces, tests, risks).
 >
 > **Working discipline (per operator standing prefs):** Opus authors/owns the plan + reviews **every diff**; Sonnet executes against the spec via the `/implement` skill; TDD (write the per-seam guard test first). Commit infrequently at milestones; **push only to the `deepinvent` remote**; no Co-Authored-By trailer; git identity `lolout1`.
 
@@ -209,7 +209,7 @@ gcloud storage cp -r gs://deepinvent-ext-ut-sdar-runs/<PROJECT_ID>/ /tmp/sdar_ou
 ## 11. Pointers
 
 - **Analysis / evidence:** `docs/audits/2026-07-04-sdar-gcp-runs-log-analysis.md` (Part II = confirmed diagnostics + gap list).
-- **Design / spec:** `docs/superpowers/specs/2026-07-04-execute-mode-verl-seams-and-sdar-repro-design.md`.
+- **Design / spec:** `docs/history/specs/2026-07-04-execute-mode-verl-seams-and-sdar-repro-design.md`.
 - **Memory:** `project_sdar_execute_mode_reproduction` (+ linked `sdar_gcp_run_hardening`, `project_sdar_gcp_harness_refactor`, `project_foundry_gptchat_root_not_executor`).
 - **Key code the seams touch:** `backend/agents/rlm/{gpu_cell_runner,cell_matrix,cell_scheduler,primitives,baseline_implementation,env_pin}.py`, `backend/services/ingestion/repo/{resolver,provisioner}.py`, `backend/agents/prompts/_sandbox_contract.py`, `config.py`, `run.py`.
 - **Existing SDAR-GCP handoffs (background):** `docs/runbooks/2026-06-22-sdar-gcp-e2e-and-rl-smoke-fix-handoff.md`, `docs/runbooks/2026-06-20-validation-coverage-and-capped-rerun-handoff.md`.

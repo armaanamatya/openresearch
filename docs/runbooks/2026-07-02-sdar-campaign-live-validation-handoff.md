@@ -36,7 +36,7 @@ Commit `f92fe1d4` (+ the live-fix commit after it): the full
 (INIT → UNDERSTAND → PLAN→LAUNCH→AWAIT→ASSESS→DISTILL→DECIDE →
 `REPRODUCED`/`CONTRADICTED`/`INFEASIBLE`/`EXHAUSTED`) + the Phase-C gated
 harness self-edit tier. Spec:
-`docs/superpowers/specs/2026-07-01-reproduction-campaign-and-self-improving-harness-design.md`
+`docs/history/specs/2026-07-01-reproduction-campaign-and-self-improving-harness-design.md`
 (v2, Codex F1–F16 all implemented). Day-to-day rules: CLAUDE.md "Reproduction
 campaign" block. Architecture: system_overview.md campaign section. ~600
 hermetic tests; full suite green at the pre-change baseline (16 env-dependent

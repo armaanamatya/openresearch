@@ -150,7 +150,7 @@ to provide one; **pending** as of this handoff.
 The zero-metrics case (§3A) is the design driver. Current anti-fabrication is **deterministic
 guards** (good — the guard itself can't hallucinate) but they have blind spots (real-keys/zero-
 values; semantic correctness of the algorithm). Proposed direction for the next session to design
-(use the brainstorming skill + write a spec under `docs/superpowers/specs/`):
+(use the brainstorming skill + write a spec under `docs/history/specs/`):
 
 - **Deterministic first (cheap, no new hallucination surface):** promote the `realmetrics`
   all-zero-metrics check into the harness as a run-time veto (a completed cell whose result-
@@ -291,7 +291,7 @@ committed or pushed yet (push target is **deepinvent only**, per repo policy).
 2. **Investigate §0** (worked-then / fails-now) in parallel — it may reveal a regression that
    makes the OAuth root usable again and is the cheapest path to "keyless + reliable".
 3. **Promote the all-zero-metrics veto** into the harness (deterministic; would have caught v6).
-4. **Brainstorm + spec the external-agent validator** (§5) under `docs/superpowers/specs/`.
+4. **Brainstorm + spec the external-agent validator** (§5) under `docs/history/specs/`.
 5. Re-run SDAR with the resolved root once (1) lands; the executor/guards/GPU path is proven, so a
    completed run is mostly gated on the root + the zero-metrics fix.
 

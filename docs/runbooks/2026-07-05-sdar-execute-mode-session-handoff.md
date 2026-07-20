@@ -8,7 +8,7 @@
 >
 > **Read order:** (1) this doc; (2) the **2026-07-04 handoff** (coordinates §2, run commands §8, gotchas §10);
 > (3) [`docs/audits/2026-07-04-sdar-gcp-runs-log-analysis.md`](../audits/2026-07-04-sdar-gcp-runs-log-analysis.md) (evidence);
-> (4) [`docs/superpowers/specs/2026-07-04-execute-mode-verl-seams-and-sdar-repro-design.md`](../superpowers/specs/2026-07-04-execute-mode-verl-seams-and-sdar-repro-design.md) (seam interfaces §3).
+> (4) [`docs/history/specs/2026-07-04-execute-mode-verl-seams-and-sdar-repro-design.md`](../history/specs/2026-07-04-execute-mode-verl-seams-and-sdar-repro-design.md) (seam interfaces §3).
 > Memory: `project_sdar_execute_mode_reproduction` (updated with this state).
 
 ---

@@ -1,7 +1,7 @@
 # `bes` branch — doc-alignment audit (2026-06-07)
 
 > **STATUS: REMEDIATED 2026-06-07** on branch `integrate/main-into-bes` (see
-> `docs/superpowers/specs/2026-06-07-bes-remediation-plan.md`). `main` was merged
+> `docs/history/specs/2026-06-07-bes-remediation-plan.md`). `main` was merged
 > into `bes` (it is a verified superset: rename, SDK isolation, docs-freshness,
 > GPU/replay/scoring features all arrived), then the genuinely-remaining items
 > were fixed/built: SDK-isolation at the 2 missing sites, Dockerfile shape guard,
@@ -63,7 +63,7 @@ The reverse audit's highest-value set. Each is real surface added by the push wi
 | **BEH-3** | MED (adj.) | **Model-level graceful degradation** (failed/skipped *models* now excluded from rubric, not just datasets); the fidelity spec still says exclusion "does not extend to" this. | `leaf_scorer.py:_detect_data_unavailable_leaves` |
 | low | low | Allocator own-holder discount (`own_pids`); `REPROLAB_MIN_TRAIN_WALL_S`, `REPROLAB_DISABLE_TORCHRUN_WRAP`; `batch_reproduce --accelerator local|auto`; `heartbeat`/`recommend_next_tool`/`resolve_gpu_requirements` primitives; replay backend route in lifecycle section. | per-finding |
 
-**Spec status drift (NEW-3 / BEH-2, MED confirmed):** `docs/superpowers/specs/2026-05-30-rubric-scoring-fidelity-design.md:4` reads "**Status:** … implementation pending," yet Component A (metrics-completeness gate) and part of D (events) **shipped** on `bes` (Component B remains unimplemented). The spec is also **uncited** from CLAUDE.md's reference-docs list. Update the spec's status header and cite it.
+**Spec status drift (NEW-3 / BEH-2, MED confirmed):** `docs/history/specs/2026-05-30-rubric-scoring-fidelity-design.md:4` reads "**Status:** … implementation pending," yet Component A (metrics-completeness gate) and part of D (events) **shipped** on `bes` (Component B remains unimplemented). The spec is also **uncited** from CLAUDE.md's reference-docs list. Update the spec's status header and cite it.
 
 ---
 

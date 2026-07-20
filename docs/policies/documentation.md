@@ -23,7 +23,7 @@ with the code, **the code wins** (and the doc is a bug to be fixed).
 | 3 | **`README.md`** | Public front door. Must not claim anything tiers 0–2 don't back. | repo root |
 | 3 | **`docs/guides/`**, **current `docs/runbooks/`** | Setup, deployment, ops. | `docs/` |
 | 4 | **Generated artifacts** | Point-in-time outputs of a run. Never edited by hand. | `best_runs/`, `runs/`, `docs/runbooks/artifacts/` |
-| 5 | **Archived / historical** | Frozen. Provenance only. Never current. | `docs/archive/`, dated `docs/runbooks/2026-*`, `docs/superpowers/**` |
+| 5 | **Archived / historical** | Frozen. Provenance only. Never current. | `docs/archive/`, dated `docs/runbooks/2026-*`, `docs/history/**` |
 
 There are **no orphan docs**: every current-state doc either is a source of
 truth itself or points up the hierarchy to one.
@@ -37,7 +37,7 @@ Every Markdown file in the repo is exactly one of:
   [`current-docs.txt`](current-docs.txt). These are the only docs the freshness
   checker holds to a "last verified" date.
 - **Dated-historical** — a snapshot whose filename starts with a date
-  (`docs/runbooks/2026-05-28-...md`) or which lives under `docs/superpowers/`
+  (`docs/runbooks/2026-05-28-...md`) or which lives under `docs/history/`
   (plans/specs are written-once design records). The date *is* the freshness
   marker. Never retro-edited; superseded work gets a new dated doc.
 - **Archived** — moved to `docs/archive/` with an `ARCHIVED` banner. Was once
@@ -116,7 +116,7 @@ matches the local command exactly.
 1. **New current-state doc?** Add the freshness marker and add its path to
    `current-docs.txt`.
 2. **Describing a session's progress / a run?** That is a *journal*, not a doc.
-   It belongs in `git log`, a `docs/superpowers/specs/` design record, or
+   It belongs in `git log`, a `docs/history/specs/` design record, or
    (if it must be a file) a **dated** file under `docs/runbooks/` — never a bare
    `progress.md` at root.
 3. **Superseding a doc?** Move the old one to `docs/archive/` with an `ARCHIVED`

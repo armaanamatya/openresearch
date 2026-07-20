@@ -187,7 +187,7 @@ both present and parallel — exactly what the spec asked for.
    crossed" (06-17 §"Live validation"). All 289 passing tests are hermetic
    (mock batch_api/core_api/blob_client). **Action:** run the smoke jobs
    (`infra/gcp/helm/smoke/{hello-gpu,cpu-stub}-job.yaml`) then a real SDAR run.
-   Template: the Azure SDAR run design (`docs/superpowers/specs/2026-06-14-sdar-on-azure-run-design.md`).
+   Template: the Azure SDAR run design (`docs/history/specs/2026-06-14-sdar-on-azure-run-design.md`).
 
 3. **[MEDIUM — verification gap] IaC render unproven by this audit.** `helm template`
    and `terraform plan` were not run (read-only; tooling may be absent). The

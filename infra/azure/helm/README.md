@@ -189,7 +189,7 @@ its non-secret endpoint, and `azure-foundry-api-key` in Key Vault.
 
 ## Cross-references
 
-- Design doc: `docs/superpowers/specs/2026-06-03-azure-aks-gpu-backend-design.md` (§3 layer split, §6 L2 list, §7 auth)
+- Design doc: `docs/history/specs/2026-06-03-azure-aks-gpu-backend-design.md` (§3 layer split, §6 L2 list, §7 auth)
 - Terraform L1: `infra/azure/` (owners: W1-E)
 - Runtime Jobs (L3): `backend/agents/rlm/k8s_job_cell_runner.py` (owners: W1-B)
 - Runbook: `docs/runbooks/2026-06-03-azure-aks-gpu-backend-handoff.md`

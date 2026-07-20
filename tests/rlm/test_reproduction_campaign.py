@@ -5,7 +5,7 @@ a scripted fake (see ``_make_stages``). These tests drive: the write-ahead
 intent invariant, halt-on-unwritable-ledger, every resume/crash-window
 sub-case (spec §5 F7), the never-raises campaign-error fallback (§13),
 fail-soft DISTILL, checkpoint-mode pausing, and per-meter spend accumulation.
-Spec: docs/superpowers/specs/2026-07-01-reproduction-campaign-and-self-
+Spec: docs/history/specs/2026-07-01-reproduction-campaign-and-self-
 improving-harness-design.md §5, §14 ("Spend-ledger properties" + resume).
 """
 

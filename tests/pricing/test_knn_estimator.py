@@ -1,6 +1,6 @@
 """Tests for estimators/knn.py.
 
-Spec: docs/superpowers/specs/2026-05-25-three-source-budget-estimator-design.md §knn
+Spec: docs/history/specs/2026-05-25-three-source-budget-estimator-design.md §knn
 """
 
 from __future__ import annotations

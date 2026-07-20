@@ -19,7 +19,7 @@ Auth posture:
     (``gcloud auth application-default login``) to upload code and download
     artifacts, and the operator's kubeconfig to submit and watch Jobs.
 
-Design reference: ``docs/superpowers/specs/2026-06-16-gcp-gke-execution-backend-design.md``
+Design reference: ``docs/history/specs/2026-06-16-gcp-gke-execution-backend-design.md``
 """
 
 from __future__ import annotations

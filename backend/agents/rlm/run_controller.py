@@ -1,7 +1,7 @@
 """Pure helpers for cross-cloud durable controller orchestration.
 
 WS3 design (durable cloud-native orchestration):
-``docs/superpowers/specs/2026-07-10-durable-cloud-native-orchestration-ws3-design.md``.
+``docs/history/specs/2026-07-10-durable-cloud-native-orchestration-ws3-design.md``.
 
 Everything here is a pure computation or a thin wrapper around an injected
 lease. Cluster submission, in-pod heartbeats, and reaping are wired by
