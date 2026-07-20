@@ -25,6 +25,25 @@ S3 bucket, ECR digest, credentials, or configured cost metadata was discovered
 or created in this workstream. Generic EKS sandbox/exec is intentionally
 disabled; AWS jobs can use only the S3/IRSA cell-matrix route.
 
+### Repository publication and authority status — 2026-07-20
+
+The worktree branch `scheduler-authority-runtime` is now published as
+[`Deepinvent/scientific_article_generator` draft PR #10](https://github.com/Deepinvent/scientific_article_generator/pull/10).
+It is a review handoff, not a merge-ready or production-ready authority flip:
+the branch is 33 commits ahead of and 49 commits behind the then-current
+`origin/main`, and a read-only merge-tree reports eight content conflicts.
+Nothing was merged into `main`.
+
+The current hermetic verification command passed 352 tests across the ASHA
+core, authority gate, scheduler evidence, campaign regression, flag registry,
+and documentation-fidelity guards. That proves the implemented default-OFF
+audit/shadow behavior, not a live authority runtime. An independent runtime
+audit reconfirmed that production has no frozen paper-step-ladder producer,
+controller-validated metric/checkpoint receipt producer, durable branch queue
+or frozen pool, grade-free decision-artifact writer, or controller-owned action
+executor. Therefore `OPENRESEARCH_SCHEDULER_AUTHORITATIVE` remains audit-only
+with `applied:false`; no cloud resource was created or changed for this update.
+
 ## Read-only preflight observations
 
 ### Authorized GCP recheck — 2026-07-19

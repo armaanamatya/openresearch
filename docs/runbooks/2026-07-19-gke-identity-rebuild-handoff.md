@@ -140,4 +140,23 @@ Previously completed verification includes the campaign/ASHA/GKE/AWS hermetic su
       tests/test_flag_registry_fresh.py tests/test_claude_md_fidelity.py \
       -p no:cacheprovider -q
 
-No branch was pushed in this workstream.
+### Publication and implementation status — 2026-07-20
+
+The committed worktree branch is now published at
+`origin/scheduler-authority-runtime` as
+[draft PR #10](https://github.com/Deepinvent/scientific_article_generator/pull/10).
+It was deliberately published as a review handoff only. A simulated merge
+against current `origin/main` has eight content conflicts, including campaign,
+Kubernetes runner, CLI, flag-registry, and campaign-CLI test files. Do not merge
+the PR until it has been rebased and every conflict has been reviewed.
+
+The current focused hermetic command passed **352 tests** across the ASHA core,
+authority gate, scheduler evidence, campaign regressions, flag registry, and
+documentation-fidelity guards. This does not make the authority flag live. An
+independent runtime audit reconfirmed that the serial campaign still lacks a
+runtime producer for the frozen paper-step ladder and verified resumable
+metric/checkpoint receipt; it also lacks a durable branch queue/frozen pool,
+grade-free closed-world decision artifact, and controller-owned idempotent
+action/event executor. Thus the flag must remain default-OFF and audit-only
+(`applied:false`). No GCP or AWS resource was created or changed while
+publishing or documenting this status.
