@@ -29,14 +29,17 @@ On 2026-07-19 the local gcloud active identity was
 `thisisaayushbaniya@gmail.com`. A read-only
 `gcloud container clusters list --project deepinvent-ext-ut` returned HTTP 403;
 `kubectl config current-context` reported no current context; and
-`GOOGLE_APPLICATION_CREDENTIALS` was unset. Do not use this identity to create a
-cluster or launch a billed job. The documented `deepinv-gke` cluster was deleted
-on 2026-07-17.
+`GOOGLE_APPLICATION_CREDENTIALS` and `ANTHROPIC_API_KEY` were unset. Do not use
+this identity to create a cluster or launch a billed job; a no-credit Anthropic
+key would not become an OAuth fallback. The documented `deepinv-gke` cluster was
+deleted on 2026-07-17.
 
-AWS has not been preflighted because AWS environment metadata is intentionally
-empty by default. Do not set static credentials in a run spec or worker pod;
-the EKS cell contract requires IRSA. The controller dependency is `boto3` and is
-declared in `backend/requirements.txt` / `pyproject.toml`.
+AWS is not launch-ready: the AWS CLI is absent, `AWS_PROFILE` and
+`AWS_WEB_IDENTITY_TOKEN_FILE` are unset, and the repository `.venv` currently
+lacks `boto3`. The bounded `aws-preflight` therefore stops locally before any
+AWS API call with the typed missing-`boto3` error. Do not set static credentials
+in a run spec or worker pod; the EKS cell contract requires IRSA. The controller
+dependency is declared in `backend/requirements.txt` / `pyproject.toml`.
 
 ## Exact unblocks before any real run
 
@@ -52,7 +55,8 @@ declared in `backend/requirements.txt` / `pyproject.toml`.
    ServiceAccount, NVIDIA GPU device plugin, a one-GPU-per-node labeled pool,
    S3 project/run-prefix policy, and a pinned ECR cell image. Set only verified
    `OPENRESEARCH_AWS_*` settings, including a whole-node `AWS_GPU_USD_PER_HOUR`.
-   Then run the explicit bounded preflight:
+   Install the declared Python dependency into the launch environment, configure
+   an operator AWS identity/kube context, then run the explicit bounded preflight:
 
    ```bash
    python -m backend.cli aws-preflight --project-id <project> --run-id <probe-run>
