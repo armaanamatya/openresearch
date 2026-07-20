@@ -32,25 +32,32 @@ On 2026-07-19 the local gcloud active identity was
 `GOOGLE_APPLICATION_CREDENTIALS` and `ANTHROPIC_API_KEY` were unset. Do not use
 this identity to create a cluster or launch a billed job; a no-credit Anthropic
 key would not become an OAuth fallback. The documented `deepinv-gke` cluster was
-deleted on 2026-07-17.
+deleted on 2026-07-17. The current local `ensure_gcp_available()` gate stops
+even earlier, at missing `OPENRESEARCH_GCP_GCS_BUCKET`, so it made no cloud call.
 
 AWS is not launch-ready: the AWS CLI is absent, `AWS_PROFILE` and
-`AWS_WEB_IDENTITY_TOKEN_FILE` are unset, and the repository `.venv` currently
-lacks `boto3`. The bounded `aws-preflight` therefore stops locally before any
-AWS API call with the typed missing-`boto3` error. Do not set static credentials
-in a run spec or worker pod; the EKS cell contract requires IRSA. The controller
-dependency is declared in `backend/requirements.txt` / `pyproject.toml`.
+`AWS_WEB_IDENTITY_TOKEN_FILE` are unset. `boto3` was installed into the local
+repository venv for the hermetic controller path, and the bounded
+`aws-preflight` now stops locally at the first real configuration gate:
+missing `OPENRESEARCH_AWS_S3_BUCKET`. It makes no AWS API call in that state.
+Do not set static credentials in a run spec or worker pod; the EKS cell contract
+requires IRSA. The controller dependency is declared in
+`backend/requirements.txt` / `pyproject.toml`.
 
 ## Exact unblocks before any real run
 
-1. Authenticate gcloud as an identity with `deepinvent-ext-ut` GKE and billing
-   permissions, then retrieve a kubectl context for the recreated `deepinv-gke`
+1. Set the intended `OPENRESEARCH_GCP_PROJECT`, `OPENRESEARCH_GCP_GCS_BUCKET`,
+   pinned `OPENRESEARCH_GCP_BASE_IMAGE`, namespace, and ServiceAccount; then
+   authenticate gcloud as an identity with `deepinvent-ext-ut` GKE and billing
+   permissions and retrieve a kubectl context for the recreated `deepinv-gke`
    cluster. Recreate it only through the six-gate procedure in
    `docs/runbooks/2026-07-17-deepinv-gke-l4-validation-handoff.md`; use an L4
    pool if A100 stock is unavailable.
 2. Configure the verified GKE cell-matrix route (`cells.json`, `train_cell.py`,
-   `OPENRESEARCH_GKE_SYNTH_CELL`) and resolve the documented job-name 409 retry
-   collision before launch.
+   `OPENRESEARCH_GKE_SYNTH_CELL`). The generic Job 409 collision is now
+   fail-closed: full run/cell/config identity must match before active/success
+   adoption; terminal conflicts never issue an unreserved retry. Ensure cluster
+   RBAC grants Job create/patch rights only to the controller ServiceAccount.
 3. For AWS, provision and review an EKS namespace with a least-privilege IRSA
    ServiceAccount, NVIDIA GPU device plugin, a one-GPU-per-node labeled pool,
    S3 project/run-prefix policy, and a pinned ECR cell image. Set only verified

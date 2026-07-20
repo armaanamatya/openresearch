@@ -19,7 +19,8 @@ Design:
     ``materialize_full_cells`` / ``estimate_full_seconds`` / ``budget_feasible``)
     is stdlib-only and unit-tested against plain dicts — no GPU, no clock.
   * **Orchestration** (``run_staged_search``) measures the candidate phase's
-    wall-clock and wires the pure core to ``gpu_cell_runner.run_matrix``.
+    wall-clock and wires the pure core to the caller's cell runner (local by
+    default; the selected K8s runner for cloud campaigns).
   * **Shape-gated:** a ``cells.json`` with no ``search`` key returns ``[]`` from
     ``parse_search_spec`` and the caller runs the legacy single-phase path
     byte-for-byte unchanged.
@@ -45,7 +46,7 @@ from __future__ import annotations
 import copy
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,8 @@ def parse_search_spec(cells_json: Any) -> list[SearchGroup]:
 
     groups: list[SearchGroup] = []
     total_candidates = 0
+    staged_cell_ids: set[str] = set()
+    staged_group_names: set[str] = set()
     for item in raw[:_MAX_GROUPS]:
         if not isinstance(item, dict):
             continue
@@ -105,6 +108,24 @@ def parse_search_spec(cells_json: Any) -> list[SearchGroup]:
         cands = cands[:_MAX_CANDIDATES_PER_GROUP]
         if not cands or not promote.get("id"):
             continue
+        # A cloud Job is identified by (run_id, cell_id). Reusing a candidate
+        # ID for a promoted configuration (or across groups) can make the
+        # second phase adopt the first Job/artifacts after a 409. Refuse the
+        # complete optional search specification rather than run an ambiguous
+        # subset with a different training configuration.
+        group_ids = [str(candidate["id"]) for candidate in cands] + [str(promote["id"])]
+        if len(set(group_ids)) != len(group_ids) or staged_cell_ids.intersection(group_ids):
+            logger.warning(
+                "staged_search: duplicate candidate/promote cell id; "
+                "ignoring ambiguous search specification"
+            )
+            return []
+        group_name = str(item.get("group") or promote.get("id"))
+        if group_name in staged_group_names:
+            logger.warning(
+                "staged_search: duplicate group name; ignoring ambiguous search specification"
+            )
+            return []
         if total_candidates + len(cands) > _MAX_TOTAL_CANDIDATES:
             logger.warning(
                 "staged_search: total-candidate cap %d reached — dropping the "
@@ -114,12 +135,14 @@ def parse_search_spec(cells_json: Any) -> list[SearchGroup]:
             )
             break
         total_candidates += len(cands)
+        staged_cell_ids.update(group_ids)
+        staged_group_names.add(group_name)
         obj = str(item.get("select_objective") or "min").strip().lower()
         if obj not in ("min", "max"):
             obj = "min"
         groups.append(
             SearchGroup(
-                group=str(item.get("group") or promote.get("id")),
+                group=group_name,
                 select_metric=str(item.get("select_metric") or "final_train_loss"),
                 select_objective=obj,
                 candidates=cands,
@@ -128,6 +151,39 @@ def parse_search_spec(cells_json: Any) -> list[SearchGroup]:
             )
         )
     return groups
+
+
+def restrict_groups_to_cell_ids(
+    groups: list[SearchGroup], allowed_cell_ids: set[str],
+    *,
+    normalized_cells_by_id: Mapping[str, dict] | None = None,
+) -> list[SearchGroup]:
+    """Keep only staged cells that already passed harness preflight gates.
+
+    Candidates that fail capacity/dataset checks are removed before they can
+    submit a Job. A group needs at least one remaining candidate *and* an
+    eligible promoted cell; otherwise it is omitted completely. This is a
+    deterministic filter, not a scheduler decision.
+    """
+    filtered: list[SearchGroup] = []
+    for group in groups:
+        candidates = [
+            (normalized_cells_by_id or {}).get(str(candidate.get("id") or ""), candidate)
+            for candidate in group.candidates
+            if str(candidate.get("id") or "") in allowed_cell_ids
+        ]
+        promote_id = str(group.promote.get("id") or "")
+        if not candidates or promote_id not in allowed_cell_ids:
+            continue
+        filtered.append(SearchGroup(
+            group=group.group,
+            select_metric=group.select_metric,
+            select_objective=group.select_objective,
+            candidates=candidates,
+            promote=(normalized_cells_by_id or {}).get(promote_id, group.promote),
+            param_from_winner=group.param_from_winner,
+        ))
+    return filtered
 
 
 def _coerce_float(v: Any) -> float | None:
@@ -467,6 +523,7 @@ def run_staged_search(
     per_cell_timeout_s: float | None = None,
     now_iso: str | None = None,
     emit: Any = None,
+    run_matrix_fn: Callable[..., dict[str, Any]] | None = None,
     **run_matrix_kwargs: Any,
 ) -> dict[str, Any]:
     """Run the two-phase tune-then-run and return the FULL-cell results.
@@ -483,9 +540,19 @@ def run_staged_search(
     """
     import time
 
-    from backend.agents.rlm.gpu_cell_runner import run_matrix
+    if run_matrix_fn is None:
+        # Preserve the local runner as the default.  Cloud callers inject the
+        # same K8s runner used by the non-search cell-matrix path, so neither
+        # phase can silently escape its namespace, identity, or GPU budget.
+        from backend.agents.rlm.gpu_cell_runner import run_matrix
+    else:
+        run_matrix = run_matrix_fn
 
-    run_matrix_kwargs.pop("overall_timeout_s", None)  # the staged budget owns this
+    # The staged orchestrator owns one total deadline.  Candidates receive the
+    # full remaining budget; promoted cells receive only the measured remainder.
+    # Discarding a caller's per-invocation value avoids accidentally granting
+    # each phase a fresh, independent matrix deadline.
+    run_matrix_kwargs.pop("overall_timeout_s", None)
 
     def _emit(code: str, msg: str, **extra: Any) -> None:
         if emit is not None:
@@ -504,7 +571,7 @@ def run_staged_search(
     candidate_results = run_matrix(
         candidate_cells, cell_script, output_root=output_root, gpus=gpus,
         max_parallel=max_parallel, per_cell_timeout_s=per_cell_timeout_s,
-        now_iso=now_iso, **run_matrix_kwargs,
+        overall_timeout_s=remaining_s, now_iso=now_iso, **run_matrix_kwargs,
     )
     cand_wall = time.monotonic() - t0
 
@@ -522,7 +589,7 @@ def run_staged_search(
     full_cells = materialize_full_cells(groups, winners)
 
     rate = candidate_rate(cand_wall, candidate_cells)
-    remaining_after = (remaining_s - cand_wall) if remaining_s is not None else None
+    remaining_after = max(0.0, remaining_s - cand_wall) if remaining_s is not None else None
     kept, dropped = affordable_full_cells(full_cells, rate, remaining_after, reserve_s)
     if dropped:
         _emit(
@@ -558,6 +625,7 @@ def run_staged_search(
 __all__ = [
     "SearchGroup",
     "parse_search_spec",
+    "restrict_groups_to_cell_ids",
     "synthesize_search_from_hint",
     "synthesize_search_from_leaf",
     "extract_select_value",
