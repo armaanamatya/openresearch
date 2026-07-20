@@ -20,6 +20,7 @@ from backend.agents.rlm import campaign_composition as cc
 from backend.agents.rlm.attempt_assessment import rubric_sha256
 from backend.agents.rlm.attempt_driver import LiveCliDriver, PairedDriver, UnifiedRunDriver
 from backend.agents.rlm.campaign_composition import CampaignOptions, build_campaign
+from backend.agents.rlm.campaign_policy import Decision
 from backend.agents.rlm.reproduction_campaign import (
     CampaignInitError,
     CampaignLedger,
@@ -1160,6 +1161,55 @@ def test_decide_impl_gpu_usd_estimate_single_gpu_unchanged(tmp_path, monkeypatch
     cc._decide_impl(run_dir, opts, state, rows=[])
 
     assert captured["est_usd"] == pytest.approx(2.0 * 0.5)
+
+
+@pytest.mark.parametrize("kind", ("REPRODUCED", "CONTRADICTED", "INFEASIBLE", "EXHAUSTED"))
+def test_decide_impl_authority_audit_preserves_terminal_decision_contract(
+    tmp_path, monkeypatch, kind
+):
+    """Exercise the real DECIDE seam, not only the authority helper.
+
+    A terminal base decision must be the exact decision that reaches the
+    controller ledger; authority adds only its durable audit marker before the
+    shadow advisory is considered.
+    """
+    run_dir = tmp_path / "runs" / "prj_t"
+    run_dir.mkdir(parents=True)
+    opts = _opts(tmp_path)
+    state = _state()
+    base = Decision(
+        kind=kind,
+        rule=f"terminal_{kind.lower()}",
+        stop_reason="evidence_terminal",
+        next_plan=None,
+        champion_attempt_n=7,
+    ).to_dict()
+    monkeypatch.setattr(
+        cc,
+        "campaign_decide",
+        lambda *_args, **_kwargs: Decision(
+            kind=kind,
+            rule=f"terminal_{kind.lower()}",
+            stop_reason="evidence_terminal",
+            next_plan=None,
+            champion_attempt_n=7,
+        ),
+    )
+    # Isolate the authority insertion point. The shadow helper has its own
+    # exhaustive tests and is intentionally not a live decision path.
+    monkeypatch.setattr(cc, "_maybe_attach_asha_advisory", lambda *_args, **_kwargs: None)
+    monkeypatch.setenv("OPENRESEARCH_SCHEDULER_TREE", "1")
+    monkeypatch.setenv("OPENRESEARCH_SCHEDULER_AUTHORITATIVE", "yes")
+
+    result = cc._decide_impl(run_dir, opts, state, rows=[])
+
+    assert {key: result[key] for key in base} == base
+    assert result["asha_authority_audit"] == {
+        "enabled": True,
+        "applied": False,
+        "action": "continue",
+        "deterministic_evidence_basis": "base_terminal_precedence",
+    }
 
 
 # --------------------------------------------------------------------------- #
