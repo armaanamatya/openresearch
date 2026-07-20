@@ -61,6 +61,50 @@ key would not become an OAuth fallback. The documented `deepinv-gke` cluster was
 deleted on 2026-07-17. The current local `ensure_gcp_available()` gate stops
 even earlier, at missing `OPENRESEARCH_GCP_GCS_BUCKET`, so it made no cloud call.
 
+### Live CPU-only Workload Identity probe — 2026-07-19
+
+At the operator's explicit request to "run and try", a bounded diagnostic was
+run against the real `deepinvent-ext-ut` project with the already authenticated
+`aayush@deepinvent.ai` account. This was **not** a reproduction or scheduler
+campaign: it used no LLM, no GPU node pool, no paper, no artifact write, and no
+static credentials. Its only cloud action was a CPU GKE control-plane/identity
+probe, followed by teardown.
+
+1. Created temporary zonal Standard cluster
+   `deepinv-gke-smoke-20260719` in `us-central1-a`, with a one-node
+   `e2-standard-2` CPU pool, IP aliasing, no master-authorized networks, and
+   workload pool `deepinvent-ext-ut.svc.id.goog`.
+2. The cluster creation completed and the CPU node became `Ready`. The initial
+   default node had metadata concealment, so a first probe could not access the
+   GKE metadata server. This is a node-pool configuration fact, not an IAM
+   success. The default pool was replaced by a CPU-only `wi-cpu` pool explicitly
+   configured with `--workload-metadata=GKE_METADATA` before the decisive probe.
+3. Created only `reprolab/reprolab-sa`, annotated with
+   `iam.gke.io/gcp-service-account:
+   deepinv-workload@deepinvent-ext-ut.iam.gserviceaccount.com`. A bounded Job
+   used the public `google/cloud-sdk:slim` image and made no GCS write.
+4. The corrected-node direct metadata probe returned HTTP 200 for the intended
+   GSA email, proving KSA-to-GSA selection reached the expected identity. Its
+   token request returned HTTP 403 with the exact live error:
+
+   ```text
+   Unable to generate access token; IAM returned 403 Forbidden:
+   Permission 'iam.serviceAccounts.getAccessToken' denied.
+   This error could be caused by a missing IAM policy binding on the target
+   IAM service account.
+   ```
+
+This confirms the prior read-only finding with a real pod: the missing
+`roles/iam.workloadIdentityUser` binding blocks the artifact path before any
+GCS operation, exactly as the evidence gate requires. It is not a Claude-vs-
+Codex issue, a GPU-capacity issue, or a scheduler defect. Do not substitute node
+credentials, static service-account keys, or unauthenticated artifact storage.
+Cluster teardown was submitted immediately after the probe. Delete operation
+`operation-1784522366167-2a78d7e2-c3a1-4946-80c2-dc35004e84e9` reached `DONE`;
+a subsequent explicit project listing showed no clusters and no
+`gke-deepinv-gke-smoke*` Compute Engine nodes. The diagnostic is closed and
+left no running GKE or node resource.
+
 AWS is not launch-ready: the AWS CLI is absent, `AWS_PROFILE` and
 `AWS_WEB_IDENTITY_TOKEN_FILE` are unset. `boto3` was installed into the local
 repository venv for the hermetic controller path, and the bounded
