@@ -13,5 +13,6 @@ ONBOARDING.md
 CLAUDE.md
 docs/README.md
 docs/architecture.md
+docs/engineering-guide.md
 docs/operations.md
 docs/policies/artifacts.md

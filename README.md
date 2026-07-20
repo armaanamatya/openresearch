@@ -304,6 +304,7 @@ For local development: use OpenAI for the root (~$1/run), OAuth for sub-agents (
 | [ONBOARDING.md](ONBOARDING.md) | First day: setup, commands, and project boundaries |
 | [CLAUDE.md](CLAUDE.md) | Developer conventions and constraints |
 | [docs/architecture.md](docs/architecture.md) | Current backend/frontend/RLM topology |
+| [docs/engineering-guide.md](docs/engineering-guide.md) | Durable engineering decisions and constraints |
 | [docs/operations.md](docs/operations.md) | Setup, checks, and safe run operation |
 | [docs/policies/artifacts.md](docs/policies/artifacts.md) | What belongs in Git |
 

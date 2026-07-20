@@ -8,7 +8,8 @@ Use this page as the single starting point for the repository.
 3. Use the supported development commands in the [Makefile](Makefile):
    `make setup`, `make smoke`, `make check`, `make dev`, `make dev-backend`, and
    `make dev-frontend`.
-4. Read [docs/README.md](docs/README.md) for the remaining small reference set.
+4. Read [docs/architecture.md](docs/architecture.md), then
+   [docs/engineering-guide.md](docs/engineering-guide.md).
 
 The authority order is **code → architecture → CLAUDE.md → README.md**.
 

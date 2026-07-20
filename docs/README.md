@@ -6,6 +6,7 @@ new hire should need:
 
 - [../README.md](../README.md) — what the project is and how to begin.
 - [architecture.md](architecture.md) — system boundaries and data flow.
+- [engineering-guide.md](engineering-guide.md) — durable technical decisions.
 - [operations.md](operations.md) — setup, local development, checks, and runs.
 - [policies/artifacts.md](policies/artifacts.md) — what belongs in Git.
 
