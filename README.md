@@ -139,6 +139,13 @@ together — with RunPod/GKE/Docker preflight and automatic Node selection via `
 # → frontend http://localhost:3000   ← open this
 ```
 
+For remote GPU campaigns, `gcp`/`gke` use the validated cell-matrix route. The
+optional `aws` sandbox is an EKS+S3/IRSA cell-matrix adapter (never a generic
+remote shell): configure its pinned image, one-GPU node pool, explicit verified
+rate, and IRSA first, then run `python -m backend.cli aws-preflight --project-id
+<project> --run-id <probe>` before a billed run. See
+[`docs/runbooks/running-the-project.md`](docs/runbooks/running-the-project.md).
+
 `OPENRESEARCH_DEFAULT_SANDBOX` (shell env > `.env` > `runpod`) selects the sandbox and
 which preflight runs. Escape hatches: `START_BACKEND_ONLY=1`, `START_FRONTEND_ONLY=1`,
 `START_SKIP_PREFLIGHT=1`. `Ctrl-C` tears down both processes.

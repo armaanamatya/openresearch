@@ -138,6 +138,33 @@ _CELL_POD_SECRET_NAMES: tuple[str, ...] = (
 # Default fallback values used when a settings attribute is absent (defensive,
 # so the module imports + tests run against a partial/older config).
 _SETTINGS_DEFAULTS: dict[str, Any] = {
+    # --- AWS / EKS ---
+    # All GPU metadata is deliberately inert.  EKS pool labels, VRAM, and
+    # effective prices are deployment facts and must be declared before the
+    # runner may submit a cell Job.
+    "aws_namespace": "reprolab",
+    "aws_service_account": "reprolab-sa",
+    "aws_base_image": "",
+    "aws_s3_bucket": "",
+    "aws_region": "",
+    "aws_max_nodes": 0,
+    "aws_gpus_per_node": 0,
+    "aws_per_gpu_vram_gb": 0.0,
+    "aws_gpu_usd_per_hour": 0.0,
+    "aws_pending_timeout_seconds": 1500,
+    "aws_gpu_skus": [],
+    "aws_ttl_seconds_after_finished": 3600,
+    "aws_job_backoff_limit": 0,
+    "aws_use_spot": False,
+    "aws_spot_backoff_limit": 3,
+    "aws_cell_preempt_grace_s": 20,
+    "aws_cache_mount_path": "/mnt/reprolab-cache",
+    "aws_files_cache_enabled": False,
+    "aws_files_share": "",
+    "aws_watch_poll_interval_s": 5.0,
+    "aws_cell_oom_batch_scale_step1": 0.5,
+    "aws_cell_oom_batch_scale_floor": 0.25,
+    "aws_bootstrap_pip_timeout_s": 600,
     # --- Azure / AKS ---
     "azure_namespace": "reprolab",
     "azure_service_account": "reprolab-sa",
@@ -214,6 +241,12 @@ _SETTINGS_PREFIX_CTX: ContextVar[str] = ContextVar(
     "k8s_job_cell_runner_settings_prefix", default="azure"
 )
 
+# Kept separate from bind_run_context so older tests/callers that monkeypatch
+# its historical three-argument shape remain compatible.
+_PROJECT_ID_CTX: ContextVar[str] = ContextVar(
+    "k8s_job_cell_runner_project_id", default=""
+)
+
 
 @contextmanager
 def _bind_settings_prefix(prefix: str) -> Iterator[None]:
@@ -233,6 +266,16 @@ def _bind_settings_prefix(prefix: str) -> Iterator[None]:
         yield
     finally:
         _SETTINGS_PREFIX_CTX.reset(token)
+
+
+@contextmanager
+def _bind_project_id(project_id: str) -> Iterator[None]:
+    """Bind a controller project id for collision-safe S3 object prefixes."""
+    token = _PROJECT_ID_CTX.set(str(project_id).strip())
+    try:
+        yield
+    finally:
+        _PROJECT_ID_CTX.reset(token)
 
 
 @contextmanager
@@ -351,6 +394,11 @@ def _get_fence_generation() -> int | None:
         return None
 
 
+def _get_project_id() -> str:
+    """Return the controller-supplied project id for collision-safe S3 prefixes."""
+    return _PROJECT_ID_CTX.get("")
+
+
 def _get_settings_prefix() -> str:
     """Return the active cloud-provider settings prefix (default ``"azure"``).
 
@@ -465,10 +513,9 @@ def _blob_download_artifact(
 def _object_store() -> Any:
     """Return the active ObjectStore for the current cloud prefix.
 
-    Resolved lazily from the bound ``settings_prefix`` (``"azure"`` → AzureBlobStore
-    via ``_AZURE_CLOUD``; ``"gcp"`` → GcsStore via ``_GCP_CLOUD``).  Lazy imports
-    prevent circular-import issues; ``_AZURE_CLOUD``/``_GCP_CLOUD`` live in their
-    respective thin-adapter modules which already import ``k8s_job_backend``.
+    Resolved lazily from the bound ``settings_prefix`` (``"azure"`` → AzureBlobStore,
+    ``"gcp"`` → GcsStore, ``"aws"`` → S3Store). Lazy imports prevent circular-import
+    issues; provider CloudSpecs live in their thin adapter modules.
 
     Monkeypatch this symbol in tests via::
 
@@ -478,6 +525,9 @@ def _object_store() -> Any:
     if prefix == "gcp":
         from backend.services.runtime.gke_job_backend import _GCP_CLOUD  # type: ignore[import]
         return _GCP_CLOUD.make_object_store(_get_settings(), None)
+    if prefix == "aws":
+        from backend.services.runtime.eks_job_backend import _AWS_CLOUD  # type: ignore[import]
+        return _AWS_CLOUD.make_object_store(_get_settings(), None)
     if prefix == "azure":
         account = _setting("azure_storage_account", "") or ""
         container = _setting("azure_blob_container", "reprolab-artifacts") or "reprolab-artifacts"
@@ -488,7 +538,7 @@ def _object_store() -> Any:
     # "azure" and both real backends bind explicitly via _bind_settings_prefix, so this
     # only fires on a genuine typo or a missing binding — where a loud error is correct.
     raise ValueError(
-        f"k8s_job_cell_runner: unknown settings prefix {prefix!r}; expected 'gcp' or 'azure'"
+        f"k8s_job_cell_runner: unknown settings prefix {prefix!r}; expected 'gcp', 'aws', or 'azure'"
     )
 
 
@@ -518,8 +568,9 @@ def _make_blob_client(
     but those helpers already catch all exceptions, so the worst case is a
     logged debug warning.
     """
-    # GCP uses its own client internally via GcsStore; no shared ContainerClient.
-    if _get_settings_prefix() == "gcp":
+    # GCP and AWS use their own object-store clients internally; no shared Azure
+    # ContainerClient.  AWS auth is exclusively the pod's IRSA identity.
+    if _get_settings_prefix() in ("gcp", "aws"):
         return None
     if not account_name:
         return None
@@ -726,6 +777,73 @@ def _cache_pvc_exists(k8s: _K8sClients, namespace: str, pvc_name: str = _CACHE_P
     return True
 
 
+_AWS_STATIC_CREDENTIAL_ENV_NAMES: frozenset[str] = frozenset({
+    "AWS_ACCESS_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN", "AWS_SECURITY_TOKEN", "AWS_PROFILE",
+    "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE",
+})
+
+
+def _assert_no_static_aws_credentials(env_vars: list[dict[str, str]]) -> None:
+    """Reject accidental static AWS credential injection into an EKS cell pod.
+
+    IRSA populates short-lived web-identity plumbing through the Kubernetes
+    ServiceAccount.  The controller must never serialize a developer's static
+    key, profile, or credential-file path into the Job manifest.
+    """
+    leaked = sorted({entry.get("name", "") for entry in env_vars} & _AWS_STATIC_CREDENTIAL_ENV_NAMES)
+    if leaked:
+        raise ValueError(
+            "k8s_job_cell_runner: refusing static AWS credential env vars in EKS pod: "
+            + ", ".join(leaked)
+        )
+
+
+def _aws_cell_configuration_error(gpu_plan: Any | None) -> str | None:
+    """Validate the EKS-only metadata required to meter and target a GPU cell."""
+    skus = tuple(str(v).strip() for v in (_cloud_setting("gpu_skus", []) or []) if str(v).strip())
+    try:
+        max_nodes = int(_cloud_setting("max_nodes", 0) or 0)
+        gpus_per_node = int(_cloud_setting("gpus_per_node", 0) or 0)
+        vram = float(_cloud_setting("per_gpu_vram_gb", 0.0) or 0.0)
+        rate = float(_cloud_setting("gpu_usd_per_hour", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return "AWS GPU metadata is malformed"
+    errors: list[str] = []
+    if not skus:
+        errors.append("aws_gpu_skus is empty")
+    if max_nodes <= 0:
+        errors.append("aws_max_nodes must be > 0")
+    if gpus_per_node != 1:
+        errors.append("aws_gpus_per_node must equal 1 (v1 EKS meters whole nodes)")
+    if vram <= 0:
+        errors.append("aws_per_gpu_vram_gb must be > 0")
+    if rate <= 0:
+        errors.append("aws_gpu_usd_per_hour must be > 0")
+    if gpu_plan is not None:
+        short_name = getattr(gpu_plan, "short_name", None)
+        if isinstance(gpu_plan, dict):
+            short_name = gpu_plan.get("short_name")
+        if short_name not in skus:
+            errors.append("resolved gpu_plan is not an aws_gpu_skus label")
+        try:
+            count = int(
+                gpu_plan.get("gpu_count", 1) if isinstance(gpu_plan, dict)
+                else getattr(gpu_plan, "gpu_count", 1)
+            )
+        except (TypeError, ValueError):
+            count = 0
+        if count != 1:
+            errors.append("resolved gpu_plan must request exactly one GPU for v1 EKS")
+    return "; ".join(errors) if errors else None
+
+
+def _safe_prefix_component(value: str) -> str:
+    """Return a path-safe nonempty S3 key component without importing runtime SDKs."""
+    safe = _DNS_SAFE_RE.sub("-", value.lower()).strip("-")[:63]
+    return safe or "unknown"
+
+
 def _build_job_manifest(
     *,
     job_name: str,
@@ -814,7 +932,14 @@ def _build_job_manifest(
     # is used even when _build_job_manifest is called directly without default_sku.
     if default_sku is None:
         _gpu_skus_for_default: list = _cloud_setting("gpu_skus", []) or []
-        default_sku = str(_gpu_skus_for_default[0]) if _gpu_skus_for_default else "azure_a100_80"
+        if _gpu_skus_for_default:
+            default_sku = str(_gpu_skus_for_default[0])
+        elif _get_settings_prefix() == "aws":
+            raise ValueError(
+                "k8s_job_cell_runner: aws_gpu_skus is empty; refusing unlabelled EKS GPU Job"
+            )
+        else:
+            default_sku = "azure_a100_80"
 
     # P0-fix-1: env-var NAMES must exactly match what aks_cell_entrypoint.py reads.
     # Canonical contract (runner injects → entrypoint reads):
@@ -860,6 +985,17 @@ def _build_job_manifest(
         env_vars.append(
             {"name": "OPENRESEARCH_GCP_GCS_BUCKET", "value": _cloud_setting("gcs_bucket", "")}
         )
+    elif _prefix == "aws":
+        # EKS pods obtain S3 access exclusively through their IRSA-bound Service
+        # Account.  Only the bucket and non-secret region cross this boundary.
+        env_vars.extend([
+            {"name": "OPENRESEARCH_AWS_S3_BUCKET", "value": _cloud_setting("s3_bucket", "")},
+            {"name": "AWS_REGION", "value": _cloud_setting("region", "")},
+            {"name": "AWS_DEFAULT_REGION", "value": _cloud_setting("region", "")},
+            # Refuse the node instance-profile fallback.  EKS worker Pods must
+            # receive IRSA's projected web-identity variables or fail in boto3.
+            {"name": "AWS_EC2_METADATA_DISABLED", "value": "true"},
+        ])
     else:
         # Default / azure: P0-fix-1 standardised on OPENRESEARCH_AZURE_* names.
         env_vars.extend([
@@ -890,6 +1026,8 @@ def _build_job_manifest(
     # the canonical secret resolver. Only injects what is actually configured;
     # byte-identical env when nothing resolves (the common case today).
     env_vars.extend(_credential_env_vars())
+    if _prefix == "aws":
+        _assert_no_static_aws_credentials(env_vars)
 
     if accelerator == "cpu":
         # Phase D (OPENRESEARCH_CPU_CLOUD_CELLS): target the CPU pool label
@@ -912,11 +1050,19 @@ def _build_job_manifest(
         # P0-fix-3: node selector uses the infra pool label reprolab/sku in ALL paths.
         # With gpu_plan → target that SKU's pool; without → fall back to the default SKU.
         if gpu_plan is not None:
-            node_selector = {
+            node_selector: dict[str, str] = {
                 "reprolab/sku": str(getattr(gpu_plan, "short_name", default_sku))
             }
         else:
             node_selector = {"reprolab/sku": default_sku}
+
+        if _prefix == "aws":
+            allowed = {str(v) for v in (_cloud_setting("gpu_skus", []) or [])}
+            selected = node_selector["reprolab/sku"]
+            if selected not in allowed:
+                raise ValueError(
+                    f"k8s_job_cell_runner: EKS selector {selected!r} is not in aws_gpu_skus"
+                )
 
         # Toleration for the nvidia.com/gpu taint (always present; required by AKS GPU nodes).
         gpu_toleration = {
@@ -931,12 +1077,12 @@ def _build_job_manifest(
         # exactly [gpu_toleration], byte-identical to the on-demand path.
         _tolerations = [gpu_toleration]
         if _cloud_setting("use_spot", False):
-            if _get_settings_prefix() == "gcp":
+            if _prefix == "gcp":
                 _tolerations.append({
                     "key": "cloud.google.com/gke-spot",
                     "operator": "Equal", "value": "true", "effect": "NoSchedule",
                 })
-            else:
+            elif _prefix == "azure":
                 _tolerations.append({
                     "key": "kubernetes.azure.com/scalesetpriority",
                     "operator": "Equal", "value": "spot", "effect": "NoSchedule",
@@ -947,8 +1093,8 @@ def _build_job_manifest(
     # not explicitly provided, preserving byte-for-byte backward compatibility.
     _pod_extra: dict[str, str] = (
         {"azure.workload.identity/use": "true"}
-        if pod_template_extra_labels is None
-        else pod_template_extra_labels
+        if pod_template_extra_labels is None and _prefix == "azure"
+        else (pod_template_extra_labels or {})
     )
     _pod_labels: dict[str, str] = {
         "app": "reprolab-cell",
@@ -1619,7 +1765,9 @@ def _run_cell_job(
         logger.error(
             "k8s_job_cell_runner: manifest build failed cell=%s: %s", cell_id, _safe_exc
         )
-        _cs = "gke" if _get_settings_prefix() == "gcp" else "aks"
+        _cs = {"gcp": "gke", "aws": "eks", "azure": "aks"}.get(
+            _get_settings_prefix(), _get_settings_prefix()
+        )
         return CellResult(
             cell_id=cell_id,
             status=STATUS_ERROR,
@@ -1630,7 +1778,9 @@ def _run_cell_job(
         )
 
     # Submit the Job.
-    _cs = "gke" if _get_settings_prefix() == "gcp" else "aks"
+    _cs = {"gcp": "gke", "aws": "eks", "azure": "aks"}.get(
+        _get_settings_prefix(), _get_settings_prefix()
+    )
     # WS3: resolved ONCE per submit attempt — gates both the persisted-deadline
     # write (success path, just below) and the adopt-on-409 branch (except,
     # just below). Uses the `fence_generation` PARAMETER (threaded explicitly
@@ -2044,8 +2194,16 @@ def run_matrix(
     # default off). A verl cell auto-targets gke-cell-verl instead of the single
     # gcp_base_image; off/unmapped => base_image unchanged.
     base_image = _maybe_framework_image(cells, base_image)
-    storage_account: str = _cloud_setting("storage_account", "") or ""
-    blob_container: str = _cloud_setting("blob_container", "reprolab-artifacts") or "reprolab-artifacts"
+    _prefix = _get_settings_prefix()
+    # ``storage_account`` / ``blob_container`` are legacy Azure-shaped helper
+    # parameters.  For AWS they carry the S3 bucket only for call-site parity;
+    # actual routing goes through S3Store and does not serialize credentials.
+    if _prefix == "aws":
+        storage_account = str(_cloud_setting("s3_bucket", "") or "")
+        blob_container = ""
+    else:
+        storage_account = _cloud_setting("storage_account", "") or ""
+        blob_container = _cloud_setting("blob_container", "reprolab-artifacts") or "reprolab-artifacts"
     # P1-fix-5: align with config.py default of 4 (was incorrectly 8 here).
     cloud_max_nodes: int = int(_cloud_setting("max_nodes", 4))
     cloud_gpus_per_node: int = int(_cloud_setting("gpus_per_node", 1))
@@ -2053,12 +2211,11 @@ def run_matrix(
     pending_timeout_s: float = float(_cloud_setting("pending_timeout_seconds", 900))
     provisioned_skus: list[str] = list(_cloud_setting("gpu_skus", []) or [])
     max_escalations: int = int(_setting("dynamic_gpu_max_escalations", 2))
-    # Derive cloud prefix short label for gpu result fields ("aks" for azure, "gke" for gcp).
-    _prefix = _get_settings_prefix()
-    _cloud_short = "gke" if _prefix == "gcp" else "aks"
-    # Pod template extra labels: AKS needs WI label, GKE does not.
+    # Derive cloud prefix short label for gpu result fields.
+    _cloud_short = {"gcp": "gke", "aws": "eks", "azure": "aks"}.get(_prefix, _prefix)
+    # Pod template extra labels: only AKS needs this workload-identity label.
     _pod_extra_labels: dict = (
-        {} if _prefix == "gcp" else {"azure.workload.identity/use": "true"}
+        {"azure.workload.identity/use": "true"} if _prefix == "azure" else {}
     )
 
     _fingerprints: dict[str, str] = fingerprints or {}
@@ -2081,6 +2238,24 @@ def run_matrix(
     # below), so every downstream consumer receives this resolved value as an
     # explicit parameter/closure capture, never by re-calling the accessor.
     fence_generation = _get_fence_generation()
+
+    if _prefix == "aws":
+        aws_error = _aws_cell_configuration_error(gpu_plan)
+        if aws_error:
+            msg = f"k8s_job_cell_runner: AWS EKS cell route blocked: {aws_error}"
+            logger.error(msg)
+            event_sink("run_warning", {"code": "aws_gpu_configuration", "message": msg})
+            return {
+                cell.get("id", f"cell_{i}"): CellResult(
+                    cell_id=cell.get("id", f"cell_{i}"),
+                    status=STATUS_ERROR,
+                    metrics=None,
+                    gpu="eks:unassigned",
+                    retries=0,
+                    error=msg,
+                ).to_dict()
+                for i, cell in enumerate(cells)
+            }
 
     # Derive a run_id from the output_root path (last two segments).
     output_root = Path(output_root)
@@ -2175,20 +2350,35 @@ def run_matrix(
     # Upload code once (parent of cell_script).
     cell_script = Path(cell_script)
     code_dir = cell_script.parent
-    code_blob_prefix = f"runs/{run_id}/{_BLOB_CODE_PREFIX}"
-    # WS3 fencing: scope this generation's cell evidence under its own
-    # gen-<gen>/ prefix so a superseded generation's writer can never clobber
-    # the current one's metrics.json. Computed ONCE here (run-level, exactly
-    # like code_blob_prefix above) — NOT re-derived per cell or per escalation
-    # attempt, and independent of the escalation "-eN" run_id suffix used only
-    # for Job naming. OFF/no-gen ⇒ legacy prefix, byte-identical.
-    if durable_controller_enabled() and fence_generation is not None:
+    if _prefix == "aws":
+        project_id = _get_project_id()
+        if not project_id:
+            msg = "k8s_job_cell_runner: AWS EKS requires controller project_id for collision-safe S3 prefixes"
+            logger.error(msg)
+            return {
+                cell.get("id", f"cell_{i}"): CellResult(
+                    cell_id=cell.get("id", f"cell_{i}"), status=STATUS_ERROR,
+                    metrics=None, gpu="eks:unassigned", retries=0, error=msg,
+                ).to_dict()
+                for i, cell in enumerate(cells)
+            }
+        object_root = (
+            f"projects/{_safe_prefix_component(project_id)}/"
+            f"runs/{_safe_prefix_component(run_id)}"
+        )
+    else:
+        object_root = f"runs/{run_id}"
+    code_blob_prefix = f"{object_root}/{_BLOB_CODE_PREFIX}"
+    # WS3 fencing scopes a GCP/Azure controller generation under a distinct
+    # output prefix. EKS uses the project-scoped S3 root above for collision
+    # safety and has no GCS fence record.
+    if _prefix != "aws" and durable_controller_enabled() and fence_generation is not None:
         output_blob_prefix = (
             fenced_blob_prefix(run_id, fence_generation).rstrip("/")
             + "/" + _BLOB_CELLS_PREFIX
         )
     else:
-        output_blob_prefix = f"runs/{run_id}/{_BLOB_CELLS_PREFIX}"
+        output_blob_prefix = f"{object_root}/{_BLOB_CELLS_PREFIX}"
 
     try:
         uploaded = _blob_upload_prefix(

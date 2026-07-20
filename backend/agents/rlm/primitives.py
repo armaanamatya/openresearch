@@ -1443,6 +1443,7 @@ def resolve_gpu_requirements(
         _sb_enum = None
     _is_azure = _sb_enum is _SandboxMode.azure
     _is_gcp = _sb_enum is _SandboxMode.gcp
+    _is_aws = _sb_enum is _SandboxMode.aws
 
     # ``provisioned_skus`` restricts the azure/gcp resolver to the GPU pools that are
     # actually provisioned (Terraform ``var.gpu_skus`` ⇒ ``settings.azure_gpu_skus`` /
@@ -1462,6 +1463,25 @@ def resolve_gpu_requirements(
         _provisioned_skus = tuple(
             getattr(settings, "gcp_gpu_skus", None) or ()
         ) or None
+    elif _is_aws:
+        # EKS labels and prices are deployment-specific.  Do not route through
+        # the RunPod catalog (which could select an impossible label and bill
+        # at the wrong rate); resolve solely from the operator's EKS metadata.
+        plan = gpu_resolver.resolve_configured_aws(
+            req,
+            gpu_skus=tuple(getattr(settings, "aws_gpu_skus", None) or ()),
+            per_gpu_vram_gb=float(getattr(settings, "aws_per_gpu_vram_gb", 0.0) or 0.0),
+            per_gpu_usd_per_hour=float(getattr(settings, "aws_gpu_usd_per_hour", 0.0) or 0.0),
+            gpus_per_node=int(getattr(settings, "aws_gpus_per_node", 0) or 0),
+            dynamic_gpu_enabled=settings.dynamic_gpu_enabled,
+            force_single_gpu=settings.force_single_gpu,
+            max_gpu_usd_per_hour=settings.max_gpu_usd_per_hour or None,
+            headroom_multiplier=settings.dynamic_gpu_headroom,
+            gpu_count_override=settings.gpu_count,
+        )
+        _provider = "aws"
+        cloud_types = ("ONDEMAND",)
+        _provisioned_skus = None
     else:
         _provider = "runpod"
         cloud_types = (
@@ -1471,19 +1491,20 @@ def resolve_gpu_requirements(
         )
         _provisioned_skus = None
 
-    from backend.agents.schemas import GpuPlan as _GpuPlan
-    plan: "_GpuPlan" = gpu_resolver.resolve(
-        req,
-        dynamic_gpu_enabled=settings.dynamic_gpu_enabled,
-        force_single_gpu=settings.force_single_gpu,
-        max_gpu_usd_per_hour=settings.max_gpu_usd_per_hour or None,
-        headroom_multiplier=settings.dynamic_gpu_headroom,
-        fallback_vram_gb=settings.dynamic_gpu_fallback_vram_gb,
-        cloud_types=cloud_types,
-        provider=_provider,
-        provisioned_skus=_provisioned_skus,
-        gpu_count_override=settings.gpu_count,
-    )
+    if not _is_aws:
+        from backend.agents.schemas import GpuPlan as _GpuPlan
+        plan: "_GpuPlan" = gpu_resolver.resolve(
+            req,
+            dynamic_gpu_enabled=settings.dynamic_gpu_enabled,
+            force_single_gpu=settings.force_single_gpu,
+            max_gpu_usd_per_hour=settings.max_gpu_usd_per_hour or None,
+            headroom_multiplier=settings.dynamic_gpu_headroom,
+            fallback_vram_gb=settings.dynamic_gpu_fallback_vram_gb,
+            cloud_types=cloud_types,
+            provider=_provider,
+            provisioned_skus=_provisioned_skus,
+            gpu_count_override=settings.gpu_count,
+        )
 
     # ---- Persist atomically.
     payload = _with_outcome(plan.model_dump(mode="json"), PrimitiveOutcome.ok)
@@ -1619,6 +1640,14 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
             "attempts": 0,
             "skipped": True,
             "note": "gcp sandbox: image is pre-baked in Artifact Registry (gcp_base_image); build_environment is a no-op",
+        }, PrimitiveOutcome.ok)
+    if _sb_key == "aws":
+        return _with_outcome({
+            "ok": True,
+            "image_tag": "",
+            "attempts": 0,
+            "skipped": True,
+            "note": "aws sandbox: EKS cells use the pinned ECR aws_base_image; build_environment is a no-op",
         }, PrimitiveOutcome.ok)
     # C6 (2026-06-16): under runpod the locally-built image is NEVER used — the
     # pod boots OPENRESEARCH_RUNPOD_IMAGE and runs over SSH in a per-run venv
@@ -6543,7 +6572,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         from backend.agents.rlm import execution_smoke as _execution_smoke_cm
         if (
             _execution_smoke_cm.is_enabled()
-            and _sb_key_ecm not in ("azure", "gcp")
+            and _sb_key_ecm not in ("azure", "gcp", "aws")
             and gpus
             and len(kept) > 1
         ):
@@ -6565,7 +6594,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     # single-phase dispatch below runs byte-for-byte unchanged.
     matrix_result = None
     _staged_out = None
-    if _sb_key_ecm not in ("azure", "gcp"):
+    if _sb_key_ecm not in ("azure", "gcp", "aws"):
         _staged_groups = []
         try:
             from backend.agents.rlm import staged_search as _ss
@@ -6634,8 +6663,9 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
             matrix_result = _staged_out.get("results") or {}
             kept = _staged_out.get("kept_cells") or []
 
-    if matrix_result is None and _sb_key_ecm in ("azure", "gcp"):
+    if matrix_result is None and _sb_key_ecm in ("azure", "gcp", "aws"):
         with k8s_job_cell_runner._bind_settings_prefix(_sb_key_ecm), \
+             k8s_job_cell_runner._bind_project_id(str(getattr(ctx, "project_id", "") or "")), \
              k8s_job_cell_runner.bind_run_context(
                  run_budget=_run_budget_ecm, event_sink=_event_sink_ecm, gpu_plan=_ecm_gpu_plan,
              ):
@@ -7260,14 +7290,28 @@ def run_experiment(
         # route gate runs, so the existing gate picks up the cell route with no change
         # to the gate itself. No-op for every other backend/flag-off.
         from backend.agents.rlm import gke_cell_synth
-        _synth_cell = gke_cell_synth.maybe_synthesize_gke_cell(code_path, _caps.backend_kind)
+        _synth_cell = gke_cell_synth.maybe_synthesize_k8s_cell(code_path, _caps.backend_kind)
         if _synth_cell is not None:
             _emit_dashboard_event(ctx, event_type="cell_synth", payload={
                 "detail": (
                     "synthesized single-cell manifest for monolithic commands.json "
-                    "(OPENRESEARCH_GKE_SYNTH_CELL)"
+                    "(cloud cell synthesis flag)"
                 ),
             })
+        # EKS has no safe monolithic reproduction path: the generic RuntimeBackend
+        # command does not materialize the S3 code bundle into a training cell.
+        # Missing metadata is also terminal before any GPU Job is submitted.
+        if _caps.backend_kind == "aws" and _caps.is_empty:
+            detail = getattr(_caps, "detail", {}).get(
+                "configuration_error", "AWS GPU capacity is not configured"
+            )
+            return {
+                "success": False,
+                "metrics": {},
+                "logs": "",
+                "error": f"aws EKS cell route blocked: {detail}",
+                "failure_class": "capacity_exhausted",
+            }
         # C6 (2026-06-16): the cell-matrix route gate historically allowed only
         # ("local","docker") — which made the azure K8s branch in
         # _execute_cell_matrix (the `_sb_key_ecm == "azure"` arm that dispatches
@@ -7287,6 +7331,27 @@ def run_experiment(
             "1", "true", "yes", "on"
         ):
             _cell_route_kinds.append("gcp")
+        # AWS is explicit at the sandbox selector, so this does not alter the
+        # default behavior of any existing sandbox.  The route is deliberately
+        # cell-matrix only; commands.json is accepted only through the opt-in
+        # EKS synth shim above.
+        if _caps.backend_kind == "aws":
+            _cell_route_kinds.append("aws")
+        if _caps.backend_kind == "aws" and not (
+            (Path(code_path) / "cells.json").is_file()
+            and ((Path(code_path) / "train_cell.py").is_file() or _cells_all_have_command(code_path))
+        ):
+            return {
+                "success": False,
+                "metrics": {},
+                "logs": "",
+                "error": (
+                    "aws EKS requires cells.json plus train_cell.py; generic monolithic EKS "
+                    "execution is not a reproduction path. Set OPENRESEARCH_EKS_SYNTH_CELL=1 "
+                    "only to synthesize a commands.json shim."
+                ),
+                "failure_class": "contract_guard",
+            }
         if (
             _caps.backend_kind in _cell_route_kinds
             and not _caps.is_empty

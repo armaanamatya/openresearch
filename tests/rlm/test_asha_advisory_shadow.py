@@ -192,6 +192,8 @@ def test_width_meter_metadata_surfaced(monkeypatch):
     assert wm["gpu_usd_budget"] == 6.0  # 10.0 - 4.0 remaining
     assert wm["a100_cap"] == 8
     assert wm["gpu_usd_spent"] == 4.0
+    assert wm["eta"] == 3.0
+    assert wm["noise_floor"] == 0.0067
     assert result["asha_advisory"]["rung"] == 2  # fidelity meter kept separate
 
 

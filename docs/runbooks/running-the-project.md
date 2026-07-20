@@ -27,6 +27,8 @@ See `CLAUDE.md` → "RLM auth" for the full credential matrix and gotchas
 | `local` | **no** | host GPUs via `OPENRESEARCH_GPU_DEVICE_IDS` | `build_environment` is a no-op; experiments run as host subprocesses |
 | `docker` | **yes** | local | real `docker build`; network/mem/CPU capped |
 | `runpod` (repo default) | **no** (build_environment short-circuits — ported 2026-06-09) | remote pod via SSH | pod boots `OPENRESEARCH_RUNPOD_IMAGE` (`cuda-devel` default); `OPENRESEARCH_RUNPOD_API_KEY` + SSH key required |
+| `gcp` / `gke` | **no** | GKE cell Jobs | cluster, ADC/kube context, GCS bucket, pinned cell image, and the GKE cell-matrix contract are required; use `scripts/gcp_ready.sh` first |
+| `aws` | **no** | EKS cell Jobs | EKS+S3/IRSA foundation; cell-matrix-only, one-GPU nodes, explicit verified cost metadata, and `python -m backend.cli aws-preflight --project-id <project> --run-id <probe>` are required before any billed run |
 | `auto` | yes | resolved | picks docker/runpod by availability |
 
 `start.sh` preflight-warns on `docker info` for the `docker`/`auto` sandboxes

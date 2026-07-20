@@ -12,6 +12,10 @@ def test_aws_settings_defaults_do_not_select_or_configure_aws():
     assert settings.aws_s3_bucket == ""
     assert settings.aws_base_image == ""
     assert settings.aws_gpu_skus == []
+    assert settings.aws_max_nodes == 0
+    assert settings.aws_gpus_per_node == 0
+    assert settings.aws_per_gpu_vram_gb == 0.0
+    assert settings.aws_gpu_usd_per_hour == 0.0
 
 
 def test_aws_is_accepted_only_as_an_explicit_sandbox_choice():

@@ -754,6 +754,29 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_aws_preflight(args: argparse.Namespace) -> int:
+    """Run the explicit controller + in-pod EKS/IRSA/S3 readiness checks."""
+    from backend.services.runtime.eks_job_backend import (
+        ensure_aws_available,
+        verify_aws_pod_readiness,
+        verify_aws_remote_readiness,
+    )
+
+    # Sandbox selection remains inert.  This explicit command intentionally
+    # creates one no-GPU Job and a transient S3 object in the caller-provided
+    # project/run prefix, then foreground-deletes the Job and deletes the key.
+    ensure_aws_available()
+    controller = verify_aws_remote_readiness()
+    pod = verify_aws_pod_readiness(
+        project_id=args.project_id,
+        run_id=args.run_id,
+        timeout_seconds=args.timeout_seconds,
+    )
+    json.dump({"controller": controller, "pod": pod}, sys.stdout, indent=2, sort_keys=True)
+    sys.stdout.write("\n")
+    return 0
+
+
 def _summarize_value(value: object) -> object:
     """Compact view: keep dict keys, replace long lists/strings with len.
     Just for the inspect summary; the per-variable view is full fidelity."""
@@ -2408,6 +2431,24 @@ def _build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("--agent", default="default")
     inspect.add_argument("--variable", default=None, help="Print one variable's full payload.")
     inspect.set_defaults(func=cmd_inspect)
+
+    aws_preflight = sub.add_parser(
+        "aws-preflight",
+        help="Verify controller and pod IRSA/S3 access with one bounded no-GPU EKS Job.",
+    )
+    aws_preflight.add_argument(
+        "--project-id", required=True,
+        help="Project id whose exact S3 prefix the IRSA probe must read/write/list/delete.",
+    )
+    aws_preflight.add_argument(
+        "--run-id", required=True,
+        help="Run id whose exact S3 prefix the IRSA probe must read/write/list/delete.",
+    )
+    aws_preflight.add_argument(
+        "--timeout-seconds", type=int, default=120,
+        help="No-GPU probe deadline (30–300 seconds; default 120).",
+    )
+    aws_preflight.set_defaults(func=cmd_aws_preflight)
 
     regen = sub.add_parser(
         "regenerate-report",

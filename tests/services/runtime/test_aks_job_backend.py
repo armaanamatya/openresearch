@@ -227,12 +227,13 @@ def test_safe_name_empty():
 
 def test_blob_code_prefix():
     prefix = _blob_code_prefix("proj-123", "run-abc")
-    assert prefix.startswith("runs/")
+    assert prefix.startswith("runs/run-abc/")
     assert "code" in prefix
 
 
 def test_blob_artifact_key():
     key = _blob_artifact_key("proj-123", "run-abc", "/code/output.json")
+    assert key.startswith("runs/run-abc/")
     assert "artifacts" in key
     assert "run" in key
 

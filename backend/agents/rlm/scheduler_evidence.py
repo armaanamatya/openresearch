@@ -128,9 +128,20 @@ class BranchRungReceipt:
 
 
 def load_verified_receipt(
-    path: Path | str, *, ladder: PaperStepLadder, run_dir: Path | str
+    path: Path | str,
+    *,
+    ladder: PaperStepLadder,
+    run_dir: Path | str,
+    expected_campaign_id: str | None = None,
 ) -> BranchRungReceipt | None:
-    """Read one receipt and return it only when every local binding verifies."""
+    """Read one receipt and return it only when every local binding verifies.
+
+    ``expected_campaign_id`` is supplied by consumers which already possess a
+    controller-owned campaign identity (the authority runtime and the offline
+    A/B gate).  It prevents copying a valid receipt from another campaign into
+    a new run directory.  ``None`` preserves the lower-level verifier's
+    backwards-compatible use in isolated receipt tests.
+    """
     try:
         run_dir = Path(run_dir).resolve()
         receipt_path = _receipt_path(path, run_dir)
@@ -141,7 +152,11 @@ def load_verified_receipt(
         if not isinstance(raw, Mapping):
             return None
         receipt = _receipt_from_mapping(raw)
-        if not _ledger_attests_receipt(receipt, receipt_bytes, run_dir):
+        if expected_campaign_id is not None and receipt.campaign_id != expected_campaign_id:
+            return None
+        if not _ledger_attests_receipt(
+            receipt, receipt_bytes, run_dir, expected_campaign_id=expected_campaign_id
+        ):
             return None
         if not _matches_ladder(receipt, ladder):
             return None
@@ -285,7 +300,13 @@ def _verify_fingerprints(raw: Mapping[str, Any], receipt: BranchRungReceipt, run
     )
 
 
-def _ledger_attests_receipt(receipt: BranchRungReceipt, receipt_bytes: bytes, run_dir: Path) -> bool:
+def _ledger_attests_receipt(
+    receipt: BranchRungReceipt,
+    receipt_bytes: bytes,
+    run_dir: Path,
+    *,
+    expected_campaign_id: str | None,
+) -> bool:
     """Only the controller's append-only campaign ledger may attest a receipt."""
     ledger = run_dir / "campaign" / "attempts.jsonl"
     try:
@@ -306,6 +327,10 @@ def _ledger_attests_receipt(receipt: BranchRungReceipt, receipt_bytes: bytes, ru
             and row.get("attempt_n") == receipt.attempt_n
             and row.get("paper_ref") == receipt.paper_ref
             and row.get("run_spec_sha256") == receipt.run_spec_sha256
+            and (
+                expected_campaign_id is None
+                or row.get("campaign_id") == expected_campaign_id == receipt.campaign_id
+            )
         ):
             return True
     return False

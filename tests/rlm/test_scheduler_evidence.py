@@ -112,6 +112,7 @@ def _receipt(root: Path, ladder: PaperStepLadder) -> Path:
             {
                 "status": "scheduler_receipt",
                 "receipt_sha256": _sha(receipt),
+                "campaign_id": "campaign-1",
                 "branch_id": "branch-1",
                 "attempt_n": 1,
                 "paper_ref": ladder.paper_ref,
@@ -133,6 +134,26 @@ def test_accepts_complete_harness_bound_receipt_and_never_uses_grade(tmp_path):
     assert receipt is not None
     assert receipt.metric_value == 0.8
     assert receipt.to_step == 10
+
+
+def test_rejects_receipt_or_ledger_from_a_different_campaign(tmp_path):
+    ladder = _ladder()
+    receipt_path = _receipt(tmp_path, ladder)
+
+    assert load_verified_receipt(
+        receipt_path, ladder=ladder, run_dir=tmp_path, expected_campaign_id="campaign-1"
+    ) is not None
+    assert load_verified_receipt(
+        receipt_path, ladder=ladder, run_dir=tmp_path, expected_campaign_id="other-campaign"
+    ) is None
+
+    ledger = tmp_path / "campaign" / "attempts.jsonl"
+    row = json.loads(ledger.read_text())
+    row["campaign_id"] = "other-campaign"
+    ledger.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    assert load_verified_receipt(
+        receipt_path, ladder=ladder, run_dir=tmp_path, expected_campaign_id="campaign-1"
+    ) is None
 
 
 def test_rejects_tampered_metric_checkpoint_bundle_and_ladder(tmp_path):

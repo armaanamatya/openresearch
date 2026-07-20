@@ -29,6 +29,9 @@ from backend.agents.rlm.reproduction_campaign import (
     ReproductionCampaign,
     default_liveness_probe,
 )
+from backend.eventstore.sqlite_store import SqliteEventStore
+from backend.eventstore.interface import ConcurrencyError
+from backend.messaging.envelope import AggregateId
 
 
 # --------------------------------------------------------------------------- #
@@ -254,6 +257,145 @@ def test_default_launch_row_omits_scheduler_metadata_and_tree_marker_is_durable(
     tree_rows = CampaignLedger(tmp_path / "tree_run" / "campaign").read_rows()
     tree_launch = next(row for row in tree_rows if row["status"] == "launched")
     assert tree_launch["is_safety_bracket"] is True
+
+
+def test_scheduler_lineage_flag_off_never_touches_the_branch_event_store(tmp_path, monkeypatch):
+    """Default-off is inert beyond serialisation: no branch-tree side effect."""
+    monkeypatch.delenv("OPENRESEARCH_SCHEDULER_TREE", raising=False)
+
+    class _MustStayUntouched:
+        def __getattr__(self, _name):
+            raise AssertionError("branch event store must not be touched while tree flag is off")
+
+    rec = _Recorder()
+    campaign = _campaign(
+        tmp_path,
+        _make_stages(tmp_path / "run", rec),
+        branch_tree_event_store=_MustStayUntouched(),
+    )
+
+    assert campaign.run()["kind"] == "REPRODUCED"
+    assert "branch_tree" not in [args[0] for args, _kwargs in rec.calls.get("emit_event", [])]
+    launch = next(row for row in CampaignLedger(tmp_path / "run" / "campaign").read_rows()
+                  if row["status"] == "launched")
+    assert "branch_type" not in launch
+    assert "is_safety_bracket" not in launch
+
+
+def test_scheduler_lineage_tree_records_only_durable_root_f10_launch(tmp_path, monkeypatch):
+    """Tree mode is factual shadow observability, not speculative ASHA control."""
+    monkeypatch.setenv("OPENRESEARCH_SCHEDULER_TREE", "yes")
+    store = SqliteEventStore(f"sqlite:///{tmp_path / 'controller-events.db'}")
+    rec = _Recorder()
+    campaign = _campaign(
+        tmp_path,
+        _make_stages(tmp_path / "run", rec),
+        branch_tree_event_store=store,
+    )
+
+    assert campaign.run()["kind"] == "REPRODUCED"
+
+    events = list(store.load(AggregateId("branch-tree:proj_1")))
+    assert len(events) == 1
+    event = events[0]
+    assert event.event_type == "branch_spawned"
+    assert event.payload == {
+        "branch_id": "1",
+        "branch_type": "faithful",
+        "parent_branch_id": None,
+        "rung": 0,
+        "hypothesis_fingerprint": "dsha-1",
+    }
+    assert event.envelope.source == "agents.rlm.reproduction_campaign"
+    # It is not represented as an SSE decision/action and it does not imply a
+    # checkpoint/rung transition beyond the root's durable launch intent.
+    assert "branch_tree" not in [args[0] for args, _kwargs in rec.calls.get("emit_event", [])]
+    assert {entry.event_type for entry in events} == {"branch_spawned"}
+    store.close()
+
+
+def test_scheduler_lineage_root_reemit_is_idempotent_on_existing_f10_fact(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENRESEARCH_SCHEDULER_TREE", "1")
+    store = SqliteEventStore(f"sqlite:///{tmp_path / 'controller-events.db'}")
+    campaign = _campaign(
+        tmp_path,
+        _make_stages(tmp_path / "run", _Recorder()),
+        branch_tree_event_store=store,
+    )
+
+    assert campaign.run()["kind"] == "REPRODUCED"
+    state = campaign._state
+    assert state is not None
+    launch = next(row for row in CampaignLedger(tmp_path / "run" / "campaign").read_rows()
+                  if row["status"] == "launched")
+    # Recovery retries the already-durable fact.  The F10 fingerprint is read
+    # from the row and suppresses a second append without inventing a new key.
+    campaign._maybe_emit_root_branch_spawned(state, launch)
+
+    assert len(list(store.load(AggregateId("branch-tree:proj_1")))) == 1
+    store.close()
+
+
+@pytest.mark.parametrize("store_kind", ["outage", "concurrency"])
+def test_scheduler_lineage_store_failures_are_fail_soft_after_durable_launch(
+    tmp_path, monkeypatch, store_kind,
+):
+    # Establish the exact serial ledger/SSE baseline first.  Tree mode must
+    # preserve it even if its optional EventStore projection is down/racing.
+    monkeypatch.delenv("OPENRESEARCH_SCHEDULER_TREE", raising=False)
+    baseline_rec = _Recorder()
+    baseline_campaign = _campaign(
+        tmp_path / "baseline",
+        _make_stages(tmp_path / "baseline" / "run", baseline_rec),
+    )
+    baseline_result = baseline_campaign.run()
+    baseline_rows = CampaignLedger(tmp_path / "baseline" / "run" / "campaign").read_rows()
+    baseline_events = list(baseline_rec.calls["emit_event"])
+
+    def _semantic_ledger(rows):
+        # These values are controller timestamps or run-root paths, not
+        # policy/ledger behavior.  Everything that can affect a launch,
+        # assessment, decision, or terminal outcome must match exactly.
+        normalized = []
+        for row in rows:
+            clean = dict(row)
+            clean.pop("launched_at", None)
+            clean.pop("assessed_at", None)
+            clean.pop("run_dir", None)
+            normalized.append(clean)
+        return normalized
+
+    monkeypatch.setenv("OPENRESEARCH_SCHEDULER_TREE", "true")
+
+    class _BrokenStore:
+        def load(self, _aggregate_id):
+            if store_kind == "outage":
+                raise RuntimeError("controller unavailable")
+            return ()
+
+        def get_aggregate_version(self, _aggregate_id):
+            return 0
+
+        def append(self, *_args, **_kwargs):
+            if store_kind == "concurrency":
+                raise ConcurrencyError("branch-tree:proj_1", expected=0, actual=1)
+            raise AssertionError("outage must fail before append")
+
+    rec = _Recorder()
+    campaign = _campaign(
+        tmp_path,
+        _make_stages(tmp_path / "run", rec),
+        branch_tree_event_store=_BrokenStore(),
+    )
+
+    assert campaign.run() == baseline_result
+    rows = CampaignLedger(tmp_path / "run" / "campaign").read_rows()
+    assert _semantic_ledger(rows) == _semantic_ledger(baseline_rows)
+    # The serial decision and SSE stream are unchanged; only a durable
+    # fail-soft warning records the unavailable observability projection.
+    assert rec.calls["emit_event"] == baseline_events
+    state = _read_campaign_json(tmp_path)
+    assert any(warning.startswith("branch_lineage_emit_failed:") for warning in state["warnings"])
 
 
 def test_ledger_error_on_intent_halts_and_never_launches(tmp_path, monkeypatch):

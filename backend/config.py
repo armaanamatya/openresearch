@@ -336,10 +336,43 @@ class Settings(BaseSettings):
     aws_pending_timeout_seconds: int = Field(default=1500, ge=1, description="Seconds before a stuck EKS GPU Job is treated as capacity-exhausted")
     aws_ttl_seconds_after_finished: int = Field(default=3600, ge=1, description="Kubernetes Job TTL after terminal completion")
     aws_job_backoff_limit: int = Field(default=0, ge=0, description="EKS Job Pod-level retry limit; keep 0 so runtime accounting remains exact")
+    # EKS does not have a safely-vendored GPU catalog: node labels, VRAM, and
+    # negotiated per-GPU price are deployment facts.  Leave every value inert
+    # by default and reject an AWS cell route until the operator declares all
+    # of them.  A zero price must never silently disable a user-supplied run
+    # dollar cap.
+    aws_per_gpu_vram_gb: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Declared VRAM per GPU for the provisioned EKS pool; 0 blocks AWS cell scheduling",
+    )
+    aws_gpu_usd_per_hour: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Verified effective per-GPU USD/hour for the EKS pool; 0 blocks AWS cell scheduling",
+    )
+    aws_max_nodes: int = Field(
+        default=0,
+        ge=0,
+        description="Maximum concurrently schedulable EKS GPU nodes; 0 blocks AWS cell scheduling",
+    )
+    aws_gpus_per_node: int = Field(
+        default=0,
+        ge=0,
+        description="Physical GPUs per provisioned EKS GPU node; 0 blocks AWS cell scheduling",
+    )
+    aws_cache_mount_path: str = Field(
+        default="/mnt/reprolab-cache",
+        description="Ephemeral cache mount path inside EKS cell pods",
+    )
+    aws_files_cache_enabled: bool = Field(
+        default=False,
+        description="EKS cell cache is emptyDir by default; do not assume a shared PVC exists",
+    )
     # Empty by default: the EKS foundation does not invent node-pool labels or
     # a GPU catalog.  An operator must name only labels actually provisioned
     # before enabling AWS GPU scheduling.
-    aws_gpu_skus: list[str] = Field(default_factory=list, description="Provisioned EKS GPU node labels (reprolab/sku); empty means no inferred selector")
+    aws_gpu_skus: list[str] = Field(default_factory=list, description="Provisioned EKS GPU node labels (reprolab/sku); empty blocks AWS GPU scheduling")
 
     # --- Azure AKS GPU backend (spec 2026-06-03, --sandbox azure) ---
     # All fields default to empty/sensible stubs so importing Settings never

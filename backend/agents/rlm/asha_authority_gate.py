@@ -8,6 +8,7 @@ The input is a JSON manifest (schema version 1)::
 
     {
       "schema_version": 1,
+      "controller_event_store": "/abs/controller/events.db",
       "pairs": [{
         "pair_id": "sdar-seed-1",
         "shadow": "/abs/runs/sdar-shadow-1",
@@ -47,23 +48,32 @@ The gate is intentionally stricter than the shadow reader:
   saving whose cost records are bound to the arm's run id, token record, and a
   source-specific node-observation or provider-export record.  A
   ``cost_ledger.jsonl`` claim is never proof.
+* every applied action must bind a paper-step/checkpoint/metric receipt to the
+  exact audit SHA **and** to a completed BranchPromoted/FrozenPoolEviction/
+  BranchTrueKilled event in the controller-owned EventStore outside the run.
 
 An authority run that conservatively records ``applied: false`` is healthy but
 cannot pass this adoption gate: it did not exercise authoritative control.
 
-There is deliberately no accepted ``applied: true`` record in the present
-runtime.  The campaign does not yet persist a provenance-validated defining
-metric at a paper-pinned optimizer-step/checkpoint lineage.  The gate rejects
-locally-authored audit prose as a substitute for that receipt.  This lets it
-produce the paired-run and grader-sigma evidence now while making an authority
-default flip impossible until the missing deterministic evidence producer is
-implemented.
+The current campaign runtime does not yet produce the complete receipt plus
+controller-event transition, so it correctly records ``applied:false``.  The
+gate nevertheless validates the full contract now, rather than accepting
+locally-authored audit prose or mutable run-local evidence as a substitute.
+This makes an authority default flip impossible until the controller producer
+is implemented and the paired evidence exists.
+
+Trust boundary: ``controller_event_store`` is an operator-supplied, trusted
+manifest field and must be ACL/IAM-isolated from both worker run directories.
+The gate verifies that its path is outside each arm, but filesystem ownership
+and cloud IAM are deployment controls that must keep workers from writing it.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
+import sqlite3
 import statistics
 import sys
 from collections.abc import Mapping, Sequence
@@ -72,6 +82,8 @@ from pathlib import Path
 from typing import Any
 
 from backend.agents.rlm.asha_shadow_report import analyze_shadow_rows
+from backend.agents.rlm.asha_scheduler import BranchObservation, RungConfig, asha_decide
+from backend.agents.rlm.scheduler_evidence import PaperStepLadder, load_verified_receipt
 
 
 SCHEMA_VERSION = 1
@@ -85,6 +97,14 @@ _BREAKAGE_CLASS = "training_diverged"
 _DECISION_KEYS = frozenset(
     {"kind", "rule", "stop_reason", "next_plan", "champion_attempt_n"}
 )
+_DECISION_EVIDENCE_KEYS = frozenset({
+    "schema_version", "campaign_id", "ladder_sha256", "metric_id", "direction",
+    "rung", "config", "cohort", "selected_branch_id", "action",
+})
+_DECISION_CONFIG_KEYS = frozenset({"gpu_usd_budget", "a100_cap", "eta", "noise_floor"})
+_DECISION_COHORT_KEYS = frozenset({
+    "branch_id", "receipt_path", "receipt_sha256", "branch_type", "is_safety_bracket", "gpu_usd",
+})
 
 
 @dataclass(frozen=True)
@@ -182,6 +202,13 @@ def evaluate_manifest(
 
     seen_pair_ids: set[str] = set()
     seen_runs: set[Path] = set()
+    seen_campaign_ids: set[str] = set()
+    seen_action_proofs: set[str] = set()
+    # A rung receipt is a one-time authority input.  Hashing an altered audit
+    # must never make the same metric/checkpoint evidence eligible for a second
+    # promotion/freeze/kill elsewhere in the manifest.
+    seen_receipt_hashes: set[str] = set()
+    controller_event_store = _controller_event_store_path(manifest, manifest_dir, failures)
     total_actions = 0
     total_saving = 0.0
     all_costs_verified = True
@@ -192,7 +219,12 @@ def evaluate_manifest(
             failures.append(GateFailure("duplicate_pair_id", "pair_id must be unique", pair_id))
         seen_pair_ids.add(pair_id)
         report, pair_failures, applied_actions, saving, run_paths = _evaluate_pair(
-            raw_pair, pair_id=pair_id, manifest_dir=manifest_dir
+            raw_pair,
+            pair_id=pair_id,
+            manifest_dir=manifest_dir,
+            controller_event_store=controller_event_store,
+            seen_action_proofs=seen_action_proofs,
+            seen_receipt_hashes=seen_receipt_hashes,
         )
         pair_reports.append(report)
         failures.extend(pair_failures)
@@ -211,6 +243,17 @@ def evaluate_manifest(
                     )
                 )
             seen_runs.add(run_path)
+            campaign_id = _campaign_identity_from_run(run_path)
+            if campaign_id is not None:
+                if campaign_id in seen_campaign_ids:
+                    failures.append(
+                        GateFailure(
+                            "reused_campaign_identity",
+                            "each A/B arm must have a distinct controller campaign identity",
+                            pair_id,
+                        )
+                    )
+                seen_campaign_ids.add(campaign_id)
 
     if total_actions < 1:
         failures.append(
@@ -276,7 +319,13 @@ def _pair_id(raw_pair: Any, index: int, failures: list[GateFailure]) -> str:
 
 
 def _evaluate_pair(
-    raw_pair: Any, *, pair_id: str, manifest_dir: Path
+    raw_pair: Any,
+    *,
+    pair_id: str,
+    manifest_dir: Path,
+    controller_event_store: Path | None,
+    seen_action_proofs: set[str],
+    seen_receipt_hashes: set[str],
 ) -> tuple[PairEvidence, list[GateFailure], int, float | None, tuple[Path, ...]]:
     failures: list[GateFailure] = []
     empty = _empty_pair(pair_id)
@@ -292,8 +341,31 @@ def _evaluate_pair(
         failures.append(GateFailure("arm_path_mismatch", "shadow and authoritative runs must differ", pair_id))
         return _pair_with_paths(empty, shadow_path, authority_path), failures, 0, None, run_paths
 
+    if controller_event_store is not None and any(
+        _path_is_within(controller_event_store, run_path)
+        for run_path in (shadow_path, authority_path)
+    ):
+        failures.append(
+            GateFailure(
+                "controller_action_event_invalid",
+                "controller_event_store must live outside both worker-owned pair arms",
+                pair_id,
+            )
+        )
+        controller_event_store = None
+
     shadow = _load_arm(shadow_path, pair_id=pair_id, arm="shadow", calibration_spec=_arm_spec(raw_pair, "calibrations", "shadow"), require_audit=False, failures=failures)
-    authority = _load_arm(authority_path, pair_id=pair_id, arm="authoritative", calibration_spec=_arm_spec(raw_pair, "calibrations", "authoritative"), require_audit=True, failures=failures)
+    authority = _load_arm(
+        authority_path,
+        pair_id=pair_id,
+        arm="authoritative",
+        calibration_spec=_arm_spec(raw_pair, "calibrations", "authoritative"),
+        require_audit=True,
+        controller_event_store=controller_event_store,
+        seen_action_proofs=seen_action_proofs,
+        seen_receipt_hashes=seen_receipt_hashes,
+        failures=failures,
+    )
     if shadow is None or authority is None:
         return _pair_with_paths(empty, shadow_path, authority_path), failures, 0, None, run_paths
 
@@ -373,6 +445,52 @@ def _run_path(
     return path
 
 
+def _controller_event_store_path(
+    manifest: Mapping[str, Any], manifest_dir: Path, failures: list[GateFailure]
+) -> Path | None:
+    """Resolve the controller-owned SQLite event store without creating it.
+
+    This path is intentionally a manifest-level operator input, rather than a
+    run-local artifact: workers can write a run directory but must not have
+    write access to the controller's event-store database.  We defer a missing
+    store failure until an arm actually claims ``applied:true`` so shadow-only
+    analyses remain usable.
+    """
+    value = manifest.get("controller_event_store")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        failures.append(GateFailure("controller_event_store_invalid", "controller_event_store must be a non-empty path", None))
+        return None
+    path = Path(value)
+    if not path.is_absolute():
+        path = manifest_dir / path
+    try:
+        if path.is_symlink() or not path.is_file():
+            raise OSError("not a regular file")
+        return path.resolve(strict=True)
+    except OSError as exc:
+        failures.append(GateFailure("controller_event_store_invalid", f"cannot read controller event store: {exc}", None))
+        return None
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _campaign_identity_from_run(run_dir: Path) -> str | None:
+    try:
+        state = json.loads((run_dir / "campaign" / "campaign.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    value = state.get("project_id") if isinstance(state, Mapping) else None
+    return value if isinstance(value, str) and value.strip() else None
+
+
 def _arm_spec(pair: Mapping[str, Any], container: str, arm: str) -> Any:
     """Read a per-arm field; singular aliases keep hand-written manifests usable."""
     value = pair.get(container)
@@ -391,6 +509,9 @@ def _load_arm(
     calibration_spec: Any,
     require_audit: bool,
     failures: list[GateFailure],
+    controller_event_store: Path | None = None,
+    seen_action_proofs: set[str] | None = None,
+    seen_receipt_hashes: set[str] | None = None,
 ) -> _ArmArtifacts | None:
     state = _read_json_mapping(run_dir / "campaign" / "campaign.json", "campaign_state", pair_id, failures)
     rows = _read_jsonl(run_dir / "campaign" / "attempts.jsonl", pair_id, failures)
@@ -417,8 +538,22 @@ def _load_arm(
     if not decided:
         failures.append(GateFailure("missing_decisions", f"{arm} run has no decided rows", pair_id))
         return None
+    campaign_id = state.get("project_id")
+    if not isinstance(campaign_id, str) or not campaign_id.strip():
+        failures.append(GateFailure("campaign_identity_missing", f"{arm} campaign must persist project_id", pair_id))
+        return None
     advisory_actions, audits = _validate_decisions(
-        decided, rows, pair_id=pair_id, arm=arm, require_audit=require_audit, failures=failures
+        decided,
+        rows,
+        run_dir=run_dir,
+        campaign_id=campaign_id,
+        controller_event_store=controller_event_store,
+        seen_action_proofs=seen_action_proofs if seen_action_proofs is not None else set(),
+        seen_receipt_hashes=seen_receipt_hashes if seen_receipt_hashes is not None else set(),
+        pair_id=pair_id,
+        arm=arm,
+        require_audit=require_audit,
+        failures=failures,
     )
     # Use the shared shadow-report reducer as a second, independently-simple
     # coverage/accounting view.  Gate validation above remains strict because the
@@ -492,6 +627,11 @@ def _validate_decisions(
     decided: Sequence[Mapping[str, Any]],
     all_rows: Sequence[Mapping[str, Any]],
     *,
+    run_dir: Path,
+    campaign_id: str,
+    controller_event_store: Path | None,
+    seen_action_proofs: set[str],
+    seen_receipt_hashes: set[str],
     pair_id: str,
     arm: str,
     require_audit: bool,
@@ -534,9 +674,23 @@ def _validate_decisions(
             if not isinstance(audit, Mapping):
                 failures.append(GateFailure("authority_audit_missing", "every authoritative decided row must persist asha_authority_audit", pair_id))
             else:
+                valid_link = True
                 if audit.get("applied") is True:
-                    _validate_applied_audit_link(audit, row_actions, all_rows, pair_id, failures)
-                if _validate_audit_shape(audit, pair_id, failures):
+                    valid_link = _validate_applied_audit_link(
+                        audit,
+                        row_actions,
+                        all_rows,
+                        decision,
+                        run_dir,
+                        campaign_id,
+                        controller_event_store,
+                        seen_action_proofs,
+                        seen_receipt_hashes,
+                        pair_id,
+                        failures,
+                    )
+                valid_shape = _validate_audit_shape(audit, pair_id, failures)
+                if valid_link and valid_shape:
                     audits.append(audit)
         elif audit is not None:
             failures.append(GateFailure("shadow_arm_contaminated", "shadow arm must not carry authority audit markers", pair_id))
@@ -574,9 +728,15 @@ def _validate_applied_audit_link(
     audit: Mapping[str, Any],
     row_actions: Sequence[tuple[str, str]],
     all_rows: Sequence[Mapping[str, Any]],
+    decision: Mapping[str, Any],
+    run_dir: Path,
+    campaign_id: str,
+    controller_event_store: Path | None,
+    seen_action_proofs: set[str],
+    seen_receipt_hashes: set[str],
     pair_id: str,
     failures: list[GateFailure],
-) -> None:
+) -> bool:
     """Require the eventual action receipt to point at a real proposed branch.
 
     The current campaign never reaches this as an accepted action, but checking
@@ -586,7 +746,9 @@ def _validate_applied_audit_link(
     branch_id = audit.get("source_branch_id")
     action = audit.get("action")
     attempt_n = audit.get("source_attempt_n")
-    if not isinstance(branch_id, str) or not branch_id or type(attempt_n) is not int:
+    valid = True
+    source_valid = isinstance(branch_id, str) and bool(branch_id) and type(attempt_n) is int
+    if not source_valid:
         failures.append(
             GateFailure(
                 "unlinked_authority_audit",
@@ -594,8 +756,8 @@ def _validate_applied_audit_link(
                 pair_id,
             )
         )
-        return
-    if (branch_id, action) not in row_actions:
+        valid = False
+    if source_valid and (branch_id, action) not in row_actions:
         failures.append(
             GateFailure(
                 "unlinked_authority_audit",
@@ -603,22 +765,26 @@ def _validate_applied_audit_link(
                 pair_id,
             )
         )
-    assessment = next(
-        (
-            row.get("assessment")
-            for row in all_rows
-            if row.get("status") == "assessed" and row.get("attempt_n") == attempt_n
-        ),
-        None,
-    )
-    if not isinstance(assessment, Mapping):
-        failures.append(
-            GateFailure(
-                "unlinked_authority_audit",
-                "applied audit source_attempt_n must have a durable assessed row",
-                pair_id,
-            )
+        valid = False
+    assessment: Any = None
+    if source_valid:
+        assessment = next(
+            (
+                row.get("assessment")
+                for row in all_rows
+                if row.get("status") == "assessed" and row.get("attempt_n") == attempt_n
+            ),
+            None,
         )
+        if not isinstance(assessment, Mapping):
+            failures.append(
+                GateFailure(
+                    "unlinked_authority_audit",
+                    "applied audit source_attempt_n must have a durable assessed row",
+                    pair_id,
+                )
+            )
+            valid = False
     if action == "kill" and (
         not isinstance(assessment, Mapping)
         or assessment.get("failure_class") != _BREAKAGE_CLASS
@@ -630,6 +796,91 @@ def _validate_applied_audit_link(
                 pair_id,
             )
         )
+        valid = False
+    receipt_bundle = _load_audit_receipt(
+        audit, run_dir, campaign_id, pair_id, failures
+    )
+    if receipt_bundle is None:
+        return False
+    receipt, ladder = receipt_bundle
+    receipt_sha256 = str(audit.get("scheduler_receipt_sha256") or "")
+    if receipt_sha256 in seen_receipt_hashes:
+        failures.append(
+            GateFailure(
+                "reused_authority_receipt",
+                "a verified scheduler receipt may authorize only one action across the manifest",
+                pair_id,
+            )
+        )
+        valid = False
+    if source_valid and (receipt.branch_id != branch_id or receipt.attempt_n != attempt_n):
+        failures.append(
+            GateFailure(
+                "unlinked_authority_receipt",
+                "applied audit receipt must bind the same source branch and attempt",
+                pair_id,
+            )
+        )
+        valid = False
+    if action == "freeze" and not receipt.checkpoint_path:
+        failures.append(
+            GateFailure(
+                "unlinked_authority_receipt",
+                "freeze action requires a verified resumable checkpoint receipt",
+                pair_id,
+            )
+        )
+        valid = False
+    if action == "kill" and receipt.termination_cause != _BREAKAGE_CLASS:
+        failures.append(
+            GateFailure(
+                "invalid_true_kill",
+                "applied kill receipt requires literal termination_cause='training_diverged'",
+                pair_id,
+            )
+        )
+        valid = False
+    decision_evidence_sha256 = _load_decision_evidence(
+        audit,
+        run_dir=run_dir,
+        campaign_id=campaign_id,
+        ladder=ladder,
+        source_receipt=receipt,
+        action=str(action),
+        all_rows=all_rows,
+        decision=decision,
+        pair_id=pair_id,
+        failures=failures,
+    )
+    if decision_evidence_sha256 is None:
+        valid = False
+    if not _controller_event_proves_action(
+        controller_event_store,
+        run_dir=run_dir,
+        campaign_id=campaign_id,
+        receipt=receipt,
+        audit=audit,
+        decision_evidence_sha256=decision_evidence_sha256,
+        action=str(action),
+        decision=decision,
+        pair_id=pair_id,
+        failures=failures,
+    ):
+        valid = False
+    proof_id = _authority_proof_id(audit)
+    if valid and proof_id in seen_action_proofs:
+        failures.append(
+            GateFailure(
+                "reused_authority_action_evidence",
+                "an applied receipt/audit proof may appear in only one decision across the manifest",
+                pair_id,
+            )
+        )
+        valid = False
+    if valid:
+        seen_action_proofs.add(proof_id)
+        seen_receipt_hashes.add(receipt_sha256)
+    return valid
 
 
 def _validate_audit_shape(audit: Mapping[str, Any], pair_id: str, failures: list[GateFailure]) -> bool:
@@ -656,25 +907,639 @@ def _validate_audit_shape(audit: Mapping[str, Any], pair_id: str, failures: list
     if action == "kill" and audit.get("failure_class") != _BREAKAGE_CLASS:
         failures.append(GateFailure("invalid_true_kill", "kill audit requires literal failure_class='training_diverged'", pair_id))
         return False
-    if applied:
-        # A free-text label is not evidence.  In particular, accepting a
-        # manifest-authored ``deterministic_evidence_basis`` here would make an
-        # authority action forgeable without the missing optimizer-step,
-        # checkpoint, and provenance receipts.  Keep this refusal local to the
-        # gate rather than silently treating a grade-derived shadow decision as
-        # live control.  The future receipt validator must replace this branch
-        # atomically with the campaign-side durable producer.
+    return True
+
+
+def _load_audit_receipt(
+    audit: Mapping[str, Any],
+    run_dir: Path,
+    campaign_id: str,
+    pair_id: str,
+    failures: list[GateFailure],
+) -> Any | None:
+    """Load the precise receipt an applied audit claims, fail closed.
+
+    The A/B manifest is intentionally not allowed to nominate this evidence.
+    It has to live in the authoritative arm's scheduler-receipt directory and
+    be attested by that arm's campaign ledger, exactly like the runtime input.
+    """
+    receipt_path = audit.get("scheduler_receipt_path")
+    ladder_path = audit.get("scheduler_ladder_path")
+    receipt_sha256 = audit.get("scheduler_receipt_sha256")
+    if (
+        not isinstance(receipt_path, str)
+        or not receipt_path.strip()
+        or not isinstance(ladder_path, str)
+        or not ladder_path.strip()
+        or not isinstance(receipt_sha256, str)
+        or len(receipt_sha256) != 64
+    ):
         failures.append(
             GateFailure(
-                "authoritative_evidence_receipt_unavailable",
-                "applied authority requires a provenance-validated deterministic "
-                "metric plus paper-step/checkpoint lineage; the current runtime "
-                "does not persist that receipt",
+                "authoritative_evidence_receipt_missing",
+                "applied audit requires scheduler receipt path, ladder path, and SHA-256",
+                pair_id,
+            )
+        )
+        return None
+    ladder_file = _safe_arm_file(ladder_path, run_dir)
+    if ladder_file is None:
+        failures.append(
+            GateFailure(
+                "authoritative_evidence_receipt_missing",
+                "scheduler_ladder_path must be a non-symlink relative file inside the run",
+                pair_id,
+            )
+        )
+        return None
+    try:
+        raw_ladder = json.loads(ladder_file.read_text(encoding="utf-8"))
+        if not isinstance(raw_ladder, Mapping):
+            raise ValueError("ladder must be an object")
+        ladder = PaperStepLadder.from_mapping(raw_ladder)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        failures.append(GateFailure("authoritative_evidence_receipt_missing", f"invalid scheduler ladder: {exc}", pair_id))
+        return None
+    raw_receipt = _safe_arm_file(receipt_path, run_dir)
+    if raw_receipt is None:
+        failures.append(
+            GateFailure(
+                "authoritative_evidence_receipt_missing",
+                "scheduler_receipt_path must be a non-symlink relative file inside the run",
+                pair_id,
+            )
+        )
+        return None
+    try:
+        actual_sha256 = hashlib.sha256(raw_receipt.read_bytes()).hexdigest()
+    except OSError as exc:
+        failures.append(GateFailure("authoritative_evidence_receipt_missing", f"cannot read receipt: {exc}", pair_id))
+        return None
+    if actual_sha256 != receipt_sha256:
+        failures.append(
+            GateFailure("authoritative_evidence_receipt_mismatch", "audit receipt SHA-256 does not match the receipt file", pair_id)
+        )
+        return None
+    receipt = load_verified_receipt(
+        raw_receipt,
+        ladder=ladder,
+        run_dir=run_dir,
+        expected_campaign_id=campaign_id,
+    )
+    if receipt is None:
+        failures.append(
+            GateFailure(
+                "authoritative_evidence_receipt_invalid",
+                "applied audit receipt fails paper-step, checkpoint, metric, bundle, or ledger verification",
+                pair_id,
+            )
+        )
+        return None
+    return receipt, ladder
+
+
+def _load_decision_evidence(
+    audit: Mapping[str, Any],
+    *,
+    run_dir: Path,
+    campaign_id: str,
+    ladder: PaperStepLadder,
+    source_receipt: Any,
+    action: str,
+    all_rows: Sequence[Mapping[str, Any]],
+    decision: Mapping[str, Any],
+    pair_id: str,
+    failures: list[GateFailure],
+) -> str | None:
+    """Verify the controller's canonical, grade-free ASHA decision input.
+
+    A valid rung artifact alone cannot establish *why* a branch was selected.
+    The decision evidence therefore lists every same-rung verified receipt,
+    explicit ASHA width/noise inputs, a deterministic branch-id order, and the
+    claimed action.  We recompute the pure scheduler output here; no report,
+    grade, curve predictor, or prose field is consulted.
+    """
+    path_value = audit.get("scheduler_decision_evidence_path")
+    expected_sha = audit.get("scheduler_decision_evidence_sha256")
+    if (
+        not isinstance(path_value, str)
+        or not path_value.strip()
+        or not isinstance(expected_sha, str)
+        or len(expected_sha) != 64
+    ):
+        failures.append(GateFailure(
+            "authoritative_decision_evidence_missing",
+            "applied audit requires canonical scheduler decision evidence path and SHA-256",
+            pair_id,
+        ))
+        return None
+    path = _safe_arm_file(path_value, run_dir)
+    if path is None:
+        failures.append(GateFailure(
+            "authoritative_decision_evidence_missing",
+            "scheduler_decision_evidence_path must be a non-symlink relative file inside the run",
+            pair_id,
+        ))
+        return None
+    try:
+        content = path.read_bytes()
+    except OSError as exc:
+        failures.append(GateFailure("authoritative_decision_evidence_missing", f"cannot read decision evidence: {exc}", pair_id))
+        return None
+    actual_sha = hashlib.sha256(content).hexdigest()
+    if actual_sha != expected_sha:
+        failures.append(GateFailure(
+            "authoritative_decision_evidence_mismatch",
+            "audit decision-evidence SHA-256 does not match its file",
+            pair_id,
+        ))
+        return None
+    try:
+        raw = json.loads(content)
+    except json.JSONDecodeError as exc:
+        failures.append(GateFailure("authoritative_decision_evidence_invalid", f"invalid decision evidence JSON: {exc}", pair_id))
+        return None
+    if not isinstance(raw, Mapping):
+        failures.append(GateFailure("authoritative_decision_evidence_invalid", "decision evidence must be an object", pair_id))
+        return None
+    # The canonical object is deliberately closed-world: a grade, curve
+    # prediction, or arbitrary policy hint cannot silently become a scheduler
+    # input.  The pure recomputation below reads only verified receipts plus the
+    # two independent meter inputs.
+    if frozenset(raw) != _DECISION_EVIDENCE_KEYS:
+        failures.append(GateFailure(
+            "authoritative_decision_evidence_invalid",
+            "decision evidence has missing or non-deterministic fields",
+            pair_id,
+        ))
+        return None
+    if (
+        raw.get("schema_version") != 1
+        or raw.get("campaign_id") != campaign_id
+        or raw.get("ladder_sha256") != ladder.sha256
+        or raw.get("metric_id") != ladder.metric_id
+        or raw.get("direction") != ladder.direction
+        or raw.get("selected_branch_id") != source_receipt.branch_id
+        or raw.get("action") != action
+    ):
+        failures.append(GateFailure(
+            "authoritative_decision_evidence_invalid",
+            "decision evidence campaign, ladder, metric, branch, or action binding is invalid",
+            pair_id,
+        ))
+        return None
+    try:
+        rung = raw["rung"]
+        if type(rung) is not int or rung != ladder.rung_steps.index(source_receipt.to_step):
+            raise ValueError("rung does not match source receipt step")
+        config_raw = raw["config"]
+        cohort_raw = raw["cohort"]
+        if not isinstance(config_raw, Mapping) or not isinstance(cohort_raw, list) or not cohort_raw:
+            raise ValueError("config/cohort missing")
+        if frozenset(config_raw) != _DECISION_CONFIG_KEYS:
+            raise ValueError("config has missing or non-deterministic fields")
+        _verify_decision_config_against_advisory(
+            decision=decision,
+            rung=rung,
+            config=config_raw,
+        )
+        raw_gpu_budget = config_raw.get("gpu_usd_budget")
+        gpu_budget = None if raw_gpu_budget is None else _finite_nonnegative(raw_gpu_budget)
+        if raw_gpu_budget is not None and gpu_budget is None:
+            raise ValueError("gpu_usd_budget invalid")
+        a100_cap = config_raw.get("a100_cap")
+        if a100_cap is not None and (type(a100_cap) is not int or a100_cap <= 0):
+            raise ValueError("a100_cap invalid")
+        eta = _finite_positive(config_raw.get("eta", 3.0))
+        noise_floor = _finite_nonnegative(config_raw.get("noise_floor", 0.0))
+        if eta is None or noise_floor is None:
+            raise ValueError("eta/noise_floor invalid")
+        observations: list[BranchObservation] = []
+        branches: list[str] = []
+        cohort_receipts: set[tuple[str, str]] = set()
+        source_seen = 0
+        for member in cohort_raw:
+            if not isinstance(member, Mapping):
+                raise ValueError("cohort member must be an object")
+            if frozenset(member) != _DECISION_COHORT_KEYS:
+                raise ValueError("cohort member has missing or non-deterministic fields")
+            branch_id = member.get("branch_id")
+            receipt_path = member.get("receipt_path")
+            receipt_sha = member.get("receipt_sha256")
+            branch_type = member.get("branch_type", "faithful")
+            safety = member.get("is_safety_bracket", False)
+            gpu_usd = _finite_nonnegative(member.get("gpu_usd", 0.0))
+            if (
+                not isinstance(branch_id, str) or not branch_id
+                or not isinstance(receipt_path, str) or not receipt_path
+                or not isinstance(receipt_sha, str) or len(receipt_sha) != 64
+                or branch_type not in {"faithful", "ambiguity", "discovery"}
+                or type(safety) is not bool or gpu_usd is None
+            ):
+                raise ValueError("cohort member fields invalid")
+            member_path = _safe_arm_file(receipt_path, run_dir)
+            if member_path is None or hashlib.sha256(member_path.read_bytes()).hexdigest() != receipt_sha:
+                raise ValueError("cohort receipt path/SHA invalid")
+            member_receipt = load_verified_receipt(
+                member_path,
+                ladder=ladder,
+                run_dir=run_dir,
+                expected_campaign_id=campaign_id,
+            )
+            if member_receipt is None or member_receipt.branch_id != branch_id:
+                raise ValueError("cohort receipt binding invalid")
+            if member_receipt.to_step != source_receipt.to_step:
+                raise ValueError("cohort crosses fidelity rungs")
+            _verify_member_against_campaign_records(
+                member_receipt=member_receipt,
+                branch_type=branch_type,
+                is_safety_bracket=safety,
+                gpu_usd=gpu_usd,
+                all_rows=all_rows,
+            )
+            if receipt_sha == audit.get("scheduler_receipt_sha256"):
+                if member_receipt != source_receipt:
+                    raise ValueError("source receipt content mismatch")
+                source_seen += 1
+            branches.append(branch_id)
+            cohort_receipts.add((branch_id, receipt_sha))
+            observations.append(BranchObservation(
+                branch_id=branch_id,
+                branch_type=branch_type,
+                score=member_receipt.metric_value,
+                gpu_usd=gpu_usd,
+                broken=member_receipt.termination_cause == _BREAKAGE_CLASS,
+                is_safety_bracket=safety,
+            ))
+        if branches != sorted(branches) or len(set(branches)) != len(branches) or source_seen != 1:
+            raise ValueError("cohort must be unique/sorted and include source receipt once")
+        available_receipts = _verified_same_rung_receipts(
+            run_dir=run_dir,
+            campaign_id=campaign_id,
+            ladder=ladder,
+            to_step=source_receipt.to_step,
+        )
+        if cohort_receipts != available_receipts:
+            raise ValueError("cohort does not exactly inventory all verified same-rung receipts")
+        decisions = asha_decide(
+            observations,
+            RungConfig(
+                rung=rung,
+                gpu_usd_budget=gpu_budget,
+                a100_cap=a100_cap,
+                eta=eta,
+                higher_is_better=ladder.direction == "maximize",
+                noise_floor=noise_floor,
+            ),
+        )
+        selected = next((d for d in decisions if d.branch_id == source_receipt.branch_id), None)
+        if selected is None or selected.action != action:
+            raise ValueError("pure ASHA result does not select claimed action")
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        failures.append(GateFailure(
+            "authoritative_decision_evidence_invalid",
+            f"decision evidence is not a verified deterministic ASHA input: {exc}",
+            pair_id,
+        ))
+        return None
+    return actual_sha
+
+
+def _verify_decision_config_against_advisory(
+    *,
+    decision: Mapping[str, Any],
+    rung: int,
+    config: Mapping[str, Any],
+) -> None:
+    """Bind width inputs to the durable advisory in the decided ledger row.
+
+    The decision artifact may make only the pure scheduler inputs explicit; it
+    cannot invent a cheaper budget or a larger A100 cap than the controller
+    recorded when it made that decision.
+    """
+    advisory = decision.get("asha_advisory")
+    if not isinstance(advisory, Mapping) or advisory.get("rung") != rung:
+        raise ValueError("decision artifact rung is not bound to its durable ASHA advisory")
+    width = advisory.get("width_meter")
+    if not isinstance(width, Mapping):
+        raise ValueError("decision artifact lacks durable ASHA width meter")
+    for key in ("gpu_usd_budget", "a100_cap", "eta", "noise_floor"):
+        if config.get(key) != width.get(key):
+            raise ValueError(f"decision artifact {key} differs from durable ASHA width meter")
+
+
+def _campaign_attempt_records(
+    rows: Sequence[Mapping[str, Any]],
+    attempt_n: int,
+) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+    """Return exactly one assessed and launched row for an authority receipt."""
+    assessments = [
+        row.get("assessment") for row in rows
+        if row.get("status") == "assessed" and row.get("attempt_n") == attempt_n
+        and isinstance(row.get("assessment"), Mapping)
+    ]
+    launched = [
+        row for row in rows
+        if row.get("status") == "launched" and row.get("attempt_n") == attempt_n
+    ]
+    if len(assessments) != 1 or len(launched) != 1:
+        raise ValueError("every authority cohort receipt requires exactly one assessed and launched row")
+    return assessments[0], launched[0]
+
+
+def _row_scheduler_metadata(record: Mapping[str, Any]) -> tuple[str, bool]:
+    """Read durable scheduler metadata with the legacy faithful/non-safety default."""
+    branch_type = record.get("branch_type", "faithful")
+    safety = record.get("is_safety_bracket", False)
+    if branch_type not in {"faithful", "ambiguity", "discovery"} or type(safety) is not bool:
+        raise ValueError("invalid durable branch metadata")
+    if safety and branch_type != "faithful":
+        raise ValueError("only faithful durable branches may carry a safety bracket")
+    return str(branch_type), safety
+
+
+def _verified_assessment_gpu_usd(assessment: Mapping[str, Any]) -> float:
+    cost = assessment.get("cost")
+    if not isinstance(cost, Mapping):
+        raise ValueError("authority cohort assessment lacks deterministic cost")
+    gpu_usd = _finite_nonnegative(cost.get("gpu_usd"))
+    if gpu_usd is None:
+        raise ValueError("authority cohort assessment gpu_usd is invalid")
+    return gpu_usd
+
+
+def _verify_member_against_campaign_records(
+    *,
+    member_receipt: Any,
+    branch_type: str,
+    is_safety_bracket: bool,
+    gpu_usd: float,
+    all_rows: Sequence[Mapping[str, Any]],
+) -> None:
+    """Prevent a decision JSON from rewriting branch or width metadata."""
+    # The live adapter defines a branch id as the durable attempt id.  Preserve
+    # that invariant until a controller-owned branch queue supplies a different
+    # immutable mapping; do not let the worker invent one in decision evidence.
+    if member_receipt.branch_id != str(member_receipt.attempt_n):
+        raise ValueError("receipt branch_id is not the durable attempt branch id")
+    assessment, launched = _campaign_attempt_records(all_rows, member_receipt.attempt_n)
+    assessed_metadata = _row_scheduler_metadata(assessment)
+    launched_metadata = _row_scheduler_metadata(launched)
+    if assessed_metadata != launched_metadata:
+        raise ValueError("assessment and launch branch metadata disagree")
+    if assessed_metadata != (branch_type, is_safety_bracket):
+        raise ValueError("cohort branch metadata differs from assessment/launch records")
+    if gpu_usd != _verified_assessment_gpu_usd(assessment):
+        raise ValueError("cohort gpu_usd differs from deterministic assessment cost")
+
+
+def _verified_same_rung_receipts(
+    *,
+    run_dir: Path,
+    campaign_id: str,
+    ladder: PaperStepLadder,
+    to_step: int,
+) -> set[tuple[str, str]]:
+    """Inventory every valid same-rung receipt under the campaign-owned root.
+
+    The decision writer is not permitted to choose its own comparison set.  A
+    malformed receipt in this authority namespace also fails closed: otherwise
+    a worker could hide a stronger branch by corrupting its receipt.
+    """
+    root = run_dir / "campaign" / "scheduler_receipts"
+    try:
+        if not root.is_dir() or _has_symlink_component(root, run_dir):
+            raise ValueError("scheduler receipt root is missing or symlinked")
+        inventory: set[tuple[str, str]] = set()
+        for path in sorted(root.rglob("*")):
+            if _has_symlink_component(path, run_dir):
+                raise ValueError("scheduler receipt path is invalid")
+            if path.is_dir():
+                continue
+            if not path.is_file():
+                raise ValueError("scheduler receipt path is invalid")
+            content = path.read_bytes()
+            receipt = load_verified_receipt(
+                path,
+                ladder=ladder,
+                run_dir=run_dir,
+                expected_campaign_id=campaign_id,
+            )
+            if receipt is None:
+                raise ValueError("scheduler receipt is invalid")
+            if receipt.to_step == to_step:
+                key = (receipt.branch_id, hashlib.sha256(content).hexdigest())
+                if key in inventory:
+                    raise ValueError("duplicate verified receipt identity")
+                inventory.add(key)
+        if not inventory:
+            raise ValueError("no verified receipts at decision rung")
+        return inventory
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"same-rung receipt inventory invalid: {exc}") from exc
+
+
+def _finite_nonnegative(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        return None
+    value = float(value)
+    return value if value >= 0.0 else None
+
+
+def _finite_positive(value: Any) -> float | None:
+    parsed = _finite_nonnegative(value)
+    return parsed if parsed is not None and parsed > 0.0 else None
+
+
+def _safe_arm_file(value: str, run_dir: Path) -> Path | None:
+    path = Path(value)
+    if path.is_absolute() or ".." in path.parts:
+        return None
+    candidate = run_dir / path
+    try:
+        if _has_symlink_component(candidate, run_dir) or not candidate.is_file():
+            return None
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(run_dir.resolve())
+    except (OSError, ValueError):
+        return None
+    return candidate
+
+
+def _has_symlink_component(path: Path, root: Path) -> bool:
+    """Reject a symlink at *any* point below a trusted run root."""
+    root = root.resolve()
+    current = path
+    while True:
+        if current.is_symlink():
+            return True
+        if current == root:
+            return False
+        parent = current.parent
+        try:
+            parent.relative_to(root)
+        except ValueError:
+            return True
+        if parent == current:
+            return True
+        current = parent
+
+
+_CONTROLLER_EVENT_BY_ACTION = {
+    "promote": "branch_promoted",
+    "freeze": "frozen_pool_eviction",
+    "kill": "branch_true_killed",
+}
+_CONTROLLER_EVENT_SOURCE = "agents.rlm.reproduction_campaign"
+
+
+def _audit_sha256(audit: Mapping[str, Any]) -> str:
+    """Hash the exact durable audit object, without accepting prose as evidence."""
+    encoded = json.dumps(dict(audit), sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _authority_proof_id(audit: Mapping[str, Any]) -> str:
+    """Stable identity for one applied receipt/audit transition."""
+    receipt_sha256 = audit.get("scheduler_receipt_sha256")
+    return f"{receipt_sha256}:{_audit_sha256(audit)}"
+
+
+def _controller_event_proves_action(
+    store_path: Path | None,
+    *,
+    run_dir: Path,
+    campaign_id: str,
+    receipt: Any,
+    audit: Mapping[str, Any],
+    decision_evidence_sha256: str | None,
+    action: str,
+    decision: Mapping[str, Any],
+    pair_id: str,
+    failures: list[GateFailure],
+) -> bool:
+    """Require an independently stored branch-event for applied authority.
+
+    The campaign ledger belongs to the run and is useful for resumability, but
+    it is not the authority boundary.  A controller EventStore located outside
+    the worker-owned run directory records the completed transition only after
+    the controller applies it.  This reader opens SQLite read-only and never
+    creates tables or writes a checkpoint.
+    """
+    expected_type = _CONTROLLER_EVENT_BY_ACTION.get(action)
+    if store_path is None or expected_type is None or decision_evidence_sha256 is None:
+        failures.append(
+            GateFailure(
+                "controller_action_event_missing",
+                "applied authority requires a controller-owned branch-tree event store and known action",
                 pair_id,
             )
         )
         return False
-    return True
+    try:
+        store_path.relative_to(run_dir.resolve())
+    except ValueError:
+        pass
+    else:
+        failures.append(
+            GateFailure(
+                "controller_action_event_invalid",
+                "controller_event_store must live outside the worker-owned run directory",
+                pair_id,
+            )
+        )
+        return False
+    try:
+        uri = f"file:{store_path.as_posix()}?mode=ro"
+        with sqlite3.connect(uri, uri=True) as conn:
+            rows = conn.execute(
+                """
+                SELECT aggregate_type, event_type, schema_version, payload_json, metadata_json
+                FROM event_store_events
+                WHERE aggregate_id = ? AND event_type = ?
+                """,
+                (f"branch-tree:{campaign_id}", expected_type),
+            ).fetchall()
+    except (sqlite3.Error, OSError) as exc:
+        failures.append(
+            GateFailure("controller_action_event_invalid", f"cannot read controller event store: {exc}", pair_id)
+        )
+        return False
+
+    receipt_sha256 = audit.get("scheduler_receipt_sha256")
+    audit_sha256 = _audit_sha256(audit)
+    try:
+        receipt_rung = None
+        # The evidence loader already verified this membership; repeat the
+        # simple rung derivation here so the controller event cannot promote a
+        # receipt at one fidelity while the live decision advances another.
+        ladder_path = _safe_arm_file(str(audit.get("scheduler_ladder_path") or ""), run_dir)
+        if ladder_path is None:
+            raise ValueError("missing ladder")
+        ladder_raw = json.loads(ladder_path.read_text(encoding="utf-8"))
+        ladder = PaperStepLadder.from_mapping(ladder_raw)
+        receipt_rung = ladder.rung_steps.index(receipt.to_step)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        failures.append(GateFailure(
+            "controller_action_event_invalid",
+            f"cannot bind controller event to receipt rung: {exc}",
+            pair_id,
+        ))
+        return False
+    if action == "promote":
+        next_plan = decision.get("next_plan")
+        expected_scope = receipt_rung + 1
+        if (
+            decision.get("kind") != "CONTINUE"
+            or not isinstance(next_plan, Mapping)
+            or next_plan.get("scope_rung") != expected_scope
+        ):
+            failures.append(GateFailure(
+                "controller_action_event_invalid",
+                "promotion must bind receipt rung to CONTINUE next_plan.scope_rung",
+                pair_id,
+            ))
+            return False
+    for aggregate_type, event_type, schema_version, payload_raw, metadata_raw in rows:
+        if aggregate_type != "branch_tree" or event_type != expected_type or schema_version != 1:
+            continue
+        try:
+            payload = json.loads(payload_raw)
+            metadata = json.loads(metadata_raw)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, Mapping) or not isinstance(metadata, Mapping):
+            continue
+        if metadata.get("source") != _CONTROLLER_EVENT_SOURCE:
+            continue
+        if (
+            payload.get("branch_id") != receipt.branch_id
+            or payload.get("receipt_sha256") != receipt_sha256
+            or payload.get("authority_audit_sha256") != audit_sha256
+            or payload.get("decision_evidence_sha256") != decision_evidence_sha256
+        ):
+            continue
+        if action == "promote" and (
+            payload.get("from_rung") != receipt_rung
+            or payload.get("to_rung") != receipt_rung + 1
+        ):
+            continue
+        if action in {"freeze", "kill"} and payload.get("rung") != receipt_rung:
+            continue
+        if action == "freeze" and payload.get("ckpt_uri") != receipt.checkpoint_path:
+            continue
+        if action == "kill" and payload.get("termination_cause") != _BREAKAGE_CLASS:
+            continue
+        return True
+
+    failures.append(
+        GateFailure(
+            "controller_action_event_missing",
+            "no controller branch-tree event binds this applied action to its receipt and audit hashes",
+            pair_id,
+        )
+    )
+    return False
 
 
 def _validate_advisory_kills(

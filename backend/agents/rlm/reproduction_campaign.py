@@ -412,6 +412,7 @@ class ReproductionCampaign:
         driver: str,
         stages: CampaignStages,
         resume: bool = False,
+        branch_tree_event_store: Any | None = None,
     ) -> None:
         self.run_dir = Path(run_dir)
         self.project_id = project_id
@@ -428,6 +429,10 @@ class ReproductionCampaign:
         # consumed by the AWAIT caller once ``await_result`` has returned.
         # Empty forever when OPENRESEARCH_DOOMED_KILL is off.
         self._doomed_kills: dict[int, dict] = {}
+        # Test/host injection point.  Production lazily opens the configured
+        # controller EventStore only when the tree flag is enabled; default-off
+        # campaigns neither construct nor touch it.
+        self._branch_tree_event_store = branch_tree_event_store
 
     def _new_state(self, *, state: str) -> CampaignState:
         now = time.time()
@@ -447,6 +452,100 @@ class ReproductionCampaign:
             self.stages.emit_event(event, payload)
         except Exception as exc:  # noqa: BLE001 -- fail-soft emit (spec §12)
             state.warnings.append(f"emit_failed:{event}:{type(exc).__name__}")
+
+    @staticmethod
+    def _scheduler_tree_enabled() -> bool:
+        """Locked default-OFF truthiness gate for lineage observability."""
+        return os.environ.get("OPENRESEARCH_SCHEDULER_TREE", "").strip().lower() in (
+            "1", "true", "yes",
+        )
+
+    def _maybe_emit_root_branch_spawned(
+        self,
+        state: CampaignState,
+        launched_row: Mapping[str, Any],
+    ) -> None:
+        """Record the only branch-tree fact the serial campaign owns today.
+
+        The existing loop has one durable launch intent but no branch queue,
+        paper-pinned optimizer-step receipt, checkpoint transition, or ASHA
+        action owner.  Consequently tree mode records the root branch only;
+        it must *not* manufacture rung climbs, promotions, freezes, revivals,
+        or true deletes from a shadow advisory.  ``directives_sha256`` is the
+        F10 novelty fingerprint already durable in the write-ahead row.
+
+        Observability remains fail-soft while the scheduler is non-authoritative:
+        a controller EventStore outage is recorded as a warning after the
+        launch intent is durable and never changes money, verdict, or decision.
+        """
+        if not self._scheduler_tree_enabled():
+            return
+        attempt_n = launched_row.get("attempt_n")
+        # Later serial attempts are iterations of the same root, not genuine
+        # branch forks.  Emitting them as children would misstate lineage.
+        if attempt_n != 1:
+            return
+        fingerprint = launched_row.get("directives_sha256")
+        if not isinstance(fingerprint, str) or not fingerprint:
+            state.warnings.append("branch_lineage_skipped:missing_f10_fingerprint")
+            return
+        branch_type = launched_row.get("branch_type", "faithful")
+        if branch_type not in {"faithful", "ambiguity", "discovery"}:
+            state.warnings.append("branch_lineage_skipped:invalid_branch_type")
+            return
+
+        created_store = False
+        store = self._branch_tree_event_store
+        try:
+            if store is None:
+                # Keep imports and SQLite construction inside the enabled
+                # branch so OFF runs remain side-effect-free and byte-identical.
+                from backend.config import get_settings
+                from backend.eventstore.sqlite_store import SqliteEventStore
+
+                store = SqliteEventStore(get_settings().database_url)
+                created_store = True
+
+            from backend.agents.rlm.branch_lineage import BranchSpawned, branch_tree_aggregate_id
+            from backend.messaging.envelope import AggregateId, CorrelationId, EventEnvelope, new_event_id
+
+            aggregate_id = AggregateId(branch_tree_aggregate_id(state.project_id))
+            branch_id = str(attempt_n)
+            # A recovery/manual repair may revisit the durable launch.  The
+            # existing F10 fingerprint is the only dedup identity: never hash
+            # a scheduler-specific replacement key.
+            for stored in store.load(aggregate_id):
+                if (
+                    stored.event_type == BranchSpawned.event_type
+                    and stored.payload.get("branch_id") == branch_id
+                    and stored.payload.get("hypothesis_fingerprint") == fingerprint
+                ):
+                    return
+            store.append(
+                aggregate_id=aggregate_id,
+                aggregate_type="branch_tree",
+                events=[BranchSpawned(
+                    branch_id=branch_id,
+                    branch_type=branch_type,
+                    parent_branch_id=None,
+                    rung=0,
+                    hypothesis_fingerprint=fingerprint,
+                )],
+                expected_version=store.get_aggregate_version(aggregate_id),
+                envelopes=[EventEnvelope(
+                    event_id=new_event_id(),
+                    correlation_id=CorrelationId(state.project_id),
+                    source="agents.rlm.reproduction_campaign",
+                )],
+            )
+        except Exception as exc:  # noqa: BLE001 -- scheduler is shadow/observability-only
+            state.warnings.append(f"branch_lineage_emit_failed:{type(exc).__name__}")
+        finally:
+            if created_store:
+                try:
+                    store.close()
+                except Exception:  # noqa: BLE001 -- cleanup never affects campaign semantics
+                    pass
 
     @staticmethod
     def _directives_sha256_for_attempt(rows: list, attempt_n: int) -> str | None:
@@ -918,6 +1017,9 @@ class ReproductionCampaign:
                     raise CampaignLedgerError("planned is_safety_bracket requires OPENRESEARCH_SCHEDULER_TREE")
                 launched_row["is_safety_bracket"] = planned["is_safety_bracket"]
             self.ledger.append_row(launched_row)
+            # Event only after the write-ahead row makes the F10 fingerprint
+            # durable.  No other scheduler transition is factual on this path.
+            self._maybe_emit_root_branch_spawned(state, launched_row)
             state.in_flight = InFlight(
                 attempt_n=attempt_n, driver=self.driver, run_dir=planned["run_dir"],
                 pid=None, lease_ref=None, launched_at=now,
