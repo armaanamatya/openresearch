@@ -550,6 +550,41 @@ def test_persist_roundtrip_and_atomicity(tmp_path: Path) -> None:
     assert not alt_path.with_suffix(alt_path.suffix + ".tmp").exists()
 
 
+def test_scheduler_defaults_omit_durable_keys_but_explicit_metadata_roundtrips(tmp_path: Path) -> None:
+    defaults = synthesize_directives(**_base_kwargs(tmp_path))
+    default_payload = defaults.to_dict()
+    assert "branch_type" not in default_payload
+    assert "is_safety_bracket" not in default_payload
+
+    safety = synthesize_directives(
+        **_base_kwargs(tmp_path, attempt_n=2, plan=_plan(is_safety_bracket=True))
+    )
+    assert safety.to_dict()["is_safety_bracket"] is True
+    assert "branch_type" not in safety.to_dict()  # faithful remains legacy-default implicit
+
+    typed = synthesize_directives(
+        **_base_kwargs(tmp_path, attempt_n=3, plan=_plan(branch_type="ambiguity"))
+    )
+    assert typed.to_dict()["branch_type"] == "ambiguity"
+    assert typed.fingerprint != defaults.fingerprint  # F10 includes branch type
+
+    with pytest.raises(DirectiveContractError):
+        AttemptDirectives(
+            **{
+                **defaults.__dict__,
+                "branch_type": "free-text",  # type: ignore[arg-type]
+            }
+        )
+    with pytest.raises(DirectiveContractError):
+        AttemptDirectives(
+            **{
+                **defaults.__dict__,
+                "branch_type": "discovery",
+                "is_safety_bracket": True,
+            }
+        )
+
+
 # ---------------------------------------------------------------------------
 # Fresh attempt 1, no prior artifacts
 # ---------------------------------------------------------------------------

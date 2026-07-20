@@ -28,3 +28,11 @@ it never changes the optimizer-step fidelity ladder.
 Exactly one initial faithful branch is protected for a campaign tree.  True-kill for
 the existing `training_diverged` evidence remains possible; no other failure is
 converted to a delete.
+
+## Current-execution boundary
+
+This increment persists only an advisory safety marker.  It may be allocated only
+when the tree flag is on, the branch is literally `faithful`, and durable campaign
+history has no earlier allocation; an orphan retry reuses its prior marker.  It is
+not yet a completed `r_max` checkpoint/resume slot because the current campaign has
+no paper-step budget or checkpoint-chain execution state.

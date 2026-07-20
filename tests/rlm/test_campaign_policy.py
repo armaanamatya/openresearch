@@ -1170,6 +1170,41 @@ def test_decision_to_dict_roundtrips_next_plan():
     assert terminal_payload["champion_attempt_n"] == 2
 
 
+def test_scheduler_plan_defaults_preserve_legacy_decision_payload_and_reject_invalid_metadata():
+    legacy_plan = NextAttemptPlan(
+        lineage="fresh", seed_attempt_n=None, seed_pointer=None, scope_rung=0, width=1
+    )
+    legacy_payload = Decision(
+        kind="CONTINUE", rule="continue", stop_reason=None, next_plan=legacy_plan
+    ).to_dict()
+    assert legacy_payload["next_plan"] == {
+        "lineage": "fresh",
+        "seed_attempt_n": None,
+        "seed_pointer": None,
+        "scope_rung": 0,
+        "width": 1,
+    }
+
+    typed_plan = NextAttemptPlan(
+        lineage="fresh", seed_attempt_n=None, seed_pointer=None, scope_rung=0, width=1,
+        branch_type="ambiguity",
+    )
+    assert Decision(
+        kind="CONTINUE", rule="continue", stop_reason=None, next_plan=typed_plan
+    ).to_dict()["next_plan"]["branch_type"] == "ambiguity"
+
+    with pytest.raises(ValueError):
+        NextAttemptPlan(
+            lineage="fresh", seed_attempt_n=None, seed_pointer=None, scope_rung=0, width=1,
+            branch_type="free-text",  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError):
+        NextAttemptPlan(
+            lineage="fresh", seed_attempt_n=None, seed_pointer=None, scope_rung=0, width=1,
+            branch_type="ambiguity", is_safety_bracket=True,
+        )
+
+
 def test_no_clean_champion_still_seeds_from_best_seedable():
     weak = _assessment(1, soft_quarantined=True, evidence_predicates=_predicates(1))
     strong = _assessment(2, soft_quarantined=True, evidence_predicates=_predicates(3))

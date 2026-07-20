@@ -2269,7 +2269,10 @@ def cmd_campaign(args: argparse.Namespace) -> int:
 
     source = _source_from_cli(args.source, "auto")
     print(f"[campaign ingest 1/6] Registering project for {args.source}", file=sys.stderr)
-    project_id = intake.register_project(RegisterProject(source=source))
+    project_id = intake.register_project(
+        RegisterProject(source=source),
+        project_id_override=(getattr(args, "project_id", None) or None),
+    )
     print(f"                       project_id={project_id}", file=sys.stderr)
 
     project_dir = runs_root / project_id
@@ -2857,6 +2860,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "campaign", help="Repeat-until-reproduced campaign: launch, assess, decide, repeat."
     )
     campaign.add_argument("source", help="PDF path, arXiv id/URL, or DOI/doi.org URL.")
+    campaign.add_argument(
+        "--project-id", dest="project_id", default=None,
+        help=(
+            "Explicit project id for an independent campaign lineage. Required "
+            "when the same paper is run as multiple A/B arms."
+        ),
+    )
     campaign.add_argument(
         "--max-llm-usd", dest="max_llm_usd", type=float, required=True,
         help="Campaign-wide cap on LLM/SDK spend (never GPU dollars; spec §10.1).",

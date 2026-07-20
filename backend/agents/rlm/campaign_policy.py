@@ -30,7 +30,18 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from backend.agents.rlm.attempt_assessment import AttemptAssessment
+from backend.agents.rlm.asha_scheduler import BranchType
 from backend.agents.rlm.campaign_types import CampaignSpend
+
+_BRANCH_TYPES: frozenset[str] = frozenset({"faithful", "ambiguity", "discovery"})
+
+
+def _validate_scheduler_plan_metadata(plan: NextAttemptPlan) -> None:
+    """Prevent malformed scheduler metadata from becoming a durable decision."""
+    if plan.branch_type not in _BRANCH_TYPES:
+        raise ValueError(f"branch_type must be one of {sorted(_BRANCH_TYPES)}, got {plan.branch_type!r}")
+    if type(plan.is_safety_bracket) is not bool:
+        raise ValueError(f"is_safety_bracket must be bool, got {plan.is_safety_bracket!r}")
 
 # --- Exceptions --------------------------------------------------------
 
@@ -386,6 +397,17 @@ class NextAttemptPlan:
     seed_pointer: str | None  # archived code/ path, campaign-selected
     scope_rung: int
     width: int
+    # Scheduler metadata is deliberately trailing + defaulted: historical
+    # decision rows and every existing positional constructor remain the
+    # faithful, non-safety serial policy unless an explicit future policy
+    # supplies otherwise.
+    branch_type: BranchType = "faithful"
+    is_safety_bracket: bool = False
+
+    def __post_init__(self) -> None:
+        _validate_scheduler_plan_metadata(self)
+        if self.is_safety_bracket and self.branch_type != "faithful":
+            raise ValueError("is_safety_bracket is allowed only for a faithful branch")
 
 
 @dataclass(frozen=True)
@@ -422,7 +444,19 @@ class Decision:
         ``decision.get(...)``). Lets a future composition layer hand a
         ``Decision`` straight to the state machine without a lossy
         hand-rolled conversion."""
-        return asdict(self)
+        payload = asdict(self)
+        # These scheduler enrichments are additive. Keep default serial-policy
+        # decisions byte-for-byte compatible with historical decision rows;
+        # explicit non-default branch policy remains durable.
+        next_plan = payload.get("next_plan")
+        if isinstance(next_plan, dict):
+            assert self.next_plan is not None
+            _validate_scheduler_plan_metadata(self.next_plan)
+            if next_plan.get("branch_type") == "faithful":
+                next_plan.pop("branch_type", None)
+            if next_plan.get("is_safety_bracket") is False:
+                next_plan.pop("is_safety_bracket", None)
+        return payload
 
 
 @dataclass(frozen=True)
@@ -514,12 +548,26 @@ def _evidence_improved_over_prior(
 
 
 def _fresh_plan() -> NextAttemptPlan:
-    return NextAttemptPlan(lineage="fresh", seed_attempt_n=None, seed_pointer=None, scope_rung=0, width=1)
+    return NextAttemptPlan(
+        lineage="fresh",
+        seed_attempt_n=None,
+        seed_pointer=None,
+        scope_rung=0,
+        width=1,
+        branch_type="faithful",
+        is_safety_bracket=False,
+    )
 
 
 def _seeded_plan(lineage: str, attempt: AttemptAssessment, seed_pointer: str) -> NextAttemptPlan:
     return NextAttemptPlan(
-        lineage=lineage, seed_attempt_n=attempt.attempt_n, seed_pointer=seed_pointer, scope_rung=0, width=1
+        lineage=lineage,
+        seed_attempt_n=attempt.attempt_n,
+        seed_pointer=seed_pointer,
+        scope_rung=0,
+        width=1,
+        branch_type="faithful",
+        is_safety_bracket=False,
     )
 
 
@@ -696,11 +744,12 @@ def directives_fingerprint(
     repair_action_kinds: Iterable[str],
     failure_classes: Iterable[str],
     envelope: Mapping[str, float],
+    branch_type: BranchType = "faithful",
 ) -> str:
     """F10 typed novelty hash over ONLY the deterministic action schema:
     seed lineage, scope rung, the typed per-leaf repair-action KINDS (never
     justification text), the failure-class set, and the quantized attempt
-    envelope. PROSE IS NEVER AN INPUT — the signature has no field for it,
+    envelope, and an explicit typed branch. PROSE IS NEVER AN INPUT — the signature has no field for it,
     so two attempts differing only in LLM prose (``propose_improvements``
     output, grader justifications) hash identically and are NOT novel.
     Unknown envelope keys default to a 1.0 quantum (defensive; every known
@@ -715,6 +764,12 @@ def directives_fingerprint(
         "classes": sorted(set(failure_classes)),
         "envelope": quantized_envelope,
     }
+    # Keep the existing F10 value for the serial faithful default while
+    # ensuring an explicit ambiguity/discovery fork cannot collide with it.
+    # The safety marker is intentionally absent: it is a scheduler-only
+    # advisory exemption, not a different hypothesis.
+    if branch_type != "faithful":
+        payload["branch_type"] = branch_type
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 

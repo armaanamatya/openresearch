@@ -336,6 +336,141 @@ def test_plan_attempt_builds_from_decided_next_plan_and_novelty_iterates_arms(tm
     assert planned2["directives_sha256"] != base_fingerprint
 
 
+def test_scheduler_off_plan_is_byte_compatible_and_tree_on_allocates_one_advisory_marker(
+    tmp_path, neutral_profile, monkeypatch
+):
+    opts = _opts(tmp_path, run_spec_path=str(neutral_profile))
+    run_dir = opts.runs_root / "prj_t"
+    (run_dir / "campaign").mkdir(parents=True)
+
+    monkeypatch.delenv("OPENRESEARCH_SCHEDULER_TREE", raising=False)
+    off = cc._plan_attempt_impl(run_dir, opts, "prj_t", _state(next_attempt_n=1), [])
+    assert "branch_type" not in off
+    assert "is_safety_bracket" not in off
+    assert "branch_type" not in off["launch_payload"].to_dict()
+    assert "is_safety_bracket" not in off["launch_payload"].to_dict()
+
+    monkeypatch.setenv("OPENRESEARCH_SCHEDULER_TREE", "1")
+    on = cc._plan_attempt_impl(run_dir, opts, "prj_t", _state(next_attempt_n=1), [])
+    assert on["is_safety_bracket"] is True
+    assert on["launch_payload"].is_safety_bracket is True
+    assert on["launch_payload"].to_dict()["is_safety_bracket"] is True
+
+    launched = {
+        "attempt_n": 1,
+        "status": "launched",
+        "directives_sha256": on["directives_sha256"],
+        "envelope": on["envelope"],
+        "driver": "live",
+        "project_id": "prj_t",
+        "run_dir": str(run_dir),
+        "launched_at": 1.0,
+        "is_safety_bracket": True,
+    }
+    decided = {
+        "attempt_n": 1,
+        "status": "decided",
+        "decision": {
+            "kind": "CONTINUE",
+            "next_plan": {
+                "lineage": "fresh",
+                "seed_attempt_n": None,
+                "seed_pointer": None,
+                "scope_rung": 1,
+                "width": 1,
+            },
+        },
+    }
+    later = cc._plan_attempt_impl(run_dir, opts, "prj_t", _state(next_attempt_n=2), [launched, decided])
+    assert "is_safety_bracket" not in later
+    assert later["launch_payload"].is_safety_bracket is False
+
+
+@pytest.mark.parametrize("branch_type", ("ambiguity", "discovery"))
+def test_tree_never_allocates_safety_marker_to_nonfaithful_branch(tmp_path, neutral_profile, monkeypatch, branch_type):
+    monkeypatch.setenv("OPENRESEARCH_SCHEDULER_TREE", "1")
+    opts = _opts(tmp_path, run_spec_path=str(neutral_profile))
+    run_dir = opts.runs_root / "prj_t"
+    (run_dir / "campaign").mkdir(parents=True)
+    rows = [
+        {
+            "attempt_n": 1,
+            "status": "decided",
+            "decision": {
+                "kind": "CONTINUE",
+                "next_plan": {
+                    "lineage": "fresh",
+                    "seed_attempt_n": None,
+                    "seed_pointer": None,
+                    "scope_rung": 0,
+                    "width": 1,
+                    "branch_type": branch_type,
+                },
+            },
+        }
+    ]
+    planned = cc._plan_attempt_impl(run_dir, opts, "prj_t", _state(next_attempt_n=2), rows)
+    assert planned["launch_payload"].branch_type == branch_type
+    assert planned["launch_payload"].is_safety_bracket is False
+    assert "is_safety_bracket" not in planned
+
+
+def test_dead_in_flight_assessment_uses_durable_launch_metadata_and_prevents_second_slot(
+    tmp_path, neutral_profile, monkeypatch
+):
+    """Resume never trusts mutable directives for a prior safety allocation."""
+    monkeypatch.setenv("OPENRESEARCH_SCHEDULER_TREE", "1")
+    opts = _opts(tmp_path, run_spec_path=str(neutral_profile))
+    run_dir = opts.runs_root / "prj_t"
+    campaign_dir = run_dir / "campaign"
+    campaign_dir.mkdir(parents=True)
+    ledger = CampaignLedger(campaign_dir)
+    ledger.append_row(
+        {
+            "attempt_n": 1,
+            "status": "launched",
+            "directives_sha256": "dsha-1",
+            "envelope": {},
+            "driver": "live",
+            "project_id": "prj_t",
+            "run_dir": str(run_dir),
+            "launched_at": 1.0,
+            "is_safety_bracket": True,
+        }
+    )
+    in_flight = InFlight(
+        attempt_n=1, driver="live", run_dir=str(run_dir), pid=None, lease_ref=None, launched_at=1.0
+    )
+
+    assessment = cc._assess_from_disk_impl(opts, "prj_t", campaign_dir, in_flight)
+    assert assessment["is_safety_bracket"] is True
+    # A maliciously edited directives file cannot remove the launch marker.
+    (campaign_dir / "directives").mkdir()
+    (campaign_dir / "directives" / "1.json").write_text("{}", encoding="utf-8")
+    resumed = cc._assess_from_disk_impl(opts, "prj_t", campaign_dir, in_flight)
+    assert resumed["is_safety_bracket"] is True
+
+    ledger.append_row(
+        {
+            "attempt_n": 1,
+            "status": "decided",
+            "decision": {
+                "kind": "CONTINUE",
+                "next_plan": {
+                    "lineage": "fresh",
+                    "seed_attempt_n": None,
+                    "seed_pointer": None,
+                    "scope_rung": 1,
+                    "width": 1,
+                },
+            },
+        }
+    )
+
+    later = cc._plan_attempt_impl(run_dir, opts, "prj_t", _state(next_attempt_n=2), ledger.read_rows())
+    assert later["launch_payload"].is_safety_bracket is False
+
+
 def test_plan_attempt_refuses_no_novel_plan_when_arms_exhausted(tmp_path, neutral_profile):
     # Both burned fingerprints are attributed to attempt_n=1 (a genuinely
     # PRIOR/different attempt from the attempt_n=2 being planned) -- the

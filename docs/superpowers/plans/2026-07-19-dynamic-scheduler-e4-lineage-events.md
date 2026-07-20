@@ -27,3 +27,13 @@ applies a continuation, using the existing F10 novelty fingerprint for dedup.
 
 Events audit scheduler branch state without changing verdict/evidence decisions.
 Flag-off runs do not open or touch the event store for scheduler lineage.
+
+## Feasibility guard
+
+Only emit facts the current serial campaign actually performed.  A shadow advisory
+is not a promotion, freeze, kill, checkpoint, or revival.  Until durable
+checkpoint/step-rung transitions and authoritative deterministic evidence exist,
+do not emit `FrozenPoolEviction`, `BranchRevived`, `BranchPromoted`, or
+`BranchTrueKilled`; their required facts are unavailable.  Emit a root
+`BranchSpawned` only after its durable launch/directive fingerprint is available,
+and retain the other event schemas for their real transition owners.
