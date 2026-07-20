@@ -285,3 +285,141 @@ def test_execute_cell_matrix_azure_dispatches_k8s_runner(tmp_path, monkeypatch):
     assert (code / "outputs" / "prj_test-rid" / "metrics.json").is_file()
     on_disk = json.loads((code / "metrics.json").read_text())
     assert on_disk["per_model"]["qwen3_1_7b"]["search_qa"]["sdar"]["metric"] == 0.42
+
+
+@pytest.mark.parametrize("sandbox", ["azure", "gcp", "aws"])
+def test_execute_cell_matrix_cloud_staged_search_never_falls_back_to_local_runner(
+    tmp_path, monkeypatch, sandbox,
+):
+    """Both tune and promoted phases stay behind the selected K8s runner."""
+    from backend.agents.rlm import k8s_job_cell_runner
+
+    code = tmp_path / "code"
+    code.mkdir()
+    (code / "train_cell.py").write_text("# cell trainer\n", encoding="utf-8")
+    candidate_a = {**_SMALL, "id": "lr-1e-3", "params": {"lr": 1e-3, "epochs": 1}}
+    candidate_b = {**_SMALL, "id": "lr-3e-3", "params": {"lr": 3e-3, "epochs": 1}}
+    full = {**_SMALL, "id": "full", "params": {"epochs": 3}}
+    (code / "cells.json").write_text(json.dumps({
+        "cells": [_SMALL],
+        "search": [{
+            "group": "g", "select_metric": "loss", "select_objective": "min",
+            "candidates": [candidate_a, candidate_b], "promote": full,
+            "param_from_winner": ["lr"],
+        }],
+    }), encoding="utf-8")
+
+    calls: list[list[str]] = []
+    contexts: list[tuple[str, str, bool, bool]] = []
+    budget = object()
+    sink = lambda *_: None
+
+    def fake_k8s_run_matrix(cells, script, **kw):
+        calls.append([cell["id"] for cell in cells])
+        contexts.append((
+            k8s_job_cell_runner._get_settings_prefix(),
+            k8s_job_cell_runner._get_project_id(),
+            k8s_job_cell_runner._get_run_budget() is budget,
+            k8s_job_cell_runner._get_event_sink() is sink,
+        ))
+        return {
+            cell["id"]: {
+                "status": "ok",
+                "metrics": {"loss": 0.01 if cell["id"] == "lr-3e-3" else 0.5, "metric": 0.5},
+                "gpu": "gke:node", "retries": 0, "error": None,
+            }
+            for cell in cells
+        }
+
+    monkeypatch.setattr(k8s_job_cell_runner, "run_matrix", fake_k8s_run_matrix)
+    monkeypatch.setattr(
+        gpu_cell_runner, "run_matrix",
+        lambda *args, **kwargs: pytest.fail("cloud staged search must not use local runner"),
+    )
+    monkeypatch.setenv("OPENRESEARCH_MATRIX_FINALIZE_RESERVE_S", "0")
+    cloud_ctx = _ctx(tmp_path)
+    cloud_ctx.sandbox_mode = sandbox
+    cloud_ctx.run_budget = budget
+    cloud_ctx._event_sink = sink
+
+    result = primitives._execute_cell_matrix(
+        cloud_ctx, str(code), _caps(backend=sandbox), timeout_s=60, run_id="cloud-staged",
+    )
+
+    assert calls == [["lr-1e-3", "lr-3e-3"], ["full"]]
+    assert contexts == [(sandbox, "prj_test", True, True)] * 2
+    assert result["success"] is True
+
+
+def test_execute_cell_matrix_cloud_staged_search_preflights_raw_search_cells(tmp_path, monkeypatch):
+    """A search-only oversized candidate cannot bypass the normal capacity gate."""
+    from backend.agents.rlm import k8s_job_cell_runner
+
+    code = tmp_path / "code"
+    code.mkdir()
+    (code / "train_cell.py").write_text("# cell trainer\n", encoding="utf-8")
+    oversized = {
+        **_SMALL, "id": "too-large", "model_key": "too_large_model",
+        "est_vram_gb": 10_000.0, "params": {"epochs": 1},
+    }
+    promoted = {**_SMALL, "id": "would-promote", "params": {"epochs": 2}}
+    (code / "cells.json").write_text(json.dumps({
+        "cells": [_SMALL],
+        "search": [{
+            "group": "g", "candidates": [oversized], "promote": promoted,
+        }],
+    }), encoding="utf-8")
+    monkeypatch.setattr(
+        k8s_job_cell_runner, "run_matrix",
+        lambda *args, **kwargs: pytest.fail("preflight-rejected search must not submit K8s Jobs"),
+    )
+    cloud_ctx = _ctx(tmp_path)
+    cloud_ctx.sandbox_mode = "gcp"
+
+    result = primitives._execute_cell_matrix(
+        cloud_ctx, str(code), _caps(backend="gcp"), timeout_s=60, run_id="cloud-preflight",
+    )
+
+    assert result["success"] is False
+    assert "too_large_model" in result["metrics"]["scope"]["models_skipped"]
+
+
+def test_execute_cell_matrix_cloud_staged_promotions_disambiguate_equal_axes(tmp_path, monkeypatch):
+    """Two full promoted measurements must never overwrite one aggregate leaf."""
+    from backend.agents.rlm import k8s_job_cell_runner
+
+    code = tmp_path / "code"
+    code.mkdir()
+    (code / "train_cell.py").write_text("# cell trainer\n", encoding="utf-8")
+    candidate_a = {**_SMALL, "id": "candidate-a", "params": {"epochs": 1}}
+    candidate_b = {**_SMALL, "id": "candidate-b", "params": {"epochs": 1}}
+    full_a = {**_SMALL, "id": "full-a", "params": {"epochs": 2}}
+    full_b = {**_SMALL, "id": "full-b", "params": {"epochs": 2}}
+    (code / "cells.json").write_text(json.dumps({
+        "cells": [_SMALL],
+        "search": [
+            {"group": "a", "select_metric": "loss", "candidates": [candidate_a], "promote": full_a},
+            {"group": "b", "select_metric": "loss", "candidates": [candidate_b], "promote": full_b},
+        ],
+    }), encoding="utf-8")
+
+    def fake_k8s_run_matrix(cells, script, **kw):
+        return {
+            cell["id"]: {
+                "status": "ok", "metrics": {"loss": 0.1, "metric": 0.5},
+                "gpu": "gke:node", "retries": 0, "error": None,
+            }
+            for cell in cells
+        }
+
+    monkeypatch.setattr(k8s_job_cell_runner, "run_matrix", fake_k8s_run_matrix)
+    monkeypatch.setenv("OPENRESEARCH_MATRIX_FINALIZE_RESERVE_S", "0")
+    cloud_ctx = _ctx(tmp_path)
+    cloud_ctx.sandbox_mode = "gcp"
+    result = primitives._execute_cell_matrix(
+        cloud_ctx, str(code), _caps(backend="gcp"), timeout_s=60, run_id="cloud-axis",
+    )
+
+    leaves = result["metrics"]["per_model"]["qwen3_1_7b"]["search_qa"]
+    assert len(leaves) == 2
+    assert set(leaves) == {"sdar", "sdar__full-b"}

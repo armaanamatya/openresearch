@@ -232,7 +232,7 @@ describe("UploadView sandbox radios", () => {
   it("renders the Local, RunPod, GCP, and Azure sandbox options", () => {
     const { container } = render(<UploadView {...DEFAULT_PROPS} />);
     const fieldset = container.querySelector('fieldset:has(input[name="sandbox"])');
-    for (const value of ["docker", "runpod", "gcp", "azure"]) {
+    for (const value of ["docker", "runpod", "gcp", "azure", "aws"]) {
       expect(fieldset?.querySelector(`input[value="${value}"]`)).not.toBeNull();
     }
   });

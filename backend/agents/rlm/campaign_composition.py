@@ -1005,6 +1005,7 @@ def _maybe_attach_asha_advisory(
             RungConfig(
                 rung=int(current_rung),
                 higher_is_better=True,
+                eta=3.0,
                 noise_floor=0.0067,
                 gpu_usd_budget=gpu_usd_budget,
                 a100_cap=max_gpu_count,
@@ -1019,6 +1020,11 @@ def _maybe_attach_asha_advisory(
                 "gpu_usd_spent": (
                     float(gpu_usd_spent) if max_gpu_usd is not None else None
                 ),
+                # These are scheduler inputs, not explanatory prose. Persist
+                # them so a future authority receipt can bind and recompute the
+                # same grade-free ASHA action exactly.
+                "eta": 3.0,
+                "noise_floor": 0.0067,
             },
             "decisions": [
                 {"branch_id": d.branch_id, "action": d.action, "reason": d.reason}

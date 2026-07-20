@@ -17,6 +17,7 @@ from backend.agents.rlm.staged_search import (
     extract_select_value,
     materialize_full_cells,
     parse_search_spec,
+    restrict_groups_to_cell_ids,
     run_staged_search,
     select_winner,
 )
@@ -71,6 +72,37 @@ class TestParse:
 
     def test_group_without_promote_id_skipped(self):
         assert parse_search_spec({"search": [{"candidates": [{"id": "c"}], "promote": {}}]}) == []
+
+    def test_duplicate_candidate_and_promote_id_rejects_entire_search(self):
+        assert parse_search_spec({"search": [{
+            "candidates": [{"id": "same"}], "promote": {"id": "same"},
+        }]}) == []
+
+    def test_duplicate_id_across_groups_rejects_entire_search(self):
+        assert parse_search_spec({"search": [
+            {"candidates": [{"id": "a"}], "promote": {"id": "full-a"}},
+            {"candidates": [{"id": "a"}], "promote": {"id": "full-b"}},
+        ]}) == []
+
+    def test_duplicate_group_name_rejects_entire_search(self):
+        assert parse_search_spec({"search": [
+            {"group": "same", "candidates": [{"id": "a"}], "promote": {"id": "full-a"}},
+            {"group": "same", "candidates": [{"id": "b"}], "promote": {"id": "full-b"}},
+        ]}) == []
+
+
+class TestPreflightRestriction:
+    def test_drops_group_without_safe_promoted_cell(self):
+        group = _group(candidates=[{"id": "candidate", "params": {}}], promote={"id": "full"})
+        assert restrict_groups_to_cell_ids([group], {"candidate"}) == []
+
+    def test_keeps_only_safe_candidates(self):
+        group = _group(
+            candidates=[{"id": "safe", "params": {}}, {"id": "unsafe", "params": {}}],
+            promote={"id": "full"},
+        )
+        filtered = restrict_groups_to_cell_ids([group], {"safe", "full"})
+        assert [candidate["id"] for candidate in filtered[0].candidates] == ["safe"]
 
 
 class TestExtractSelect:
@@ -209,6 +241,27 @@ class TestOrchestration:
         assert calls[1] == ["mlp_adam"]                 # one full cell
         assert out["winners"] == {"mlp_adam": "mlp_adam__lr3e-3"}
         assert "mlp_adam" in out["results"]
+
+    def test_candidate_phase_receives_total_deadline_and_full_phase_remainder(self):
+        calls = []
+
+        def fake_run_matrix(cells, cell_script, **kw):
+            calls.append(kw["overall_timeout_s"])
+            return {
+                cell["id"]: {"status": "ok", "metrics": {"final_train_loss": 0.1}}
+                for cell in cells
+            }
+
+        groups = [_group()]
+        out = run_staged_search(
+            groups, "train_cell.py", output_root="/tmp/x", remaining_s=30.0,
+            run_matrix_fn=fake_run_matrix,
+        )
+
+        assert calls[0] == 30.0
+        assert len(calls) == 2
+        assert calls[1] is not None and 0.0 <= calls[1] <= 30.0
+        assert out["results"]
 
     def test_no_full_phase_when_all_candidates_crash(self, monkeypatch):
         def crash_run_matrix(cells, cell_script, **kw):

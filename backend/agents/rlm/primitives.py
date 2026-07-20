@@ -1443,6 +1443,7 @@ def resolve_gpu_requirements(
         _sb_enum = None
     _is_azure = _sb_enum is _SandboxMode.azure
     _is_gcp = _sb_enum is _SandboxMode.gcp
+    _is_aws = _sb_enum is _SandboxMode.aws
 
     # ``provisioned_skus`` restricts the azure/gcp resolver to the GPU pools that are
     # actually provisioned (Terraform ``var.gpu_skus`` ⇒ ``settings.azure_gpu_skus`` /
@@ -1462,6 +1463,25 @@ def resolve_gpu_requirements(
         _provisioned_skus = tuple(
             getattr(settings, "gcp_gpu_skus", None) or ()
         ) or None
+    elif _is_aws:
+        # EKS labels and prices are deployment-specific.  Do not route through
+        # the RunPod catalog (which could select an impossible label and bill
+        # at the wrong rate); resolve solely from the operator's EKS metadata.
+        plan = gpu_resolver.resolve_configured_aws(
+            req,
+            gpu_skus=tuple(getattr(settings, "aws_gpu_skus", None) or ()),
+            per_gpu_vram_gb=float(getattr(settings, "aws_per_gpu_vram_gb", 0.0) or 0.0),
+            per_gpu_usd_per_hour=float(getattr(settings, "aws_gpu_usd_per_hour", 0.0) or 0.0),
+            gpus_per_node=int(getattr(settings, "aws_gpus_per_node", 0) or 0),
+            dynamic_gpu_enabled=settings.dynamic_gpu_enabled,
+            force_single_gpu=settings.force_single_gpu,
+            max_gpu_usd_per_hour=settings.max_gpu_usd_per_hour or None,
+            headroom_multiplier=settings.dynamic_gpu_headroom,
+            gpu_count_override=settings.gpu_count,
+        )
+        _provider = "aws"
+        cloud_types = ("ONDEMAND",)
+        _provisioned_skus = None
     else:
         _provider = "runpod"
         cloud_types = (
@@ -1471,19 +1491,20 @@ def resolve_gpu_requirements(
         )
         _provisioned_skus = None
 
-    from backend.agents.schemas import GpuPlan as _GpuPlan
-    plan: "_GpuPlan" = gpu_resolver.resolve(
-        req,
-        dynamic_gpu_enabled=settings.dynamic_gpu_enabled,
-        force_single_gpu=settings.force_single_gpu,
-        max_gpu_usd_per_hour=settings.max_gpu_usd_per_hour or None,
-        headroom_multiplier=settings.dynamic_gpu_headroom,
-        fallback_vram_gb=settings.dynamic_gpu_fallback_vram_gb,
-        cloud_types=cloud_types,
-        provider=_provider,
-        provisioned_skus=_provisioned_skus,
-        gpu_count_override=settings.gpu_count,
-    )
+    if not _is_aws:
+        from backend.agents.schemas import GpuPlan as _GpuPlan
+        plan: "_GpuPlan" = gpu_resolver.resolve(
+            req,
+            dynamic_gpu_enabled=settings.dynamic_gpu_enabled,
+            force_single_gpu=settings.force_single_gpu,
+            max_gpu_usd_per_hour=settings.max_gpu_usd_per_hour or None,
+            headroom_multiplier=settings.dynamic_gpu_headroom,
+            fallback_vram_gb=settings.dynamic_gpu_fallback_vram_gb,
+            cloud_types=cloud_types,
+            provider=_provider,
+            provisioned_skus=_provisioned_skus,
+            gpu_count_override=settings.gpu_count,
+        )
 
     # ---- Persist atomically.
     payload = _with_outcome(plan.model_dump(mode="json"), PrimitiveOutcome.ok)
@@ -1619,6 +1640,14 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
             "attempts": 0,
             "skipped": True,
             "note": "gcp sandbox: image is pre-baked in Artifact Registry (gcp_base_image); build_environment is a no-op",
+        }, PrimitiveOutcome.ok)
+    if _sb_key == "aws":
+        return _with_outcome({
+            "ok": True,
+            "image_tag": "",
+            "attempts": 0,
+            "skipped": True,
+            "note": "aws sandbox: EKS cells use the pinned ECR aws_base_image; build_environment is a no-op",
         }, PrimitiveOutcome.ok)
     # C6 (2026-06-16): under runpod the locally-built image is NEVER used — the
     # pod boots OPENRESEARCH_RUNPOD_IMAGE and runs over SSH in a per-run venv
@@ -3332,6 +3361,13 @@ def _backend_for_sandbox_mode(
         _runtime.ensure_azure_available()
         return AksJobBackend(run_budget=run_budget, gpu_plan=gpu_plan)
 
+    if mode is SandboxMode.aws:
+        import backend.services.runtime as _runtime
+        from backend.services.runtime.eks_job_backend import EksJobBackend
+
+        _runtime.ensure_aws_available()
+        return EksJobBackend(run_budget=run_budget, gpu_plan=gpu_plan)
+
     if mode is SandboxMode.gcp:
         import backend.services.runtime as _runtime
         from backend.services.runtime.gke_job_backend import GkeJobBackend
@@ -3344,7 +3380,7 @@ def _backend_for_sandbox_mode(
     logger.warning(
         "_execute_in_sandbox: sandbox_mode=%r is not supported in the RLM "
         "path — falling back to LocalDockerBackend.  "
-        "Set --sandbox docker, --sandbox runpod, or --sandbox azure for a supported backend.",
+        "Set --sandbox docker, --sandbox runpod, --sandbox azure, --sandbox aws, or --sandbox gcp for a supported backend.",
         mode.value,
     )
     return LocalDockerBackend()
@@ -6295,7 +6331,7 @@ def _maybe_replicate_seeds(ctx, cells: list, manifest, emit) -> list:
 
 
 def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: float | None, run_id: str) -> dict:
-    """Run the training matrix one-GPU-per-cell via ``gpu_cell_runner`` (comp 4).
+    """Run the training matrix one-GPU-per-cell via the selected cell runner.
 
     PREVENT → drop over-budget cells + dead datasets to honest ``scope.gaps``.
     PLACEMENT → ``run_matrix`` pins one cell per GPU, ``min(free, cells)`` parallel,
@@ -6528,6 +6564,26 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     except Exception:  # noqa: BLE001 — gpu_plan load must never block the cell-matrix route
         logger.debug("_execute_cell_matrix: gpu_plan.json unreadable; proceeding without it")
 
+    # Both phases of a staged search must use exactly the same runner as an
+    # ordinary cell matrix. In particular, a cloud search cannot fall back to
+    # the local subprocess runner, where it would evade K8s identity, IRSA/WI,
+    # namespace isolation, and the controller's GPU budget accounting.
+    _matrix_runner = gpu_cell_runner.run_matrix
+    if _sb_key_ecm in ("azure", "gcp", "aws"):
+        _matrix_budget_ledger = k8s_job_cell_runner._new_budget_reservation_ledger()
+
+        def _run_cloud_matrix(_cells, _script, **_kwargs):
+            with k8s_job_cell_runner._bind_settings_prefix(_sb_key_ecm), \
+                 k8s_job_cell_runner._bind_project_id(str(getattr(ctx, "project_id", "") or "")), \
+                 k8s_job_cell_runner._bind_budget_reservation_ledger(_matrix_budget_ledger), \
+                 k8s_job_cell_runner.bind_run_context(
+                     run_budget=_run_budget_ecm, event_sink=_event_sink_ecm,
+                     gpu_plan=_ecm_gpu_plan,
+                 ):
+                return k8s_job_cell_runner.run_matrix(_cells, _script, **_kwargs)
+
+        _matrix_runner = _run_cloud_matrix
+
     # U2/U3 — cell-aware pre-grid execution smoke (OPENRESEARCH_EXECUTION_SMOKE, local/docker
     # only; azure uses the K8s runner).  Run the smallest cell briefly BEFORE the grid so a
     # non-OOM train_cell.py bug (the All-CNN cell_execution_error) is caught on cell 1 and
@@ -6536,7 +6592,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         from backend.agents.rlm import execution_smoke as _execution_smoke_cm
         if (
             _execution_smoke_cm.is_enabled()
-            and _sb_key_ecm not in ("azure", "gcp")
+            and _sb_key_ecm not in ("azure", "gcp", "aws")
             and gpus
             and len(kept) > 1
         ):
@@ -6554,97 +6610,137 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     # group's winner by the declared metric, budget-preflights against the remaining
     # wall-clock, and runs ONE full cell per group at the tuned params — so the LLM
     # can never blow the grid into a wall-clock-killing cross-product (the exact Adam
-    # failure). Shape-gated + local/docker only; no `search` key → the legacy
-    # single-phase dispatch below runs byte-for-byte unchanged.
+    # failure). Shape-gated; no `search` key → the legacy single-phase dispatch
+    # below runs byte-for-byte unchanged.  The selected runner is injected so
+    # cloud candidate and full phases remain in the cloud execution boundary.
     matrix_result = None
     _staged_out = None
-    if _sb_key_ecm not in ("azure", "gcp"):
-        _staged_groups = []
-        try:
-            from backend.agents.rlm import staged_search as _ss
-            _cells_doc = json.loads((code / "cells.json").read_text(encoding="utf-8"))
-            # Issue #1 (2026-06-15): harness auto-synthesis. If the agent emitted no
-            # `search` block BUT the active paper hint declares an lr_search grid,
-            # synthesize the staged search from the emitted cells × the grid — so a
-            # per-model LR search fires even when the agent ships one fixed lr (the
-            # observed All-CNN failure: every model at lr=0.05, base-A 15.61% vs 12.5%).
-            if isinstance(_cells_doc, dict) and not _cells_doc.get("search"):
-                _hint_ls = _resolve_hint_lr_search(getattr(ctx, "arxiv_id", None))
-                if _hint_ls:
-                    _synth = _ss.synthesize_search_from_hint(_cells_doc.get("cells") or [], _hint_ls)
-                    if _synth:
-                        _cells_doc["search"] = _synth
+    _staged_groups = []
+    _staged_requested = False
+    try:
+        from backend.agents.rlm import staged_search as _ss
+        _cells_doc = json.loads((code / "cells.json").read_text(encoding="utf-8"))
+        # Issue #1 (2026-06-15): harness auto-synthesis. If the agent emitted no
+        # `search` block BUT the active paper hint declares an lr_search grid,
+        # synthesize the staged search from the emitted cells × the grid — so a
+        # per-model LR search fires even when the agent ships one fixed lr (the
+        # observed All-CNN failure: every model at lr=0.05, base-A 15.61% vs 12.5%).
+        if isinstance(_cells_doc, dict) and not _cells_doc.get("search"):
+            _hint_ls = _resolve_hint_lr_search(getattr(ctx, "arxiv_id", None))
+            if _hint_ls:
+                _synth = _ss.synthesize_search_from_hint(_cells_doc.get("cells") or [], _hint_ls)
+                if _synth:
+                    _cells_doc["search"] = _synth
+                    try:
+                        _emit_dashboard_event(
+                            ctx, event_type="run_warning",
+                            payload={"code": "search_synthesized",
+                                     "message": (f"harness synthesized {len(_synth)} lr-search "
+                                                 "group(s) from the paper hint (agent emitted no "
+                                                 "search block)")})
+                    except Exception:  # noqa: BLE001 — emit is best-effort
+                        pass
+            # L4 (2026-06-16): second fallback — a per-condition search synthesized
+            # from the LAST verify's result_quality leaf (leaf_actuator), used only
+            # when neither the agent nor a paper hint supplied a search block. Reader
+            # self-guards on OPENRESEARCH_LEAF_ACTUATE (default-OFF == today byte-for-byte).
+            if not _cells_doc.get("search"):
+                try:
+                    from backend.agents.rlm import leaf_actuator as _la
+                    _leaf_search = _la.staged_search_override(ctx.project_dir)
+                    if _leaf_search:
+                        _cells_doc["search"] = _leaf_search
                         try:
                             _emit_dashboard_event(
                                 ctx, event_type="run_warning",
-                                payload={"code": "search_synthesized",
-                                         "message": (f"harness synthesized {len(_synth)} lr-search "
-                                                     "group(s) from the paper hint (agent emitted no "
-                                                     "search block)")})
+                                payload={"code": "search_synthesized_from_leaf",
+                                         "message": (f"harness synthesized {len(_leaf_search)} "
+                                                     "lr-search group(s) from the last verify's "
+                                                     "result_quality leaf (no agent/hint search)")})
                         except Exception:  # noqa: BLE001 — emit is best-effort
                             pass
-                # L4 (2026-06-16): second fallback — a per-condition search synthesized
-                # from the LAST verify's result_quality leaf (leaf_actuator), used only
-                # when neither the agent nor a paper hint supplied a search block. Reader
-                # self-guards on OPENRESEARCH_LEAF_ACTUATE (default-OFF == today byte-for-byte).
-                if not _cells_doc.get("search"):
-                    try:
-                        from backend.agents.rlm import leaf_actuator as _la
-                        _leaf_search = _la.staged_search_override(ctx.project_dir)
-                        if _leaf_search:
-                            _cells_doc["search"] = _leaf_search
-                            try:
-                                _emit_dashboard_event(
-                                    ctx, event_type="run_warning",
-                                    payload={"code": "search_synthesized_from_leaf",
-                                             "message": (f"harness synthesized {len(_leaf_search)} "
-                                                         "lr-search group(s) from the last verify's "
-                                                         "result_quality leaf (no agent/hint search)")})
-                            except Exception:  # noqa: BLE001 — emit is best-effort
-                                pass
-                    except Exception:  # noqa: BLE001 — override is advisory
-                        pass
-            _staged_groups = _ss.parse_search_spec(_cells_doc)
-        except Exception:  # noqa: BLE001 — a malformed/absent manifest → legacy path
-            _staged_groups = []
-        if _staged_groups:
-            def _ss_emit(_c: str, _m: str, **_x) -> None:
-                try:
-                    _emit_dashboard_event(
-                        ctx, event_type="run_warning",
-                        payload={"code": _c, "message": _m, **_x})
-                except Exception:  # noqa: BLE001 — emit is best-effort
+                except Exception:  # noqa: BLE001 — override is advisory
                     pass
-            _reserve_ss = float(
-                os.environ.get("OPENRESEARCH_MATRIX_FINALIZE_RESERVE_S", "2700") or 2700)
-            _staged_out = _ss.run_staged_search(
-                _staged_groups, str(code / "train_cell.py"),
-                output_root=str(artifact_root), gpus=gpus or None,
-                remaining_s=_matrix_overall_s, reserve_s=_reserve_ss,
-                per_cell_timeout_s=timeout_s, gpus_per_cell=_gpus_per_cell,
-                now_iso=datetime.now(timezone.utc).isoformat(), emit=_ss_emit,
+        _staged_groups = _ss.parse_search_spec(_cells_doc)
+        if _staged_groups:
+            _staged_requested = True
+            # Search cells are separate from the top-level `cells` list, so
+            # they must independently pass the same capacity and dataset gates
+            # before either cloud phase can submit a Job. Otherwise a raw
+            # candidate/promote entry could bypass honest scope accounting.
+            # Only promoted cells become aggregate leaves. Normalize that set
+            # before preflight so two groups with equal explicit axes cannot
+            # silently overwrite a measured promoted result. Candidates retain
+            # their raw axes because they are selection-only observations.
+            _staged_promotes, _stage_axis_notes = cell_matrix.normalize_cell_axes(
+                [group.promote for group in _staged_groups]
             )
-            matrix_result = _staged_out.get("results") or {}
-            kept = _staged_out.get("kept_cells") or []
+            if _stage_axis_notes:
+                try:
+                    _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                        "code": "cell_axes_derived",
+                        "message": " ".join(_stage_axis_notes)[:500],
+                    })
+                except Exception:  # noqa: BLE001 — diagnostics must never break the run
+                    logger.debug("run_experiment: staged cell-axis normalization warning failed")
+            _staged_cells = [
+                *[candidate for group in _staged_groups for candidate in group.candidates],
+                *_staged_promotes,
+            ]
+            _stage_kept, _stage_cap_gaps, _stage_models_skipped = cell_matrix.capacity_gate(
+                _staged_cells, caps.per_gpu_vram_gb, headroom=headroom,
+                default_gpus_per_cell=_gpus_per_cell,
+            )
+            _stage_kept, _stage_ds_gaps, _stage_envs_skipped = cell_matrix.dataset_url_preflight(
+                _stage_kept
+            )
+            cap_gaps = list(cap_gaps or []) + list(_stage_cap_gaps or [])
+            ds_gaps = list(ds_gaps or []) + list(_stage_ds_gaps or [])
+            for _skipped, _target in (
+                (_stage_models_skipped or [], models_skipped),
+                (_stage_envs_skipped or [], envs_skipped),
+            ):
+                for _item in _skipped:
+                    if _item not in _target:
+                        _target.append(_item)
+            _stage_kept_by_id = {
+                str(cell.get("id")): cell for cell in _stage_kept if cell.get("id")
+            }
+            _staged_groups = _ss.restrict_groups_to_cell_ids(
+                _staged_groups, set(_stage_kept_by_id),
+                normalized_cells_by_id=_stage_kept_by_id,
+            )
+    except Exception:  # noqa: BLE001 — a malformed/absent manifest → legacy path
+        _staged_groups = []
+    if _staged_requested and not _staged_groups:
+        # A valid staged request whose cells all fail harness preflight is an
+        # honest no-launch outcome, not permission to fall back to unrelated
+        # top-level cells. Their capacity/dataset gaps remain in aggregation.
+        matrix_result = {}
+        kept = []
+    if _staged_groups:
+        def _ss_emit(_c: str, _m: str, **_x) -> None:
+            try:
+                _emit_dashboard_event(
+                    ctx, event_type="run_warning",
+                    payload={"code": _c, "message": _m, **_x})
+            except Exception:  # noqa: BLE001 — emit is best-effort
+                pass
+        _reserve_ss = float(
+            os.environ.get("OPENRESEARCH_MATRIX_FINALIZE_RESERVE_S", "2700") or 2700)
+        _staged_out = _ss.run_staged_search(
+            _staged_groups, str(code / "train_cell.py"),
+            output_root=str(artifact_root), gpus=gpus or None,
+            remaining_s=_matrix_overall_s, reserve_s=_reserve_ss,
+            per_cell_timeout_s=timeout_s, gpus_per_cell=_gpus_per_cell,
+            now_iso=datetime.now(timezone.utc).isoformat(), emit=_ss_emit,
+            run_matrix_fn=_matrix_runner,
+        )
+        matrix_result = _staged_out.get("results") or {}
+        kept = _staged_out.get("kept_cells") or []
 
-    if matrix_result is None and _sb_key_ecm in ("azure", "gcp"):
-        with k8s_job_cell_runner._bind_settings_prefix(_sb_key_ecm), \
-             k8s_job_cell_runner.bind_run_context(
-                 run_budget=_run_budget_ecm, event_sink=_event_sink_ecm, gpu_plan=_ecm_gpu_plan,
-             ):
-            matrix_result = k8s_job_cell_runner.run_matrix(
-                kept, str(code / "train_cell.py"),
-                output_root=str(artifact_root),
-                gpus=gpus or None,
-                per_cell_timeout_s=timeout_s,
-                overall_timeout_s=_matrix_overall_s,
-                gpus_per_cell=_gpus_per_cell,
-                fingerprints=_fingerprints,
-                force_cells=_force_cells or None,
-                now_iso=datetime.now(timezone.utc).isoformat(),
-            )
-    elif matrix_result is None:
-        matrix_result = gpu_cell_runner.run_matrix(
+    if matrix_result is None:
+        matrix_result = _matrix_runner(
             kept, str(code / "train_cell.py"),
             output_root=str(artifact_root),
             gpus=gpus or None,
@@ -7253,14 +7349,28 @@ def run_experiment(
         # route gate runs, so the existing gate picks up the cell route with no change
         # to the gate itself. No-op for every other backend/flag-off.
         from backend.agents.rlm import gke_cell_synth
-        _synth_cell = gke_cell_synth.maybe_synthesize_gke_cell(code_path, _caps.backend_kind)
+        _synth_cell = gke_cell_synth.maybe_synthesize_k8s_cell(code_path, _caps.backend_kind)
         if _synth_cell is not None:
             _emit_dashboard_event(ctx, event_type="cell_synth", payload={
                 "detail": (
                     "synthesized single-cell manifest for monolithic commands.json "
-                    "(OPENRESEARCH_GKE_SYNTH_CELL)"
+                    "(cloud cell synthesis flag)"
                 ),
             })
+        # EKS has no safe monolithic reproduction path: the generic RuntimeBackend
+        # command does not materialize the S3 code bundle into a training cell.
+        # Missing metadata is also terminal before any GPU Job is submitted.
+        if _caps.backend_kind == "aws" and _caps.is_empty:
+            detail = getattr(_caps, "detail", {}).get(
+                "configuration_error", "AWS GPU capacity is not configured"
+            )
+            return {
+                "success": False,
+                "metrics": {},
+                "logs": "",
+                "error": f"aws EKS cell route blocked: {detail}",
+                "failure_class": "capacity_exhausted",
+            }
         # C6 (2026-06-16): the cell-matrix route gate historically allowed only
         # ("local","docker") — which made the azure K8s branch in
         # _execute_cell_matrix (the `_sb_key_ecm == "azure"` arm that dispatches
@@ -7280,6 +7390,27 @@ def run_experiment(
             "1", "true", "yes", "on"
         ):
             _cell_route_kinds.append("gcp")
+        # AWS is explicit at the sandbox selector, so this does not alter the
+        # default behavior of any existing sandbox.  The route is deliberately
+        # cell-matrix only; commands.json is accepted only through the opt-in
+        # EKS synth shim above.
+        if _caps.backend_kind == "aws":
+            _cell_route_kinds.append("aws")
+        if _caps.backend_kind == "aws" and not (
+            (Path(code_path) / "cells.json").is_file()
+            and ((Path(code_path) / "train_cell.py").is_file() or _cells_all_have_command(code_path))
+        ):
+            return {
+                "success": False,
+                "metrics": {},
+                "logs": "",
+                "error": (
+                    "aws EKS requires cells.json plus train_cell.py; generic monolithic EKS "
+                    "execution is not a reproduction path. Set OPENRESEARCH_EKS_SYNTH_CELL=1 "
+                    "only to synthesize a commands.json shim."
+                ),
+                "failure_class": "contract_guard",
+            }
         if (
             _caps.backend_kind in _cell_route_kinds
             and not _caps.is_empty

@@ -49,6 +49,87 @@ class GpuResolutionError(RuntimeError):
     """Raised when no SKU can satisfy (VRAM + $/hr cap + cloud_type) constraints."""
 
 
+def resolve_configured_aws(
+    requirements: GpuRequirements,
+    *,
+    gpu_skus: tuple[str, ...],
+    per_gpu_vram_gb: float,
+    per_gpu_usd_per_hour: float,
+    gpus_per_node: int,
+    dynamic_gpu_enabled: bool,
+    force_single_gpu: bool,
+    max_gpu_usd_per_hour: float | None,
+    headroom_multiplier: float,
+    gpu_count_override: int | None = None,
+) -> GpuPlan:
+    """Resolve against declared EKS metadata without inventing an AWS catalog.
+
+    ``gpu_skus`` are Kubernetes ``reprolab/sku`` labels, not public instance
+    types.  EKS deployments often have private pricing and heterogeneous
+    capacity, so selection is intentionally a single declared pool and there
+    is no speculative ladder.  Invalid/missing metadata fails before a Job can
+    be submitted; a zero effective rate is never treated as a free GPU.
+    """
+    labels = tuple(str(v).strip() for v in gpu_skus if str(v).strip())
+    if not labels:
+        raise GpuResolutionError("AWS EKS requires at least one configured aws_gpu_skus label")
+    if per_gpu_vram_gb <= 0 or per_gpu_usd_per_hour <= 0 or gpus_per_node != 1:
+        raise GpuResolutionError(
+            "AWS EKS requires positive aws_per_gpu_vram_gb, aws_gpu_usd_per_hour, "
+            "and aws_gpus_per_node=1 metadata before GPU scheduling; v1 EKS "
+            "reserves whole GPU nodes so multi-GPU nodes would undercount cost"
+        )
+    if max_gpu_usd_per_hour and max_gpu_usd_per_hour > 0 and per_gpu_usd_per_hour > max_gpu_usd_per_hour:
+        raise GpuResolutionError(
+            f"AWS configured GPU rate ${per_gpu_usd_per_hour:.2f}/hr exceeds "
+            f"max_gpu_usd_per_hour ${max_gpu_usd_per_hour:.2f}"
+        )
+
+    estimate = requirements.estimated_vram_gb
+    if dynamic_gpu_enabled and estimate is not None and requirements.confidence >= _CONFIDENCE_FLOOR:
+        needed = math.ceil(estimate * max(headroom_multiplier, 1.0))
+        if needed > per_gpu_vram_gb:
+            raise GpuResolutionError(
+                f"AWS configured EKS pool has {per_gpu_vram_gb:g} GB/GPU but the paper requires "
+                f">= {needed} GB after headroom; provision a matching pool or lower the scope"
+            )
+        source = "paper"
+    elif dynamic_gpu_enabled:
+        source = "fallback"
+    else:
+        source = "informational"
+
+    if gpu_count_override is not None:
+        requested = max(1, int(gpu_count_override))
+        source = "manual"
+    elif force_single_gpu:
+        requested = 1
+    else:
+        requested = max(1, int(requirements.paper_gpu_count or 1))
+    if requested != 1:
+        raise GpuResolutionError(
+            f"AWS EKS v1 requires exactly one GPU per plan/node, got {requested}; "
+            "use a one-GPU pool or choose a single-GPU scope"
+        )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    return GpuPlan(
+        runpod_id=labels[0],
+        short_name=labels[0],
+        vram_gb=max(1, int(per_gpu_vram_gb)),
+        gpu_count=requested,
+        cloud_type="ONDEMAND",
+        sku_usd_per_hr=float(per_gpu_usd_per_hour),
+        total_usd_per_hr=round(float(per_gpu_usd_per_hour) * requested, 4),
+        container_disk_gb=50,
+        volume_gb=20,
+        source=source,
+        requirements=requirements,
+        ladder_remaining=(),
+        resolved_at=now_iso,
+    )
+
+
 def _provisioned_default_sku(
     provider: str,
     fallback_short_name: str,

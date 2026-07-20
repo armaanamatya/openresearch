@@ -109,4 +109,12 @@ describe("LabShell", () => {
     const select = screen.getByLabelText("Model") as HTMLSelectElement;
     await waitFor(() => expect(select.value).toBe("claude-oauth"));
   });
+
+  it("restores the persisted AWS/EKS sandbox choice", () => {
+    window.localStorage.setItem("openresearch:user-prefs", JSON.stringify({ sandbox: "aws" }));
+
+    render(<LabShell />);
+
+    expect(screen.getByRole("radio", { name: /GPU on AWS/i })).toBeChecked();
+  });
 });

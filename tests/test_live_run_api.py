@@ -255,13 +255,14 @@ def test_python_script_preserves_registry_model_key() -> None:
     assert '\\"model\\": \\"claude-sonnet-4-6\\"' not in script
 
 
-def test_start_run_request_accepts_azure_and_gcp_sandbox() -> None:
+def test_start_run_request_accepts_cloud_sandboxes() -> None:
     # The API-layer SandboxMode Literal must include the cloud backends the
     # canonical execution enum + CLI already accept, else a POST /runs with
     # sandbox "gcp"/"azure" 422s before the run starts.
     from backend.services.events.live_runs import StartRunRequest
 
     assert StartRunRequest(sandbox="azure").sandbox == "azure"
+    assert StartRunRequest(sandbox="aws").sandbox == "aws"
     assert StartRunRequest(sandbox="gcp").sandbox == "gcp"
 
 

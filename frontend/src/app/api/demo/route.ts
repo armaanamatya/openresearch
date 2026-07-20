@@ -56,6 +56,7 @@ function toSandboxMode(request: Request): DemoSandboxMode | undefined {
     value === "local" ||
     value === "runpod" ||
     value === "azure" ||
+    value === "aws" ||
     value === "gcp"
     ? value
     : undefined;

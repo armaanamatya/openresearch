@@ -36,4 +36,7 @@ checkpoint/step-rung transitions and authoritative deterministic evidence exist,
 do not emit `FrozenPoolEviction`, `BranchRevived`, `BranchPromoted`, or
 `BranchTrueKilled`; their required facts are unavailable.  Emit a root
 `BranchSpawned` only after its durable launch/directive fingerprint is available,
-and retain the other event schemas for their real transition owners.
+and retain the other event schemas for their real transition owners.  `DedupHit`
+is likewise deferred: a `no_novel_plan` refusal names a colliding fingerprint but
+does not yet own a durable candidate branch identity, so assigning one would
+fabricate lineage.

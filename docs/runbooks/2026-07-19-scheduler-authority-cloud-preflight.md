@@ -2,12 +2,26 @@
 
 ## Status
 
-No chargeable reproduction was launched. `OPENRESEARCH_SCHEDULER_TREE=1` remains
-the only runnable scheduler mode. `OPENRESEARCH_SCHEDULER_AUTHORITATIVE` is an
-explicit fail-closed audit seam: the current campaign has no provenance-validated
-defining metric at a paper-pinned optimizer step, no checkpoint lineage, and no
-branch queue/frozen pool to carry out an ASHA decision. The paired A/B gate
-therefore rejects every `applied:true` action and cannot approve a default flip.
+No chargeable reproduction has been launched in this workstream.
+`OPENRESEARCH_SCHEDULER_TREE=1` remains the only runnable scheduler mode.
+`OPENRESEARCH_SCHEDULER_AUTHORITATIVE` is still an explicit fail-closed audit
+seam: it preserves the cohort decision and records `applied:false` because the
+campaign runtime has not yet produced frozen optimizer-step ladders, verified
+metric/checkpoint receipts, a durable queue/frozen pool, or controller-emitted
+branch transitions.
+
+The offline paired-A/B gate is now stricter than the current producer. A future
+applied action must bind a verified receipt, a closed-world grade-free ASHA
+decision artifact that the gate recomputes, and a matching controller-owned
+`branch-tree:<campaign>` EventStore event. It also rejects reuse of a receipt
+across the entire manifest. This is evidence for an operator review only; it
+cannot flip a default and it is not permission to claim an authority-on run.
+
+The CLI now has an inert `--sandbox aws` EKS+S3 cell-matrix foundation. It is
+not yet an available AWS environment: no EKS cluster, namespace, IRSA role,
+S3 bucket, ECR digest, credentials, or configured cost metadata was discovered
+or created in this workstream. Generic EKS sandbox/exec is intentionally
+disabled; AWS jobs can use only the S3/IRSA cell-matrix route.
 
 ## Read-only preflight observations
 
@@ -15,36 +29,65 @@ On 2026-07-19 the local gcloud active identity was
 `thisisaayushbaniya@gmail.com`. A read-only
 `gcloud container clusters list --project deepinvent-ext-ut` returned HTTP 403;
 `kubectl config current-context` reported no current context; and
-`GOOGLE_APPLICATION_CREDENTIALS` was unset. Do not use this identity to create a
-cluster or launch a billed job.
+`GOOGLE_APPLICATION_CREDENTIALS` and `ANTHROPIC_API_KEY` were unset. Do not use
+this identity to create a cluster or launch a billed job; a no-credit Anthropic
+key would not become an OAuth fallback. The documented `deepinv-gke` cluster was
+deleted on 2026-07-17. The current local `ensure_gcp_available()` gate stops
+even earlier, at missing `OPENRESEARCH_GCP_GCS_BUCKET`, so it made no cloud call.
 
-The CLI accepts `auto`, `local`, `docker`, `runpod`, `azure`, `gcp`, and `gke` for
-`--sandbox`; it does not have an `aws` GPU backend. AWS GPU execution would need a
-new EKS/Batch/EC2 backend and is not a valid value for the current command.
+AWS is not launch-ready: the AWS CLI is absent, `AWS_PROFILE` and
+`AWS_WEB_IDENTITY_TOKEN_FILE` are unset. `boto3` was installed into the local
+repository venv for the hermetic controller path, and the bounded
+`aws-preflight` now stops locally at the first real configuration gate:
+missing `OPENRESEARCH_AWS_S3_BUCKET`. It makes no AWS API call in that state.
+Do not set static credentials in a run spec or worker pod; the EKS cell contract
+requires IRSA. The controller dependency is declared in
+`backend/requirements.txt` / `pyproject.toml`.
 
 ## Exact unblocks before any real run
 
-1. Authenticate gcloud as an identity with `deepinvent-ext-ut` GKE and billing
-   permissions, then retrieve a kubectl context for the recreated `deepinv-gke`
-   cluster. Recreate it only through the reviewed six-gate procedure in
-   `docs/runbooks/2026-07-17-deepinv-gke-l4-validation-handoff.md`; use an L4 pool
-   if A100 stock is unavailable.
+1. Set the intended `OPENRESEARCH_GCP_PROJECT`, `OPENRESEARCH_GCP_GCS_BUCKET`,
+   pinned `OPENRESEARCH_GCP_BASE_IMAGE`, namespace, and ServiceAccount; then
+   authenticate gcloud as an identity with `deepinvent-ext-ut` GKE and billing
+   permissions and retrieve a kubectl context for the recreated `deepinv-gke`
+   cluster. Recreate it only through the six-gate procedure in
+   `docs/runbooks/2026-07-17-deepinv-gke-l4-validation-handoff.md`; use an L4
+   pool if A100 stock is unavailable.
 2. Configure the verified GKE cell-matrix route (`cells.json`, `train_cell.py`,
-   `GKE_SYNTH_CELL`) and resolve the documented job-name 409 retry collision before
-   launch.
-3. Add the prerequisite authority runtime: frozen paper-step ladder,
-   provenance-validated metric/checkpoint receipts, durable branch queue/frozen
-   pool, and factual branch-lineage event emitter. Until then, do not call an arm
-   "authoritative" and do not set `applied:true`.
-4. For a shadow run, pass explicit LLM/GPU dollar and GPU-hour caps. Verify spend
-   from provider/token records and `kubectl get nodes,pods`; neither
+   `OPENRESEARCH_GKE_SYNTH_CELL`). The generic Job 409 collision is now
+   fail-closed: full run/cell/config identity must match before active/success
+   adoption; terminal conflicts never issue an unreserved retry. Ensure cluster
+   RBAC grants Job create/patch rights only to the controller ServiceAccount.
+3. For AWS, provision and review an EKS namespace with a least-privilege IRSA
+   ServiceAccount, NVIDIA GPU device plugin, a one-GPU-per-node labeled pool,
+   S3 project/run-prefix policy, and a pinned ECR cell image. Set only verified
+   `OPENRESEARCH_AWS_*` settings, including a whole-node `AWS_GPU_USD_PER_HOUR`.
+   Install the declared Python dependency into the launch environment, configure
+   an operator AWS identity/kube context, then run the explicit bounded preflight:
+
+   ```bash
+   python -m backend.cli aws-preflight --project-id <project> --run-id <probe-run>
+   ```
+
+   It checks controller identity/context and creates one no-GPU Job that proves
+   the **pod** IRSA STS plus scoped S3 Put/Get/List/Delete, then foreground-
+   deletes the Job. A controller STS check alone is not proof of pod access.
+4. Implement the prerequisite authority runtime: frozen paper-step ladder,
+   provenance-validated metric/checkpoint receipts, durable branch queue and
+   frozen pool, grade-free decision-evidence writer, and factual controller
+   branch-lineage emitter. Until then, do not call an arm authoritative and do
+   not set `applied:true`.
+5. For every shadow run, pass explicit LLM/GPU dollar and GPU-hour caps. Verify
+   spend from provider/token records and `kubectl get nodes,pods`; neither
    `cost_ledger.jsonl` nor `demo_status.json` includes Foundry spend or idle GPU
    node time.
 
 ## Monitoring contract after those unblocks
 
-Record the project ID and run `asha_shadow_report.py` on every ~40-minute tick;
-also inspect `demo_status.json`, `experiment_runs.jsonl`, and live nodes/pods.
-Append verified cost and terminal evidence to this dated runbook and the scheduler
-memory. A 40-minute scheduler/wakeup facility was not available in this session,
-so no fictitious recurring monitor was registered.
+Record each project ID, then on every ~40-minute tick run
+`asha_shadow_report.py` for the arm and inspect `demo_status.json`,
+`experiment_runs.jsonl`, and live nodes/pods. Append verified cost, node idle
+time, terminal evidence, and A/B evidence to this dated runbook and the
+scheduler memory. This tool environment has no recurring wakeup capability, so
+no fictitious monitor has been registered; an operator or supported scheduler
+must trigger the next tick.

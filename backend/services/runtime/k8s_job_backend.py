@@ -133,12 +133,20 @@ def _job_name(run_id: str, suffix: str = "") -> str:
 
 
 def _blob_code_prefix(project_id: str, run_id: str) -> str:
-    """Return the blob prefix for uploaded code."""
+    """Return the established run-scoped prefix for uploaded code.
+
+    Provider-specific isolation belongs in the provider adapter.  In
+    particular, changing this shared helper would silently rewrite existing
+    GKE/AKS artifact locations, making an EKS hardening change an incompatible
+    storage-contract migration for two existing backends.
+    """
+    del project_id
     return f"runs/{_safe_name(run_id)}/code/"
 
 
 def _blob_artifact_key(project_id: str, run_id: str, path: str) -> str:
-    """Map an in-sandbox path to a run-scoped blob key."""
+    """Map an in-sandbox path to the established run-scoped artifact key."""
+    del project_id
     clean = path.lstrip("/")
     return f"runs/{_safe_name(run_id)}/artifacts/{clean}"
 
@@ -379,7 +387,7 @@ def _build_job_manifest(
 
 
 class ObjectStore(typing.Protocol):
-    """Duck-type interface for a cloud object store (GCS / Azure Blob)."""
+    """Duck-type interface for a cloud object store (GCS / Azure Blob / S3)."""
 
     def upload_prefix(self, local_root: Any, *, blob_prefix: str) -> list[str]: ...
     def upload_bytes(self, data: bytes, *, blob_name: str) -> None: ...
@@ -499,6 +507,62 @@ class GcsStore:
             destination,
             bucket=self._bucket,
             project=self._project,
+            client=self._client,
+        )
+
+
+class S3Store:
+    """ObjectStore backed by Amazon S3.
+
+    Importing ``s3_blob`` at call time keeps boto3 optional and lets hermetic
+    tests patch ``backend.services.runtime.s3_blob`` with a fake module.
+    """
+
+    def __init__(self, bucket: str, region: str | None, client: Any) -> None:
+        self._bucket = bucket
+        self._region = region
+        self._client = client
+
+    def upload_prefix(self, local_root: Any, *, blob_prefix: str) -> list[str]:
+        from backend.services.runtime import s3_blob  # type: ignore[import]
+
+        return s3_blob.upload_prefix(
+            local_root,
+            blob_prefix=blob_prefix,
+            bucket=self._bucket,
+            region=self._region,
+            client=self._client,
+        )
+
+    def upload_bytes(self, data: bytes, *, blob_name: str) -> None:
+        from backend.services.runtime import s3_blob  # type: ignore[import]
+
+        s3_blob.upload_bytes(
+            data,
+            blob_name=blob_name,
+            bucket=self._bucket,
+            region=self._region,
+            client=self._client,
+        )
+
+    def download_bytes(self, blob_name: str) -> bytes:
+        from backend.services.runtime import s3_blob  # type: ignore[import]
+
+        return s3_blob.download_bytes(
+            blob_name,
+            bucket=self._bucket,
+            region=self._region,
+            client=self._client,
+        )
+
+    def download_artifact(self, blob_name: str, destination: Any) -> Path:
+        from backend.services.runtime import s3_blob  # type: ignore[import]
+
+        return s3_blob.download_artifact(
+            blob_name,
+            destination,
+            bucket=self._bucket,
+            region=self._region,
             client=self._client,
         )
 
@@ -685,6 +749,14 @@ class _KubernetesJobBackend(RuntimeBackend):
             self._store = self._cloud.make_object_store(self._get_settings(), self._blob_client)
         return self._store
 
+    def _blob_code_prefix(self, project_id: str, run_id: str) -> str:
+        """Return this backend's code prefix (legacy run scope by default)."""
+        return _blob_code_prefix(project_id, run_id)
+
+    def _blob_artifact_key(self, project_id: str, run_id: str, path: str) -> str:
+        """Return this backend's artifact key (legacy run scope by default)."""
+        return _blob_artifact_key(project_id, run_id, path)
+
     # ------------------------------------------------------------------
     # API accessors (lazy — fall back to constructing real clients)
     # ------------------------------------------------------------------
@@ -854,12 +926,10 @@ class _KubernetesJobBackend(RuntimeBackend):
             )
 
         image = self._base_image()
-
         # GPU SKU/node-pool preflight — BEFORE the (expensive) project upload.
         # One live cluster query, GCP-only, no-op when no GPU SKUs are configured.
         await asyncio.get_running_loop().run_in_executor(None, self._run_gpu_pool_preflight)
-
-        blob_prefix = _blob_code_prefix(config.project_id, config.run_id)
+        blob_prefix = self._blob_code_prefix(config.project_id, config.run_id)
 
         # Upload project files to object storage (run in executor — sync SDK).
         try:
@@ -1021,7 +1091,9 @@ class _KubernetesJobBackend(RuntimeBackend):
 
     async def copy_out(self, sandbox: Sandbox, path: str) -> bytes:
         """Download a file from the run-scoped object store prefix and return its bytes."""
-        blob_key = _blob_artifact_key(sandbox.config.project_id, sandbox.config.run_id, path)
+        blob_key = self._blob_artifact_key(
+            sandbox.config.project_id, sandbox.config.run_id, path
+        )
         try:
             store = self._get_store()
             data = await asyncio.get_running_loop().run_in_executor(
@@ -1040,7 +1112,9 @@ class _KubernetesJobBackend(RuntimeBackend):
 
     async def copy_in(self, sandbox: Sandbox, path: str, data: bytes) -> None:
         """Upload *data* to the run-scoped object store prefix at *path*."""
-        blob_key = _blob_artifact_key(sandbox.config.project_id, sandbox.config.run_id, path)
+        blob_key = self._blob_artifact_key(
+            sandbox.config.project_id, sandbox.config.run_id, path
+        )
         try:
             store = self._get_store()
             await asyncio.get_running_loop().run_in_executor(
@@ -1277,6 +1351,7 @@ __all__ = [
     "_JOB_PREFIX",
     "AzureBlobStore",
     "GcsStore",
+    "S3Store",
     "ObjectStore",
     "CloudSpec",
 ]

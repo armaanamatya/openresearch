@@ -185,6 +185,17 @@ def test_campaign_project_id_defaults_to_none():
     assert args.project_id is None
 
 
+@pytest.mark.parametrize("command", ["campaign", "reproduce"])
+def test_cli_accepts_explicit_aws_sandbox(command):
+    if command == "campaign":
+        args = cli._build_parser().parse_args(_campaign_argv("--sandbox", "aws"))
+    else:
+        args = cli._build_parser().parse_args(
+            ["reproduce", "2605.15155", "--sandbox", "aws"]
+    )
+    assert args.sandbox == "aws"
+
+
 # --------------------------------------------------------------------------- #
 # cmd_campaign wiring                                                          #
 # --------------------------------------------------------------------------- #

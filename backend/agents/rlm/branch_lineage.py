@@ -11,8 +11,12 @@ store + optimistic concurrency). These are the persistence backbone for:
   compute a new fingerprint.
 
 Design: ``docs/superpowers/specs/2026-07-18-dynamic-reproduction-scheduler-design.md`` §7.1.
-Emitted by the scheduler adapter (future, behind ``OPENRESEARCH_SCHEDULER_TREE``);
-inert until then — defining an event type has no runtime effect.
+With ``OPENRESEARCH_SCHEDULER_TREE`` enabled, the serial campaign emits only a
+durable root ``BranchSpawned`` after its write-ahead launch row has recorded the
+existing F10 fingerprint.  The remaining transition types (including `DedupHit`,
+whose rejected candidate lacks a durable branch owner) stay inert until their real
+checkpoint/receipt/branch-queue owners exist; a shadow advisory is never an event
+source for them.
 """
 from __future__ import annotations
 
@@ -67,6 +71,12 @@ class BranchPromoted(DomainEvent):
     from_rung: int
     to_rung: int
     cohort_ids: tuple[str, ...] = ()
+    # Authority actions are bound to both the verified rung receipt and the
+    # exact durable audit payload.  Defaults preserve the historical event
+    # schema for shadow-only / pre-authority streams.
+    receipt_sha256: str | None = None
+    authority_audit_sha256: str | None = None
+    decision_evidence_sha256: str | None = None
 
 
 @register_event
@@ -81,6 +91,9 @@ class FrozenPoolEviction(DomainEvent):
     rung: int
     ckpt_uri: str
     reason: str
+    receipt_sha256: str | None = None
+    authority_audit_sha256: str | None = None
+    decision_evidence_sha256: str | None = None
 
 
 @register_event
@@ -104,6 +117,13 @@ class BranchTrueKilled(DomainEvent):
 
     branch_id: str
     termination_cause: str
+    # The measured fidelity rung is mandatory for authority proof but optional
+    # for historical shadow streams; the gate rejects an applied kill when it
+    # is absent/mismatched.
+    rung: int | None = None
+    receipt_sha256: str | None = None
+    authority_audit_sha256: str | None = None
+    decision_evidence_sha256: str | None = None
 
 
 @register_event

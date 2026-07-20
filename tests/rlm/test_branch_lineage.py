@@ -24,7 +24,7 @@ _ALL = [
     BranchPromoted(branch_id="b1", from_rung=1, to_rung=2, cohort_ids=("b1", "b2")),
     FrozenPoolEviction(branch_id="b2", rung=1, ckpt_uri="gs://ck/b2", reason="halved_below_topk"),
     BranchRevived(branch_id="b2", from_ckpt="gs://ck/b2"),
-    BranchTrueKilled(branch_id="b3", termination_cause="frozen_params"),
+    BranchTrueKilled(branch_id="b3", termination_cause="frozen_params", rung=2),
     DedupHit(hypothesis_fingerprint="fp2", existing_branch_id="b2"),
 ]
 
