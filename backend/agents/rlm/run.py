@@ -4338,6 +4338,15 @@ async def run_pipeline_rlm(
         if _blocked_rubric is not None:
             context_dict["rubric_spec"] = _blocked_rubric
 
+    # W1-M1 grading-input integrity: pin the harness-finalized rubric (after the
+    # optional spec-validator may have dropped leaves) so a later agent-side
+    # rewrite of the rubric used at grade time is caught by verify_against_rubric.
+    # Flag-gated (OPENRESEARCH_GRADER_INTEGRITY, default-OFF → no pin file written,
+    # byte-identical to the prior baseline). Fail-soft — never breaks a run.
+    if context_dict.get("rubric_spec"):
+        from backend.evals.paperbench.grading_input_integrity import maybe_write_rubric_pin
+        maybe_write_rubric_pin(project_dir, context_dict["rubric_spec"])
+
     # Hybrid Phase 2: seed context with Phase 1 code path + weak cluster list
     # so the root model repairs rather than reproduces from scratch.
     active_prompt = _ROOT_PROMPT

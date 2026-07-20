@@ -45,6 +45,16 @@ def _clean_campaign_env(monkeypatch):
         "OPENRESEARCH_EXPERIENCE_MEMORY",
     ):
         monkeypatch.delenv(var, raising=False)
+    # The campaign applies its run-spec profile to os.environ via RAW assignment
+    # (real production behavior — e.g. OPENRESEARCH_EXTERNAL_VALIDATOR from the
+    # profile). monkeypatch does not track those writes, so without a full
+    # snapshot/restore a leaked flag pollutes later tests (observed: the
+    # external-validator / report-validation "disabled_by_default" tests failing
+    # only in full-suite order). Snapshot after the delenvs; restore on teardown.
+    _env_snapshot = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(_env_snapshot)
 
 
 @pytest.fixture()
