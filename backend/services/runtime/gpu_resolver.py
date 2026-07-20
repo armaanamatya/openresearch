@@ -130,6 +130,31 @@ def resolve_configured_aws(
     )
 
 
+class GpuSkuConfigError(RuntimeError):
+    """Configured GPU SKUs cannot match any provisioned cluster node pool."""
+
+
+def validate_configured_skus(
+    *, configured: list[str], available: list[str]
+) -> None:
+    """Raise GpuSkuConfigError when no configured SKU is provisioned.
+
+    `configured` is settings.gcp_gpu_skus; `available` is the set of
+    reprolab/sku labels actually present on cluster nodes. The resolver can only
+    place a cell on a label that exists, so a zero-overlap config guarantees
+    every GPU request Pends forever - surface it loudly at preflight instead.
+    """
+    if set(configured) & set(available):
+        return
+    raise GpuSkuConfigError(
+        "No configured GPU SKU is provisioned on the cluster.\n"
+        f"  configured (OPENRESEARCH_GCP_GPU_SKUS): {configured}\n"
+        f"  available (reprolab/sku node labels):   {available}\n"
+        "Fix: set OPENRESEARCH_GCP_GPU_SKUS to a JSON array of SKUs your cluster "
+        "actually provisions, e.g. OPENRESEARCH_GCP_GPU_SKUS='[\"gcp_a100_80\"]'."
+    )
+
+
 def _provisioned_default_sku(
     provider: str,
     fallback_short_name: str,
@@ -303,7 +328,8 @@ def _resolve_runpod(
                            requirements=requirements, ladder=remaining, now_iso=now_iso)
 
     # Apply headroom multiplier; round up.
-    needed_vram = math.ceil(estimate * max(headroom_multiplier, 1.0))
+    _headroom = 1.0 if getattr(requirements, "vram_is_explicit", False) else headroom_multiplier
+    needed_vram = math.ceil(estimate * max(_headroom, 1.0))
 
     # Find ladder under cap.
     ladder = find_ladder(
@@ -425,7 +451,8 @@ def _resolve_provisioned_cloud(
                            requirements=requirements, ladder=remaining, now_iso=now_iso)
 
     # Apply headroom multiplier (against per-GPU estimate; same logic as RunPod).
-    needed_vram = math.ceil(estimate * max(headroom_multiplier, 1.0))
+    _headroom = 1.0 if getattr(requirements, "vram_is_explicit", False) else headroom_multiplier
+    needed_vram = math.ceil(estimate * max(_headroom, 1.0))
 
     # Build the ladder filtered by effective capacity and optionally single-GPU.
     ladder = _provisioned_ladder(provider=provider,

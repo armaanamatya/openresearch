@@ -134,6 +134,6 @@ def test_autonomous_false_with_no_deployment_overrides_is_byte_identical():
     request = StartRunRequest()
     result = _compose(request)
     assert result is request
-    assert result.sandbox == "runpod"  # StartRunRequest's own default, untouched
+    assert result.sandbox == "gcp"  # StartRunRequest's own default (gcp primary), untouched
     assert result.model == "sonnet"
     assert result.run_spec is None

@@ -45,7 +45,8 @@ python -m backend.cli campaign <paper> --max-llm-usd X --max-gpu-usd Y --max-gpu
 ```
 
 Common flags: `--mode {rlm(default),rdr,rlm-pure}`, `--provider`, `--sandbox
-{auto,local,docker,runpod,gke,gcp}`, `--model`, `--models role=token,…`, `--vram-gb`, `--max-usd`.
+{auto,docker,local,gcp,azure,runpod}` (gcp/azure are the primary clouds; auto = docker/local only, never a paid remote; runpod is legacy),
+`--model`, `--models role=token,…`, `--vram-gb`, `--max-usd`.
 Root-model vocabulary, the two auth surfaces, per-role selection, Foundry/Grok, and the full flag
 catalog live in **`backend/agents/rlm/CLAUDE.md`**; sandbox/GPU knobs in
 **`backend/services/runtime/CLAUDE.md`**.

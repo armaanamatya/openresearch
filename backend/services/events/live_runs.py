@@ -178,7 +178,7 @@ class StartRunRequest(BaseModel):
     provider: Provider = "anthropic"
     verificationProvider: Provider | None = None
     executionMode: ExecutionMode = "max"
-    sandbox: SandboxMode = "runpod"
+    sandbox: SandboxMode = "gcp"  # GCP/Azure primary; runpod legacy (cloud-posture 2026-07)
     gpuMode: GpuMode = "auto"
     model: ModelChoice = "sonnet"
     # rdr-specific: PaperBench bundle paper_id (directory name under

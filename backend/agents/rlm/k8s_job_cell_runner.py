@@ -896,6 +896,18 @@ def _check_budget(
     return None
 
 
+def _accrued_gpu_usd(*, elapsed_s: float, usd_per_hr_per_gpu: float, gpu_count: int) -> float:
+    """USD accrued so far for one running cell = hours x per-GPU rate x GPUs."""
+    return (elapsed_s / 3600.0) * float(usd_per_hr_per_gpu) * max(1, int(gpu_count))
+
+
+def _over_gpu_budget(*, accrued: float, cap: float | None) -> bool:
+    """True when a positive cap exists and accrued spend meets/exceeds it."""
+    if not cap or cap <= 0:
+        return False
+    return accrued >= cap
+
+
 # ---------------------------------------------------------------------------
 # K8s Job manifest builder
 # ---------------------------------------------------------------------------
@@ -1411,6 +1423,9 @@ def _watch_job(
     active_deadline_seconds: int,
     pending_timeout_s: float,
     backoff_limit: int = 0,
+    gpu_budget_cap: float | None = None,
+    gpu_usd_per_hr_per_gpu: float = 0.0,
+    gpu_count: int = 1,
 ) -> dict[str, Any]:
     """Watch a K8s Job until terminal or timeout.
 
@@ -1432,13 +1447,25 @@ def _watch_job(
     Returns a dict with keys:
         ``status``  — ``"succeeded"`` | ``"failed"`` | ``"deadline"``
                       | ``"overall_timeout"`` | ``"pending_timeout"``
+                      | ``"gpu_budget_exceeded"``
         ``exit_code``  — int from container state (best-effort, may be None)
         ``node_name``  — str (best-effort, may be None)
         ``log``        — str (captured from K8s pod log, best-effort)
         ``outcome``    — str from Blob status.json, or None
         ``retries``    — int from Blob status.json, or 0
+
+    **Mid-cell GPU-$ heartbeat.** ``run_experiment``'s ``RunBudget.check_run_gpu_usd``
+    only fires when a cell RETURNS, so a cell wedged on a slow download holds its
+    GPU(s) for the full ``active_deadline`` and can silently breach the run's GPU-$
+    cap. Each poll re-estimates the cell's accrued GPU spend (elapsed x per-GPU rate
+    x gpus) and returns ``"gpu_budget_exceeded"`` the moment it meets/exceeds
+    ``gpu_budget_cap``. NO-OP (byte-identical to the prior loop) when ``gpu_budget_cap``
+    is falsy or ``gpu_usd_per_hr_per_gpu`` <= 0. The three billing values are threaded
+    EXPLICITLY from ``_process_cell`` — ContextVars (``_get_run_budget``/``_get_gpu_plan``)
+    do NOT propagate into the ``run_matrix`` worker threads this loop runs in.
     """
     job_deadline = time.monotonic() + active_deadline_seconds
+    job_started = time.monotonic()
     pending_since: float | None = None
 
     while True:
@@ -1451,6 +1478,29 @@ def _watch_job(
         # Per-cell deadline.
         if now >= job_deadline:
             return _watch_result("deadline")
+
+        # Mid-cell GPU-$ heartbeat: kill a cell that would breach the run's GPU-$ cap
+        # before its deadline. NO-OP when there is no cap or no positive rate, so a
+        # run without a GPU-$ cap is byte-for-byte the prior loop.
+        if gpu_usd_per_hr_per_gpu > 0:
+            _accrued = _accrued_gpu_usd(
+                elapsed_s=now - job_started,
+                usd_per_hr_per_gpu=gpu_usd_per_hr_per_gpu,
+                gpu_count=gpu_count,
+            )
+            if _over_gpu_budget(accrued=_accrued, cap=gpu_budget_cap):
+                logger.warning(
+                    "k8s_job_cell_runner: cell job=%s exceeded GPU-$ cap "
+                    "$%.4f >= $%.4f — terminating",
+                    job_name, _accrued, gpu_budget_cap,
+                )
+                node, exit_code, log = _collect_pod_info(k8s, job_name, namespace)
+                return _watch_result(
+                    "gpu_budget_exceeded",
+                    exit_code=exit_code,
+                    node_name=node,
+                    log=log,
+                )
 
         # --- Single API call: read Job status ---
         _poll_interval: float = _cloud_setting("watch_poll_interval_s", 5.0)
@@ -1830,6 +1880,18 @@ def _map_status(
     if w_status in ("overall_timeout", "deadline"):
         return STATUS_ERROR, f"timeout: watch_status={w_status}", retries
 
+    # Mid-cell GPU-$ heartbeat kill. Terminal + NON-retryable (STATUS_ERROR is not
+    # STATUS_OOM_FAILED, so the escalation loop in _process_cell never re-submits it):
+    # a cell that already breached the run's GPU-$ cap must not be retried onto a
+    # bigger/pricier SKU. Mirrors the "deadline" hard-failure path.
+    if w_status == "gpu_budget_exceeded":
+        return (
+            STATUS_ERROR,
+            f"budget_exhausted: cell exceeded run GPU-$ cap ({log[-1500:]})"
+            if log else "budget_exhausted: cell exceeded run GPU-$ cap",
+            retries,
+        )
+
     if w_status == "failed":
         # Check for terminal OOM sentinel.
         if outcome == _SENTINEL_OOM_OUTCOME or exit_code == _EXIT_OOM_EXHAUSTED:
@@ -1883,6 +1945,9 @@ def _run_cell_job(
     # to before this param existed; "cpu" threads through to
     # _build_job_manifest's accelerator="cpu" branch.
     accelerator: str = "gpu",
+    gpu_budget_cap: float | None = None,
+    gpu_usd_per_hr_per_gpu: float = 0.0,
+    gpu_count: int = 1,
 ) -> CellResult:
     """Submit a K8s Job for ``cell`` and block until terminal, then return a CellResult.
 
@@ -2180,6 +2245,9 @@ def _run_cell_job(
         active_deadline_seconds=active_deadline_seconds,
         pending_timeout_s=pending_timeout_s,
         backoff_limit=_backoff_limit,
+        gpu_budget_cap=gpu_budget_cap,
+        gpu_usd_per_hr_per_gpu=gpu_usd_per_hr_per_gpu,
+        gpu_count=gpu_count,
     )
 
     node_name = watch.get("node_name")
@@ -2876,6 +2944,17 @@ def run_matrix(
                 # Phase D: closure-captured per-cell routing decision (see
                 # _cell_accelerator above) — never re-derived here.
                 accelerator=_cell_accelerator,
+                # Mid-cell GPU-$ heartbeat: thread the run's GPU-$ cap + this cell's
+                # (possibly escalated) billing rate + gpu_count EXPLICITLY — the watch
+                # loop runs in this worker thread where ContextVars don't propagate, so
+                # _get_run_budget()/_get_gpu_plan() would read None there. No-op when
+                # no cap or no rate.
+                gpu_budget_cap=(
+                    getattr(run_budget, "max_run_gpu_usd", None)
+                    if run_budget is not None else None
+                ),
+                gpu_usd_per_hr_per_gpu=cell_gpu_usd_per_hour,
+                gpu_count=_cell_gpu_count,
             )
 
             # Escalation check: only if oom_failed + plan available + cap not hit.

@@ -1428,7 +1428,9 @@ def resolve_gpu_requirements(
     # ---- vram_override: per-run CLI override bypasses LLM estimate.
     vram_override = getattr(ctx, "vram_override", None)
     if vram_override is not None:
-        req = req.model_copy(update={"estimated_vram_gb": int(vram_override)})
+        req = req.model_copy(
+            update={"estimated_vram_gb": int(vram_override), "vram_is_explicit": True}
+        )
 
     settings = get_settings()
 
@@ -3352,6 +3354,10 @@ def _backend_for_sandbox_mode(
         from backend.services.runtime.runpod_backend import RunpodBackend
 
         _runtime.ensure_runpod_available()
+        logger.info(
+            "sandbox=runpod is a LEGACY backend - GCP (--sandbox gcp) and Azure "
+            "(--sandbox azure) are the supported primary clouds."
+        )
         return RunpodBackend(run_budget=run_budget, gpu_plan=gpu_plan)
 
     if mode is SandboxMode.azure:

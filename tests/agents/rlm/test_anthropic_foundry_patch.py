@@ -22,7 +22,6 @@ def test_resolve_opus_foundry_alias(monkeypatch):
     # relying on the developer's .env — that made this test pass locally and
     # fail on any clean checkout / CI runner.
     monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "k-fake-for-test")
-
     entry = models.resolve_root_model("opus-4-8")
     assert entry.key == "opus-foundry"
 

@@ -153,10 +153,8 @@ def test_resolve_auto_on_wsl_no_docker_returns_local(monkeypatch):
     _docker_reachable.cache_clear()
 
 
-def test_resolve_auto_on_wsl_with_docker_uses_default(monkeypatch):
-    """On WSL with docker reachable, auto → DEFAULT_SANDBOX_MODE (not overridden)."""
-    from backend.agents.execution import DEFAULT_SANDBOX_MODE
-
+def test_resolve_auto_on_wsl_with_docker_resolves_docker(monkeypatch):
+    """On WSL with docker reachable, auto → docker (not local, not runpod)."""
     _is_wsl.cache_clear()
     _docker_reachable.cache_clear()
     monkeypatch.delenv("OPENRESEARCH_FORCE_SANDBOX", raising=False)
@@ -164,8 +162,8 @@ def test_resolve_auto_on_wsl_with_docker_uses_default(monkeypatch):
     monkeypatch.setattr("backend.agents.execution._docker_reachable", lambda: True)
 
     result = resolve_sandbox_mode("auto", pipeline_mode="rlm")
-    # Should NOT be forced to local — docker is reachable so we use the default.
-    assert result is DEFAULT_SANDBOX_MODE
+    # Docker is reachable, so auto picks docker (never the paid runpod default).
+    assert result is SandboxMode.docker
     assert result is not SandboxMode.local
 
     _is_wsl.cache_clear()
