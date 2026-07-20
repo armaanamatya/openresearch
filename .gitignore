@@ -205,3 +205,7 @@ frontend/next-env.d.ts
 
 # Local-only GCP project notes — keep on disk, never publish (history purged 2026-06-18)
 /gcp_info.md
+
+# Bounded live RunPod scheduler-validation artifacts are retained locally and
+# summarized with hashes/cost in the dated runbook; never sweep them into code PRs.
+/runs/prj_runpod_scheduler_smoke_20260720*/
