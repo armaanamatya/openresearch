@@ -25,6 +25,32 @@ disabled; AWS jobs can use only the S3/IRSA cell-matrix route.
 
 ## Read-only preflight observations
 
+### Authorized GCP recheck — 2026-07-19
+
+The local machine retains a second authenticated account,
+`aayush@deepinvent.ai`.  Read-only calls made with that account, without
+changing the global gcloud configuration, establish that
+`deepinvent-ext-ut` is active and billed, both historical artifact buckets
+exist, the pinned `gke-cell-base:v1` image exists in Artifact Registry, and
+the regional quotas are currently unused (8 L4, 8 A100, and 4 A100-80 GPUs).
+`gcloud container clusters list` remains empty: `deepinv-gke` has not been
+recreated.
+
+This recheck also found the gate that must be repaired before cluster creation:
+`deepinv-workload@deepinvent-ext-ut.iam.gserviceaccount.com` has
+`roles/storage.objectAdmin` on `deepinvent-ext-ut-reprolab-artifacts`, but its
+service-account IAM policy has no Kubernetes Workload Identity member.  The
+available account is a project Editor and can use the project, but direct
+permission checks show it lacks both `iam.serviceAccounts.setIamPolicy` and
+`resourcemanager.projects.setIamPolicy`.  It therefore cannot restore the
+required binding or grant the custom node service account its node role.
+
+No cluster was created from this account: creating one before those bindings
+exist would knowingly fail gate 6 (provenance artifact upload) and leave a
+billed, nonfunctional control plane.  A project IAM administrator must first
+apply the three bindings in the next section; then this account can continue
+with the scale-to-zero L4 recreation and the six-gate validation.
+
 On 2026-07-19 the local gcloud active identity was
 `thisisaayushbaniya@gmail.com`. A read-only
 `gcloud container clusters list --project deepinvent-ext-ut` returned HTTP 403;
@@ -46,19 +72,42 @@ requires IRSA. The controller dependency is declared in
 
 ## Exact unblocks before any real run
 
-1. Set the intended `OPENRESEARCH_GCP_PROJECT`, `OPENRESEARCH_GCP_GCS_BUCKET`,
+1. A project IAM administrator must restore the Workload Identity and custom
+   node-service-account bindings (no static key fallback):
+
+   ```bash
+   gcloud iam service-accounts add-iam-policy-binding \
+     deepinv-workload@deepinvent-ext-ut.iam.gserviceaccount.com \
+     --project deepinvent-ext-ut \
+     --member='serviceAccount:deepinvent-ext-ut.svc.id.goog[reprolab/reprolab-sa]' \
+     --role=roles/iam.workloadIdentityUser
+
+   gcloud projects add-iam-policy-binding deepinvent-ext-ut \
+     --member='serviceAccount:deepinv-gke-node@deepinvent-ext-ut.iam.gserviceaccount.com' \
+     --role=roles/container.defaultNodeServiceAccount
+
+   gcloud projects add-iam-policy-binding deepinvent-ext-ut \
+     --member='serviceAccount:deepinv-gke-node@deepinvent-ext-ut.iam.gserviceaccount.com' \
+     --role=roles/artifactregistry.reader
+   ```
+
+   Preserve `deepinv-workload`'s existing bucket-scoped
+   `roles/storage.objectAdmin`; it is the GSA for the `reprolab/reprolab-sa`
+   Kubernetes ServiceAccount.  Verify the first binding before creating a
+   cluster.
+2. Set the intended `OPENRESEARCH_GCP_PROJECT`, `OPENRESEARCH_GCP_GCS_BUCKET`,
    pinned `OPENRESEARCH_GCP_BASE_IMAGE`, namespace, and ServiceAccount; then
    authenticate gcloud as an identity with `deepinvent-ext-ut` GKE and billing
    permissions and retrieve a kubectl context for the recreated `deepinv-gke`
    cluster. Recreate it only through the six-gate procedure in
    `docs/runbooks/2026-07-17-deepinv-gke-l4-validation-handoff.md`; use an L4
    pool if A100 stock is unavailable.
-2. Configure the verified GKE cell-matrix route (`cells.json`, `train_cell.py`,
+3. Configure the verified GKE cell-matrix route (`cells.json`, `train_cell.py`,
    `OPENRESEARCH_GKE_SYNTH_CELL`). The generic Job 409 collision is now
    fail-closed: full run/cell/config identity must match before active/success
    adoption; terminal conflicts never issue an unreserved retry. Ensure cluster
    RBAC grants Job create/patch rights only to the controller ServiceAccount.
-3. For AWS, provision and review an EKS namespace with a least-privilege IRSA
+4. For AWS, provision and review an EKS namespace with a least-privilege IRSA
    ServiceAccount, NVIDIA GPU device plugin, a one-GPU-per-node labeled pool,
    S3 project/run-prefix policy, and a pinned ECR cell image. Set only verified
    `OPENRESEARCH_AWS_*` settings, including a whole-node `AWS_GPU_USD_PER_HOUR`.
@@ -72,12 +121,12 @@ requires IRSA. The controller dependency is declared in
    It checks controller identity/context and creates one no-GPU Job that proves
    the **pod** IRSA STS plus scoped S3 Put/Get/List/Delete, then foreground-
    deletes the Job. A controller STS check alone is not proof of pod access.
-4. Implement the prerequisite authority runtime: frozen paper-step ladder,
+5. Implement the prerequisite authority runtime: frozen paper-step ladder,
    provenance-validated metric/checkpoint receipts, durable branch queue and
    frozen pool, grade-free decision-evidence writer, and factual controller
    branch-lineage emitter. Until then, do not call an arm authoritative and do
    not set `applied:true`.
-5. For every shadow run, pass explicit LLM/GPU dollar and GPU-hour caps. Verify
+6. For every shadow run, pass explicit LLM/GPU dollar and GPU-hour caps. Verify
    spend from provider/token records and `kubectl get nodes,pods`; neither
    `cost_ledger.jsonl` nor `demo_status.json` includes Foundry spend or idle GPU
    node time.
