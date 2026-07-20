@@ -3,10 +3,10 @@
 ## Result
 
 The bounded RunPod data-plane smoke completed successfully after two real
-integration defects were fixed. The final run is
-`prj_runpod_scheduler_smoke_20260720d` under the local `runs/` directory.
-It used the normal `runpod` sandbox, a one-GPU `NVIDIA GeForce RTX 4090` pod,
-and no LLM calls. Its deterministic evidence records:
+integration defects were fixed. The final run was
+`prj_runpod_scheduler_smoke_20260720d`. It used the normal `runpod` sandbox, a
+one-GPU `NVIDIA GeForce RTX 4090` pod, and no LLM calls. Its deterministic
+evidence recorded at completion:
 
 - `demo_status.json`: `completed` / `reproduced`.
 - `experiment_runs.jsonl`: `success=true`, `exit_code=0`,
@@ -16,6 +16,12 @@ and no LLM calls. Its deterministic evidence records:
   device was an RTX 4090.
 - `runpodctl pod list --all`: `[]` immediately after completion, proving the
   owned-pod teardown path ran.
+
+The four local smoke directories (including two failed diagnostic attempts)
+were moved to macOS Trash after validation, so they cannot leave a dirty
+worktree or be accidentally committed. The immutable metric SHA, logs, exact
+failure chronology, and cost evidence needed to audit the result are retained
+in this runbook.
 
 The command was deliberately bounded: `--max-usd 0.25`,
 `--max-wall-clock 480`, `--max-pod-seconds 240`,
