@@ -136,6 +136,12 @@ the scheduler's evidence contract does not permit substituting node credentials
 for the current provenance identity. Recreating a cluster or re-authenticating
 the same user cannot recreate the missing GSA policy binding.
 
+After an explicit 2026-07-19 CLI OAuth and ADC refresh as
+`aayush@deepinvent.ai`, the IAM REST `testIamPermissions` request for the GSA
+returned only `iam.serviceAccounts.getIamPolicy`, not
+`iam.serviceAccounts.setIamPolicy`. This is a fresh-token confirmation that
+the remaining failure is authorization, rather than cached local credentials.
+
 AWS is not launch-ready: the AWS CLI is absent, `AWS_PROFILE` and
 `AWS_WEB_IDENTITY_TOKEN_FILE` are unset. `boto3` was installed into the local
 repository venv for the hermetic controller path, and the bounded
