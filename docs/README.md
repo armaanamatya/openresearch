@@ -12,3 +12,5 @@ new hire should need:
 
 [reference/flags.md](reference/flags.md) is generated operator reference, not
 required onboarding reading. Code is authoritative when it conflicts with prose.
+
+For compressed historical context, use the [development timeline](periods/).

@@ -2,8 +2,8 @@
 # Engineering guide
 
 This is the compressed replacement for the old plans, handoffs, and incident
-logs. Read it after [architecture.md](architecture.md); do not hunt for a
-historical document before starting work.
+logs. Read it after [architecture.md](architecture.md). For dated context, use
+the concise [development timeline](periods/) rather than a raw historical log.
 
 ## What we are building
 
