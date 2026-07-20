@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import shutil
 from collections.abc import Mapping, MutableMapping, Sequence
@@ -98,6 +99,53 @@ __all__ = ["CampaignOptions", "build_campaign", "mint_width_project_ids"]
 logger = logging.getLogger(__name__)
 
 _TRUTHY = ("1", "true", "yes", "on")
+_BRANCH_TYPES: frozenset[str] = frozenset({"faithful", "ambiguity", "discovery"})
+
+
+def _scheduler_tree_enabled() -> bool:
+    """The scheduler flag's locked default-OFF truthiness contract."""
+    return os.environ.get("OPENRESEARCH_SCHEDULER_TREE", "").strip().lower() in ("1", "true", "yes")
+
+
+def _scheduler_metadata(data: Mapping[str, Any]) -> tuple[str, bool]:
+    """Read only explicit, well-typed durable scheduler metadata.
+
+    Legacy absent fields default to the serial faithful/no-safety state.
+    A field that is present but malformed is a durable-contract error, rather
+    than a value we could silently reinterpret. This helper deliberately does
+    not inspect scores, grades, or failures.
+    """
+    branch_type = "faithful"
+    is_safety_bracket = False
+    if "branch_type" in data:
+        raw_branch_type = data["branch_type"]
+        if not isinstance(raw_branch_type, str) or raw_branch_type not in _BRANCH_TYPES:
+            raise ValueError(f"branch_type must be one of {sorted(_BRANCH_TYPES)}, got {raw_branch_type!r}")
+        branch_type = raw_branch_type
+    if "is_safety_bracket" in data:
+        raw_safety_bracket = data["is_safety_bracket"]
+        if type(raw_safety_bracket) is not bool:
+            raise ValueError(f"is_safety_bracket must be bool, got {raw_safety_bracket!r}")
+        is_safety_bracket = raw_safety_bracket
+    if is_safety_bracket and branch_type != "faithful":
+        raise ValueError("is_safety_bracket is allowed only for a faithful branch")
+    return branch_type, is_safety_bracket
+
+
+def _has_recorded_safety_bracket(rows: Sequence[Mapping[str, Any]]) -> bool:
+    """Whether a tree-gated advisory slot has already reached the W-A ledger.
+
+    We scan launched rows only: decisions describe the serial policy and must
+    not reserve a full-budget marker before an attempt has actually been
+    planned and durably launched.
+    """
+    for row in rows:
+        if row.get("status") != "launched":
+            continue
+        _branch_type, is_safety_bracket = _scheduler_metadata(row)
+        if is_safety_bracket:
+            return True
+    return False
 # Per-attempt driver-owned keys the canonical run-spec profile must never
 # set (attempt_driver.build_attempt_env sets these per attempt).
 _DRIVER_OWNED_ENV_KEYS: frozenset[str] = frozenset(
@@ -428,12 +476,17 @@ def _base_next_plan(rows: Sequence[Mapping[str, Any]], attempt_n: int) -> NextAt
         decision = decided_row.get("decision")
         if isinstance(decision, dict) and decision.get("kind") == "CONTINUE":
             next_plan = decision.get("next_plan") or {}
+            if not isinstance(next_plan, Mapping):
+                raise ValueError("decision.next_plan must be a mapping")
+            branch_type, is_safety_bracket = _scheduler_metadata(next_plan)
             return NextAttemptPlan(
                 lineage=str(next_plan.get("lineage") or "fresh"),
                 seed_attempt_n=next_plan.get("seed_attempt_n"),
                 seed_pointer=next_plan.get("seed_pointer"),
                 scope_rung=int(next_plan.get("scope_rung") or 0),
                 width=int(next_plan.get("width") or 1),
+                branch_type=branch_type,  # type: ignore[arg-type]
+                is_safety_bracket=is_safety_bracket,
             )
     return NextAttemptPlan(lineage="fresh", seed_attempt_n=None, seed_pointer=None, scope_rung=0, width=1)
 
@@ -572,6 +625,8 @@ def _synthesize_with_novelty(
             seed_pointer=arm.seed_pointer,
             scope_rung=base_plan.scope_rung,
             width=base_plan.width,
+            branch_type=base_plan.branch_type,
+            is_safety_bracket=base_plan.is_safety_bracket,
         )
         directives = _make(candidate_plan)
         if directives.fingerprint not in prior_fingerprints:
@@ -600,6 +655,24 @@ def _plan_attempt_impl(
 
     attempt_n = state.next_attempt_n
     base_plan = _base_next_plan(rows, attempt_n)
+    # Safety is advisory-only scheduler metadata, never a second fidelity
+    # ladder or a claim that this serial campaign has checkpointed Hyperband
+    # s=0 execution. Under the tree flag, mark exactly the first *faithful*
+    # attempt that reaches the write-ahead launch path; launched rows make the
+    # choice durable across resume. Re-planning before that row exists makes
+    # the same deterministic choice again, so it remains idempotent.
+    if _scheduler_tree_enabled():
+        if base_plan.branch_type == "faithful" and not _has_recorded_safety_bracket(rows):
+            base_plan = replace(base_plan, is_safety_bracket=True)
+        else:
+            # Ambiguity/discovery branches and every later faithful branch
+            # remain halvable. A supplied marker never bypasses this
+            # harness-owned, one-slot allocation rule.
+            base_plan = replace(base_plan, is_safety_bracket=False)
+    else:
+        # A resumed operator that turns shadow mode off cannot persist or
+        # propagate a prior advisory marker into the normal serial path.
+        base_plan = replace(base_plan, is_safety_bracket=False)
     # The §8.4 novelty domain is "any PRIOR attempt's plan" -- never this same
     # attempt's own write-ahead residue. Without the attempt_n exclusion, the
     # spec-§5-sanctioned orphaned-intent resume (crash between the intent
@@ -675,7 +748,7 @@ def _plan_attempt_impl(
 
     launch_run_dir = opts.runs_root / launch_project_id
 
-    return {
+    result: dict[str, Any] = {
         "attempt_n": attempt_n,
         "directives_sha256": directives.fingerprint,
         "envelope": envelope.to_dict(),
@@ -685,6 +758,14 @@ def _plan_attempt_impl(
         "downgrade_to_checkpoint": False,
         "launch_payload": directives,
     }
+    # The W-A launch row only carries scheduler metadata when it is explicit.
+    # Default-OFF legacy rows stay byte-identical; assess-from-disk reads this
+    # trusted ledger copy rather than a mutable directives file.
+    if directives.branch_type != "faithful":
+        result["branch_type"] = directives.branch_type
+    if directives.is_safety_bracket:
+        result["is_safety_bracket"] = True
+    return result
 
 
 # --- launch / await_result ---------------------------------------------------
@@ -729,6 +810,8 @@ def _run_assessment(
     project_id: str,
     directives_sha256: str,
     pinned: str | None,
+    branch_type: str = "faithful",
+    is_safety_bracket: bool = False,
 ) -> dict[str, Any]:
     assessment = assess_attempt(
         attempt_run_dir,
@@ -738,6 +821,8 @@ def _run_assessment(
         directives_sha256=directives_sha256,
         pinned_rubric_sha256=pinned,
         arxiv_id=opts.arxiv_id,
+        branch_type=branch_type,  # type: ignore[arg-type]
+        is_safety_bracket=is_safety_bracket,
     )
     result = assessment.to_dict()
     # Pin-at-first-sight: computed here (never persisted from inside a
@@ -753,6 +838,13 @@ def _run_assessment(
 def _assess_impl(
     opts: CampaignOptions, project_id: str, campaign_dir: Path, raw: Mapping[str, Any], planned: Mapping[str, Any]
 ) -> dict[str, Any]:
+    directives = planned.get("launch_payload")
+    branch_type, is_safety_bracket = _scheduler_metadata(
+        {
+            "branch_type": getattr(directives, "branch_type", "faithful"),
+            "is_safety_bracket": getattr(directives, "is_safety_bracket", False),
+        }
+    )
     return _run_assessment(
         opts,
         Path(raw["run_dir"]),
@@ -760,6 +852,8 @@ def _assess_impl(
         str(planned.get("project_id") or project_id),
         str(planned["directives_sha256"]),
         _current_rubric_pin(campaign_dir),
+        branch_type,
+        is_safety_bracket,
     )
 
 
@@ -768,6 +862,7 @@ def _assess_from_disk_impl(
 ) -> dict[str, Any]:
     rows = CampaignLedger(campaign_dir).read_rows()
     launched_row = CampaignLedger.latest_by_status(rows, in_flight.attempt_n).get("launched") or {}
+    branch_type, is_safety_bracket = _scheduler_metadata(launched_row)
     return _run_assessment(
         opts,
         Path(in_flight.run_dir),
@@ -775,6 +870,8 @@ def _assess_from_disk_impl(
         project_id,
         str(launched_row.get("directives_sha256") or ""),
         _current_rubric_pin(campaign_dir),
+        branch_type,
+        is_safety_bracket,
     )
 
 
@@ -864,16 +961,12 @@ def _maybe_attach_asha_advisory(
     ``max_gpu_usd`` / ``gpu_usd_spent`` / ``max_gpu_count`` feed the *independent*
     WIDTH meter (GPU-$ budget + hard A100 cap) — the two are never merged. Absent ⇒
     the width meter degrades to the geometric ``eta`` fallback (prior behaviour), so
-    every existing OFF/positional call stays byte-identical. Per-attempt GPU-$ is a
-    **uniform estimate** (``gpu_usd_spent / n``): the campaign tracks only cumulative
-    spend, not per-attempt, so this is a documented approximation used solely for the
-    advisory's ``k`` — never a live decision. All the width arithmetic runs *after*
-    the env-gate short-circuit, so OFF adds zero work to the fail-closed path."""
-    import os
-
-    if os.environ.get("OPENRESEARCH_SCHEDULER_TREE", "").strip().lower() not in (
-        "1", "true", "yes", "on",
-    ):
+    every existing OFF/positional call stays byte-identical. Per-attempt GPU-$ comes
+    from each deterministic ``AttemptAssessment.cost.gpu_usd``; it is used solely
+    for the advisory's width meter, never a live decision. All the width arithmetic
+    runs *after* the env-gate short-circuit, so OFF adds zero work to the fail-closed
+    path."""
+    if not _scheduler_tree_enabled():
         return
     try:
         from backend.agents.rlm.asha_campaign_adapter import (
@@ -888,13 +981,24 @@ def _maybe_attach_asha_advisory(
         gpu_usd_by_attempt: dict[int, float] | None = None
         if max_gpu_usd is not None:
             gpu_usd_budget = max(0.0, float(max_gpu_usd) - float(gpu_usd_spent))
-            n_assess = len(assessments)
-            if n_assess and gpu_usd_spent > 0:
-                per_attempt = float(gpu_usd_spent) / n_assess  # uniform estimate
-                gpu_usd_by_attempt = {
-                    int(getattr(a, "attempt_n", i)): per_attempt
-                    for i, a in enumerate(assessments)
-                }
+            gpu_usd_by_attempt = {}
+            for assessment in assessments:
+                try:
+                    attempt_n = getattr(assessment, "attempt_n", None)
+                    cost = getattr(assessment, "cost", None)
+                    gpu_usd = getattr(cost, "gpu_usd", None)
+                except Exception:  # noqa: BLE001 -- a bad cost must not drop the advisory
+                    continue
+                if (
+                    not isinstance(attempt_n, int)
+                    or isinstance(attempt_n, bool)
+                    or not isinstance(gpu_usd, (int, float))
+                    or isinstance(gpu_usd, bool)
+                ):
+                    continue
+                observed_gpu_usd = float(gpu_usd)
+                if math.isfinite(observed_gpu_usd) and observed_gpu_usd >= 0.0:
+                    gpu_usd_by_attempt[attempt_n] = observed_gpu_usd
 
         decisions = asha_decide_for_assessments(
             assessments,
@@ -923,6 +1027,41 @@ def _maybe_attach_asha_advisory(
         }
     except Exception:  # noqa: BLE001 — advisory must never break the fail-closed decide
         pass
+
+
+def _maybe_apply_asha_authority(result: dict[str, Any]) -> None:
+    """Audit an authority evaluation without adopting an unsafe scheduler action.
+
+    The shadow adapter currently ranks the LLM-derived final-report score and
+    receives a campaign scope rung, not a provenance-gated deterministic defining
+    metric at a paper-pinned optimizer-step/checkpoint rung.  Both flags therefore
+    expose an explicit, durable *not applied* audit record; they never turn that
+    advisory into a live decision.  A future mapper may replace this only after it
+    receives those deterministic inputs.  Terminal policy decisions always win.
+
+    The check intentionally runs after ``Decision.to_dict()`` and only after both
+    explicit default-OFF switches.  Off remains byte-identical.
+    """
+    if not _scheduler_tree_enabled():
+        return
+    if os.environ.get("OPENRESEARCH_SCHEDULER_AUTHORITATIVE", "").strip().lower() not in (
+        "1", "true", "yes",
+    ):
+        return
+
+    if result.get("kind") != "CONTINUE":
+        basis = "base_terminal_precedence"
+    else:
+        basis = (
+            "unavailable: provenance-gated deterministic defining metric and "
+            "optimizer-step lineage are required"
+        )
+    result["asha_authority_audit"] = {
+        "enabled": True,
+        "applied": False,
+        "action": "continue",
+        "deterministic_evidence_basis": basis,
+    }
 
 
 def _decide_impl(run_dir: Path, opts: CampaignOptions, state: CampaignState, rows: list) -> dict[str, Any]:
@@ -961,6 +1100,7 @@ def _decide_impl(run_dir: Path, opts: CampaignOptions, state: CampaignState, row
         blocking_gap=None,  # no live probe-confirmed-gap source wired in v1
     )
     result = decision.to_dict()
+    _maybe_apply_asha_authority(result)
     # Shadow advisory: fidelity meter = state.scope_rung; width meter = remaining
     # GPU-$ (opts.max_gpu_usd − spent.gpu_usd) + hard A100 cap (ctx.max_gpu_count,
     # already resolved by _enforcement_ctx). OFF ⇒ byte-identical (helper returns

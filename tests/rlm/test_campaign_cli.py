@@ -110,6 +110,7 @@ def test_campaign_parser_defaults():
     assert args.require_cpu_tier is False
     assert args.resume is False
     assert args.root_model is None
+    assert args.project_id is None
 
 
 def test_campaign_accepts_root_model():
@@ -201,8 +202,8 @@ class _FakeIntake:
         self.fetched: list = []
 
     def register_project(self, cmd, project_id_override=None):
-        self.registered.append(cmd)
-        return self._project_id
+        self.registered.append((cmd, project_id_override))
+        return project_id_override or self._project_id
 
     def fetch_paper(self, cmd):
         self.fetched.append(cmd)
@@ -301,9 +302,25 @@ def test_cmd_campaign_wires_options(tmp_path, monkeypatch):
     assert opts.gpu_mode == "prefer"
     assert opts.minimize_compute is True
     # Full ingest chain ran, in order, on the fakes.
-    assert len(intake.registered) == 1 and len(intake.fetched) == 1
+    assert len(intake.registered) == 1 and intake.registered[0][1] is None
+    assert len(intake.fetched) == 1
     for step in (parser_svc, discovery, indexer, workspace):
         assert len(step.calls) == 1
+
+
+def test_campaign_project_id_creates_an_independent_lineage(tmp_path, monkeypatch):
+    intake, *_ = _install_fakes(monkeypatch)
+    captured = _install_fake_campaign(
+        monkeypatch, {"kind": "EXHAUSTED", "rule": "r", "stop_reason": None,
+                      "champion_attempt_n": None, "spent": {}}
+    )
+
+    args = cli._build_parser().parse_args(
+        _campaign_argv("--project-id", "sdar_scheduler_shadow_01", runs_root=str(tmp_path / "runs"))
+    )
+    assert cli.cmd_campaign(args) == 0
+    assert intake.registered[0][1] == "sdar_scheduler_shadow_01"
+    assert captured["project_id"] == "sdar_scheduler_shadow_01"
 
 
 def test_cmd_campaign_scope_ladder_resolution(tmp_path, monkeypatch):

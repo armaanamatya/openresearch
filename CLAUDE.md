@@ -108,6 +108,10 @@ Load-bearing invariants; the owning nested file/spec carries the full rule + inc
 - **New feature flags** use `os.environ.get("FLAG","").strip().lower() in ("1","true","yes")`,
   default-OFF and byte-identical when off; a default-flip needs ≥3 paired A/B runs + the grader-σ
   gate. → `backend/agents/rlm/CLAUDE.md`
+- **`OPENRESEARCH_SCHEDULER_AUTHORITATIVE`** is default-OFF and requires
+  `OPENRESEARCH_SCHEDULER_TREE`; it may never adopt an LLM grade or bypass a
+  deterministic terminal evidence decision. Its A/B gate is evidence for operator
+  review, never an automatic default flip. → `backend/agents/rlm/CLAUDE.md`
 - **Git.** Branch off `main`; no Conventional-Commit prefixes; descriptive present-tense headline;
   **no `Co-Authored-By`/AI-attribution trailer**; author = local config; commit at milestones;
   commit/push only when asked, to the operator-designated remote.

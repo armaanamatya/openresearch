@@ -15,11 +15,11 @@ Mapping decisions (the substance of the integration):
   FREEZE, never kill.
 - ``score`` = ``final_report.score`` (``None`` when the report is missing).
 - Per-attempt ``gpu_usd`` is supplied by the caller — the campaign tracks
-  *cumulative* spend, not per-attempt GPU-$ yet (an ENRICHMENT gap); absent → 0.0,
-  so the width meter degrades to the geometric ``eta`` fallback.
-- ``branch_type`` is ``"faithful"`` (the campaign has no typed branches yet) and
-  ``is_safety_bracket`` is ``False`` (no Hyperband ``s=0`` slot yet) — both are
-  enrichment gaps the full integration fills.
+  deterministic per-attempt spend; absent → 0.0, so the width meter degrades to
+  the geometric ``eta`` fallback.
+- ``branch_type`` and ``is_safety_bracket`` are durable campaign metadata. Bad
+  duck-typed/legacy values fail closed to faithful/non-safety; the adapter never
+  infers either from a grade, score, or failure class.
 """
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from backend.agents.rlm.asha_scheduler import (
+    BranchType,
     BranchObservation,
     RungConfig,
     SchedulerDecision,
@@ -37,6 +38,34 @@ from backend.agents.rlm.asha_scheduler import (
 # every other class is repairable-and-frozen (never deleted). Extend only with
 # unambiguous breakage (a dead/diverged network), never a repairable class.
 _BREAKAGE_CLASSES: frozenset[str] = frozenset({"training_diverged"})
+_BRANCH_TYPES: frozenset[str] = frozenset({"faithful", "ambiguity", "discovery"})
+_MISSING = object()
+
+
+def _scheduler_metadata_from_assessment(assessment: Any) -> tuple[BranchType, bool]:
+    """Use legacy defaults only for *absent* attrs; reject bad explicit attrs.
+
+    The shadow caller catches this and omits the whole advisory, so malformed
+    evidence can never earn a scheduler exemption by being silently coerced.
+    """
+    raw_branch_type = getattr(assessment, "branch_type", _MISSING)
+    if raw_branch_type is _MISSING:
+        branch_type: BranchType = "faithful"
+    elif isinstance(raw_branch_type, str) and raw_branch_type in _BRANCH_TYPES:
+        branch_type = raw_branch_type  # type: ignore[assignment]
+    else:
+        raise ValueError(f"branch_type must be one of {sorted(_BRANCH_TYPES)}, got {raw_branch_type!r}")
+
+    raw_safety_bracket = getattr(assessment, "is_safety_bracket", _MISSING)
+    if raw_safety_bracket is _MISSING:
+        is_safety_bracket = False
+    elif type(raw_safety_bracket) is bool:
+        is_safety_bracket = raw_safety_bracket
+    else:
+        raise ValueError(f"is_safety_bracket must be bool, got {raw_safety_bracket!r}")
+    if is_safety_bracket and branch_type != "faithful":
+        raise ValueError("is_safety_bracket is allowed only for a faithful branch")
+    return branch_type, is_safety_bracket
 
 
 def observation_from_assessment(
@@ -48,13 +77,14 @@ def observation_from_assessment(
     report = getattr(assessment, "final_report", None)
     score = getattr(report, "score", None) if report is not None else None
     failure_class = getattr(assessment, "failure_class", None)
+    branch_type, is_safety_bracket = _scheduler_metadata_from_assessment(assessment)
     return BranchObservation(
         branch_id=str(getattr(assessment, "attempt_n", "?")),
-        branch_type="faithful",
+        branch_type=branch_type,
         score=score,
         gpu_usd=gpu_usd,
         broken=failure_class in _BREAKAGE_CLASSES,
-        is_safety_bracket=False,
+        is_safety_bracket=is_safety_bracket,
     )
 
 
