@@ -3,7 +3,7 @@
 These tests assert that the RunPod execution surface is completely decoupled
 from Anthropic credentials — the pod runs ML code, not LLM calls.
 
-Spec reference: docs/superpowers/specs/2026-05-23-dynamic-gpu-selection-design.md
+Spec reference: docs/history/specs/2026-05-23-dynamic-gpu-selection-design.md
 Invariant I4: ANTHROPIC_API_KEY must never enter the pod env.
 """
 from __future__ import annotations

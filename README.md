@@ -3,10 +3,11 @@
 
 > **Doc status:** Current · last verified 2026-07-06 against `backend/` + `CLAUDE.md`.
 > This README is the public front door (source-of-truth tier 3): it must not claim
-> anything the code, [`system_overview.md`](system_overview.md), or
-> [`CLAUDE.md`](CLAUDE.md) don't back. Freshness is enforced by `make docs-check`
-> — see [Documentation](#documentation). There is no `prd.md`; the closest
-> spec is [`docs/design/project-rebuild-spec.md`](docs/design/project-rebuild-spec.md).
+> anything the code or [`CLAUDE.md`](CLAUDE.md) don't back. Freshness is
+> enforced by `make docs-check` — see [Documentation](#documentation).
+
+> **New to the repository?** Start with [`ONBOARDING.md`](ONBOARDING.md), then
+> use the [documentation index](docs/README.md) instead of dated handoffs.
 
 Automated research paper reproduction. Given a paper (arXiv link or PDF), OpenResearch ingests it, builds a compute environment, implements and runs the experiments, scores the reproduction against a rubric, and outputs a benchmark report.
 
@@ -144,7 +145,7 @@ optional `aws` sandbox is an EKS+S3/IRSA cell-matrix adapter (never a generic
 remote shell): configure its pinned image, one-GPU node pool, explicit verified
 rate, and IRSA first, then run `python -m backend.cli aws-preflight --project-id
 <project> --run-id <probe>` before a billed run. See
-[`docs/runbooks/running-the-project.md`](docs/runbooks/running-the-project.md).
+[`docs/operations.md`](docs/operations.md).
 
 `OPENRESEARCH_DEFAULT_SANDBOX` (shell env > `.env` > `runpod`) selects the sandbox and
 which preflight runs. Escape hatches: `START_BACKEND_ONLY=1`, `START_FRONTEND_ONLY=1`,
@@ -187,7 +188,7 @@ docker compose up --build
 | `OPENAI_API_KEY` | One auth path | Root model when `--model gpt-5` (the default root). |
 | `ANTHROPIC_API_KEY` | Optional | Sub-agents (Sonnet) and `--model claude`. **Leave empty to use Claude CLI OAuth** (`claude login`). A no-credit key does *not* fall back to OAuth — it hard-fails; see `CLAUDE.md` → "RLM auth". |
 | `OPENRESEARCH_DEFAULT_SANDBOX` | No | `auto` / `local` / `docker` / `runpod` / `azure` |
-| `OPENRESEARCH_AZURE_*` | For Azure | AKS GPU sandbox (cluster, storage, base image) — see the [Azure guide](docs/guides/azure-kubernetes-gpu-setup.md) |
+| `OPENRESEARCH_AZURE_*` | For Azure | AKS GPU sandbox (cluster, storage, base image) |
 | `OPENRESEARCH_RUNPOD_API_KEY` | For RunPod | RunPod GPU sandbox |
 | `OPENRESEARCH_RUNPOD_SSH_KEY_PATH` | For RunPod | SSH key for pod access |
 | `OPENRESEARCH_DEMO_SECRET` | No | Gate run-start endpoints with a shared secret |
@@ -265,7 +266,7 @@ frontend/
 tests/                # ~3,600 backend tests (pytest)
 scripts/              # Dev tools: RunPod preflight, PaperBench runners, monitoring
 third_party/          # Vendored PaperBench bundles (rubrics + paper markdown)
-docs/                 # Design docs, runbooks, setup guides
+docs/                 # Small current-doc set and generated references
 ```
 
 ## Execution Modes
@@ -298,33 +299,19 @@ For local development: use OpenAI for the root (~$1/run), OAuth for sub-agents (
 
 ## Documentation
 
-| Document | Purpose | Tier |
-|---|---|---|
-| [system_overview.md](system_overview.md) | Architecture rationale — the "why" and how the pieces fit | 1 |
-| [docs/design/rlm-pivot-brief.md](docs/design/rlm-pivot-brief.md) | Canonical RLM-as-orchestrator architecture reference | 1 |
-| [docs/design/project-rebuild-spec.md](docs/design/project-rebuild-spec.md) | Closest thing to a PRD: the *what*/*why*, framework-agnostic | 1 |
-| [CLAUDE.md](CLAUDE.md) | Developer reference: commands, conventions, gotchas, invariants | 2 |
-| [docs/reproduction.md](docs/reproduction.md) | Fresh-clone reproduction path, smoke checks, expected outputs | 2 |
-| [docs/architecture.md](docs/architecture.md) | Current backend/frontend/RLM topology and artifact model | 2 |
-| [docs/infra.md](docs/infra.md) | Docker, compose, persistence, RunPod, Azure/Kubernetes status | 2 |
-| [docs/troubleshooting.md](docs/troubleshooting.md) | Common install, auth, Docker, SQLite, RunPod, and port failures | 2 |
-| [docs/guides/setup-guide.md](docs/guides/setup-guide.md) | Detailed setup instructions | 3 |
-| [docs/guides/deployment.md](docs/guides/deployment.md) | Deployment guide | 3 |
-| [docs/runbooks/e2e-testing.md](docs/runbooks/e2e-testing.md) | End-to-end testing runbook | 3 |
-| [docs/policies/documentation.md](docs/policies/documentation.md) | **Source-of-truth hierarchy + freshness policy** | — |
+| Document | Purpose |
+|---|---|
+| [ONBOARDING.md](ONBOARDING.md) | First day: setup, commands, and project boundaries |
+| [CLAUDE.md](CLAUDE.md) | Developer conventions and constraints |
+| [docs/architecture.md](docs/architecture.md) | Current backend/frontend/RLM topology |
+| [docs/engineering-guide.md](docs/engineering-guide.md) | Durable engineering decisions and constraints |
+| [docs/operations.md](docs/operations.md) | Setup, checks, and safe run operation |
+| [docs/policies/artifacts.md](docs/policies/artifacts.md) | What belongs in Git |
 
 ### Source of truth
 
-There is no `prd.md`. Authority runs **code → `system_overview.md` / design docs →
-`CLAUDE.md` → `README.md`**. When docs disagree, the higher tier wins; when a doc
-disagrees with the code, the **code wins** and the doc is a bug. Full hierarchy
-and the rules for not creating stale docs:
-[`docs/policies/documentation.md`](docs/policies/documentation.md).
-
-Historical material (engineering journals, old run logs, superseded notes) lives
-in [`docs/archive/`](docs/archive/) and under dated `docs/runbooks/` /
-`docs/superpowers/` files — each carries its date or an `ARCHIVED` banner and is
-**never** presented as current.
+Authority runs **code → architecture → `CLAUDE.md` → `README.md`**. When prose
+disagrees with the code, code wins.
 
 ### Generated artifacts
 
@@ -336,7 +323,7 @@ re-running an expensive reproduction):
 |---|---|
 | [`best_runs/`](best_runs/README.md) | Point-in-time scored reproductions (Adam, All-CNN, VAE + the SDAR campaign) with full sidecars |
 | `runs/<project_id>/` | Live per-run state: `final_report.{json,md}`, event log, cost ledger, reproduced `code/` (gitignored) |
-| `docs/runbooks/artifacts/<id>/` | A committed reference run captured for a runbook |
+| `best_runs/<id>/` | A curated committed reference run |
 
 Tracked PDFs (`paperbench1.pdf`, `demo_paper.pdf`) are **input fixtures** — the
 papers being reproduced. Papers don't go stale; they are not generated output.

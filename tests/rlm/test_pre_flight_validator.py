@@ -930,7 +930,7 @@ def test_non_optimizer_call_with_kwargs_pass(tmp_path: Path) -> None:
 
 # ---------------------------------------------------------------------------
 # Lane X — paper-invariants checks (stop_gradient + real_model)
-# Driven by docs/papers/<arxiv_id>.yaml; the SDAR yaml at 2605.15155.yaml
+# Driven by configs/papers/<arxiv_id>.yaml; the SDAR yaml at 2605.15155.yaml
 # already declares both invariants
 # ---------------------------------------------------------------------------
 
@@ -1027,7 +1027,7 @@ class SDARModel(nn.Module):
 
 
 def test_arxiv_id_without_yaml_is_noop(tmp_path: Path) -> None:
-    """Papers without docs/papers/<id>.yaml → check is silent."""
+    """Papers without configs/papers/<id>.yaml → check is silent."""
     body = "g_t = sigmoid(beta * delta_t)\n"  # would crash an SDAR run
     _write(tmp_path / "train.py", body)
     out = validate_code_pre_flight(tmp_path, {}, arxiv_id="9999.99999")
@@ -1045,7 +1045,7 @@ def test_arxiv_id_none_is_noop(tmp_path: Path) -> None:
 
 
 def test_paper_invariants_load_sdar_yaml() -> None:
-    """The SDAR yaml at docs/papers/2605.15155.yaml is the golden fixture
+    """The SDAR yaml at configs/papers/2605.15155.yaml is the golden fixture
     — verify load_paper_invariants extracts the expected structure."""
     from backend.agents.rlm.paper_invariants import load_paper_invariants
     inv = load_paper_invariants("2605.15155")

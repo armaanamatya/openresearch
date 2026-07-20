@@ -11,7 +11,7 @@ match those two functions' parameter names exactly, so a caller can pass a
 claim's ``metric_binding`` straight through as kwargs.
 
 Design (locked — see
-``docs/superpowers/specs/2026-07-09-eval-integrity-track-a-design.md`` §4.1):
+``docs/history/specs/2026-07-09-eval-integrity-track-a-design.md`` §4.1):
 deterministic tokenized candidate search over the ``metrics`` key tree,
 reusing the tokenizers already in ``leaf_scorer`` (no new tokenization is
 invented here), followed by a scope+unit ACCEPTANCE GATE. "The path exists in

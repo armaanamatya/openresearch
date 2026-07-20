@@ -3,7 +3,7 @@ from an ``ExecuteSpec``, so a confidently-detected framework (verl today) is
 RUN via the authors' own launch entrypoint instead of hand-authored or
 LLM-written per paper.
 
-Background: ``docs/superpowers/specs/2026-07-07-deterministic-any-paper-execute-mode-design.md``
+Background: ``docs/history/specs/2026-07-07-deterministic-any-paper-execute-mode-design.md``
 §3/§7/§10. The hand-authored ``scripts/ucpo_execute_cell/train_cell.py`` (the
 UCPO prove-now control; real GPU reward 0.25) is the concrete reference this
 module generalizes: same setup/launch/reward-bridge shape, but the launch

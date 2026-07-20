@@ -132,7 +132,7 @@ _PROVENANCE_HPARAM_FIELDS: frozenset[str] = frozenset({
 #                  be told to emit the wrong symbol. This is the coefficient
 #                  analogue of the artifact gate's "the file must be named in the
 #                  leaf."
-#   6. CONTESTED — if the operator's per-paper registry (``docs/papers/<id>.yaml``
+#   6. CONTESTED — if the operator's per-paper registry (``configs/papers/<id>.yaml``
 #                  → ``paper_invariants.declared_coefficients``) records a value
 #                  that DISAGREES with the paper text, the symbol is contested and
 #                  no machine check on it is sound. Drop it → LLM. SDAR is exactly
@@ -713,7 +713,7 @@ def _contested_coefficients(project_dir: Path | None) -> dict[str, float]:
     """Operator-declared coefficient values for this run's paper (``{}`` if none).
 
     Feeds the CONTESTED gate. Fail-soft in every direction: no project_dir, no
-    arXiv id, no ``docs/papers/<id>.yaml``, or an import error all yield ``{}``,
+    arXiv id, no ``configs/papers/<id>.yaml``, or an import error all yield ``{}``,
     which means "no veto" — the paper-text-grounded annotation stands unchanged.
     """
     try:
@@ -1035,7 +1035,7 @@ def _annotate_coefficient(
             if not _numbers_close(float(value), float(declared)):
                 logger.warning(
                     "rubric_gen: dropping CONTESTED coefficient annotation %s — paper "
-                    "text says %r but docs/papers/<id>.yaml declares %r (e.g. the "
+                    "text says %r but configs/papers/<id>.yaml declares %r (e.g. the "
                     "authors' released scripts). A deterministic check would fail a run "
                     "that faithfully reproduced either one; leaf → LLM.",
                     name, value, declared,

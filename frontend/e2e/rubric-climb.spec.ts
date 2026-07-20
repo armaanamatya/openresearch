@@ -9,7 +9,7 @@ import { test, expect } from "@playwright/test";
  * Docker-dependent live-stream tests (count-up animation during a real run,
  * mid-run resume) are tracked as deferred for the next session per the plan.
  *
- * Spec: docs/superpowers/specs/2026-05-23-rubric-climb-leaderboard.md §6.4.
+ * Spec: docs/history/specs/2026-05-23-rubric-climb-leaderboard.md §6.4.
  */
 test.describe("Rubric climb panel", () => {
   test("renders the SVG sparkline polyline once the fixture has folded", async ({ page }) => {

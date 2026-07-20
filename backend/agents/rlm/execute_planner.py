@@ -5,7 +5,7 @@ Pure/deterministic: NO LLM, NO network, NO GPU. Given a framework detected by
 the repo's own launch scripts, extract the authors' own entrypoint + hydra
 overrides VERBATIM, and produce a downscaled-but-faithful ``ExecuteSpec`` the
 generic ``execute_cell_synth`` shim can run. Contracts mirror
-``docs/superpowers/specs/2026-07-07-deterministic-any-paper-execute-mode-design.md``
+``docs/history/specs/2026-07-07-deterministic-any-paper-execute-mode-design.md``
 §4, and the downscale numbers mirror the hand-authored, GPU-proven
 ``scripts/ucpo_execute_cell/train_cell.py`` (UCPO, real reward 0.25).
 

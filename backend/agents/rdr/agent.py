@@ -5,7 +5,7 @@ Public API::
     from backend.agents.rdr.agent import reproduce
     artifacts = await reproduce(agent_context, ctx=run_ctx)
 
-See ``docs/superpowers/specs/2026-05-22-rubric-driven-harness-design.md`` §7.
+See ``docs/history/specs/2026-05-22-rubric-driven-harness-design.md`` §7.
 
 **v1 tool surface — design §4.4 deferred to v2.**  v1 reuses the
 ``baseline-implementation`` SDK agent (tools: Read / Write / Edit / Bash).
@@ -102,7 +102,7 @@ def _cleanup_repo_root_escape(before: set[str], cluster_id: str) -> None:
 
 # ---------------------------------------------------------------------------
 # SDK call thread-isolation (Workaround B from
-# docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md)
+# docs/history/specs/2026-05-22-sdk-aclose-investigation.md)
 # ---------------------------------------------------------------------------
 #
 # The Claude Agent SDK has a known deadlock: its triple-nested async generators
@@ -508,7 +508,7 @@ async def _reproduce_inner(
         # now backend.agents.runtime.sdk_isolation.run_isolated, called inside
         # collect_agent_text. _run_sdk_in_thread wraps it with a per-cluster
         # wall-clock cap and the non-blocking ThreadPoolExecutor pattern.
-        # See docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md
+        # See docs/history/specs/2026-05-22-sdk-aclose-investigation.md
         # and PR-μ runtime-resilience design (2026-05-26).
         agent_text = await asyncio.to_thread(
             _run_sdk_in_thread,

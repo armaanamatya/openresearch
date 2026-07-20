@@ -118,6 +118,6 @@ Skill-SD, GRPO+OPSD, RLSD) **and** `sdar` must appear in `per_model` OR in `omit
 6. Emit `per_model`/`baselines_vs_sdar`/`omitted`; each baseline + `sdar` present or omitted-with-reason.
 
 ## Sources (repo-native grounding — not vendored)
-`docs/papers/2605.15155.yaml`, `docs/runbooks/2026-05-23-sdar-baseline-handoff.md`,
+`configs/papers/2605.15155.yaml`, `docs/runbooks/2026-05-23-sdar-baseline-handoff.md`,
 `backend/agents/prompts/paper_hints.py`, `backend/requirements-sdar.txt`, the faithful impl under
 `runs/prj_23f04429cd3beaf7/code/`. For the GKE/GPU execution path see the `gcp-gke-reproduction` skill.

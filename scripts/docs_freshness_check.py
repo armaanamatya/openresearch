@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Documentation freshness & consistency checker.
 
-Enforces the policy in ``docs/policies/documentation.md``. Pure stdlib; run from
-anywhere inside the repo:
+Checks the small current-documentation set. Pure stdlib; run from anywhere
+inside the repo:
 
     python scripts/docs_freshness_check.py        # or: make docs-check
 
@@ -39,6 +39,9 @@ APPROVED_PDF_GLOBS = [
     "best_runs/**/*.pdf",
     "docs/**/*.pdf",
     "third_party/**/*.pdf",
+    # Citation/template fixtures bundled with the writing skill.  They are
+    # immutable source material rather than operator-created run outputs.
+    "backend/agents/rlm/skills/**/templates/**/*.pdf",
     # Bundled reproduction targets (papers/registry.json) — input fixtures shipped
     # in-repo so they're selectable on a fresh clone with no network fetch. Added
     # by feat(papers) 01918a15; the allow-list was never updated, so docs-check
@@ -46,8 +49,8 @@ APPROVED_PDF_GLOBS = [
     "papers/*.pdf",
 ]
 
-# These were development working-notes; they live in docs/archive/ now. If any
-# reappears at the repo ROOT it would masquerade as a current top-level doc.
+# These are development working-notes, never onboarding material. If any
+# reappears at the repo root it would masquerade as current documentation.
 FORBIDDEN_ROOT_BASENAMES = {
     "progress.md",
     "runlog.md",
@@ -109,9 +112,8 @@ def check_root_working_notes(root: Path, fails: list[str]) -> None:
     for name in sorted(FORBIDDEN_ROOT_BASENAMES):
         if (root / name).exists():
             fails.append(
-                f"Working-note '{name}' is back at repo root — it must live in "
-                f"docs/archive/ with an ARCHIVED banner, not masquerade as a "
-                f"current top-level doc."
+                f"Working-note '{name}' is back at repo root — remove it from "
+                f"the working tree instead of presenting it as current docs."
             )
 
 
@@ -209,7 +211,7 @@ def main() -> int:
 
     if fails:
         print(f"\ndocs-check FAILED: {len(fails)} problem(s). "
-              f"See docs/policies/documentation.md.")
+              f"See docs/README.md.")
         return 1
     print("docs-check OK" + (f" ({len(warns)} warning(s))" if warns else ""))
     return 0

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 # when asyncio.shutdown_asyncgens() or GC tries to close the SDK's triple-nested
 # async generator (InternalClient._process_query_inner) while it is still marked
 # as running — a known SDK quirk documented in CLAUDE.md (search "aclose") and
-# analysed in docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md.
+# analysed in docs/history/specs/2026-05-22-sdk-aclose-investigation.md.
 # Option B (module-level filter) is used here because the warning fires in a GC
 # finalizer / asyncio.shutdown_asyncgens() path that executes AFTER our `async for`
 # loop exits, so a scoped `warnings.catch_warnings()` context at the call site would

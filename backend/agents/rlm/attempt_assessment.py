@@ -1,6 +1,6 @@
 """Deterministic post-hoc reader: run directory -> trust-scored AttemptAssessment.
 
-Spec: docs/superpowers/specs/2026-07-01-reproduction-campaign-and-self-improving-harness-design.md
+Spec: docs/history/specs/2026-07-01-reproduction-campaign-and-self-improving-harness-design.md
 §8.1 (AttemptAssessment) + Codex resolution F4 (§20): validator absence quarantines.
 
 PURE READER. No LLM calls, no subprocess execution, no writes -- every field is a

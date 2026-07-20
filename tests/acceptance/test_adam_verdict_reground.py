@@ -1,5 +1,5 @@
 """WS1 acceptance: the reproduction verdict is now the honest deterministic one
-(Task 9, ``docs/superpowers/specs/2026-07-09-eval-integrity-track-a-design.md`` §7,
+(Task 9, ``docs/history/specs/2026-07-09-eval-integrity-track-a-design.md`` §7,
 corrected per review).
 
 **Headline case.** The design doc's own §7 acceptance text says the frozen

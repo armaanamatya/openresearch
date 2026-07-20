@@ -25,7 +25,7 @@ absolute gate, never outvoted by unrelated improvements.
 Advisory only: admission never mutates run mechanics, it only decides
 whether ``candidate.patch`` (a guidance-hint payload) may later be surfaced.
 
-See ``docs/superpowers/plans/2026-07-01-phase-1e-experience-memory.md``,
+See ``docs/history/plans/2026-07-01-phase-1e-experience-memory.md``,
 Unit C.
 """
 

@@ -14,7 +14,7 @@ Browser
           -> FastAPI backend (:8000)
               -> long-lived run subprocess
                   -> RLM / RDR controller
-                      -> local, docker, runpod, or azure sandbox
+                      -> local, docker, RunPod, GKE, AKS, or EKS sandbox
 ```
 
 The browser does not call FastAPI directly. The frontend proxy target is
@@ -78,6 +78,8 @@ clusters.
 | `docker` | Implemented | Local Docker build and container execution; requires daemon |
 | `runpod` | Implemented | Remote GPU pod over SSH; no local Docker build after 2026-06-09 hardening |
 | `azure` | Partial | AKS GPU backend and Terraform/Helm exist under `infra/azure`, but this is not documented as production-ready |
+| `gcp` / `gke` | Partial | GKE Kubernetes-job backend; `gke` is a CLI/environment alias for `gcp` |
+| `aws` / `eks` | Experimental | EKS cell-runtime path; keep feature flags off until cloud preflight is green |
 | `auto` | Implemented | Chooses available backend; Docker daemon availability matters |
 
 ## State and Artifacts
@@ -119,4 +121,3 @@ shape.
 Partial or operationally manual: Azure/Kubernetes production readiness, scheduled
 artifact generation, run retention policy, network-hermetic test enforcement,
 and automated restart policy outside the local monitoring scripts.
-

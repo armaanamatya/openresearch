@@ -1,7 +1,7 @@
 /**
  * useRlmRun — the pure reducer for RLM run state.
  *
- * Spec: docs/superpowers/specs/2026-05-21-rlm-phase4-frontend-design.md §5 / §6
+ * Spec: docs/history/specs/2026-05-21-rlm-phase4-frontend-design.md §5 / §6
  *
  * Folds the 8 RLM dashboard events into `RlmRunState`. The four tree events
  * (candidate_proposed, candidate_outcome, sub_rlm_spawned, sub_rlm_complete)

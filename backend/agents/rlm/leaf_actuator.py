@@ -31,7 +31,7 @@ Design discipline (matches ``staged_search``/``leaf_triage``):
     byte-for-byte; every entry point swallows and falls back to the advisory
     directive, so enabling the flag can only ADD a repair attempt.
 
-Spec: ``docs/superpowers/specs/2026-06-16-leaf-frontier-out-of-scope-remediation-design.md``.
+Spec: ``docs/history/specs/2026-06-16-leaf-frontier-out-of-scope-remediation-design.md``.
 """
 
 from __future__ import annotations

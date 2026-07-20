@@ -753,7 +753,7 @@ class Settings(BaseSettings):
     # --- BES on RDR (spec 2026-06-07, default OFF) ---
     # Competing candidates extend the RDR controller behind a MASTER gate. When
     # bes_enabled is False every child flag below is inert and run_rdr behaves
-    # bit-for-bit as today. See docs/superpowers/specs/2026-06-07-bes-integration/.
+    # bit-for-bit as today. See docs/history/specs/2026-06-07-bes-integration/.
     bes_enabled: bool = Field(default=False, description="MASTER gate for BES-on-RDR; off => today's RDR path")
     bes_candidates_per_cluster: int = Field(default=1, ge=1, le=8, description="N competing candidates per cluster; 1 = parity")
     bes_select_metric: str = Field(default="cluster_score", description="Candidate SELECT metric (cluster_score | failed_leaves); an unknown value falls back to cluster_score at use-site, so it never aborts the default RDR path")

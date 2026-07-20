@@ -4,7 +4,7 @@
 experiment → score → repair loop → report.  No LLM in the control path; the
 controller is pure Python except for the async agent calls it dispatches.
 
-See ``docs/superpowers/specs/2026-05-22-rubric-driven-harness-design.md`` §7.
+See ``docs/history/specs/2026-05-22-rubric-driven-harness-design.md`` §7.
 """
 
 from __future__ import annotations

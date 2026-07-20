@@ -1,7 +1,7 @@
 """Pure absolute-epoch deadline helpers for durable, restart-safe budgets.
 
 WS3 (durable cloud-native orchestration) design
-(``docs/superpowers/specs/2026-07-10-durable-cloud-native-orchestration-ws3-design.md``):
+(``docs/history/specs/2026-07-10-durable-cloud-native-orchestration-ws3-design.md``):
 when a controller pod is killed and a successor **adopts** an in-flight GPU
 cell Job, the successor must inherit the run's REMAINING wall-clock budget,
 not a fresh full one -- otherwise every restart doubles the GPU cost. Today's

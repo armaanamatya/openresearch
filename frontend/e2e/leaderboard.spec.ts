@@ -11,7 +11,7 @@ import { test, expect } from "@playwright/test";
  * Docker-dependent populated-state e2e (seed N fixture runs and verify
  * ranking + row click navigation) is tracked as deferred per the plan.
  *
- * Spec: docs/superpowers/specs/2026-05-23-rubric-climb-leaderboard.md §6.4, §3 #12.
+ * Spec: docs/history/specs/2026-05-23-rubric-climb-leaderboard.md §6.4, §3 #12.
  */
 test.describe("/leaderboard", () => {
   test("renders the page with title and either rows or empty-state", async ({ page }) => {

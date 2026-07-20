@@ -368,7 +368,7 @@ class TestRubricChecklistBlock:
 
 
 class TestLoadPaperOverride:
-    """_load_paper_override loads docs/papers/<arxiv_id>.yaml from repo root."""
+    """_load_paper_override loads configs/papers/<arxiv_id>.yaml from repo root."""
 
     def test_missing_arxiv_id_returns_empty(self):
         from backend.agents.baseline_implementation import _load_paper_override
@@ -385,7 +385,7 @@ class TestLoadPaperOverride:
         """The real 2605.15155.yaml must exist and produce a non-empty block."""
         from backend.agents.baseline_implementation import _load_paper_override
         result = _load_paper_override("2605.15155")
-        assert result != "", "docs/papers/2605.15155.yaml must exist and be non-empty"
+        assert result != "", "configs/papers/2605.15155.yaml must exist and be non-empty"
         assert "PAPER-SPECIFIC GUIDANCE" in result
         assert "2605.15155" in result
 
@@ -402,7 +402,7 @@ class TestLoadPaperOverride:
         from backend.agents import baseline_implementation as bi
         # Redirect _REPO_ROOT to tmp_path so we can place a yaml there
         monkeypatch.setattr(bi, "_REPO_ROOT", tmp_path)
-        yaml_dir = tmp_path / "docs" / "papers"
+        yaml_dir = tmp_path / "configs" / "papers"
         yaml_dir.mkdir(parents=True)
         (yaml_dir / "1234.56789.yaml").write_text(
             "key: value\nnested:\n  a: 1\n", encoding="utf-8"
@@ -504,7 +504,7 @@ class TestPromptAssemblyOrder:
         """PAPER-SPECIFIC GUIDANCE comes after RUBRIC CHECKLIST."""
         from backend.agents import baseline_implementation as bi
         monkeypatch.setattr(bi, "_REPO_ROOT", tmp_path)
-        yaml_dir = tmp_path / "docs" / "papers"
+        yaml_dir = tmp_path / "configs" / "papers"
         yaml_dir.mkdir(parents=True)
         (yaml_dir / "2605.15155.yaml").write_text(
             "algorithm_invariants:\n  gate_formula: test\n", encoding="utf-8"
@@ -536,7 +536,7 @@ class TestPromptAssemblyOrder:
         """When both inputs exist, both RUBRIC CHECKLIST and PAPER-SPECIFIC GUIDANCE appear."""
         from backend.agents import baseline_implementation as bi
         monkeypatch.setattr(bi, "_REPO_ROOT", tmp_path)
-        yaml_dir = tmp_path / "docs" / "papers"
+        yaml_dir = tmp_path / "configs" / "papers"
         yaml_dir.mkdir(parents=True)
         (yaml_dir / "2605.15155.yaml").write_text(
             "algorithm_invariants:\n  beta: 10\n", encoding="utf-8"

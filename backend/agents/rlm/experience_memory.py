@@ -40,7 +40,7 @@ Default OFF (``OPENRESEARCH_EXPERIENCE_MEMORY`` unset/falsey): ``record`` is
 a no-op, ``infra_hints() == []``, ``guidance_block() == ""`` — byte-identical
 to today.
 
-See ``docs/superpowers/plans/2026-07-01-phase-1e-experience-memory.md``,
+See ``docs/history/plans/2026-07-01-phase-1e-experience-memory.md``,
 Unit B.
 """
 

@@ -206,7 +206,7 @@ def _describe_azure(ctx: Any) -> GpuCapacity:
     The azure runner's own SKU escalation operates independently and is correct
     regardless of this flag.
 
-    Full design: docs/superpowers/specs/2026-06-03-azure-aks-gpu-backend-design.md.
+    Full design: docs/history/specs/2026-06-03-azure-aks-gpu-backend-design.md.
     """
     import json
     from pathlib import Path

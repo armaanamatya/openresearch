@@ -4,7 +4,7 @@ Prices are approximate snapshots audited quarterly. Bump CATALOG_SCHEMA_VERSION
 on every audit pass to invalidate stale cached estimates. Each audit pass writes
 docs/runbooks/pricing-audit-YYYY-QN.md documenting every changed entry.
 
-Spec: docs/superpowers/specs/2026-05-25-budget-estimation-design.md §catalog.py
+Spec: docs/history/specs/2026-05-25-budget-estimation-design.md §catalog.py
 """
 
 from __future__ import annotations

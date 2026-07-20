@@ -3699,7 +3699,7 @@ def _metrics_completeness_violation(result: dict) -> tuple[str, str] | None:
     the loop must re-run to REAL measured numbers before it can score or finalize.
     Opt out with ``OPENRESEARCH_METRICS_COMPLETENESS_CHECK=0``. Returns
     ``(failure_class, message)`` or ``None``. See
-    docs/superpowers/specs/2026-05-30-rubric-scoring-fidelity-design.md.
+    docs/history/specs/2026-05-30-rubric-scoring-fidelity-design.md.
     """
     import os as _os
 
@@ -8115,7 +8115,7 @@ def run_experiment(
                            getattr(ctx, "run_id", "?"), _disk_post[1][:120])
 
     # Rubric-contract validation: post-run diff of metrics + artifacts against
-    # the paper's declared docs/papers/<arxiv_id>.yaml paper_targets section.
+    # the paper's declared configs/papers/<arxiv_id>.yaml paper_targets section.
     # Surfaces concrete, actionable violations the agent can fix on its next
     # implement_baseline iteration.  Covers 4 of 6 rubric areas
     # (Data fidelity, Experiment execution, Eval protocol, Result match,

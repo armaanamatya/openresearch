@@ -3,7 +3,7 @@
 Vendored prices are approximate snapshots refreshed quarterly. The resolver's
 ranking between SKUs is what matters; absolute prices may drift ±20%.
 
-See `docs/superpowers/specs/2026-05-23-dynamic-gpu-selection-design.md` §Catalog.
+See `docs/history/specs/2026-05-23-dynamic-gpu-selection-design.md` §Catalog.
 """
 
 from __future__ import annotations

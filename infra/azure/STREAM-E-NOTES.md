@@ -1,7 +1,7 @@
 # Stream E — Key Vault hardening + in-AKS orchestrator: operator notes
 
 > **Doc status:** Current · authored 2026-06-13.
-> Design authority: `docs/superpowers/specs/2026-06-12-azure-bicep-canonical-aionic-compute-design.md` (D4/D5/D8).
+> Design authority: `docs/history/specs/2026-06-12-azure-bicep-canonical-aionic-compute-design.md` (D4/D5/D8).
 
 ---
 

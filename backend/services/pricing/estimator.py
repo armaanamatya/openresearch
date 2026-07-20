@@ -4,7 +4,7 @@ Single public entry point: `estimate_paper_budget(source, *, recipe_mode, ...)`.
 Makes one Sonnet LLM call to estimate training workload, then computes GPU cost
 and API cost across all supported providers.
 
-Spec: docs/superpowers/specs/2026-05-25-budget-estimation-design.md §estimator.py
+Spec: docs/history/specs/2026-05-25-budget-estimation-design.md §estimator.py
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ class PdfPathNotAllowedError(ValueError):
     allowed root.
 
     Security-review fix: this is a REJECTION, not an estimator failure.
-    Invariant 10 (docs/superpowers/specs/2026-05-25-budget-estimation-design.md
+    Invariant 10 (docs/history/specs/2026-05-25-budget-estimation-design.md
     §HTTP API) says estimator FAILURES return HTTP 200 + error_message so the
     UI can offer "skip estimate" -- but a path-containment violation is an
     attempted arbitrary-file-read, not a failure to estimate. The HTTP layer

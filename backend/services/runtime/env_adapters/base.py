@@ -1,7 +1,7 @@
 """EnvironmentAdapter — the paper-agnostic provisioning contract (Phase 1a).
 
 Part of the provisioning-seam refactor (see
-``docs/superpowers/plans/2026-07-01-phase-1a-1b-provisioning-seam-and-gates.md``):
+``docs/history/plans/2026-07-01-phase-1a-1b-provisioning-seam-and-gates.md``):
 ``env_cache.py``'s ``EnvCacheManager`` hard-codes three SDAR-specific setup
 methods (``ensure_alfworld`` / ``acquire_webshop`` / ``ensure_search_qa_index``).
 This module defines the generalized shape every environment-provisioning adapter

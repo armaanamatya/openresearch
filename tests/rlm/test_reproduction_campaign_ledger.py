@@ -3,7 +3,7 @@
 Covers ``CampaignLedger``'s atomic+fsync durability guarantees in isolation
 from the state machine: atomic snapshot writes, append-only newline-guarded
 rows, corrupt-tail tolerance vs. mid-file-corruption halt, and unwritable-dir
-fail-closed behavior. Spec: docs/superpowers/specs/2026-07-01-reproduction-
+fail-closed behavior. Spec: docs/history/specs/2026-07-01-reproduction-
 campaign-and-self-improving-harness-design.md §5, F1, F7.
 """
 

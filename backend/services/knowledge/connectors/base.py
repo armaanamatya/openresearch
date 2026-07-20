@@ -11,7 +11,7 @@ literature records — the input-side counterpart to
 ``backend/agents/rlm/claim_grounding.py``.
 
 Design contract (house rules — see
-``docs/superpowers/specs/2026-07-05-openscience-skill-library-and-harness-enhancements-design.md``
+``docs/history/specs/2026-07-05-openscience-skill-library-and-harness-enhancements-design.md``
 §6②):
   - Gated at the CALL SITE by ``OPENRESEARCH_LITERATURE_GROUNDING`` — this
     module is always importable; ``.search()``/``.fetch()`` are simply never

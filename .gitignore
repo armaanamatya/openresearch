@@ -61,23 +61,12 @@ Thumbs.db
 # Local run outputs (anchored to repo root — must not match nested
 # source paths like frontend/src/app/api/runs/ or frontend/src/lib/runs/
 # or backend/services/runs/).
-# Policy (2026-05-30): IGNORE the heavy run artifacts (per-run .venv/, code/,
-# rlm_state/ checkpoints, weight caches, .heartbeat) but TRACK the small,
-# high-value per-run diagnostic logs so results + failure trails live in git.
-# Whitelist idiom: ignore everything under /runs/, then re-include the per-run
-# dirs (so git descends ONE level — it never walks code/ or .venv/) plus the
-# specific key logs.
+# Local run output is operational state, not source.  Existing tracked run
+# summaries remain available as historical evidence, but new runs are ignored
+# by default so an ordinary reproduction never dirties the worktree. Curate a
+# completed result into best_runs/ (with its provenance) or force-add a small,
+# reviewed evidence file deliberately; do not revive a broad whitelist here.
 /runs/**
-!/runs/*/
-!/runs/*/final_report.json
-!/runs/*/final_report.md
-!/runs/*/demo_status.json
-!/runs/*/batch_child.log
-!/runs/*/experiment_runs.jsonl
-!/runs/*/cost_ledger.jsonl
-!/runs/*/tokens_total.json
-# (dashboard_events.jsonl is the full SSE firehose — can be large; track it
-#  per-run on demand with `git add -f runs/<id>/dashboard_events.jsonl`.)
 # Throwaway BES A1 SELECT-stability capture dirs — re-ignore wholesale (these
 # override the per-run whitelist above) so the safe-capture wrapper's scratch
 # runs never sweep their whitelisted JSON into a commit.

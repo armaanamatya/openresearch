@@ -19,7 +19,7 @@ Auth posture:
     upload code and download artifacts, and the operator's kubeconfig to submit
     and watch Jobs.
 
-Design reference: ``docs/superpowers/specs/2026-06-03-azure-aks-gpu-backend-design.md``
+Design reference: ``docs/history/specs/2026-06-03-azure-aks-gpu-backend-design.md``
 """
 
 from __future__ import annotations

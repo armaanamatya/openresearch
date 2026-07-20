@@ -6,7 +6,7 @@ Public API::
     from backend.agents.rdr.context_engineer import build_context
     ctx = build_context(cluster, paper=text, artifacts=done_artifacts)
 
-See ``docs/superpowers/specs/2026-05-22-rubric-driven-harness-design.md`` §6.
+See ``docs/history/specs/2026-05-22-rubric-driven-harness-design.md`` §6.
 """
 
 from __future__ import annotations

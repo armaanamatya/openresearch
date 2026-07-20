@@ -1,7 +1,7 @@
 """Tests for metric_binding.bind_claims (Track A, closes gap D2).
 
 Pure deterministic tests — no LLM, no network, no filesystem. See
-docs/superpowers/specs/2026-07-09-eval-integrity-track-a-design.md §4.1 for the
+docs/history/specs/2026-07-09-eval-integrity-track-a-design.md §4.1 for the
 design this locks down: a candidate bind is accepted only when the resolved
 scope keys deterministically match the claim's declared scope; anything
 ambiguous or mismatched stays unbound rather than risk a wrong number.

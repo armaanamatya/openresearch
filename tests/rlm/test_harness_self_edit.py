@@ -6,7 +6,7 @@ no LLM calls, no subprocess. The whitelist file the module reads
 ``harness_self_edit.SURFACE_PATH`` so tests never depend on -- or mutate --
 the real checked-in whitelist.
 
-Spec: docs/superpowers/specs/2026-07-01-reproduction-campaign-and-self-improving-harness-design.md
+Spec: docs/history/specs/2026-07-01-reproduction-campaign-and-self-improving-harness-design.md
 S11.2 (self-edit tier) + S17 (non-goals: no autonomous canary->default flip,
 ever) + S20 F11 (dedicated HarnessEditGate, held_out_gate untouched) / F12
 (strengthened canary: >=2 papers x >=2 seeds, sigma bound, negative control,

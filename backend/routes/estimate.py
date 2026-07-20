@@ -1,6 +1,6 @@
 """POST /paper/estimate — pre-run budget estimation.
 
-Spec: docs/superpowers/specs/2026-05-25-budget-estimation-design.md §HTTP API
+Spec: docs/history/specs/2026-05-25-budget-estimation-design.md §HTTP API
 Invariant 7: this handler never spawns a subprocess.
 Invariant 10: on failure, return a 200 with error_message so the UI can
   surface "Skip estimate and start anyway" without blocking the user.

@@ -6,7 +6,7 @@ Public API::
     from backend.agents.rdr.decomposer import decompose
     clusters = decompose(rubric_tree)
 
-See ``docs/superpowers/specs/2026-05-22-rubric-driven-harness-design.md`` §5.
+See ``docs/history/specs/2026-05-22-rubric-driven-harness-design.md`` §5.
 """
 
 from __future__ import annotations

@@ -6,7 +6,7 @@ Loads `runs/<id>/timing.json` from every preserved run and returns a
 When fewer than `MIN_NEIGHBORS` matching runs exist, returns `None` — the
 caller (estimator.py) then skips this source (σ=∞ contribution = 0 weight).
 
-Spec: docs/superpowers/specs/2026-05-25-three-source-budget-estimator-design.md §knn
+Spec: docs/history/specs/2026-05-25-three-source-budget-estimator-design.md §knn
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 """Generic AssetResolver — resolves Phase-1b ``RequiredAsset``s for ANY paper.
 
 Phase 1d, Unit B of the credentials/assets/cpu-tier refactor (see
-``docs/superpowers/plans/2026-07-01-phase-1d-credentials-assets-cpu-tier.md``):
+``docs/history/plans/2026-07-01-phase-1d-credentials-assets-cpu-tier.md``):
 this module WRAPS the existing, proven fetchers (``dataset_recipes.find_recipe``
 for the registry/torchvision path, ``huggingface_hub.snapshot_download`` for
 weights/datasets keyed by an HF repo id, a plain URL fetch for everything else)

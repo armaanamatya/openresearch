@@ -1,6 +1,6 @@
 """Tests for the SDAR baseline-coverage guidance block (BES Phase 1).
 
-Spec: docs/superpowers/specs/2026-06-07-bes-integration/phase-1-coverage-completion.md
+Spec: docs/history/specs/2026-06-07-bes-integration/phase-1-coverage-completion.md
 
 Covers:
   - Opt-in OFF parity: with OPENRESEARCH_SDAR_BASELINES unset, _compute_constraint_guidance

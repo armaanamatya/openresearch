@@ -1,7 +1,7 @@
 """SearchQaAdapter — Search-QA dense/BM25 retriever provisioning (Phase 1a).
 
 Part of the provisioning-seam refactor (see
-``docs/superpowers/plans/2026-07-01-phase-1a-1b-provisioning-seam-and-gates.md``):
+``docs/history/plans/2026-07-01-phase-1a-1b-provisioning-seam-and-gates.md``):
 lifts ``EnvCacheManager.ensure_search_qa_index`` and its helper functions
 (``_search_qa_encoder`` / ``_default_search_qa_index_builder``) out of
 ``env_cache.py`` verbatim, behind the

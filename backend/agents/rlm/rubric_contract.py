@@ -3,7 +3,7 @@
 The PaperBench-style rubric scores six areas. Five of them
 (Data fidelity, Experiment execution, Evaluation protocol, Result match,
 Artifact completeness) are **deterministically verifiable** against a
-contract the paper declares in ``docs/papers/<arxiv_id>.yaml``:
+contract the paper declares in ``configs/papers/<arxiv_id>.yaml``:
 
     paper_targets:
       mnist_baseline_final_acc: 0.965        # numeric target
@@ -302,7 +302,7 @@ def validate(
 
 
 def load_paper_targets(arxiv_id: str | None, *, docs_root: Path | None = None) -> dict | None:
-    """Load ``paper_targets`` from ``docs/papers/<arxiv_id>.yaml``.
+    """Load ``paper_targets`` from ``configs/papers/<arxiv_id>.yaml``.
 
     Returns ``None`` when no override exists OR when the override has no
     ``paper_targets`` section — both cases mean "no contract to validate
@@ -311,7 +311,7 @@ def load_paper_targets(arxiv_id: str | None, *, docs_root: Path | None = None) -
     if not arxiv_id:
         return None
     if docs_root is None:
-        docs_root = Path(__file__).resolve().parents[3] / "docs" / "papers"
+        docs_root = Path(__file__).resolve().parents[3] / "configs" / "papers"
     yaml_path = docs_root / f"{arxiv_id}.yaml"
     if not yaml_path.exists():
         return None

@@ -84,7 +84,7 @@ class RunContext:
                             # set by run.py / rdr/run.py from OPENRESEARCH_SCOPE_SPEC_JSON.
     arxiv_id: str | None = None  # Bare arXiv ID (e.g. "2605.15155") when known; set by
                                  # run_pipeline_rlm from artifact_index.json / demo_status.json
-                                 # so implement_baseline can route docs/papers/<id>.yaml even
+                                 # so implement_baseline can route configs/papers/<id>.yaml even
                                  # when project_id is a hashed `prj_<digest>` string that the
                                  # _extract_arxiv_id regex cannot parse.
     minimize_compute: bool = False  # Lane Q — --minimize-compute / lab UI checkbox. When True,
