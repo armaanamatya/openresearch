@@ -105,7 +105,7 @@ a subsequent explicit project listing showed no clusters and no
 `gke-deepinv-gke-smoke*` Compute Engine nodes. The diagnostic is closed and
 left no running GKE or node resource.
 
-### Why the historical GPU runs worked — configuration comparison
+### Historical GKE configuration reconciliation — corrected 2026-07-19
 
 The repository retains records for two different, now-deleted GKE generations;
 they must not be conflated with a persistent Claude credential.
@@ -114,27 +114,43 @@ they must not be conflated with a persistent Claude credential.
   node-service-account plus `storage-rw`-scope route against
   `deepinvent-ext-ut-sdar-runs`.
 - The later `deepinv-gke` cluster ran `prj_resnetgcp4` through
-  `prj_resnetgcp12` on 2026-07-17. Its validated L4 path used
-  `reprolab/reprolab-sa`,
-  `deepinv-workload@deepinvent-ext-ut.iam.gserviceaccount.com`, and Workload
-  Identity to upload to `deepinvent-ext-ut-reprolab-artifacts`. It was deleted
-  externally around 2026-07-17 22:00 UTC.
+  `prj_resnetgcp12` on 2026-07-17 and was deleted externally around
+  2026-07-17 22:00 UTC. Its Terraform state version at 06:33 UTC records a
+  Workload-Identity-enabled cluster, `deepinv-gke-node@…` attached to every
+  node pool, and `deepinv-workload@…` with bucket object-admin access. It does
+  **not** record a `google_service_account_iam_member` resource for
+  `roles/iam.workloadIdentityUser`.
 
-The current decisive difference is on the latter path's GSA policy: a live
-read returned only `{\"etag\": \"ACAB\"}` — no
+The saved run evidence is also nuanced: `prj_resnetgcp10` recorded the same
+metadata-token HTTP 403 before this workstream; later runs reached cell
+execution and timeouts after the L4 pool was recreated with the custom node
+service account. The dated handoff says the final path uploaded artifacts, but
+there is no preserved IAM-policy snapshot that proves which identity binding
+was present then. Therefore the evidence does **not** establish that the
+operator changed GCP, nor does it identify an actor or time for any policy
+mutation.
+
+To eliminate the topology difference, a second bounded CPU-only cluster,
+`deepinv-gke-historical-probe-20260719`, was created with the exact historical
+settings: workload pool `deepinvent-ext-ut.svc.id.goog`, custom node service
+account `deepinv-gke-node@…`, `cloud-platform` scope,
+`GKE_METADATA`, and annotated `reprolab/reprolab-sa` → `deepinv-workload@…`.
+The node reached `Ready`; a no-write metadata Job returned the expected GSA
+email and the same token HTTP 403. No GPU, LLM, paper, or GCS write ran. This
+proves that the **current** keyless Workload-Identity path cannot mint a token
+even with the historical node identity; it does not prove what changed after
+the historical run. Teardown operation
+`operation-1784524836593-f46bb931-2854-4ef2-8ecd-c83732bc89f7` reached `DONE`;
+an explicit project listing then confirmed no GKE clusters and no
+`gke-deepinv-gke-historic*` Compute Engine nodes remain.
+
+The current GSA policy still contains only `{\"etag\": \"ACAB\"}` — no
 `roles/iam.workloadIdentityUser` member for
-`serviceAccount:deepinvent-ext-ut.svc.id.goog[reprolab/reprolab-sa]`. Cluster
-deletion does not remove a GSA IAM policy, so either that policy was overwritten
-or the GSA was recreated after the validated run. The available records do not
-attribute which actor or automation made that mutation.
-
-The old node-service-account route is not a reusable fallback: its cluster is
-gone, it targets a different bucket, and current inspection finds neither a
-project-level nor either current artifact-bucket write role for
-`deepinv-gke-node@deepinvent-ext-ut.iam.gserviceaccount.com`. More importantly,
-the scheduler's evidence contract does not permit substituting node credentials
-for the current provenance identity. Recreating a cluster or re-authenticating
-the same user cannot recreate the missing GSA policy binding.
+`serviceAccount:deepinvent-ext-ut.svc.id.goog[reprolab/reprolab-sa]`. The
+workstream has not changed any project, service-account, or bucket IAM policy;
+it created and deleted only temporary GKE/Kubernetes probe resources. The old
+node-service-account route is not an evidence-contract-permitted fallback, and
+current bucket policy exposes no write role for the node service account.
 
 After an explicit 2026-07-19 CLI OAuth and ADC refresh as
 `aayush@deepinvent.ai`, the IAM REST `testIamPermissions` request for the GSA
@@ -153,8 +169,8 @@ requires IRSA. The controller dependency is declared in
 
 ## Exact unblocks before any real run
 
-1. A project IAM administrator must restore the Workload Identity and custom
-   node-service-account bindings (no static key fallback):
+1. A project IAM administrator must restore the Workload Identity binding (no
+   static-key or node-credential fallback):
 
    ```bash
    gcloud iam service-accounts add-iam-policy-binding \
@@ -162,7 +178,13 @@ requires IRSA. The controller dependency is declared in
      --project deepinvent-ext-ut \
      --member='serviceAccount:deepinvent-ext-ut.svc.id.goog[reprolab/reprolab-sa]' \
      --role=roles/iam.workloadIdentityUser
+   ```
 
+   After that first binding is restored, validate the retained custom node
+   service-account roles before a production image pull. If missing, an IAM
+   administrator can restore them with:
+
+   ```bash
    gcloud projects add-iam-policy-binding deepinvent-ext-ut \
      --member='serviceAccount:deepinv-gke-node@deepinvent-ext-ut.iam.gserviceaccount.com' \
      --role=roles/container.defaultNodeServiceAccount
