@@ -95,6 +95,16 @@ _FOUNDRY_ALIASES: dict[str, str] = {
 }
 
 
+# Foundry role-token aliases → their bare Claude PRICING keys. The ledger records
+# these hyphenated role tokens on some Foundry sub-role paths (grader/executor via
+# role_models); `_resolve_pricing`'s ``provider.``-dot stripping does not match a
+# hyphen, so without this map they resolve to None and price at $0.
+_FOUNDRY_ALIASES: dict[str, str] = {
+    "opus-foundry": "claude-opus-4-8",
+    "sonnet-foundry": "claude-sonnet-5",
+}
+
+
 def _resolve_pricing(model: str) -> ModelPricing | None:
     """Resolve a ModelPricing entry for *model*.
 

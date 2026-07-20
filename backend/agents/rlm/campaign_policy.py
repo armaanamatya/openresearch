@@ -44,6 +44,16 @@ def _validate_scheduler_plan_metadata(plan: NextAttemptPlan) -> None:
     if type(plan.is_safety_bracket) is not bool:
         raise ValueError(f"is_safety_bracket must be bool, got {plan.is_safety_bracket!r}")
 
+_BRANCH_TYPES: frozenset[str] = frozenset({"faithful", "ambiguity", "discovery"})
+
+
+def _validate_scheduler_plan_metadata(plan: NextAttemptPlan) -> None:
+    """Prevent malformed scheduler metadata from becoming a durable decision."""
+    if plan.branch_type not in _BRANCH_TYPES:
+        raise ValueError(f"branch_type must be one of {sorted(_BRANCH_TYPES)}, got {plan.branch_type!r}")
+    if type(plan.is_safety_bracket) is not bool:
+        raise ValueError(f"is_safety_bracket must be bool, got {plan.is_safety_bracket!r}")
+
 # --- Exceptions --------------------------------------------------------
 
 
