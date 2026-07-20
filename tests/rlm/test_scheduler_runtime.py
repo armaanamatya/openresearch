@@ -8,11 +8,19 @@ from pathlib import Path
 import pytest
 
 from backend.agents.rlm.scheduler_evidence import PaperStepLadder
-from backend.agents.rlm.scheduler_runtime import SchedulerRuntimeError, SchedulerTreeRuntime
+from backend.agents.rlm.scheduler_runtime import (
+    SchedulerRuntimeError,
+    SchedulerTreeRuntime,
+    load_authority_spec,
+)
 
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _f10(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _ladder() -> PaperStepLadder:
@@ -112,7 +120,7 @@ def test_authority_tree_promotes_freezes_and_emits_factual_events_after_wal(tmp_
         assert runtime.register_branch(
             branch_id=branch_id,
             branch_type=branch_id if branch_id != "faithful" else "faithful",
-            hypothesis_fingerprint=f"f10-{branch_id}",
+            hypothesis_fingerprint=_f10(f"f10-{branch_id}"),
         )
         runtime.record_receipt(branch_id, _receipt(tmp_path, ladder, branch_id=branch_id, attempt_n=attempt_n, value=score))
 
@@ -120,7 +128,8 @@ def test_authority_tree_promotes_freezes_and_emits_factual_events_after_wal(tmp_
         rung=0,
         provider_gpu_usd_by_branch={"faithful": 1.0, "ambiguity": 1.0, "discovery": 1.0},
         gpu_usd_budget=1.0,
-        a100_cap=1,
+        a100_cap=2,
+        discovery_gpu_usd_budget=1.0,
     )
 
     actions = {item.branch_id: item.action for item in result.actions}
@@ -134,17 +143,21 @@ def test_authority_tree_promotes_freezes_and_emits_factual_events_after_wal(tmp_
     assert result.authority_audit()["applied"] is True
     assert {item.decision_evidence_sha256 for item in result.actions} == {result.decision_evidence_sha256}
     assert {item.authority_audit_sha256 for item in result.actions} == {result.authority_audit_sha256}
+    assert (tmp_path / "campaign" / "scheduler_ladder.json").is_file()
+    decision_evidence = tmp_path / result.decision_evidence_path
+    assert decision_evidence.is_file()
+    assert hashlib.sha256(decision_evidence.read_bytes()).hexdigest() == result.decision_evidence_sha256
     assert any(kind == "branch_promoted" for kind, _ in events)
     assert any(kind == "frozen_pool_eviction" for kind, _ in events)
     wal = (tmp_path / "campaign" / "scheduler_tree_actions.jsonl").read_text(encoding="utf-8")
-    assert "authority_transition" in wal
+    assert "authority_batch" in wal
 
 
 def test_true_kill_requires_literal_training_diverged_and_is_never_grade_based(tmp_path):
     runtime = _runtime(tmp_path)
     ladder = _ladder()
-    runtime.register_branch(branch_id="bad", branch_type="faithful", hypothesis_fingerprint="f10-bad")
-    runtime.register_branch(branch_id="good", branch_type="faithful", hypothesis_fingerprint="f10-good")
+    runtime.register_branch(branch_id="bad", branch_type="faithful", hypothesis_fingerprint=_f10("f10-bad"))
+    runtime.register_branch(branch_id="good", branch_type="faithful", hypothesis_fingerprint=_f10("f10-good"))
     # A lower final_report score is embedded in every receipt fixture.  The
     # authority result is controlled only by eval.accuracy and the literal cause.
     runtime.record_receipt("bad", _receipt(tmp_path, ladder, branch_id="bad", attempt_n=1, value=0.99,
@@ -165,7 +178,7 @@ def test_true_kill_requires_literal_training_diverged_and_is_never_grade_based(t
 def test_missing_provider_cost_or_receipt_fails_closed_without_authority_transition(tmp_path):
     runtime = _runtime(tmp_path)
     ladder = _ladder()
-    runtime.register_branch(branch_id="b1", branch_type="faithful", hypothesis_fingerprint="f10-b1")
+    runtime.register_branch(branch_id="b1", branch_type="faithful", hypothesis_fingerprint=_f10("f10-b1"))
     with pytest.raises(SchedulerRuntimeError, match="receipt"):
         runtime.record_receipt("b1", tmp_path / "campaign" / "scheduler_receipts" / "missing.json")
     assert runtime.branches["b1"].state == "queued"
@@ -179,14 +192,97 @@ def test_missing_provider_cost_or_receipt_fails_closed_without_authority_transit
 def test_write_ahead_wal_recovers_projection_and_f10_dedup_is_not_reinvented(tmp_path):
     events: list[tuple[str, dict]] = []
     runtime = _runtime(tmp_path, events)
-    assert runtime.register_branch(branch_id="first", branch_type="faithful", hypothesis_fingerprint="existing-f10")
-    assert not runtime.register_branch(branch_id="duplicate", branch_type="ambiguity", hypothesis_fingerprint="existing-f10")
+    existing_f10 = _f10("existing-f10")
+    assert runtime.register_branch(branch_id="first", branch_type="faithful", hypothesis_fingerprint=existing_f10)
+    assert not runtime.register_branch(branch_id="duplicate", branch_type="ambiguity", hypothesis_fingerprint=existing_f10)
     assert set(runtime.branches) == {"first"}
-    assert events[-1] == ("dedup_hit", {"hypothesis_fingerprint": "existing-f10", "existing_branch_id": "first"})
+    assert events[-1] == ("dedup_hit", {"hypothesis_fingerprint": existing_f10, "existing_branch_id": "first"})
 
     # Simulate a controller crash after fsync'ing the WAL but before a durable
     # snapshot reaches its next process. Re-opening reconstructs the same tree.
     (tmp_path / "campaign" / "scheduler_tree_state.json").unlink()
     recovered = _runtime(tmp_path)
     assert set(recovered.branches) == {"first"}
-    assert recovered.branches["first"].hypothesis_fingerprint == "existing-f10"
+    assert recovered.branches["first"].hypothesis_fingerprint == existing_f10
+
+
+def test_event_outbox_keeps_a_whole_cohort_durable_and_reconciles_after_sink_failure(tmp_path):
+    runtime = _runtime(tmp_path)
+    ladder = _ladder()
+    for attempt_n, (branch_id, score) in enumerate((("top", 0.9), ("low", 0.1)), 1):
+        runtime.register_branch(branch_id=branch_id, branch_type="faithful", hypothesis_fingerprint=_f10(branch_id))
+        runtime.record_receipt(branch_id, _receipt(tmp_path, ladder, branch_id=branch_id, attempt_n=attempt_n, value=score))
+
+    # Deliver setup facts first. The batch's first authority event then fails,
+    # after its whole WAL decision was committed but before its EventStore fact.
+    runtime.event_sink = lambda _kind, _payload: None
+    assert runtime.reconcile_events() > 0
+    runtime.event_sink = lambda kind, _payload: (_ for _ in ()).throw(RuntimeError("store down")) if kind == "branch_promoted" else None
+    with pytest.raises(SchedulerRuntimeError, match="durable but event emission failed"):
+        runtime.decide_ready_rung(
+            rung=0, provider_gpu_usd_by_branch={"top": 1.0, "low": 1.0}, gpu_usd_budget=1.0, a100_cap=1,
+        )
+    # It is never a partly re-ranked cohort: both transitions were one batch.
+    assert runtime.branches["top"].state == "queued"
+    assert runtime.branches["low"].state == "frozen"
+
+    delivered: list[str] = []
+    runtime.event_sink = lambda kind, _payload: delivered.append(kind)
+    assert runtime.reconcile_events() >= 2
+    assert {"branch_promoted", "frozen_pool_eviction"}.issubset(delivered)
+    assert runtime.reconcile_events() == 0
+
+
+def test_frozen_branch_can_be_explicitly_revived_but_not_reuse_its_old_receipt(tmp_path):
+    events: list[tuple[str, dict]] = []
+    runtime = _runtime(tmp_path, events)
+    ladder = _ladder()
+    for attempt_n, (branch_id, score) in enumerate((("top", 0.9), ("low", 0.1)), 1):
+        runtime.register_branch(branch_id=branch_id, branch_type="faithful", hypothesis_fingerprint=_f10(branch_id))
+        runtime.record_receipt(branch_id, _receipt(tmp_path, ladder, branch_id=branch_id, attempt_n=attempt_n, value=score))
+    runtime.decide_ready_rung(
+        rung=0, provider_gpu_usd_by_branch={"top": 1.0, "low": 1.0}, gpu_usd_budget=1.0, a100_cap=1,
+    )
+    old_receipt = tmp_path / "campaign" / "scheduler_receipts" / "low-2.json"
+    revived = runtime.revive_branch("low")
+    assert revived.state == "queued"
+    assert revived.checkpoint_path is not None
+    assert revived.receipt_sha256 is None
+    assert events[-1][0] == "branch_revived"
+    with pytest.raises(SchedulerRuntimeError, match="already produced"):
+        runtime.record_receipt("low", old_receipt)
+
+
+def test_explicit_zero_gpu_width_freezes_a_single_ready_branch(tmp_path):
+    runtime = _runtime(tmp_path)
+    ladder = _ladder()
+    runtime.register_branch(branch_id="only", branch_type="faithful", hypothesis_fingerprint=_f10("only"))
+    runtime.record_receipt("only", _receipt(tmp_path, ladder, branch_id="only", attempt_n=1, value=0.9))
+    result = runtime.decide_ready_rung(
+        rung=0, provider_gpu_usd_by_branch={"only": 1.0}, gpu_usd_budget=0.0, a100_cap=1,
+    )
+    assert result.actions[0].action == "freeze"
+    assert runtime.branches["only"].state == "frozen"
+
+
+def test_authority_spec_requires_existing_f10s_and_separate_reservations(tmp_path):
+    raw = {
+        "schema_version": 1,
+        "ladder": {
+            "paper_ref": "2605.15155", "metric_id": "eval.accuracy", "direction": "maximize",
+            "r_max_steps": 50, "rung_steps": [10, 50], "schedule_source_sha256": "a" * 64,
+        },
+        "width": {"gpu_usd_budget": 3.0, "a100_cap": 2, "discovery_gpu_usd_budget": 1.0},
+        "branches": [
+            {"branch_id": "faithful", "branch_type": "faithful", "hypothesis_fingerprint": _f10("faithful"), "seed": 1},
+            {"branch_id": "discovery", "branch_type": "discovery", "hypothesis_fingerprint": _f10("discovery"), "seed": 2},
+        ],
+    }
+    path = tmp_path / "authority-spec.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    spec = load_authority_spec(path, paper_ref="2605.15155")
+    assert spec.discovery_gpu_usd_budget == 1.0
+    raw["branches"][1]["hypothesis_fingerprint"] = "not-a-sha"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(SchedulerRuntimeError, match="malformed"):
+        load_authority_spec(path, paper_ref="2605.15155")
