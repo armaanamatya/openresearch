@@ -3,6 +3,8 @@
 ## Status
 
 No chargeable reproduction has been launched in this workstream.
+For the full GKE investigation chronology and restart handoff, see
+[GKE identity rebuild investigation — handoff](2026-07-19-gke-identity-rebuild-handoff.md).
 `OPENRESEARCH_SCHEDULER_TREE=1` remains the only runnable scheduler mode.
 `OPENRESEARCH_SCHEDULER_AUTHORITATIVE` is still an explicit fail-closed audit
 seam: it preserves the cohort decision and records `applied:false` because the
