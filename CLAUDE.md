@@ -97,10 +97,10 @@ Load-bearing invariants; the owning nested file/spec carries the full rule + inc
   → `backend/agents/rlm/CLAUDE.md`
 - **Cost visibility.** `cost_ledger.jsonl`/`demo_status.json` are **blind** to Foundry-routed LLM
   spend and idle GPU-node time — a `$0` there is not proof of $0. Verify real cost via
-  `tokens_total.json` + `kubectl get nodes` (stray A100s), never the ledger alone. → `learn.md`
+  `tokens_total.json` + `kubectl get nodes` (stray A100s), never the ledger alone. → `docs/guides/reliability-rules.md`
 - **GKE runs go through the cell-matrix.** The monolithic `k8s_job_backend.exec` path never
   stages code into the pod; on gcp/gke, training routes via `cells.json`+`train_cell.py` (or the
-  `OPENRESEARCH_GKE_SYNTH_CELL` synthesis). → `backend/services/runtime/CLAUDE.md` · `learn.md`
+  `OPENRESEARCH_GKE_SYNTH_CELL` synthesis). → `backend/services/runtime/CLAUDE.md` · `docs/guides/reliability-rules.md`
 - **Delegation.** The session's lead model owns design + reviews **every diff**; delegate
   mechanical impl + wide recon to Sonnet/`Explore` sub-agents against a tight spec. → memory.
 - **Docker daemon** is a prerequisite only for the `docker`/`auto` sandboxes; `build_environment` is
@@ -129,7 +129,7 @@ header (`hmac.compare_digest`). Empty/unset disables the gate — local-dev beha
   `docs/design/project-rebuild-spec.md`.
 - **Specs / runbooks:** `docs/superpowers/specs/` (design specs, cited from the nested files),
   `docs/runbooks/` (setup, ops, dated handoffs).
-- **Reliability rules:** [`learn.md`](learn.md) — active cross-cutting *Rule/How/Why* log
+- **Reliability rules:** [`docs/guides/reliability-rules.md`](docs/guides/reliability-rules.md) — active cross-cutting *Rule/How/Why* log
   (pre-2026-06 postmortems archived at `docs/archive/learn.md`).
 - **Baseline test paper:** SDAR (arXiv 2605.15155) — the canonical stress test; full command +
   scope in `docs/runbooks/2026-05-23-sdar-baseline-handoff.md`.

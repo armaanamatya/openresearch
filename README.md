@@ -8,6 +8,9 @@
 > — see [Documentation](#documentation). There is no `prd.md`; the closest
 > spec is [`docs/design/project-rebuild-spec.md`](docs/design/project-rebuild-spec.md).
 
+> **New to the repository?** Start with [`ONBOARDING.md`](ONBOARDING.md), then
+> use the [documentation index](docs/README.md) instead of dated handoffs.
+
 Automated research paper reproduction. Given a paper (arXiv link or PDF), OpenResearch ingests it, builds a compute environment, implements and runs the experiments, scores the reproduction against a rubric, and outputs a benchmark report.
 
 > **Status (2026-06-03):** Single-user, locally-run research tool — not a hosted

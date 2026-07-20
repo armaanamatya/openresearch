@@ -39,6 +39,9 @@ APPROVED_PDF_GLOBS = [
     "best_runs/**/*.pdf",
     "docs/**/*.pdf",
     "third_party/**/*.pdf",
+    # Citation/template fixtures bundled with the writing skill.  They are
+    # immutable source material rather than operator-created run outputs.
+    "backend/agents/rlm/skills/**/templates/**/*.pdf",
     # Bundled reproduction targets (papers/registry.json) — input fixtures shipped
     # in-repo so they're selectable on a fresh clone with no network fetch. Added
     # by feat(papers) 01918a15; the allow-list was never updated, so docs-check

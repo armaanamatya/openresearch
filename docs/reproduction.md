@@ -52,6 +52,15 @@ claude login
 
 ## Run Locally
 
+The supported full-stack command is:
+
+```bash
+make dev
+```
+
+It starts and supervises both services. The split commands below are useful
+only when you need to run one side independently.
+
 Terminal 1, backend:
 
 ```bash
@@ -73,8 +82,9 @@ Backend-only launcher:
 ./start.sh
 ```
 
-`start.sh` reads `OPENRESEARCH_DEFAULT_SANDBOX` from the shell, then `.env`,
-then falls back to `runpod`. It does not start the frontend.
+`make dev-backend` (or `START_BACKEND_ONLY=1 ./start.sh`) reads
+`OPENRESEARCH_DEFAULT_SANDBOX` from the shell, then `.env`, then falls back to
+`runpod`. Plain `./start.sh` / `make dev` starts both backend and frontend.
 
 ## Smoke Checks
 
@@ -159,4 +169,3 @@ Each run writes to `runs/<project_id>/`:
 | Empty/partial SDK output | LLM credential issue, often no-credit Anthropic API key | Leave `ANTHROPIC_API_KEY` empty for Claude OAuth, or provide a credited API key |
 | SQLite opens under `/app/app/runs` | Three-slash SQLite URL | Use `sqlite:////app/runs/openresearch.db` in containers |
 | Tests fail with `disk_exhausted` | Production disk-floor preflight | Tests disable this by default; set `OPENRESEARCH_DISK_FLOOR_GB=0` for local mocked runs |
-

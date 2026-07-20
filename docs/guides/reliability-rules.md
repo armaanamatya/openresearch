@@ -1,4 +1,5 @@
-# learn.md — cross-cutting reliability rules (active)
+<!-- doc-meta: status=current; last-verified=2026-07-20 -->
+# Reliability rules
 
 > **Active, append-only.** This log holds cross-cutting reliability RULES in
 > **Rule / How / Why** shape (per the `/iterate` discipline) — not per-bug
@@ -10,7 +11,7 @@
 > `docs/superpowers/specs/` — this file cites them but doesn't retell them.
 > The pre-2026-06 postmortem log (`Symptom → Root cause → Fix → Lesson →
 > Guardrail` shape) is frozen and archived at
-> [`docs/archive/learn.md`](docs/archive/learn.md).
+> [`docs/archive/learn.md`](../archive/learn.md).
 
 ---
 
