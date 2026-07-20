@@ -402,6 +402,11 @@ def _mark_demo_status_stopped(
         merged = {
             **existing,
             "status": "stopped",
+            # ``status`` and ``process_status`` are distinct UI contracts, but
+            # a terminal CLI exit must close both.  Leaving process_status as
+            # "running" makes a stopped run appear live to consumers that use
+            # the subprocess lifecycle rather than the verdict lifecycle.
+            "process_status": "completed",
             "updatedAt": now_iso,
             "completedAt": now_iso,
             "error": reason,
@@ -455,6 +460,7 @@ def _mark_demo_status_failed(
         merged = {
             **existing,
             "status": "failed",
+            "process_status": "completed",
             "updatedAt": now_iso,
             "completedAt": now_iso,
             "error": reason,
@@ -531,6 +537,7 @@ def _mark_demo_status_killed(
         merged = {
             **existing,
             "status": "killed",
+            "process_status": "completed",
             "killReason": kill_reason,
             "updatedAt": now_iso,
             "completedAt": now_iso,
