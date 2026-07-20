@@ -3332,6 +3332,13 @@ def _backend_for_sandbox_mode(
         _runtime.ensure_azure_available()
         return AksJobBackend(run_budget=run_budget, gpu_plan=gpu_plan)
 
+    if mode is SandboxMode.aws:
+        import backend.services.runtime as _runtime
+        from backend.services.runtime.eks_job_backend import EksJobBackend
+
+        _runtime.ensure_aws_available()
+        return EksJobBackend(run_budget=run_budget, gpu_plan=gpu_plan)
+
     if mode is SandboxMode.gcp:
         import backend.services.runtime as _runtime
         from backend.services.runtime.gke_job_backend import GkeJobBackend
@@ -3344,7 +3351,7 @@ def _backend_for_sandbox_mode(
     logger.warning(
         "_execute_in_sandbox: sandbox_mode=%r is not supported in the RLM "
         "path — falling back to LocalDockerBackend.  "
-        "Set --sandbox docker, --sandbox runpod, or --sandbox azure for a supported backend.",
+        "Set --sandbox docker, --sandbox runpod, --sandbox azure, --sandbox aws, or --sandbox gcp for a supported backend.",
         mode.value,
     )
     return LocalDockerBackend()

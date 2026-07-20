@@ -379,7 +379,7 @@ def _build_job_manifest(
 
 
 class ObjectStore(typing.Protocol):
-    """Duck-type interface for a cloud object store (GCS / Azure Blob)."""
+    """Duck-type interface for a cloud object store (GCS / Azure Blob / S3)."""
 
     def upload_prefix(self, local_root: Any, *, blob_prefix: str) -> list[str]: ...
     def upload_bytes(self, data: bytes, *, blob_name: str) -> None: ...
@@ -499,6 +499,62 @@ class GcsStore:
             destination,
             bucket=self._bucket,
             project=self._project,
+            client=self._client,
+        )
+
+
+class S3Store:
+    """ObjectStore backed by Amazon S3.
+
+    Importing ``s3_blob`` at call time keeps boto3 optional and lets hermetic
+    tests patch ``backend.services.runtime.s3_blob`` with a fake module.
+    """
+
+    def __init__(self, bucket: str, region: str | None, client: Any) -> None:
+        self._bucket = bucket
+        self._region = region
+        self._client = client
+
+    def upload_prefix(self, local_root: Any, *, blob_prefix: str) -> list[str]:
+        from backend.services.runtime import s3_blob  # type: ignore[import]
+
+        return s3_blob.upload_prefix(
+            local_root,
+            blob_prefix=blob_prefix,
+            bucket=self._bucket,
+            region=self._region,
+            client=self._client,
+        )
+
+    def upload_bytes(self, data: bytes, *, blob_name: str) -> None:
+        from backend.services.runtime import s3_blob  # type: ignore[import]
+
+        s3_blob.upload_bytes(
+            data,
+            blob_name=blob_name,
+            bucket=self._bucket,
+            region=self._region,
+            client=self._client,
+        )
+
+    def download_bytes(self, blob_name: str) -> bytes:
+        from backend.services.runtime import s3_blob  # type: ignore[import]
+
+        return s3_blob.download_bytes(
+            blob_name,
+            bucket=self._bucket,
+            region=self._region,
+            client=self._client,
+        )
+
+    def download_artifact(self, blob_name: str, destination: Any) -> Path:
+        from backend.services.runtime import s3_blob  # type: ignore[import]
+
+        return s3_blob.download_artifact(
+            blob_name,
+            destination,
+            bucket=self._bucket,
+            region=self._region,
             client=self._client,
         )
 
@@ -1277,6 +1333,7 @@ __all__ = [
     "_JOB_PREFIX",
     "AzureBlobStore",
     "GcsStore",
+    "S3Store",
     "ObjectStore",
     "CloudSpec",
 ]

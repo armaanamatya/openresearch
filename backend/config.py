@@ -263,14 +263,14 @@ class Settings(BaseSettings):
     # "gke" is a first-class alias for "gcp" (SandboxMode._missing_ maps it to the
     # gcp member); accepted here so OPENRESEARCH_DEFAULT_SANDBOX=gke boots and the
     # start.sh gcp/gke preflight branch is reachable.
-    default_sandbox: Literal["auto", "local", "docker", "runpod", "azure", "gcp", "gke"] = "runpod"
+    default_sandbox: Literal["auto", "local", "docker", "runpod", "azure", "aws", "gcp", "gke"] = "runpod"
 
     # Optional hard override for every run's sandbox mode, regardless of what
     # the client requested. Empty means "honor the request/default_sandbox".
     # Deployments that must forbid RunPod should set OPENRESEARCH_FORCE_SANDBOX to
     # "docker" or "local" explicitly; the code default must stay empty so a
     # missing/commented .env line does not silently rewrite sandbox=runpod.
-    force_sandbox: Literal["", "auto", "local", "docker", "runpod", "azure", "gcp", "gke"] = ""
+    force_sandbox: Literal["", "auto", "local", "docker", "runpod", "azure", "aws", "gcp", "gke"] = ""
 
     # Force the LLM provider for every run regardless of what the client
     # requested — analogous to force_sandbox. The UI hard-codes provider=
@@ -321,6 +321,25 @@ class Settings(BaseSettings):
     # by the backend (the _owned_pod_ids allowlist enforces this even
     # if delete_on_destroy=true). Useful for persistent shared workers.
     runpod_pod_id: str = ""
+
+    # --- AWS EKS GPU runtime foundation (--sandbox aws) ---
+    # These defaults are intentionally inert.  Merely importing Settings or
+    # selecting any other sandbox neither imports boto3 nor contacts AWS.
+    # EksJobBackend validates the required bucket/cluster only when AWS is
+    # explicitly selected; it never provisions EKS, S3, or IAM resources.
+    aws_region: str = Field(default="us-east-1", description="AWS region for the pre-existing EKS cluster and S3 bucket")
+    aws_eks_cluster: str = Field(default="", description="Name of the pre-existing EKS cluster; required only for --sandbox aws preflight")
+    aws_s3_bucket: str = Field(default="", description="S3 bucket for run-scoped code and artifact transfers; required only for --sandbox aws")
+    aws_namespace: str = Field(default="reprolab", description="Kubernetes namespace for EKS Job submission")
+    aws_service_account: str = Field(default="reprolab-sa", description="EKS Kubernetes ServiceAccount configured with IRSA for S3")
+    aws_base_image: str = Field(default="", description="Pinned ECR/container image for EKS Jobs; empty fails only when AWS is selected")
+    aws_pending_timeout_seconds: int = Field(default=1500, ge=1, description="Seconds before a stuck EKS GPU Job is treated as capacity-exhausted")
+    aws_ttl_seconds_after_finished: int = Field(default=3600, ge=1, description="Kubernetes Job TTL after terminal completion")
+    aws_job_backoff_limit: int = Field(default=0, ge=0, description="EKS Job Pod-level retry limit; keep 0 so runtime accounting remains exact")
+    # Empty by default: the EKS foundation does not invent node-pool labels or
+    # a GPU catalog.  An operator must name only labels actually provisioned
+    # before enabling AWS GPU scheduling.
+    aws_gpu_skus: list[str] = Field(default_factory=list, description="Provisioned EKS GPU node labels (reprolab/sku); empty means no inferred selector")
 
     # --- Azure AKS GPU backend (spec 2026-06-03, --sandbox azure) ---
     # All fields default to empty/sensible stubs so importing Settings never

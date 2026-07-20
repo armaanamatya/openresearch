@@ -33,6 +33,7 @@ class SandboxMode(str, Enum):
     """Experiment execution backend policy."""
 
     auto = "auto"
+    aws = "aws"
     azure = "azure"
     brev = "brev"
     docker = "docker"
@@ -307,6 +308,10 @@ def ensure_sandbox_mode_available(mode: SandboxMode | str) -> None:
         from backend.services.runtime import ensure_azure_available
 
         ensure_azure_available()
+    elif resolved is SandboxMode.aws:
+        from backend.services.runtime import ensure_aws_available
+
+        ensure_aws_available()
     elif resolved is SandboxMode.gcp:
         from backend.services.runtime import ensure_gcp_available
 
