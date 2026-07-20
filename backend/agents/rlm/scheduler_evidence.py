@@ -15,10 +15,11 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 
 SCHEMA_VERSION = 1
@@ -171,6 +172,72 @@ def load_verified_receipt(
         return receipt
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return None
+
+
+def write_verified_receipt(
+    raw: Mapping[str, Any],
+    *,
+    ladder: PaperStepLadder,
+    run_dir: Path | str,
+    campaign_id: str,
+    attest: Callable[[Mapping[str, Any]], None],
+) -> Path:
+    """Atomically write and controller-attest one authority receipt.
+
+    This is the only writer-facing counterpart to :func:`load_verified_receipt`.
+    A cell runner must supply its already-materialized metric, checkpoint,
+    evidence bundle, and run-spec/dataset bindings.  This helper neither
+    manufactures evidence nor reads a grade.  It validates every binding
+    before publishing the receipt, asks the controller to append the durable
+    ``scheduler_receipt`` ledger attestation, then re-loads the result through
+    the normal verifier.  A failure at any point leaves it unusable for
+    authority.
+
+    ``attest`` is deliberately injected so this evidence module stays free of
+    campaign-controller imports.  Production passes ``CampaignLedger.append_row``;
+    tests may supply an equivalent fsync-backed attestor.
+    """
+    root = Path(run_dir).resolve()
+    try:
+        payload = dict(raw)
+        receipt = _receipt_from_mapping(payload)
+        if receipt.campaign_id != campaign_id:
+            raise ValueError("receipt campaign_id does not match controller campaign")
+        if not _matches_ladder(receipt, ladder):
+            raise ValueError("receipt does not match the paper step ladder")
+        if not _verify_metric(payload.get("metric"), receipt, root):
+            raise ValueError("receipt metric artifact does not verify")
+        if not _verify_checkpoint(payload.get("checkpoint"), receipt, root):
+            raise ValueError("receipt checkpoint does not verify")
+        if not _verify_evidence_bundle(payload.get("evidence_bundle"), receipt, root):
+            raise ValueError("receipt evidence bundle does not verify")
+        if not _verify_fingerprints(payload, receipt, root):
+            raise ValueError("receipt fingerprints do not verify")
+
+        receipt_dir = root / "campaign" / "scheduler_receipts"
+        receipt_dir.mkdir(parents=True, exist_ok=True)
+        filename = _receipt_filename(receipt.branch_id, receipt.attempt_n)
+        path = receipt_dir / filename
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        _atomic_write(path, encoded)
+        receipt_sha256 = _sha256_bytes(encoded)
+        attest({
+            "status": "scheduler_receipt",
+            "receipt_sha256": receipt_sha256,
+            "campaign_id": receipt.campaign_id,
+            "branch_id": receipt.branch_id,
+            "attempt_n": receipt.attempt_n,
+            "paper_ref": receipt.paper_ref,
+            "run_spec_sha256": receipt.run_spec_sha256,
+        })
+        verified = load_verified_receipt(
+            path, ladder=ladder, run_dir=root, expected_campaign_id=campaign_id,
+        )
+        if verified is None:
+            raise ValueError("controller attestation did not produce a verified receipt")
+        return path
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("cannot write a verified scheduler receipt") from exc
 
 
 def _receipt_from_mapping(raw: Mapping[str, Any]) -> BranchRungReceipt:
@@ -348,6 +415,33 @@ def _receipt_path(value: Path | str, root: Path) -> Path | None:
     except ValueError:
         return None
     return candidate if candidate.is_file() else None
+
+
+def _receipt_filename(branch_id: str, attempt_n: int) -> str:
+    if not branch_id or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for char in branch_id):
+        raise ValueError("branch_id is unsafe for a receipt filename")
+    return f"{branch_id}-{attempt_n}.json"
+
+
+def _atomic_write(path: Path, payload: bytes) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with tmp.open("wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        directory_fd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def _safe_relative_file(value: Any, root: Path) -> Path | None:

@@ -5,7 +5,13 @@ import hashlib
 import json
 from pathlib import Path
 
-from backend.agents.rlm.scheduler_evidence import PaperStepLadder, load_verified_receipt
+import pytest
+
+from backend.agents.rlm.scheduler_evidence import (
+    PaperStepLadder,
+    load_verified_receipt,
+    write_verified_receipt,
+)
 
 
 def _sha(path: Path) -> str:
@@ -246,3 +252,45 @@ def test_rejects_unattested_absolute_symlink_and_boolean_metric_receipts(tmp_pat
     receipt_link = tmp_path / "campaign" / "scheduler_receipts" / "receipt-link.json"
     receipt_link.symlink_to(receipt_path)
     assert load_verified_receipt(receipt_link, ladder=ladder, run_dir=tmp_path) is None
+
+
+def test_controller_writer_validates_before_attesting_then_reloads_its_own_receipt(tmp_path):
+    ladder = _ladder()
+    source = _receipt(tmp_path, ladder)
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    source.unlink()
+    ledger = tmp_path / "campaign" / "attempts.jsonl"
+    ledger.unlink()
+    rows: list[dict] = []
+
+    def attest(row):
+        rows.append(dict(row))
+        ledger.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    written = write_verified_receipt(
+        payload, ladder=ladder, run_dir=tmp_path, campaign_id="campaign-1", attest=attest,
+    )
+    assert written.name == "branch-1-1.json"
+    assert rows[0]["status"] == "scheduler_receipt"
+    assert load_verified_receipt(
+        written, ladder=ladder, run_dir=tmp_path, expected_campaign_id="campaign-1",
+    ) is not None
+
+
+def test_controller_writer_refuses_invalid_evidence_before_ledger_attestation(tmp_path):
+    ladder = _ladder()
+    source = _receipt(tmp_path, ladder)
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    source.unlink()
+    (tmp_path / "campaign" / "attempts.jsonl").unlink()
+    payload["metric"]["value"] = 0.1
+    rows: list[dict] = []
+    with pytest.raises(ValueError, match="cannot write"):
+        write_verified_receipt(
+            payload,
+            ladder=ladder,
+            run_dir=tmp_path,
+            campaign_id="campaign-1",
+            attest=lambda row: rows.append(dict(row)),
+        )
+    assert rows == []

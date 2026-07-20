@@ -57,14 +57,24 @@ def test_n1_single_branch_promotes():
 
 
 def test_envelope_not_shrunk_holds_all():
-    # spread (0.02) <= noise_floor (0.05) → don't cull; promote all.
+    # spread (0.02) <= noise_floor (0.05) → don't score-cull. The declared
+    # width is sufficient for both, so both are allowed to continue.
     d = _by_id(asha_decide([
         BranchObservation("a", score=0.50, gpu_usd=1.0),
         BranchObservation("b", score=0.52, gpu_usd=1.0),
-    ], RungConfig(gpu_usd_budget=1.0, noise_floor=0.05)))
+    ], RungConfig(gpu_usd_budget=2.0, noise_floor=0.05)))
     assert d["a"].action == "promote"
     assert d["b"].action == "promote"
     assert d["a"].reason == "envelope_not_shrunk"
+
+
+def test_explicit_zero_width_freezes_even_a_single_scored_branch():
+    d = _by_id(asha_decide(
+        [BranchObservation("solo", score=0.4, gpu_usd=1.0)],
+        RungConfig(gpu_usd_budget=0.0),
+    ))
+    assert d["solo"].action == "freeze"
+    assert d["solo"].reason == "width_meter_exhausted"
 
 
 def test_halving_promotes_top_k_freezes_rest():

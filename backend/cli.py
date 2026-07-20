@@ -3027,17 +3027,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--resume", action="store_true", default=False,
         help="Resume an existing campaign for this paper's project id.",
     )
-    campaign.add_argument(
-        "--project-id",
-        dest="project_id",
-        default=None,
-        help=(
-            "Override the project id (writes to runs/<project-id>/). When unset, "
-            "an id is derived from the paper source. Lets a durable controller "
-            "(or the REST API) resume the SAME campaign lineage across a Pod "
-            "restart/reschedule via --resume (mirrors reproduce's --project-id)."
-        ),
-    )
     campaign.set_defaults(func=cmd_campaign)
 
     from backend.cli_paperbench import add_paperbench_subparser

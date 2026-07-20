@@ -80,13 +80,19 @@ class SchedulerDecision:
 def _promotion_width(
     n_ranked: int, cohort: Sequence[BranchObservation], config: RungConfig
 ) -> int:
-    """``k = min(budget / cost_per_branch, a100_cap)`` clamped to ``[1, n_ranked]``;
+    """``k = min(budget / cost_per_branch, a100_cap)`` clamped to ``[0, n_ranked]``;
     geometric ``eta`` fallback when no budget/cost signal is available.
 
     ``cost_per_branch`` is the *max* observed spend in the cohort (conservative —
     it never over-promotes past the $ budget)."""
+    # An explicit zero is not an unavailable meter. It means that no ordinary
+    # branch may consume another rung; retaining a minimum-one promotion here
+    # would silently breach the caller's remaining-GPU-$ constraint.
+    if config.gpu_usd_budget is not None and config.gpu_usd_budget <= 0:
+        return 0
+
     k_cost: int | None = None
-    if config.gpu_usd_budget is not None and config.gpu_usd_budget > 0:
+    if config.gpu_usd_budget is not None:
         costs = [b.gpu_usd for b in cohort if b.gpu_usd > 0]
         cost_per_branch = max(costs) if costs else 0.0
         if cost_per_branch > 0:
@@ -97,7 +103,7 @@ def _promotion_width(
         k = k_cost
     if config.a100_cap is not None:
         k = min(k, config.a100_cap)
-    return max(1, min(k, n_ranked))
+    return max(0, min(k, n_ranked))
 
 
 def asha_decide(
@@ -144,14 +150,7 @@ def asha_decide(
     if not halvable:
         return decisions
 
-    # 4. N=1 degradation — nothing to halve.
-    if len(halvable) == 1:
-        decisions.append(
-            SchedulerDecision(halvable[0].branch_id, "promote", "n1_single_branch")
-        )
-        return decisions
-
-    # 5. A branch with no measurable score cannot justify promotion → FREEZE
+    # 4. A branch with no measurable score cannot justify promotion → FREEZE
     #    (revivable), never kill.
     ranked = [b for b in halvable if b.score is not None]
     for b in halvable:
@@ -161,21 +160,36 @@ def asha_decide(
             )
     if not ranked:
         return decisions
+
+    # 5. N=1 degradation — nothing to rank against, but it is still bound by
+    # both width meters. A lone unscored branch was already frozen above.
     if len(ranked) == 1:
-        decisions.append(
-            SchedulerDecision(ranked[0].branch_id, "promote", "n1_single_scored")
-        )
+        if _promotion_width(1, halvable, config) >= 1:
+            decisions.append(
+                SchedulerDecision(ranked[0].branch_id, "promote", "n1_single_scored")
+            )
+        else:
+            decisions.append(
+                SchedulerDecision(ranked[0].branch_id, "freeze", "width_meter_exhausted")
+            )
         return decisions
 
     scores = [b.score for b in ranked if b.score is not None]
     spread = max(scores) - min(scores)
 
-    # 6. Envelope-shrink gate — refuse to cull until curves separate beyond noise.
+    # 6. Envelope-shrink gate — refuse score-derived culling until curves
+    # separate beyond noise. It never permits a physical/dollar-cap bypass.
     if spread <= config.noise_floor:
-        for b in ranked:
-            decisions.append(
-                SchedulerDecision(b.branch_id, "promote", "envelope_not_shrunk")
-            )
+        k = _promotion_width(len(ranked), halvable, config)
+        for index, branch in enumerate(ranked):
+            if index < k:
+                decisions.append(
+                    SchedulerDecision(branch.branch_id, "promote", "envelope_not_shrunk")
+                )
+            else:
+                decisions.append(
+                    SchedulerDecision(branch.branch_id, "freeze", "width_meter_exhausted")
+                )
         return decisions
 
     # 7. Halving: promote top-k by score; FREEZE the rest (never kill — under-
