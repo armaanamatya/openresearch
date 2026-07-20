@@ -28,7 +28,7 @@ class TestRunContextArxivIdField:
         names = {f.name for f in dataclasses.fields(RunContext)}
         assert "arxiv_id" in names, (
             "RunContext.arxiv_id field is required for per-paper YAML override "
-            "routing.  Without it, docs/papers/<id>.yaml is dead code for every "
+            "routing.  Without it, configs/papers/<id>.yaml is dead code for every "
             "hashed-project-id run."
         )
 
@@ -167,7 +167,7 @@ class TestLoadPaperOverrideViaCTXArxivId:
         from backend.agents import baseline_implementation as bi
 
         monkeypatch.setattr(bi, "_REPO_ROOT", tmp_path)
-        yaml_dir = tmp_path / "docs" / "papers"
+        yaml_dir = tmp_path / "configs" / "papers"
         yaml_dir.mkdir(parents=True)
         (yaml_dir / "9999.99999.yaml").write_text(
             "algorithm: my_special_algo\nstep: test_step\n", encoding="utf-8"
@@ -187,7 +187,7 @@ class TestLoadPaperOverrideViaCTXArxivId:
         from backend.agents import baseline_implementation as bi
 
         monkeypatch.setattr(bi, "_REPO_ROOT", tmp_path)
-        # No yaml in docs/papers/ — make sure the dir doesn't exist
+        # No yaml in configs/papers/ — make sure the dir doesn't exist
         result = bi._compute_constraint_guidance(
             "docker", None,
             project_dir=None,
@@ -245,7 +245,7 @@ class TestExtractArxivIdFallbackStillWired:
         from backend.agents.schemas import EnvironmentSpec, PaperClaimMap
 
         monkeypatch.setattr(bi, "_REPO_ROOT", tmp_path)
-        yaml_dir = tmp_path / "docs" / "papers"
+        yaml_dir = tmp_path / "configs" / "papers"
         yaml_dir.mkdir(parents=True)
         (yaml_dir / "2605.15155.yaml").write_text(
             "algorithm: SDAR_sentinel_value\n", encoding="utf-8"

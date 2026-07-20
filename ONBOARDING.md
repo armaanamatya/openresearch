@@ -4,16 +4,13 @@
 Use this page as the single starting point for the repository.
 
 1. Read the public overview in [README.md](README.md).
-2. Set up a fresh clone through [docs/reproduction.md](docs/reproduction.md).
+2. Set up and run locally through [docs/operations.md](docs/operations.md).
 3. Use the supported development commands in the [Makefile](Makefile):
    `make setup`, `make smoke`, `make check`, `make dev`, `make dev-backend`, and
    `make dev-frontend`.
-4. Read [docs/README.md](docs/README.md) to navigate current architecture,
-   operations, and reference material.
+4. Read [docs/README.md](docs/README.md) for the remaining small reference set.
 
-The authority order is **code → architecture/design docs → CLAUDE.md →
-README.md**. Dated runbooks, plans, and handoffs are historical records, not
-instructions for a fresh run.
+The authority order is **code → architecture → CLAUDE.md → README.md**.
 
 ## Day-to-day rules
 

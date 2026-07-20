@@ -1,5 +1,5 @@
 """Per-paper invariant loader — declarative pre-flight checks driven by
-``docs/papers/<arxiv_id>.yaml``.
+``configs/papers/<arxiv_id>.yaml``.
 
 The 2026-05-25 codex review surfaced that the SDAR paper (arXiv 2605.15155)
 needs three pre-flight invariants the harness was missing: (a) the
@@ -159,7 +159,7 @@ class AlgorithmInvariant:
     WHY. The rubric grounds its coefficient assertions in the PAPER TEXT — the
     only source that generalizes to an arbitrary arXiv id. But an operator who has
     read the authors' released code sometimes records a DIFFERENT value here, on
-    purpose. SDAR is exactly that case: ``docs/papers/2605.15155.yaml`` declares
+    purpose. SDAR is exactly that case: ``configs/papers/2605.15155.yaml`` declares
     ``beta: 5.0`` / ``lambda: 0.01`` ("authors' released scripts") while the paper
     text prints β=10 / λ=0.1. A run that faithfully executes the authors' code
     therefore emits ``coefficients.beta = 5.0`` — and a deterministic
@@ -285,7 +285,7 @@ def declared_coefficients(
 ) -> dict[str, float]:
     """Operator-declared coefficients for the paper this run reproduces, if any.
 
-    ``{}`` whenever the paper has no ``docs/papers/<id>.yaml``, no
+    ``{}`` whenever the paper has no ``configs/papers/<id>.yaml``, no
     ``algorithm_invariants``, or no numeric entries in it — which is the common
     case, and means "no veto, the paper-text-grounded annotation stands."
     Fail-soft; never raises.
@@ -369,7 +369,7 @@ def canonical_model_key(name: str) -> str:
 
 
 def load_paper_invariants(arxiv_id: str, repo_root: Path | None = None) -> PaperInvariants | None:
-    """Load ``docs/papers/<arxiv_id>.yaml`` and extract invariants. Fail-soft.
+    """Load ``configs/papers/<arxiv_id>.yaml`` and extract invariants. Fail-soft.
 
     Returns ``None`` when:
       * ``arxiv_id`` is empty / None
@@ -387,7 +387,7 @@ def load_paper_invariants(arxiv_id: str, repo_root: Path | None = None) -> Paper
         # Default: the repo root is two parents up from this file
         # (backend/agents/rlm/paper_invariants.py → backend/agents → backend → repo).
         repo_root = Path(__file__).resolve().parents[3]
-    yaml_path = repo_root / "docs" / "papers" / f"{arxiv_id}.yaml"
+    yaml_path = repo_root / "configs" / "papers" / f"{arxiv_id}.yaml"
     if not yaml_path.exists():
         return None
     try:

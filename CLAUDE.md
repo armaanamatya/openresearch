@@ -1,9 +1,8 @@
 <!-- doc-meta: status=current; last-verified=2026-07-07 -->
 # CLAUDE.md
 
-> **Tier-2 day-to-day reference.** The "why" lives in `system_overview.md` +
-> `docs/design/rlm-pivot-brief.md` — read those before non-trivial architecture changes.
-> Doc policy: [`docs/policies/documentation.md`](docs/policies/documentation.md).
+> **Tier-2 day-to-day reference.** Read `docs/architecture.md` before
+> non-trivial architecture changes.
 >
 > **This root is deliberately lean.** Subsystem detail lives in nested `CLAUDE.md` files that
 > load automatically when you work in that subtree — `backend/agents/rlm/` (orchestrator,
@@ -97,10 +96,10 @@ Load-bearing invariants; the owning nested file/spec carries the full rule + inc
   → `backend/agents/rlm/CLAUDE.md`
 - **Cost visibility.** `cost_ledger.jsonl`/`demo_status.json` are **blind** to Foundry-routed LLM
   spend and idle GPU-node time — a `$0` there is not proof of $0. Verify real cost via
-  `tokens_total.json` + `kubectl get nodes` (stray A100s), never the ledger alone. → `docs/guides/reliability-rules.md`
+  `tokens_total.json` + `kubectl get nodes` (stray A100s), never the ledger alone.
 - **GKE runs go through the cell-matrix.** The monolithic `k8s_job_backend.exec` path never
   stages code into the pod; on gcp/gke, training routes via `cells.json`+`train_cell.py` (or the
-  `OPENRESEARCH_GKE_SYNTH_CELL` synthesis). → `backend/services/runtime/CLAUDE.md` · `docs/guides/reliability-rules.md`
+  `OPENRESEARCH_GKE_SYNTH_CELL` synthesis). → `backend/services/runtime/CLAUDE.md`
 - **Delegation.** The session's lead model owns design + reviews **every diff**; delegate
   mechanical impl + wide recon to Sonnet/`Explore` sub-agents against a tight spec. → memory.
 - **Docker daemon** is a prerequisite only for the `docker`/`auto` sandboxes; `build_environment` is
@@ -125,14 +124,8 @@ header (`hmac.compare_digest`). Empty/unset disables the gate — local-dev beha
 ## Doc map
 - **Nested `CLAUDE.md` (load on-demand):** `backend/agents/rlm/` · `backend/services/runtime/` ·
   `frontend/` · `tests/`.
-- **Tier-1 "why":** `system_overview.md`, `docs/design/rlm-pivot-brief.md`,
-  `docs/design/project-rebuild-spec.md`.
-- **Specs / runbooks:** `docs/history/specs/` (design specs, cited from the nested files),
-  `docs/runbooks/` (setup, ops, dated handoffs).
-- **Reliability rules:** [`docs/guides/reliability-rules.md`](docs/guides/reliability-rules.md) — active cross-cutting *Rule/How/Why* log
-  (pre-2026-06 postmortems archived at `docs/archive/learn.md`).
-- **Baseline test paper:** SDAR (arXiv 2605.15155) — the canonical stress test; full command +
-  scope in `docs/runbooks/2026-05-23-sdar-baseline-handoff.md`.
+- **Current docs:** `README.md`, `docs/architecture.md`, and `docs/operations.md`.
+- **Baseline test paper:** SDAR (arXiv 2605.15155) — the canonical stress test.
 
 ## Context-mode routing
 Inherits context-mode MCP routing from the parent `CLAUDE.md`: use
@@ -145,4 +138,4 @@ Root stays lean — orientation + always-on rules + pointers. When you add a pri
 sandbox, or flag, update the **nested** `CLAUDE.md` that owns it, not this file. Fidelity anchors
 kept current here + guarded by `tests/test_claude_md_fidelity.py` (which reads the root **and**
 nested set): the bound primitive count is **19**, and the RunPod cloud-type default is `SECURE`.
-`system_overview.md` = the "why"; this = the day-to-day.
+`docs/architecture.md` = the system map; this = the day-to-day.

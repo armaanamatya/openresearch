@@ -8115,7 +8115,7 @@ def run_experiment(
                            getattr(ctx, "run_id", "?"), _disk_post[1][:120])
 
     # Rubric-contract validation: post-run diff of metrics + artifacts against
-    # the paper's declared docs/papers/<arxiv_id>.yaml paper_targets section.
+    # the paper's declared configs/papers/<arxiv_id>.yaml paper_targets section.
     # Surfaces concrete, actionable violations the agent can fix on its next
     # implement_baseline iteration.  Covers 4 of 6 rubric areas
     # (Data fidelity, Experiment execution, Eval protocol, Result match,

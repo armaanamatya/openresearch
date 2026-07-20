@@ -25,7 +25,7 @@ from backend.utils.io import read_json
 
 logger = logging.getLogger(__name__)
 
-# Repo root — used by _load_paper_override to locate docs/papers/<id>.yaml
+# Repo root — used by _load_paper_override to locate configs/papers/<id>.yaml
 _REPO_ROOT = Path(__file__).parent.parent.parent
 
 # Regex matching bare arXiv IDs in project_id strings (e.g. "2605.15155",
@@ -1316,7 +1316,7 @@ _RUBRIC_GUARD_BLOCK = (
     "the faster you can repair the gap.\n"
     "\n"
     "Required keys / artifacts come from the paper rubric. Derive them from\n"
-    "context['paper_targets'] / docs/papers/<arxiv_id>.yaml when present, else\n"
+    "context['paper_targets'] / configs/papers/<arxiv_id>.yaml when present, else\n"
     "pick the minimal set the rubric's leaf descriptions explicitly name. Common\n"
     "always-on artifacts: README.md, training_curves.json, config_used.json,\n"
     "fig_*.png. Common always-on keys: every leaf metric the paper headlines\n"
@@ -2012,7 +2012,7 @@ def _rubric_checklist_block(project_dir: Path) -> str:
 
 
 def _load_paper_override(arxiv_id: str | None) -> str:
-    """Return a prompt block loaded from ``docs/papers/<arxiv_id>.yaml``.
+    """Return a prompt block loaded from ``configs/papers/<arxiv_id>.yaml``.
 
     The yaml schema is open-ended; the loader formats it as a markdown-style
     prompt block so the agent sees it in a readable format.
@@ -2023,7 +2023,7 @@ def _load_paper_override(arxiv_id: str | None) -> str:
     if not arxiv_id:
         return ""
 
-    yaml_path = _REPO_ROOT / "docs" / "papers" / f"{arxiv_id}.yaml"
+    yaml_path = _REPO_ROOT / "configs" / "papers" / f"{arxiv_id}.yaml"
     if not yaml_path.exists():
         return ""
 
@@ -2044,7 +2044,7 @@ def _load_paper_override(arxiv_id: str | None) -> str:
         formatted = str(data)
 
     return (
-        f"\n\nPAPER-SPECIFIC GUIDANCE (loaded from docs/papers/{arxiv_id}.yaml):\n"
+        f"\n\nPAPER-SPECIFIC GUIDANCE (loaded from configs/papers/{arxiv_id}.yaml):\n"
         + formatted
     )
 
@@ -2505,7 +2505,7 @@ def _compute_constraint_guidance(
     3. _POD_SETUP_BLOCK (only when sandbox=runpod)
     4. _DATASET_SETUP_BLOCK (always-on)
     5. Rubric auto-checklist (when generated_rubric.json exists)
-    6. Per-paper override (when docs/papers/<arxiv_id>.yaml exists)
+    6. Per-paper override (when configs/papers/<arxiv_id>.yaml exists)
     7. OPENRESEARCH_BASELINE_EXTRA_GUIDANCE env-var block
     8. gpu_mode policy overlays (off / max)
     """
@@ -2707,7 +2707,7 @@ def _compute_constraint_guidance(
     if data_recipes:
         guidance += _data_recipes_binding_block(data_recipes)
 
-    # 6. Per-paper YAML override — when docs/papers/<arxiv_id>.yaml exists.
+    # 6. Per-paper YAML override — when configs/papers/<arxiv_id>.yaml exists.
     override = _load_paper_override(arxiv_id)
     if override:
         guidance += override
@@ -2939,7 +2939,7 @@ async def run_with_sdk(
 
     ``arxiv_id`` — when set (threaded from ``RunContext.arxiv_id`` by the RLM
     primitives layer), takes precedence over ``_extract_arxiv_id(project_id)``
-    for the ``docs/papers/<id>.yaml`` override lookup.  This is the P0 fix:
+    for the ``configs/papers/<id>.yaml`` override lookup.  This is the P0 fix:
     arXiv-sourced runs receive hashed project IDs (``prj_<digest>``) that the
     regex cannot parse, so the override was dead code on every real arXiv run.
     """

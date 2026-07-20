@@ -607,7 +607,7 @@ def _extract_arxiv_id_from_project_dir(project_dir: Path) -> str | None:
     that encodes no ID-shaped string, so the ``_extract_arxiv_id`` regex in
     ``baseline_implementation.py`` always returns ``None`` for them.  This
     helper reads the on-disk files produced during ingest to recover the
-    real ID so ``docs/papers/<id>.yaml`` overrides can fire.
+    real ID so ``configs/papers/<id>.yaml`` overrides can fire.
 
     Resolution order (most-authoritative first):
     1. ``artifact_index.json`` → ``paper.arxiv_id``
@@ -3960,7 +3960,7 @@ async def run_pipeline_rlm(
     else:
         _scope_spec = None
 
-    # Recover the arXiv ID from on-disk artifacts so docs/papers/<id>.yaml
+    # Recover the arXiv ID from on-disk artifacts so configs/papers/<id>.yaml
     # overrides fire even when project_id is a hashed `prj_<digest>` string.
     # Falls back to the regex over project_id for legacy non-hashed IDs.
     # See _extract_arxiv_id_from_project_dir for resolution order.
@@ -4038,7 +4038,7 @@ async def run_pipeline_rlm(
         vram_override=_vram_override,
         scope_spec=_scope_spec,
         arxiv_id=_arxiv_id,  # P0: thread arXiv ID so implement_baseline can load
-                             # docs/papers/<id>.yaml even on hashed project IDs.
+                             # configs/papers/<id>.yaml even on hashed project IDs.
         # Lane Q — --minimize-compute / lab UI checkbox. Threaded onto ctx so the
         # implement_baseline primitive can pass it into run_with_sdk.
         minimize_compute=(

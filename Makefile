@@ -14,7 +14,7 @@ help:
 	@echo "make lint           Frontend eslint"
 	@echo "make typecheck      Frontend tsc --noEmit"
 	@echo "make smoke          Fast sanity: app factory boots, CLI parses, compose validates"
-	@echo "make docs-check     Documentation freshness & consistency (docs/policies/documentation.md)"
+	@echo "make docs-check     Documentation freshness & consistency"
 	@echo "make docker-build   Build the production image"
 	@echo "make dev            Run the supported local stack (API + frontend)"
 	@echo "make dev-backend    Run only the API with --reload on :8000"

@@ -32,7 +32,7 @@ import json
 import pathlib
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
-DEFAULT_LEDGER = REPO / "docs/runbooks/2026-06-26-sdar-gcp-e2e-runlog.md"
+DEFAULT_LEDGER = REPO / "runs" / "sdar-runlog.md"
 
 COLUMNS = [
     "UTC", "project_id", "event", "root/model", "scope", "sandbox/instance",
