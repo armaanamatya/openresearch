@@ -20,7 +20,8 @@ report or a maximized demo score.
 2. **A run is file-backed.** `runs/<project-id>/` is the source of operational
    state; API/UI processes may restart, but run files and final reports must
    remain interpretable.
-3. **Default-off safety is not deployment.** A new guard needs a deliberate
+3. **Default-off safety is not deployment.** A new guard, evidence gate, or
+   scheduler authority needs a deliberate
    enabled-profile decision, tests for the off path, and evidence before it
    becomes a default.
 4. **Keep one implementation of a trust predicate.** Higher-level callers
@@ -51,12 +52,19 @@ report or a maximized demo score.
 
 Cloud availability is an operational fact, not a code fact. Never bill a run
 until credentials, image, storage, quota, and the selected execution route have
-been checked.
+been checked. GCP/GKE and Azure/AKS are primary; `auto` is deliberately local
+only, RunPod is an explicit legacy route, and EKS is experimental. Durable
+cloud control requires a lease/fence, persistent state, and a terminal receipt.
 
 ## Evidence model
 
 - A reproduction claim needs scoped metrics, a concrete artifact path, and a
   final report that agrees with the authoritative verdict.
+- The deterministic verdict authority is the only final verdict writer. Grades,
+  scheduler recommendations, UI state, and cost telemetry are inputs or
+  observations, never substitutes for that authority.
+- Scheduler decisions are shadow/advisory until their explicit receipt and
+  authority gates are enabled and validated against real-run evidence.
 - Preserve partial, timed-out, capacity-limited, and ungraded states. They are
   information—not zeroes to overwrite or successes to infer.
 - Cost ledgers are incomplete on some providers. Review token totals and cloud

@@ -45,6 +45,18 @@ When no usable repository exists:
 - NEVER substitute datasets without explicit approval
 - Record which assumption IDs (A001, etc.) were applied in your implementation
 
+# EXPERIMENT SCOPE (bound the config set — CRITICAL for staying in budget)
+- Implement the MINIMAL set of training configs needed to validate the paper's
+  CORE claim(s): typically one config per claim plus its baseline. For "method X
+  improves architecture A on dataset D", that is exactly TWO configs (A baseline,
+  A + method X) — not a grid.
+- Do NOT build exhaustive grid searches, hyperparameter/size sweeps, or extra
+  datasets/architectures UNLESS a specific stated claim under test requires them.
+  Each extra config multiplies GPU cost and risks exceeding the per-cell time
+  budget — a run that times out mid-grid loses its verdict even if the core
+  claim already reproduced. Use the paper's already-published tuned values
+  (e.g. a chosen grid winner) rather than re-deriving them.
+
 # ANTI-HALLUCINATION RULES (CRITICAL)
 - NEVER fabricate git commit SHAs or dependency versions. If modifying the Dockerfile, verify all git refs with `git ls-remote` before pinning.
 - NEVER invent CLI wrapper scripts that don't exist in the upstream repo. If the repo lacks the exact entry point you need, write one explicitly in the code directory and document it.

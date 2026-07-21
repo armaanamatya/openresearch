@@ -46,7 +46,7 @@ def test_force_sandbox_default_is_empty():
     settings = Settings(_env_file=None)
 
     assert settings.force_sandbox == ""
-    assert settings.default_sandbox == "runpod"
+    assert settings.default_sandbox == "gcp"  # GCP/Azure primary; runpod legacy (cloud-posture 2026-07)
 
 
 # --------------------------------------------------------------------------- #

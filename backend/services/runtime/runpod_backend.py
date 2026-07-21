@@ -41,6 +41,40 @@ from backend.services.runtime.remote_stall import (
 
 DEFAULT_RUNPOD_IMAGE = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"
 
+
+def _runpod_cli_credentials_enabled() -> bool:
+    """Whether the explicit opt-in may read RunPod CLI's local credential file."""
+    return os.environ.get(
+        "OPENRESEARCH_RUNPOD_USE_CLI_CREDENTIALS", ""
+    ).strip().lower() in ("1", "true", "yes")
+
+
+def _runpod_cli_config_path() -> Path:
+    """Return the standard runpodctl credential location without reading it."""
+    return Path.home() / ".runpod" / "config.toml"
+
+
+def _runpod_cli_api_key() -> str:
+    """Load runpodctl's API key only behind its explicit default-OFF flag.
+
+    This makes a local `runpodctl doctor` login usable by the application while
+    retaining the historic, environment-only behavior unless an operator opts
+    in.  Parse failures deliberately look like a missing credential and never
+    log secret material.
+    """
+    if not _runpod_cli_credentials_enabled():
+        return ""
+    try:
+        import tomllib
+
+        payload = tomllib.loads(
+            _runpod_cli_config_path().read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return ""
+    api_key = payload.get("apikey", "")
+    return api_key.strip() if isinstance(api_key, str) else ""
+
 # Newest mtime of any checkpoint/metrics artifact under a root — the remote
 # stall guard's SECOND independent liveness signal (the first being streamed
 # output). Mirrors local_process._PROGRESS_GLOBS / _newest_progress_mtime.
@@ -223,6 +257,7 @@ class RunpodBackend(RuntimeBackend):
             api_key
             or os.environ.get("OPENRESEARCH_RUNPOD_API_KEY")
             or os.environ.get("RUNPOD_API_KEY")
+            or _runpod_cli_api_key()
             or ""
         ).strip()
         self.api_base_url = api_base_url.rstrip("/")
@@ -1681,12 +1716,15 @@ def ensure_runpod_available() -> None:
         settings.runpod_api_key
         or os.environ.get("OPENRESEARCH_RUNPOD_API_KEY")
         or os.environ.get("RUNPOD_API_KEY")
+        or _runpod_cli_api_key()
         or ""
     ).strip()
     if not api_key:
         raise SandboxRuntimeError(
             RuntimeCauseKind.backend_unavailable,
-            "RunPod sandbox is selected but OPENRESEARCH_RUNPOD_API_KEY or RUNPOD_API_KEY is not set.",
+            "RunPod sandbox is selected but OPENRESEARCH_RUNPOD_API_KEY or RUNPOD_API_KEY is not set. "
+            "Alternatively opt in to runpodctl's local credential with "
+            "OPENRESEARCH_RUNPOD_USE_CLI_CREDENTIALS=1.",
         )
     ssh_key_path = _normalize_ssh_key_path(settings.runpod_ssh_key_path or None)
     if not ssh_key_path.exists():

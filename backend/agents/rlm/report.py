@@ -1690,19 +1690,68 @@ def _build_reproduction_block(project_dir: Path) -> dict | None:
     return block
 
 
-def _has_partial_timeout_evidence(project_dir: Path) -> bool:
-    """True iff ``experiment_runs.jsonl`` has a HARNESS-finalized partial row:
-    non-empty dict ``metrics`` AND (``failure_class == "partial_timeout"`` or
-    ``partial_timeout is True``).
+# Bookkeeping keys that a ``metrics`` dict may carry WITHOUT constituting a real
+# measured result — a killed row whose metrics contain ONLY these must NOT be
+# credited as partial evidence (they carry no reproduced-work signal).
+_METRICS_BOOKKEEPING_KEYS = frozenset(
+    {"status", "error", "timestamp", "artifact_dir", "artifact_paths"}
+)
 
-    These rows come from ``primitives._finalize_timeout_result`` — the 2026-06-08
-    exec-reliability redesign loads the on-disk partial ``metrics.json`` written by
-    the training process itself when a run hits ``exec_timeout``/``exec_stalled``,
-    so the metrics are real completed work, not agent-attested numbers. They are
-    deliberately NOT accepted by ``_has_experiment_evidence`` (success is False),
-    but they justify capping a verdict at "partial" instead of forcing "failed".
-    Fail-soft: any I/O / parse error returns False.
+
+def _row_has_real_metrics(metrics: object) -> bool:
+    """True iff ``metrics`` is a non-empty dict carrying at least one key OUTSIDE
+    the bookkeeping set (``status``/``error``/``timestamp``/``artifact_dir``/
+    ``artifact_paths``).
+
+    This is the "realness" guard that distinguishes a cell that produced actual
+    measured work (e.g. ``per_model`` / ``test_err``) from an empty or
+    bookkeeping-only placeholder row. Anti-forge: an empty ``{}`` or a dict
+    holding only status/error scaffolding returns False.
     """
+    if not isinstance(metrics, dict) or not metrics:
+        return False
+    return any(k not in _METRICS_BOOKKEEPING_KEYS for k in metrics)
+
+
+def _row_is_strict_partial_timeout(entry: dict) -> bool:
+    """Branch 1: a HARNESS-finalized timeout partial — non-empty dict ``metrics``
+    AND (``failure_class == "partial_timeout"`` or ``partial_timeout is True``),
+    from ``primitives._finalize_timeout_result`` (loads the on-disk partial
+    ``metrics.json`` the training process wrote on ``exec_timeout``/``exec_stalled``)."""
+    if not (
+        entry.get("failure_class") == "partial_timeout"
+        or entry.get("partial_timeout") is True
+    ):
+        return False
+    metrics = entry.get("metrics")
+    return isinstance(metrics, dict) and bool(metrics)
+
+
+def _row_is_deadline_killed_with_metrics(entry: dict) -> bool:
+    """Branch 2 (Fix C, 2026-07-08): a DEADLINE/SIGNAL-killed cell with REAL metrics.
+
+    The cell route always records ``exit_code`` EXPLICITLY; a cell SIGTERM'd at its
+    wall-clock deadline writes ``exit_code: null``, whereas a clean CODE error
+    carries a real non-None code (e.g. 41) and does NOT qualify. We require the key
+    to be PRESENT and null — ``entry.get("exit_code")`` alone cannot tell an explicit
+    ``null`` from an absent key, so a forged row that simply OMITS ``exit_code`` is
+    not credited here — plus ≥1 real (non-bookkeeping) metric key.
+
+    Incident: a WRN-28-10 GKE cell ran real training and uploaded a valid
+    ``metrics.json`` but was SIGTERM'd at its 6h deadline before its script wrote a
+    terminal ``status:"completed"``, so its row was ``success:false, exit_code:null``
+    — real work the gate was falsely downgrading to "failed".
+    """
+    return (
+        "exit_code" in entry
+        and entry.get("exit_code") is None
+        and _row_has_real_metrics(entry.get("metrics"))
+    )
+
+
+def _scan_experiment_rows(project_dir: Path, predicate) -> bool:
+    """True iff any parsed dict row in ``experiment_runs.jsonl`` satisfies
+    ``predicate``. Fail-soft: any I/O / parse error returns False."""
     path = project_dir / "experiment_runs.jsonl"
     if not path.exists():
         return False
@@ -1715,19 +1764,45 @@ def _has_partial_timeout_evidence(project_dir: Path) -> bool:
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if not isinstance(entry, dict):
-                continue
-            if not (
-                entry.get("failure_class") == "partial_timeout"
-                or entry.get("partial_timeout") is True
-            ):
-                continue
-            metrics = entry.get("metrics")
-            if isinstance(metrics, dict) and metrics:
+            if isinstance(entry, dict) and predicate(entry):
                 return True
     except OSError:
         return False
     return False
+
+
+def _has_deadline_killed_evidence(project_dir: Path) -> bool:
+    """True iff a DEADLINE/SIGNAL-killed cell with REAL metrics exists (branch 2).
+
+    Kept separate from the strict-partial-timeout predicate so the verdict gate can
+    apply the RIGHT anti-forge ledger guard to each: a strict partial_timeout is
+    proven by its in-process ``partial_timeout`` outcome stamp, while a deadline-kill
+    (no such stamp — it was SIGTERM'd, not harness-finalized) is backed by a real
+    in-process ``run_experiment`` call (``run_experiment_calls >= 1``).
+    """
+    return _scan_experiment_rows(project_dir, _row_is_deadline_killed_with_metrics)
+
+
+def _has_partial_timeout_evidence(project_dir: Path) -> bool:
+    """True iff ``experiment_runs.jsonl`` has a row that justifies capping a verdict
+    at "partial" (instead of forcing "failed"), from EITHER a harness-finalized
+    timeout partial (branch 1, ``_row_is_strict_partial_timeout``) OR a
+    deadline/signal-killed cell that produced REAL metrics (branch 2, Fix C,
+    ``_row_is_deadline_killed_with_metrics``).
+
+    INVARIANT (fail-closed, "evidence not grade"): both branches only justify a
+    "partial" CAP — never a full "reproduced" verdict, which still requires a clean
+    ``success==True`` row via ``_has_experiment_evidence``. The realness guard
+    (``_row_has_real_metrics``) excludes empty/bookkeeping-only rows, and the verdict
+    gate additionally requires a real in-process ``run_experiment`` call to back this
+    evidence (see ``_apply_evidence_gate``), so a REPL-forged row cannot lift a
+    verdict off "failed". Fail-soft: any I/O / parse error returns False.
+    """
+    return _scan_experiment_rows(
+        project_dir,
+        lambda e: _row_is_strict_partial_timeout(e)
+        or _row_is_deadline_killed_with_metrics(e),
+    )
 
 
 def _evidence_gate_flag_enabled() -> bool:
@@ -1887,28 +1962,48 @@ def _apply_evidence_gate(
                 run_experiment_calls,
                 run_experiment_ok_calls,
             )
-        elif (
-            (run_experiment_calls is None or run_experiment_calls >= 1)
-            and (
-                run_experiment_partial_timeout_calls is None
-                or run_experiment_partial_timeout_calls >= 1
+        elif (run_experiment_calls is None or run_experiment_calls >= 1) and (
+            # A HARNESS-finalized timeout partial (branch 1) is proven by its own
+            # in-process ``partial_timeout`` ledger stamp — a REPL-forged
+            # partial_timeout row cannot mint one, so it needs partial_timeout
+            # calls >= 1 (or None = no-ledger fallback).
+            (
+                (
+                    run_experiment_partial_timeout_calls is None
+                    or run_experiment_partial_timeout_calls >= 1
+                )
+                and _has_partial_timeout_evidence(project_dir)
             )
-            and _has_partial_timeout_evidence(project_dir)
+            # A DEADLINE/SIGNAL-killed cell (branch 2, Fix C) carries NO
+            # partial_timeout stamp — it was SIGTERM'd at the wall-clock deadline,
+            # not harness-finalized — so it is backed by a real in-process
+            # ``run_experiment`` call instead (the calls>=1 guard above). A
+            # REPL-forged row that OMITS ``exit_code`` does not satisfy
+            # ``_has_deadline_killed_evidence`` (it requires an explicit null), and
+            # a forge with 0 real calls fails the calls>=1 guard — so neither the
+            # real-but-failed-call + forged-timeout-row attack nor a wholly forged
+            # row can ride this branch.
+            or _has_deadline_killed_evidence(project_dir)
         ):
-            # Second tier (2026-06-09): the only evidence is a timeout-finalized
-            # partial — run_experiment ended early (exec_timeout/exec_stalled)
-            # after some work wrote real metrics, which the harness itself loaded
-            # from disk (primitives._finalize_timeout_result). Forcing "failed"
-            # here would misdescribe the run the finalize-on-timeout redesign was
-            # built for; cap at "partial" instead. A REPL-forged partial row with
-            # 0 in-process run_experiment calls does NOT reach this tier (the
-            # ledger condition above) and falls through to the hard downgrade.
+            # Second tier (2026-06-09; extended 2026-07-08 by Fix C): the only
+            # evidence justifies capping at "partial", not forcing "failed" —
+            # EITHER a timeout-finalized partial (run_experiment ended early on
+            # exec_timeout/exec_stalled after real metrics were written, harness-
+            # loaded from disk via primitives._finalize_timeout_result) OR a
+            # deadline/signal-killed cell that produced REAL metrics before its
+            # wall-clock SIGTERM (exit_code None + a real metric key). Forcing
+            # "failed" here would misdescribe exactly the runs these salvage paths
+            # exist for. INVARIANT: this tier only CAPS at "partial" — it never
+            # promotes to "reproduced" (that still needs a clean success==True row
+            # via _has_experiment_evidence). A REPL-forged row with 0 in-process
+            # run_experiment calls does NOT reach this tier (the ledger conditions
+            # above) and falls through to the hard downgrade.
             note = (
                 " [evidence_cap] Verdict capped at 'partial': the experiment "
-                "evidence is a timeout-finalized partial — run_experiment ended "
-                "early (exec_timeout/exec_stalled) after real metrics were "
-                "written; no cleanly-successful run backs a full reproduction "
-                "claim."
+                "evidence is a timeout-finalized OR deadline-killed partial — "
+                "run_experiment ended early (exec_timeout/exec_stalled or a "
+                "wall-clock SIGTERM) after real metrics were written; no "
+                "cleanly-successful run backs a full reproduction claim."
             )
             if report.verdict == "reproduced":
                 logger.warning(

@@ -67,6 +67,22 @@ def eval_provenance_guard_enabled() -> bool:
     ).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _min_eval_n() -> int:
+    """Eval-coverage floor from ``OPENRESEARCH_MIN_EVAL_N`` (0 / unset / invalid = off).
+
+    A sub-knob of the eval-provenance guard: only consulted when that guard is
+    enabled (coverage needs the ``eval_provenance.json`` sidecar the guard
+    enforces). When > 0, a success cell whose ``n_eval`` is below the floor is
+    vetoed — a mean that is correct but computed over too few held-out examples
+    is not a substantiated benchmark result.
+    """
+    try:
+        v = int(os.environ.get("OPENRESEARCH_MIN_EVAL_N", "0").strip() or "0")
+    except (TypeError, ValueError):
+        return 0
+    return v if v > 0 else 0
+
+
 # ---------------------------------------------------------------------------
 # Producer API  (agent-facing; copied into code/ by the harness)
 # ---------------------------------------------------------------------------
@@ -313,6 +329,28 @@ def eval_provenance_should_veto(code_dir: str | Path) -> tuple[bool, str | None]
                     if len(violations) >= 3:
                         break
                     continue
+
+                # Eval-coverage floor (OPENRESEARCH_MIN_EVAL_N, default 0=off): the
+                # checks below verify the reported metric IS the mean of real
+                # outcomes; this verifies ENOUGH held-out examples backed it (a
+                # correct mean over 3 examples is not a benchmark result).
+                # Conservative: skips when the sidecar carries no numeric n_eval.
+                floor = _min_eval_n()
+                if floor > 0:
+                    sc_n = sc.get("n_eval")
+                    if (
+                        isinstance(sc_n, (int, float))
+                        and not isinstance(sc_n, bool)
+                        and sc_n < floor
+                    ):
+                        violations.append(
+                            f"{cell_label}: n_eval={int(sc_n)} <"
+                            f" OPENRESEARCH_MIN_EVAL_N={floor} — too few held-out examples"
+                            f" to substantiate {rate_key}={reported:.4f}"
+                        )
+                        if len(violations) >= 3:
+                            break
+                        continue
 
                 # Aggregate-provenance schema (execute-mode verl adapter): a
                 # value-preservingly copied aggregate metric with NO per-example

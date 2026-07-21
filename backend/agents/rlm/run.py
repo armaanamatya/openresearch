@@ -1319,6 +1319,22 @@ def _primary_inputs_ready(
     return True, None
 
 
+def _resolve_run_iterations(
+    *, primary_active: bool, summary: dict | None, logger_iterations: int
+) -> int:
+    """Pick the iteration count for the final report.
+
+    Lifecycle-primary drives its own loop, so ``rlm_logger.iteration_count`` is 0
+    there — use the driver summary's ``iterations`` instead. Fall back to the
+    logger count when not primary, or when the summary lacks the key (defensive).
+    """
+    if primary_active and summary:
+        val = summary.get("iterations")
+        if isinstance(val, int) and val > 0:
+            return val
+    return int(logger_iterations or 0)
+
+
 def _synth_result_from_summary(summary: dict, ctx: Any) -> Any:
     """Build a minimal RLMChatCompletion from a primary-mode driver summary.
 
@@ -4322,6 +4338,15 @@ async def run_pipeline_rlm(
         if _blocked_rubric is not None:
             context_dict["rubric_spec"] = _blocked_rubric
 
+    # W1-M1 grading-input integrity: pin the harness-finalized rubric (after the
+    # optional spec-validator may have dropped leaves) so a later agent-side
+    # rewrite of the rubric used at grade time is caught by verify_against_rubric.
+    # Flag-gated (OPENRESEARCH_GRADER_INTEGRITY, default-OFF → no pin file written,
+    # byte-identical to the prior baseline). Fail-soft — never breaks a run.
+    if context_dict.get("rubric_spec"):
+        from backend.evals.paperbench.grading_input_integrity import maybe_write_rubric_pin
+        maybe_write_rubric_pin(project_dir, context_dict["rubric_spec"])
+
     # Hybrid Phase 2: seed context with Phase 1 code path + weak cluster list
     # so the root model repairs rather than reproduces from scratch.
     active_prompt = _ROOT_PROMPT
@@ -4881,6 +4906,7 @@ async def run_pipeline_rlm(
                 return rlm.completion(context_dict, active_prompt)
 
         _primary_active = False
+        _primary_summary = None
         if _lifecycle_primary_enabled():
             _primary_paper_text = context_dict.get("paper_text", "")
             _primary_rubric_spec = context_dict.get("rubric_spec", {})
@@ -4924,6 +4950,7 @@ async def run_pipeline_rlm(
                     result=_fatal,
                 )
             result_obj = _synth_result_from_summary(summary, ctx)
+            _primary_summary = summary
             # F6/T9: after T8, an evidenced-but-unscored run projects a real
             # (partial/failed) report rather than None, so "did this run fail"
             # is now "did we get an honest report at all" — result_obj is None
@@ -5043,7 +5070,11 @@ async def run_pipeline_rlm(
             return _finalize_fatal_primitive_abort(
                 abort=fatal_abort,
                 ctx=ctx,
-                iterations=rlm_logger.iteration_count,
+                iterations=_resolve_run_iterations(
+                    primary_active=_primary_active,
+                    summary=_primary_summary,
+                    logger_iterations=rlm_logger.iteration_count,
+                ),
                 project_dir=project_dir,
                 emit=emit,
                 tools_label=tools_label,
@@ -5052,7 +5083,11 @@ async def run_pipeline_rlm(
             result_obj=result_obj,
             run_failed=run_failed,
             ctx=ctx,
-            iterations=rlm_logger.iteration_count,
+            iterations=_resolve_run_iterations(
+                primary_active=_primary_active,
+                summary=_primary_summary,
+                logger_iterations=rlm_logger.iteration_count,
+            ),
             project_dir=project_dir,
             emit=emit,
             corpus_sentinels=corpus_sentinels,

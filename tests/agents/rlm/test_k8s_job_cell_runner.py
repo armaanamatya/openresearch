@@ -1602,6 +1602,15 @@ class TestJobName:
         assert a != b
         assert len(a) <= 63 and len(b) <= 63
 
+    def test_collision_guard_off_preserves_legacy_long_prefix_name(self, monkeypatch):
+        """The default-OFF GKE/AKS path must retain legacy identity behavior."""
+        monkeypatch.delenv("OPENRESEARCH_K8S_COLLISION_GUARD", raising=False)
+        with kjcr._bind_settings_prefix("gcp"):
+            a = kjcr._job_name("monolithic", "prj_resnetgcp12-aaaaaaaa")
+            b = kjcr._job_name("monolithic", "prj_resnetgcp12-bbbbbbbb")
+
+        assert a == b
+
     def test_code_bundle_digest_matches_uploader_repo_exclusion(self, tmp_path):
         trainer = tmp_path / "train_cell.py"
         trainer.write_text("print('trainer')\n", encoding="utf-8")
