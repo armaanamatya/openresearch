@@ -12,7 +12,8 @@ make dev
 `make dev` starts the API on `:8000` and the frontend on `:3000`. Use
 `make dev-backend` only when running the frontend separately.
 
-For a no-cloud smoke run, keep `OPENRESEARCH_DEFAULT_SANDBOX=local` in `.env`.
+For a no-cloud smoke run, explicitly use `--sandbox local`; `gcp` is the
+configured cloud default and `auto` only resolves to `docker` or `local`.
 Then run:
 
 ```bash
@@ -32,10 +33,13 @@ two commands while iterating.
 
 ## Cloud runs
 
-Cloud sandboxes are operator-only. Configure the matching provider variables
-in `.env`, validate credentials and capacity, then explicitly choose the
-sandbox (`runpod`, `gcp`, `azure`, or `aws`) on the CLI. Do not assume a cloud
-backend is available merely because code for it exists.
+Cloud sandboxes are operator-only. GCP/GKE and Azure/AKS are the primary cloud
+routes; RunPod is a legacy explicit route, and AWS/EKS remains experimental.
+Configure the matching provider variables, validate identity, capacity, image,
+storage, and budget preflight, then choose the sandbox explicitly. A submitted
+Job is not a successful run: wait for the terminal receipt and authoritative
+final report. Durable-controller mode additionally requires its lease/object
+storage/PVC prerequisites.
 
 ## Where output goes
 
