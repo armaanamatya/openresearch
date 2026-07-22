@@ -43,13 +43,42 @@ def test_force_sandbox_gke_override(monkeypatch):
     assert resolve_sandbox_mode("auto", pipeline_mode="rlm") is SandboxMode.gcp
 
 
-def test_gke_token_parked_raises_without_flag(monkeypatch):
-    """PARKED: the gke alias raises unless OPENRESEARCH_ALLOW_GKE is set."""
+def test_gke_token_not_used_raises_without_flag(monkeypatch):
+    """GKE is NOT USED: the gke alias raises a fail-closed RuntimeError unless
+    the inert operator-only OPENRESEARCH_ALLOW_GKE escape hatch is set."""
     monkeypatch.delenv("OPENRESEARCH_ALLOW_GKE", raising=False)
     from backend.agents.rlm.primitives import _backend_for_sandbox_mode
 
-    with pytest.raises(RuntimeError, match="PARKED"):
+    with pytest.raises(RuntimeError, match="not used"):
         _backend_for_sandbox_mode(SandboxMode("gke"), run_budget=None)
+
+
+def test_gcp_fails_closed_through_failover_path(monkeypatch):
+    """The OPENRESEARCH_CLOUD_FAILOVER path must NOT be a bypass hole for gcp:
+    routing gcp through _resolve_run_backend with failover set still fail-closes,
+    because _real_backend_factory re-enters the same guarded function.
+
+    Step-0 finding: the gcp guard raises a plain RuntimeError, and
+    select_backend_with_failover builds the backend (resolved_factory) OUTSIDE its
+    `except SandboxRuntimeError` block — so the guard's RuntimeError propagates
+    terminally rather than being swallowed as a "cloud down" signal. Azure is never
+    reached, so this is a true raise (not an Azure fallback). The gcp availability
+    probe is patched to a no-op to model "GCP infra IS reachable, the guard still
+    refuses" — otherwise the hermetic env's ensure_gcp_available would raise a
+    backend_unavailable SandboxRuntimeError first and mask the guard under test.
+    """
+    monkeypatch.delenv("OPENRESEARCH_ALLOW_GKE", raising=False)
+    monkeypatch.setenv("OPENRESEARCH_CLOUD_FAILOVER", "gcp")
+    # Patch the probe on the name select_backend_with_failover binds via
+    # _real_availability_map (the gke_job_backend module symbol), NOT the
+    # backend.services.runtime re-export the direct-factory tests patch.
+    with patch(
+        "backend.services.runtime.gke_job_backend.ensure_gcp_available", lambda: None
+    ):
+        from backend.agents.rlm.primitives import _resolve_run_backend
+
+        with pytest.raises(RuntimeError, match="not used"):
+            _resolve_run_backend(SandboxMode.gcp, run_budget=None)
 
 
 def test_gke_token_constructs_gke_backend(monkeypatch):

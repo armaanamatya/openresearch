@@ -17,7 +17,7 @@ deterministic regardless of the host shell's own SDAR/GCP exports.
 import pytest
 
 from backend.services.runtime.cloud_profile import CloudProfile, VmSpec
-from backend.services.runtime.compute_provider import ComputeLease
+from backend.services.runtime.compute_provider import ComputeLease, RunHandle
 from backend.services.runtime.run_plan import RunPlan
 from backend.services.runtime.vm_compute_provider import VmComputeProvider, VmExecResult
 
@@ -276,3 +276,80 @@ def test_stage_on_gpu_default_unchanged(tmp_path):
     joined = [" ".join(a) for a in calls]
     assert any("a2-highgpu-4g" in j and "instances create" in j for j in joined)
     assert not any("e2-standard-16" in j for j in joined)                           # no cheap CPU VM under stage_on_gpu
+
+
+# ---------------------------------------------------------------------------
+# watch(): in-VM final_report.json sentinel -> terminal "completed"
+# ---------------------------------------------------------------------------
+
+
+def test_watch_returns_completed_when_report_present():
+    """A RUNNING VM whose in-VM child already wrote final_report.json yields a
+    single terminal 'completed' status and stops polling -- no idle-GPU billing
+    to the max-run-duration ceiling, and the graceful FINALIZE path downstream."""
+    def fake_runner(argv):
+        joined = " ".join(argv)
+        if "final_report.json" in joined:      # the ssh sentinel probe
+            return VmExecResult(returncode=0, stdout="DONE\n")
+        return VmExecResult(returncode=0, stdout="RUNNING\n")  # instances describe
+    prov = VmComputeProvider(_gcp_profile(), runner=fake_runner, sleep=lambda s: None)
+    handle = RunHandle(id="prj_test", lease=_lease())
+    states = [s.state for s in prov.watch(handle)]
+    assert states == ["completed"]
+
+
+def test_watch_keeps_polling_until_report_present():
+    """While the child is still running (no final_report.json), watch() yields
+    'running' and keeps polling -- until the sentinel flips to DONE."""
+    describe_calls = {"n": 0}
+    def fake_runner(argv):
+        joined = " ".join(argv)
+        if "final_report.json" in joined:
+            return VmExecResult(returncode=0, stdout=("DONE\n" if describe_calls["n"] >= 2 else "WAIT\n"))
+        describe_calls["n"] += 1
+        return VmExecResult(returncode=0, stdout="RUNNING\n")
+    prov = VmComputeProvider(_gcp_profile(), runner=fake_runner, sleep=lambda s: None)
+    handle = RunHandle(id="prj_test", lease=_lease())
+    states = [s.state for s in prov.watch(handle)]
+    assert states == ["running", "completed"]
+
+
+def test_watch_probe_error_does_not_false_complete():
+    """A failed/empty sentinel probe must NEVER be read as DONE -- watch() must
+    fail-open to 'running' and keep polling (never a false terminal)."""
+    def fake_runner(argv):
+        joined = " ".join(argv)
+        if "final_report.json" in joined:
+            return VmExecResult(returncode=255, stdout="", stderr="ssh: connect timeout")
+        return VmExecResult(returncode=0, stdout="RUNNING\n")
+    prov = VmComputeProvider(_gcp_profile(), runner=fake_runner, sleep=lambda s: None)
+    handle = RunHandle(id="prj_test", lease=_lease())
+    import itertools
+    states = [s.state for s in itertools.islice(prov.watch(handle), 2)]
+    assert states == ["running", "running"]
+
+
+def test_collect_tars_evidence_artifacts():
+    """collect() must include the evidence-audit artifacts (rubric, evidence
+    bundle, validation verdict, rubric tree) in the remote tar allow-list, not
+    just the report + ledger -- so a collected clean run is auditable."""
+    captured = {"tar_cmd": None}
+    def fake_runner(argv):
+        joined = " ".join(argv)
+        if "tar czf" in joined:
+            captured["tar_cmd"] = joined
+        return VmExecResult(returncode=0, stdout="")
+    prov = VmComputeProvider(_gcp_profile(), runner=fake_runner)
+    handle = RunHandle(id="prj_test", lease=_lease())
+    bundle = prov.collect(handle)
+    assert bundle.ok is True
+    tar = captured["tar_cmd"]
+    for existing in ("final_report.json", "experiment_runs.jsonl", "code/metrics.json"):
+        assert existing in tar, f"regression: {existing} dropped from collect tar"
+    for evidence in (
+        "generated_rubric.json",
+        "rlm_state/evidence_bundle.json",
+        "rlm_state/validation_verdict.json",
+        "rubric_tree.json",
+    ):
+        assert evidence in tar, f"{evidence} missing from collect tar allow-list"

@@ -243,6 +243,50 @@ def test_emergency_stop_recovers(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# Invariant 3 (terminal routing): an in-VM "completed" sentinel takes the
+# graceful COLLECT -> RELEASE_GPU -> FINALIZE path, NOT the emergency/recover
+# path -- and, because the break precedes the budget block, a coincident
+# budget-ceiling observation on that final poll cannot re-route it to RECOVERED.
+# ---------------------------------------------------------------------------
+
+
+def test_completed_state_routes_to_finalize_not_recovered(tmp_path: Path):
+    prov = FakeComputeProvider(
+        watch_sequence=[
+            RunStatus(state="running", synced=True),
+            RunStatus(state="completed", synced=True),
+        ],
+        # A recoverable bundle is offered; the graceful path must NOT touch it.
+        recover_bundle=ReportBundle(ok=True, report_path="/recovered"),
+    )
+    # Budget elapsed on the final poll would breach a 1.0h cap -- but the
+    # "completed" break fires BEFORE the budget block, so it can never re-route
+    # this finished run through _emergency_shutdown -> RECOVERED.
+    clock = _SequenceClock([0.0, 0.0, 7200.0])
+    run = ReproductionRun(
+        plan=_plan(
+            ScopeSpec(models=["qwen3-1.7b"], datasets=[{"name": "alfworld"}], seeds=[0]),
+            RunBudget(max_gpu_hours=1.0),
+        ),
+        provider=prov,
+        triage=FeasibilityTriage(reachability_probe=lambda a: "reachable"),
+        sku=_SKU,
+        state_dir=tmp_path,
+        green_gate=lambda lease: True,
+        clock=clock,
+    )
+    out = run.run()
+    # Graceful FINALIZE, never the salvaged /recovered bundle.
+    assert out.state == "FINALIZE"
+    assert out.report is not None and out.report.report_path == "/r"
+    # COLLECT ran (graceful path); recover() did NOT (emergency path skipped).
+    assert "collect" in prov.calls
+    assert "recover" not in prov.calls
+    # Graceful COLLECT -> RELEASE_GPU order still holds on the completed break.
+    assert prov.calls.index("collect") < prov.calls.index("release_gpu")
+
+
+# ---------------------------------------------------------------------------
 # Invariant 1 (negative, via GREEN_GATE) + 7 (checkpoint file exists)
 # ---------------------------------------------------------------------------
 

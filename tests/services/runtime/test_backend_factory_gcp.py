@@ -21,12 +21,13 @@ def test_sandbox_mode_gcp_member_exists():
     assert SandboxMode.gcp.value == "gcp"
 
 
-def test_backend_for_sandbox_mode_gcp_parked_raises_without_flag(monkeypatch):
-    """PARKED: sandbox=gcp raises a clear RuntimeError unless OPENRESEARCH_ALLOW_GKE is set."""
+def test_backend_for_sandbox_mode_gcp_not_used_raises_without_flag(monkeypatch):
+    """NOT USED: sandbox=gcp raises a clear RuntimeError unless the inert
+    operator-only OPENRESEARCH_ALLOW_GKE escape hatch is set."""
     monkeypatch.delenv("OPENRESEARCH_ALLOW_GKE", raising=False)
     from backend.agents.rlm.primitives import _backend_for_sandbox_mode
 
-    with pytest.raises(RuntimeError, match="PARKED"):
+    with pytest.raises(RuntimeError, match="not used"):
         _backend_for_sandbox_mode(SandboxMode.gcp, run_budget=None)
 
 
