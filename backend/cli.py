@@ -1300,7 +1300,7 @@ def _cmd_reproduce_sanity(args: argparse.Namespace, runs_root: Path) -> int:
         "    except (OSError, subprocess.SubprocessError):\n"
         "        pass\n"
         "if REQUIRE_GPU and not gpu_name:\n"
-        "    raise RuntimeError('RunPod sanity requested a GPU but nvidia-smi found none')\n"
+        "    raise RuntimeError('GPU sanity requested a GPU but nvidia-smi found none')\n"
         "with open(os.path.join(out, 'metrics.json'), 'w', encoding='utf-8') as fh:\n"
         "    json.dump({'sanity_ok': 1.0, 'gpu_visible': float(bool(gpu_name))}, fh)\n"
         "print('reprolab sanity ok' + (': ' + gpu_name if gpu_name else ''))\n",
@@ -2651,7 +2651,7 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="max_run_gpu_usd",
         type=float,
         default=None,
-        help="Total RunPod USD cap per run (default: from OPENRESEARCH_MAX_RUN_GPU_USD=10.0).",
+        help="Total GPU USD cap per run (default: from OPENRESEARCH_MAX_RUN_GPU_USD=10.0).",
     )
     reproduce.add_argument(
         "--dynamic-gpu-headroom",

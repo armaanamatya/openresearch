@@ -322,35 +322,6 @@ export interface AuthStatus {
   };
 }
 
-// ── Runpod status chip (U1) ────────────────────────────────────────────────
-
-export type DemoRunpodStatusKind =
-  | "not_runpod"
-  | "not_yet"
-  | "provisioning"
-  | "ready"
-  | "executing"
-  | "stopping"
-  | "destroyed"
-  | "error";
-
-export interface DemoRunpodStatusResponse {
-  project_id: string;
-  sandbox_mode?: DemoSandboxMode | null;
-  status: DemoRunpodStatusKind;
-  label: string;
-  detail: string;
-  source: "events" | "runpod_api";
-  pod?: {
-    id?: string | null;
-    name?: string | null;
-    desiredStatus?: string | null;
-    currentStatus?: string | null;
-  } | null;
-  updated_at?: string | null;
-  api_error?: string;
-}
-
 export const RUN_MODE_OPTIONS: ReadonlyArray<{
   value: DemoRunMode;
   label: string;

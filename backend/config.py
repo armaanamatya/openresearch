@@ -697,11 +697,11 @@ class Settings(BaseSettings):
             "OPENRESEARCH_DYNAMIC_GPU_ENABLED",
             "OPENRESEARCH_DYNAMIC_GPU",
         ),
-        description="Wire paper hardware clues to RunPod SKU choice",
+        description="Wire paper hardware clues to cloud GPU SKU choice",
     )
-    force_single_gpu: bool = Field(default=True, description="Cap RunPod GPU count at 1 regardless of paper")
+    force_single_gpu: bool = Field(default=True, description="Cap cloud GPU count at 1 regardless of paper")
     max_gpu_usd_per_hour: float = Field(default=10.0, ge=0.0, description="Per-GPU $/hr cap; 0 disables")
-    max_run_gpu_usd: float = Field(default=10.0, ge=0.0, description="Total RunPod $ per run cap; 0 disables")
+    max_run_gpu_usd: float = Field(default=10.0, ge=0.0, description="Total GPU $ per run cap; 0 disables")
     gpu_count: int | None = Field(
         default=None,
         description=(
