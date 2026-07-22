@@ -146,8 +146,9 @@ For remote GPU work on **GCP**, the supported path is a single VM: provision a
 fresh GPU VM, run `reproduce --sandbox local` on it, and auto-delete when done —
 the validated end-to-end procedure is
 [`docs/runbooks/2026-07-22-gcp-vm-e2e-run-procedure.md`](docs/runbooks/2026-07-22-gcp-vm-e2e-run-procedure.md).
-GKE is **parked** behind a fail-loud guard (`OPENRESEARCH_ALLOW_GKE` to revive)
-and is not the go-forward GCP route. The optional `aws` sandbox is an EKS+S3/IRSA
+GKE is **not used** — a fail-closed guard rejects `--sandbox gcp/gke` on the
+reproduction path (`OPENRESEARCH_ALLOW_GKE` is an inert operator-only escape
+hatch, not a supported path); the single-VM path above is the GCP GPU route. The optional `aws` sandbox is an EKS+S3/IRSA
 cell-matrix adapter (never a generic remote shell): configure its pinned image,
 one-GPU node pool, explicit verified rate, and IRSA first, then run `python -m
 backend.cli aws-preflight --project-id <project> --run-id <probe>` before a billed
@@ -196,7 +197,7 @@ docker compose up --build
 | `OPENRESEARCH_DEFAULT_SANDBOX` | No | `auto` / `local` / `docker` / `azure` / `aws` / `gcp` (default `local`) |
 | `OPENRESEARCH_AZURE_*` | For Azure | AKS GPU sandbox (cluster, storage, base image) |
 | `OPENRESEARCH_AWS_*` | For AWS | EKS GPU sandbox (cluster, S3 bucket, pinned image, IRSA) |
-| `OPENRESEARCH_GCP_*` | For GCP | GCP config (single-VM GPU path is the supported route; GKE parked) |
+| `OPENRESEARCH_GCP_*` | For GCP | GCP config (single-VM GPU path is the supported route; GKE not used) |
 | `OPENRESEARCH_DEMO_SECRET` | No | Gate run-start endpoints with a shared secret |
 | `OPENRESEARCH_DYNAMIC_GPU` | No | `true` (default): auto-select GPU SKU per paper |
 | `OPENRESEARCH_MAX_RUN_GPU_USD` | No | Per-run GPU spend cap (float, default 10.0) |

@@ -36,7 +36,8 @@ Cloud sandboxes are operator-only. For GCP the supported GPU route is the
 single-VM path (a fresh GPU VM running `reproduce --sandbox local`, then
 auto-delete — see
 [`2026-07-22-gcp-vm-e2e-run-procedure.md`](runbooks/2026-07-22-gcp-vm-e2e-run-procedure.md));
-GKE is parked behind a fail-loud guard (`OPENRESEARCH_ALLOW_GKE` to revive).
+GKE is not used — a fail-closed guard rejects it (`OPENRESEARCH_ALLOW_GKE` is an
+inert operator-only escape hatch, not a supported path).
 Azure runs on AKS and AWS on EKS. (RunPod/Brev/Railway were removed 2026-07-22.)
 Configure the matching provider variables, validate identity, capacity, image,
 storage, and budget preflight, then choose the sandbox explicitly. A submitted

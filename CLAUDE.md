@@ -46,7 +46,8 @@ python -m backend.cli campaign <paper> --max-llm-usd X --max-gpu-usd Y --max-gpu
 
 Common flags: `--mode {rlm(default),rdr,rlm-pure}`, `--provider`, `--sandbox
 {auto,docker,local,aws,azure,gcp}` (default `local`; `aws`=EKS, `azure`=AKS are the primary
-clouds; `gcp`/`gke` is PARKED and raises unless `OPENRESEARCH_ALLOW_GKE=1`; auto = docker/local
+clouds; `gcp`/`gke` is NOT USED and fail-closes unless the inert `OPENRESEARCH_ALLOW_GKE=1`
+escape hatch is set (not a supported path); auto = docker/local
 only, never a paid remote), `--model`, `--models role=token,…`, `--vram-gb`, `--max-usd`.
 Root-model vocabulary, the two auth surfaces, per-role selection, Foundry/Grok, and the full flag
 catalog live in **`backend/agents/rlm/CLAUDE.md`**; sandbox/GPU knobs in
@@ -99,7 +100,7 @@ Load-bearing invariants; the owning nested file/spec carries the full rule + inc
 - **Cost visibility.** `cost_ledger.jsonl`/`demo_status.json` are **blind** to Foundry-routed LLM
   spend and idle GPU-node time — a `$0` there is not proof of $0. Verify real cost via
   `tokens_total.json` + `kubectl get nodes` (stray A100s), never the ledger alone.
-- **GKE runs go through the cell-matrix.** The monolithic `k8s_job_backend.exec` path never
+- **GKE is not used** (fail-closed guard). **GKE runs go through the cell-matrix.** The monolithic `k8s_job_backend.exec` path never
   stages code into the pod; on gcp/gke, training routes via `cells.json`+`train_cell.py` (or the
   `OPENRESEARCH_GKE_SYNTH_CELL` synthesis). → `backend/services/runtime/CLAUDE.md`
 - **Delegation.** The session's lead model owns design + reviews **every diff**; delegate

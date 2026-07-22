@@ -46,7 +46,7 @@ report or a maximized demo score.
 | `local` | development, CPU/local-GPU, and GCP single-VM GPU runs | supported (default) |
 | `docker` | isolated local execution | supported when Docker is available |
 | `gcp` (single VM) | remote GPU execution | supported: fresh GPU VM + `--sandbox local` + auto-delete |
-| `gcp` / `gke` (Kubernetes) | GKE cell execution | parked (`OPENRESEARCH_ALLOW_GKE` to revive) |
+| `gcp` / `gke` (Kubernetes) | GKE cell execution | not used (fail-closed guard; `OPENRESEARCH_ALLOW_GKE` is an inert escape hatch) |
 | `azure` | AKS cell execution | operator-gated; preflight first |
 | `aws` / `eks` | EKS cell execution | experimental; operator-gated; preflight first |
 
@@ -55,7 +55,7 @@ until credentials, image, storage, quota, and the selected execution route have
 been checked. The go-forward GCP GPU route is the single-VM path (fresh VM +
 `reproduce --sandbox local` + auto-delete —
 [`docs/runbooks/2026-07-22-gcp-vm-e2e-run-procedure.md`](runbooks/2026-07-22-gcp-vm-e2e-run-procedure.md)),
-NOT GKE (parked). Azure runs on AKS, AWS on EKS; `auto` is deliberately local
+NOT GKE (not used). Azure runs on AKS, AWS on EKS; `auto` is deliberately local
 only. RunPod/Brev/Railway were removed 2026-07-22. Durable cloud control
 requires a lease/fence, persistent state, and a terminal receipt.
 
