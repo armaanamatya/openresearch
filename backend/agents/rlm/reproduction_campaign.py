@@ -487,6 +487,14 @@ class ReproductionCampaign:
         a controller EventStore outage is recorded as a warning after the
         launch intent is durable and never changes money, verdict, or decision.
         """
+        # Under authority the ``SchedulerAuthorityController`` owns
+        # ``branch-tree:<campaign_id>`` lineage as the SOLE writer; since
+        # ``campaign_id == project_id`` there, emitting here too would
+        # double-write the same aggregate and risk an ``expected_version``
+        # collision. ``scheduler_controller`` is None on every default path
+        # today, so this is byte-identical when authority is not live.
+        if self.scheduler_controller is not None:
+            return
         if not self._scheduler_tree_enabled():
             return
         attempt_n = launched_row.get("attempt_n")

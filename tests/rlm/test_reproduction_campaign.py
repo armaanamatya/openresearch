@@ -15,6 +15,7 @@ import json
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -333,6 +334,48 @@ def test_scheduler_lineage_root_reemit_is_idempotent_on_existing_f10_fact(tmp_pa
     campaign._maybe_emit_root_branch_spawned(state, launch)
 
     assert len(list(store.load(AggregateId("branch-tree:proj_1")))) == 1
+    store.close()
+
+
+def test_serial_branch_spawn_emitted_when_no_controller(tmp_path, monkeypatch):
+    """Default path (no authority controller): the serial campaign is still the
+    branch-tree lineage writer and emits the root ``BranchSpawned``."""
+    monkeypatch.setenv("OPENRESEARCH_SCHEDULER_TREE", "yes")
+    store = SqliteEventStore(f"sqlite:///{tmp_path / 'controller-events.db'}")
+    campaign = _campaign(
+        tmp_path,
+        _make_stages(tmp_path / "run", _Recorder()),
+        branch_tree_event_store=store,
+    )
+    assert campaign.scheduler_controller is None
+
+    assert campaign.run()["kind"] == "REPRODUCED"
+
+    events = list(store.load(AggregateId("branch-tree:proj_1")))
+    assert len(events) == 1
+    assert events[0].event_type == "branch_spawned"
+    store.close()
+
+
+def test_serial_branch_spawn_suppressed_under_authority(tmp_path, monkeypatch):
+    """When an authority controller is live it is the SOLE branch-tree writer:
+    the serial emit is suppressed to avoid a double-write / expected_version
+    collision on the shared ``branch-tree:<campaign_id>`` aggregate. Tree flag
+    is ON so the ONLY thing that can suppress the emit is the controller guard."""
+    monkeypatch.setenv("OPENRESEARCH_SCHEDULER_TREE", "yes")
+    store = SqliteEventStore(f"sqlite:///{tmp_path / 'controller-events.db'}")
+    campaign = _campaign(
+        tmp_path,
+        _make_stages(tmp_path / "run", _Recorder()),
+        branch_tree_event_store=store,
+        scheduler_controller=SimpleNamespace(),
+    )
+    assert campaign.scheduler_controller is not None
+
+    assert campaign.run()["kind"] == "REPRODUCED"
+
+    # The controller owns the aggregate; the serial writer wrote nothing.
+    assert list(store.load(AggregateId("branch-tree:proj_1"))) == []
     store.close()
 
 
