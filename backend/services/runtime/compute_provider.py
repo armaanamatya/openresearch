@@ -76,15 +76,19 @@ class RunStatus:
     """One ``watch`` poll result.
 
     ``state`` is one of ``"running"`` | ``"terminal"`` | ``"stalled"`` |
-    ``"stopped_uncollected"`` (the last meaning the compute was reclaimed --
-    by a run-duration ceiling, a watchdog, or an external actor -- before
-    ``collect`` ran; the driving state machine reacts by calling
-    ``recover()``). ``synced`` records whether artifacts were off-box as of
-    THIS poll, so an emergency stop can degrade to "last synced" instead of
-    "stranded."
+    ``"stopped_uncollected"`` | ``"completed"``. ``"stopped_uncollected"``
+    means the compute was reclaimed -- by a run-duration ceiling, a watchdog,
+    or an external actor -- before ``collect`` ran; the driving state machine
+    reacts by calling ``recover()``. ``"completed"`` means the in-VM run wrote
+    its terminal report (e.g. ``final_report.json``); the driving state
+    machine takes the graceful COLLECT -> RELEASE_GPU -> FINALIZE path. ``synced``
+    records whether artifacts were off-box as of THIS poll, so an emergency stop
+    can degrade to "last synced" instead of "stranded."
     """
 
-    state: str  # "running" | "terminal" | "stalled" | "stopped_uncollected"
+    # "running" | "terminal" | "stalled" | "stopped_uncollected" | "completed"
+    # ("completed" = the in-VM run wrote its terminal report -> graceful FINALIZE)
+    state: str
     detail: str = ""
     synced: bool = False  # True once artifacts are off-box for this poll
 

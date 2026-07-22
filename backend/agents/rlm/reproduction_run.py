@@ -302,6 +302,14 @@ class ReproductionRun:
                         lease, reason="stopped_uncollected", decision=decision.decision
                     )
 
+                if status.state == "completed":
+                    # The in-VM child wrote final_report.json: the run finished
+                    # cleanly. Break BEFORE the budget block so a coincident
+                    # budget-ceiling observation cannot re-route this poll to
+                    # _emergency_shutdown -> RECOVERED. Takes the graceful
+                    # COLLECT -> RELEASE_GPU -> FINALIZE path (invariant 3).
+                    break
+
                 if budget is not None:
                     # Invariant 6: a budget breach observed at WATCH time
                     # (real elapsed GPU seconds via the injected clock, not
