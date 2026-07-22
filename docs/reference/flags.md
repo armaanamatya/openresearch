@@ -4,10 +4,10 @@
 
 ## Summary
 
-- **Total distinct flags:** 518
+- **Total distinct flags:** 505
 - **Managed by `config.py` Settings (typed, default known):** 140
-- **Ad-hoc `os.environ` reads (no central default):** 378
-- **Mentioned in a `CLAUDE.md`:** 144 (27%)
+- **Ad-hoc `os.environ` reads (no central default):** 365
+- **Mentioned in a `CLAUDE.md`:** 141 (27%)
 
 Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **sites** = ad-hoc read count; **default** = literal default at first read site (best effort).
 
@@ -231,17 +231,6 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **si
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_BOOTSTRAP_MKDIRS` |  |  |  | |
 | `OPENRESEARCH_BOOTSTRAP_PIP_TIMEOUT_S` |  |  |  | |
-
-### `OPENRESEARCH_BREV_*`
-
-| Flag | cfg | doc | sites | default |
-|---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_BREV_` |  |  |  | |
-| `OPENRESEARCH_BREV_CONTAINER_DISK_GB` |  |  | 1 | `"50"` |
-| `OPENRESEARCH_BREV_GPU_COUNT` |  |  | 1 | `"1"` |
-| `OPENRESEARCH_BREV_GPU_TYPE` |  |  | 1 | `""` |
-| `OPENRESEARCH_BREV_IMAGE` |  |  | 1 | `""` |
-| `OPENRESEARCH_BREV_REGION` |  |  | 1 | `""` |
 
 ### `OPENRESEARCH_BUDGET_*`
 
@@ -1124,17 +1113,10 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **si
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_RUNPOD_` |  | ✅ |  | |
 | `OPENRESEARCH_RUNPOD_API_KEY` |  | ✅ |  | |
 | `OPENRESEARCH_RUNPOD_BOOTSTRAP_COMMAND` |  |  |  | |
-| `OPENRESEARCH_RUNPOD_CLOUD_TYPE` |  | ✅ | 1 | `"SECURE"` |
-| `OPENRESEARCH_RUNPOD_CONTAINER_DISK_GB` |  |  | 1 | `"50"` |
-| `OPENRESEARCH_RUNPOD_GPU_COUNT` |  |  | 1 | `"1"` |
-| `OPENRESEARCH_RUNPOD_GPU_TYPE` |  |  | 1 | `""` |
-| `OPENRESEARCH_RUNPOD_IMAGE` |  | ✅ | 1 | `""` |
 | `OPENRESEARCH_RUNPOD_NETWORK_VOLUME_ID` |  |  |  | |
-| `OPENRESEARCH_RUNPOD_VOLUME_GB` |  |  | 1 | `"20"` |
-| `OPENRESEARCH_RUNPOD_VOLUME_MOUNT_PATH` |  |  | 5 | `"/workspace"` |
+| `OPENRESEARCH_RUNPOD_VOLUME_MOUNT_PATH` |  |  | 4 | `""` |
 
 ### `OPENRESEARCH_RUNS_*`
 

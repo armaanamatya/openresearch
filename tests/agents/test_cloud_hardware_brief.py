@@ -2,16 +2,12 @@
 
 The agent's implement_baseline prompt needs to know what hardware it
 will actually run against — GPU model, VRAM, image, disk — so it can
-pick batch sizes without probing. Originally RunPod-only via the
-OPENRESEARCH_RUNPOD_* env vars; this suite pins the generalisation that
-also handles Azure ML (OPENRESEARCH_AZURE_VM_SIZE → SKU catalog from
-Microsoft Learn /azure/virtual-machines/sizes/gpu-accelerated, May 2026)
-and Brev.
+pick batch sizes without probing. This suite pins the Azure ML resolver
+(OPENRESEARCH_AZURE_VM_SIZE → SKU catalog from Microsoft Learn
+/azure/virtual-machines/sizes/gpu-accelerated, May 2026).
 
 Pinned invariants:
 
-  * RunPod env unchanged from earlier ship — OPENRESEARCH_RUNPOD_GPU_TYPE
-    drives the brief when sandbox contains "runpod".
   * Azure SKU catalog covers the modern lineup (NCads_A100_v4,
     NCads_H100_v5, ND_H100_v5, ND_H200_v5, NV*ads_A10_v5, NC*as_T4_v3).
   * OPENRESEARCH_VRAM_OVERRIDE_GB beats any catalog lookup across all
@@ -27,7 +23,6 @@ import pytest
 
 from backend.agents.baseline_implementation import (
     _AZURE_VM_SKU_CATALOG,
-    _GPU_VRAM_ESTIMATE_GB,
     _hardware_specs_block,
     _resolve_cloud_hardware,
 )
@@ -35,52 +30,14 @@ from backend.agents.baseline_implementation import (
 
 @pytest.fixture(autouse=True)
 def _clear_cloud_env(monkeypatch):
-    """Strip every OPENRESEARCH_*_GPU / VM_SIZE env so tests don't pollute each other."""
+    """Strip every OPENRESEARCH_*_VM_SIZE / VRAM env so tests don't pollute each other."""
     for key in (
-        "OPENRESEARCH_RUNPOD_GPU_TYPE", "OPENRESEARCH_RUNPOD_GPU_COUNT",
-        "OPENRESEARCH_RUNPOD_CLOUD_TYPE", "OPENRESEARCH_RUNPOD_IMAGE",
-        "OPENRESEARCH_RUNPOD_CONTAINER_DISK_GB", "OPENRESEARCH_RUNPOD_VOLUME_GB",
-        "OPENRESEARCH_RUNPOD_VOLUME_MOUNT_PATH",
         "OPENRESEARCH_AZURE_VM_SIZE", "OPENRESEARCH_AZURE_REGION",
         "OPENRESEARCH_AZURE_IMAGE", "OPENRESEARCH_AZURE_DATA_DISK_GB",
         "OPENRESEARCH_AZURE_DATASTORE_GB", "OPENRESEARCH_AZURE_DATASTORE_MOUNT",
-        "OPENRESEARCH_BREV_GPU_TYPE", "OPENRESEARCH_BREV_GPU_COUNT",
-        "OPENRESEARCH_BREV_REGION", "OPENRESEARCH_BREV_IMAGE",
-        "OPENRESEARCH_BREV_CONTAINER_DISK_GB",
         "OPENRESEARCH_VRAM_OVERRIDE_GB",
     ):
         monkeypatch.delenv(key, raising=False)
-
-
-# ---------------------------------------------------------------------------
-# RunPod — back-compat
-# ---------------------------------------------------------------------------
-
-
-def test_runpod_resolves_to_l40s(monkeypatch):
-    monkeypatch.setenv("OPENRESEARCH_RUNPOD_GPU_TYPE", "NVIDIA L40S")
-    monkeypatch.setenv("OPENRESEARCH_RUNPOD_CLOUD_TYPE", "SECURE")
-    monkeypatch.setenv("OPENRESEARCH_RUNPOD_IMAGE", "runpod/pytorch:2.1.0")
-    spec = _resolve_cloud_hardware("runpod")
-    assert spec is not None
-    assert spec["cloud"] == "RunPod"
-    assert spec["gpu"] == "NVIDIA L40S"
-    assert spec["vram_gb"] == 48
-    assert spec["tier"] == "SECURE"
-    assert "runpod/pytorch" in spec["image"]
-
-
-def test_runpod_unknown_gpu_falls_through(monkeypatch):
-    monkeypatch.setenv("OPENRESEARCH_RUNPOD_GPU_TYPE", "NVIDIA Made-Up 9999")
-    spec = _resolve_cloud_hardware("runpod")
-    assert spec is not None
-    assert spec["vram_known"] is False
-    assert spec["vram_gb"] is None
-
-
-def test_runpod_no_env_returns_none():
-    """No RunPod env set + sandbox=runpod → resolver returns None (nothing to brief)."""
-    assert _resolve_cloud_hardware("runpod") is None
 
 
 # ---------------------------------------------------------------------------
@@ -190,15 +147,6 @@ def test_azure_image_override(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_vram_override_beats_runpod_catalog(monkeypatch):
-    """Operator override bypasses the catalog (--vram-gb / OPENRESEARCH_VRAM_OVERRIDE_GB)."""
-    monkeypatch.setenv("OPENRESEARCH_RUNPOD_GPU_TYPE", "NVIDIA L40S")  # would map to 48
-    monkeypatch.setenv("OPENRESEARCH_VRAM_OVERRIDE_GB", "40")  # override
-    spec = _resolve_cloud_hardware("runpod")
-    assert spec["vram_gb"] == 40
-    assert spec["vram_known"] is True
-
-
 def test_vram_override_beats_azure_catalog(monkeypatch):
     monkeypatch.setenv("OPENRESEARCH_AZURE_VM_SIZE", "Standard_NC24ads_A100_v4")  # would map to 80
     monkeypatch.setenv("OPENRESEARCH_VRAM_OVERRIDE_GB", "60")
@@ -209,14 +157,6 @@ def test_vram_override_beats_azure_catalog(monkeypatch):
 # ---------------------------------------------------------------------------
 # Prompt block emission
 # ---------------------------------------------------------------------------
-
-
-def test_block_emits_for_runpod(monkeypatch):
-    monkeypatch.setenv("OPENRESEARCH_RUNPOD_GPU_TYPE", "NVIDIA L40S")
-    block = _hardware_specs_block("runpod")
-    assert "Cloud: RunPod" in block
-    assert "NVIDIA L40S" in block
-    assert "48 GB" in block
 
 
 def test_block_emits_for_azure(monkeypatch):
@@ -269,9 +209,3 @@ def test_azure_catalog_covers_modern_lineup():
         assert gpu, f"{sku}: blank GPU"
         assert count > 0, f"{sku}: zero GPU count"
         assert vram > 0, f"{sku}: zero VRAM"
-
-
-def test_runpod_strings_have_vram_entries():
-    """Every common RunPod GPU string the lab UI offers is in the VRAM map."""
-    for gpu in ("NVIDIA L40S", "NVIDIA RTX 4090", "NVIDIA A100 80GB", "NVIDIA H100"):
-        assert gpu in _GPU_VRAM_ESTIMATE_GB

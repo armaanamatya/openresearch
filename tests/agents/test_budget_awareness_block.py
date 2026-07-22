@@ -6,7 +6,7 @@ telling it to scale train.py to fit. Without this the agent picks epoch
 counts that overrun the sandbox kill, producing zero-metric timeouts.
 
 The injection gate is OPENRESEARCH_BUDGET_AWARENESS_MODE (auto / always / never):
-- auto  → inject on cost-bearing sandboxes (runpod) only
+- auto  → inject on cost-bearing sandboxes (gcp / azure / aws) only
 - always → inject regardless of sandbox
 - never  → skip regardless
 """
@@ -50,22 +50,15 @@ def test_auto_mode_skips_budget_on_local_docker(monkeypatch) -> None:
     assert "EXECUTION-BUDGET AWARENESS" not in g
 
 
-def test_auto_mode_injects_budget_on_runpod(monkeypatch) -> None:
-    monkeypatch.setenv("OPENRESEARCH_BUDGET_AWARENESS_MODE", "auto")
-    g = _compute_constraint_guidance(sandbox_mode="runpod", gpu_mode=None, remaining_s=900.0)
-    assert "EXECUTION-BUDGET AWARENESS" in g
-    assert "900" in g
-
-
 def test_always_mode_injects_budget_even_on_local_docker(monkeypatch) -> None:
     monkeypatch.setenv("OPENRESEARCH_BUDGET_AWARENESS_MODE", "always")
     g = _compute_constraint_guidance(sandbox_mode="docker", gpu_mode=None, remaining_s=900.0)
     assert "EXECUTION-BUDGET AWARENESS" in g
 
 
-def test_never_mode_skips_budget_even_on_runpod(monkeypatch) -> None:
+def test_never_mode_skips_budget_even_on_gcp(monkeypatch) -> None:
     monkeypatch.setenv("OPENRESEARCH_BUDGET_AWARENESS_MODE", "never")
-    g = _compute_constraint_guidance(sandbox_mode="runpod", gpu_mode=None, remaining_s=900.0)
+    g = _compute_constraint_guidance(sandbox_mode="gcp", gpu_mode=None, remaining_s=900.0)
     assert "EXECUTION-BUDGET AWARENESS" not in g
 
 
