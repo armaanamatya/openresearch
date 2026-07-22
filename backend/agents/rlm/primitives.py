@@ -3274,8 +3274,9 @@ def _backend_for_sandbox_mode(
     ``azure``/``aws`` construct the AKS/EKS Job backends after their availability
     checks.
 
-    ``SandboxMode.gcp`` (and its ``gke`` alias) is PARKED: it raises a clear
-    ``RuntimeError`` unless ``OPENRESEARCH_ALLOW_GKE`` is set, in which case the
+    ``SandboxMode.gcp`` (and its ``gke`` alias) is NOT USED (fail-closed): it
+    raises a clear ``RuntimeError`` unless the inert operator-only
+    ``OPENRESEARCH_ALLOW_GKE`` escape hatch is set, in which case the
     ``GkeJobBackend`` is constructed as before. The supported GCP path is the
     campaign VM route (``--sandbox local --billing-sandbox gcp``).
 
@@ -3328,10 +3329,11 @@ def _backend_for_sandbox_mode(
             "yes",
         ):
             raise RuntimeError(
-                "sandbox=gcp/gke routes to GKE, which is PARKED — use the "
-                "campaign VM path: `campaign --campaign-driver unified "
-                "--sandbox local --billing-sandbox gcp`; set "
-                "OPENRESEARCH_ALLOW_GKE=1 to revive."
+                "sandbox=gcp/gke routes to GKE, which is not used. The supported "
+                "GCP GPU path is the campaign single-VM route: `campaign "
+                "--campaign-driver unified --sandbox local --billing-sandbox gcp`. "
+                "(OPENRESEARCH_ALLOW_GKE is an inert operator-only escape hatch, "
+                "not a supported path.)"
             )
         import backend.services.runtime as _runtime
         from backend.services.runtime.gke_job_backend import GkeJobBackend
