@@ -1,4 +1,4 @@
-<!-- doc-meta: status=current; last-verified=2026-06-09 -->
+<!-- doc-meta: status=current; last-verified=2026-07-22 -->
 # Architecture
 
 OpenResearch is a single-user paper-reproduction system: ingest a paper, let an
@@ -14,7 +14,7 @@ Browser
           -> FastAPI backend (:8000)
               -> long-lived run subprocess
                   -> RLM / RDR controller
-                      -> local, docker, RunPod, GKE, AKS, or EKS sandbox
+                      -> local, docker, GCP VM, AKS, or EKS sandbox
 ```
 
 The browser does not call FastAPI directly. The frontend proxy target is
@@ -74,11 +74,10 @@ clusters.
 
 | Sandbox | Status | Behavior |
 |---|---|---|
-| `local` | Implemented | Host subprocess execution; no local Docker build |
+| `local` | Implemented | Host subprocess execution; no local Docker build. On a GCP GPU VM this is the supported remote-GPU path (single-VM: fresh VM + `--sandbox local` + auto-delete). |
 | `docker` | Implemented | Local Docker build and container execution; requires daemon |
-| `runpod` | Implemented | Remote GPU pod over SSH; no local Docker build after 2026-06-09 hardening |
 | `azure` | Partial | AKS GPU backend and Terraform/Helm exist under `infra/azure`, but this is not documented as production-ready |
-| `gcp` / `gke` | Partial | GKE Kubernetes-job backend; `gke` is a CLI/environment alias for `gcp` |
+| `gcp` / `gke` | Parked | GKE Kubernetes-job backend is parked behind a fail-loud guard (`OPENRESEARCH_ALLOW_GKE` to revive); the go-forward GCP GPU route is the single-VM `local` path above |
 | `aws` / `eks` | Experimental | EKS cell-runtime path; keep feature flags off until cloud preflight is green |
 | `auto` | Implemented | Chooses available backend; Docker daemon availability matters |
 

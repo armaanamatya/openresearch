@@ -16,7 +16,7 @@ from backend.services.runtime.run_plan import RunPlan, RequiredAsset
 from backend.agents.resilience.budget import RunBudget
 from backend.agents.schemas import ScopeSpec
 
-_SKU = find_by_alias("rtx4090")
+_SKU = find_by_alias("l4")
 
 
 # ---------------------------------------------------------------------------
@@ -31,7 +31,7 @@ def test_est_train_seconds_monotonic_in_steps_and_size():
 
 
 def test_estimate_scope_cost_scales_with_cells():
-    sku = find_by_alias("rtx4090")                                # approx_usd_per_hr known
+    sku = find_by_alias("l4")                                # approx_usd_per_hr known
     small = ScopeSpec(models=["qwen3-1.7b"], datasets=[{"name": "alfworld"}], seeds=[0])
     big = ScopeSpec(models=["qwen3-1.7b", "qwen2.5-3b"],
                     datasets=[{"name": "alfworld"}, {"name": "webshop"}], seeds=[0, 1])
@@ -44,7 +44,7 @@ def test_estimate_scope_cost_scales_with_cells():
 
 
 def test_estimate_scope_cost_empty_scope_is_zero():
-    sku = find_by_alias("rtx4090")
+    sku = find_by_alias("l4")
     assert estimate_scope_cost(ScopeSpec(), sku, steps=400) == (0.0, 0.0)
 
 

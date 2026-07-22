@@ -30,7 +30,7 @@ from backend.agents.runtime import credential_vault as vault
 _FAKE_ANTHROPIC = "sentinel-anthropic-not-a-real-key"
 _FAKE_OPENAI = "sentinel-openai-not-a-real-key"
 _FAKE_FOUNDRY = "sentinel-foundry-not-a-real-key"
-_FAKE_RUNPOD = "sentinel-runpod-not-a-real-key"
+_FAKE_OPENROUTER = "sentinel-openrouter-not-a-real-key"
 
 
 @pytest.fixture(autouse=True)
@@ -46,7 +46,7 @@ def full_credentials(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", _FAKE_ANTHROPIC)
     monkeypatch.setenv("OPENAI_API_KEY", _FAKE_OPENAI)
     monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", _FAKE_FOUNDRY)
-    monkeypatch.setenv("OPENRESEARCH_RUNPOD_API_KEY", _FAKE_RUNPOD)
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_OPENROUTER)
 
 
 # ---------------------------------------------------------------------------
@@ -140,18 +140,18 @@ def test_guard_is_a_noop_when_the_operator_disables_the_vault(monkeypatch, full_
 
 
 def test_primitive_call_re_exposes_then_rescrubs(full_credentials):
-    """Lazy consumers (grader/runpod/azure) read os.environ from INSIDE a primitive."""
+    """Lazy consumers (grader/azure/openrouter) read os.environ from INSIDE a primitive."""
     seen: dict[str, str | None] = {}
 
     with vault.armed_vault():
         assert os.environ.get("ANTHROPIC_API_KEY") is None
         with vault.exposed():
             seen["anthropic"] = os.environ.get("ANTHROPIC_API_KEY")
-            seen["runpod"] = os.environ.get("OPENRESEARCH_RUNPOD_API_KEY")
+            seen["openrouter"] = os.environ.get("OPENROUTER_API_KEY")
         assert os.environ.get("ANTHROPIC_API_KEY") is None, "must re-scrub on primitive exit"
 
     assert seen["anthropic"] == _FAKE_ANTHROPIC
-    assert seen["runpod"] == _FAKE_RUNPOD
+    assert seen["openrouter"] == _FAKE_OPENROUTER
 
 
 def test_consumer_repollution_during_a_primitive_cannot_escape(full_credentials):
@@ -190,7 +190,7 @@ def test_credential_scoped_tools_exposes_only_inside_the_tool(full_credentials):
     observed: dict[str, str | None] = {}
 
     def run_experiment(code_path: str, env_id: str = "x") -> dict:
-        observed["inside"] = os.environ.get("OPENRESEARCH_RUNPOD_API_KEY")
+        observed["inside"] = os.environ.get("OPENROUTER_API_KEY")
         return {"ok": True, "code_path": code_path, "env_id": env_id}
 
     tools = _credential_scoped_tools(
@@ -201,11 +201,11 @@ def test_credential_scoped_tools_exposes_only_inside_the_tool(full_credentials):
     )
 
     with vault.armed_vault():
-        observed["outside"] = os.environ.get("OPENRESEARCH_RUNPOD_API_KEY")
+        observed["outside"] = os.environ.get("OPENROUTER_API_KEY")
         result = tools["run_experiment"]["tool"]("code/", env_id="e1")
 
     assert observed["outside"] is None, "the REPL must not see the key between primitives"
-    assert observed["inside"] == _FAKE_RUNPOD, "the primitive must still get the key"
+    assert observed["inside"] == _FAKE_OPENROUTER, "the primitive must still get the key"
     assert result == {"ok": True, "code_path": "code/", "env_id": "e1"}, "args must pass through"
     assert tools["rubric_spec"] == {"leaves": []}, "non-callable tools must be untouched"
 
@@ -322,51 +322,6 @@ def test_executor_env_is_unchanged_when_the_vault_is_not_armed(full_credentials)
     from backend.agents.runtime.claude_runtime import _subprocess_env
 
     assert _subprocess_env(None)["ANTHROPIC_API_KEY"] == _FAKE_ANTHROPIC
-
-
-# ---------------------------------------------------------------------------
-# 7. Invariant I4 — the RunPod pod env carries NO Anthropic key.
-# ---------------------------------------------------------------------------
-
-
-def test_runpod_pod_env_never_receives_an_anthropic_key(full_credentials, monkeypatch):
-    """Pre-existing invariant: the pod runs ML code only. The vault's exposure window (which
-    re-injects creds into os.environ *inside* run_experiment, where the pod is created) must
-    not weaken it. The pod env derives from SandboxConfig.environment, never os.environ."""
-    import asyncio
-    from pathlib import Path
-
-    from backend.services.runtime.interface import SandboxConfig
-    from backend.services.runtime.runpod_backend import RunpodBackend
-
-    monkeypatch.setenv("OPENRESEARCH_RUNPOD_API_KEY", _FAKE_RUNPOD)
-    backend = RunpodBackend()
-
-    captured: dict = {}
-
-    async def _fake_request_json(method, path, **kwargs):
-        captured["payload"] = kwargs.get("json") or {}
-        return {"id": "pod-1", "desiredStatus": "RUNNING"}
-
-    monkeypatch.setattr(backend, "_request_json", _fake_request_json)
-
-    config = SandboxConfig(
-        project_id="prj_test",
-        run_id="run_test",
-        image="runpod/base:latest",
-        project_root=Path("/tmp/prj_test"),
-        environment={"FOO": "bar"},
-    )
-
-    # Worst case: creds ARE live in os.environ (we are inside run_experiment's window).
-    with vault.armed_vault(), vault.exposed():
-        assert os.environ.get("ANTHROPIC_API_KEY") == _FAKE_ANTHROPIC
-        asyncio.run(backend._create_pod(config, "runpod/base:latest"))
-
-    pod_env = captured["payload"]["env"]
-    assert pod_env["FOO"] == "bar", "the caller's env must still be honoured"
-    for name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "AZURE_FOUNDRY_API_KEY"):
-        assert name not in pod_env, f"{name} must NEVER enter the pod env (invariant I4)"
 
 
 # ---------------------------------------------------------------------------

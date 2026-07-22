@@ -57,7 +57,6 @@ _SECRET_REGISTRY: dict[str, tuple[tuple[str, ...], str | None]] = {
     "hf_token": (("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"), None),
     "anthropic_api_key": (("ANTHROPIC_API_KEY",), "anthropic_api_key"),
     "openai_api_key": (("OPENAI_API_KEY",), "openai_api_key"),
-    "runpod_api_key": (("RUNPOD_API_KEY",), "runpod_api_key"),
     "azure_foundry_api_key": (("AZURE_FOUNDRY_API_KEY",), "azure_foundry_api_key"),
     "aws_access_key_id": (("AWS_ACCESS_KEY_ID",), None),
     "aws_secret_access_key": (("AWS_SECRET_ACCESS_KEY",), None),

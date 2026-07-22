@@ -45,7 +45,6 @@ _CREDENTIAL_FIELDS = (
     "azure_foundry_api_key",
     "azure_foundry_endpoint",
     "azure_foundry_deployment",
-    "runpod_api_key",
     "apify_api_token",
     "claude_code_oauth_token",
     "demo_secret",
@@ -107,11 +106,11 @@ def test_settings_defaults_are_the_declared_code_defaults():
 
     These are safe to compare by value (no secrets) and they are the ones that
     silently rewrite behaviour: a .env that sets OPENRESEARCH_DEFAULT_SANDBOX=gcp
-    turns every "defaults to runpod" assertion into a lie.
+    turns every "defaults to local" assertion into a lie.
     """
     settings = Settings()
 
-    assert settings.default_sandbox == "runpod"
+    assert settings.default_sandbox == "local"
     assert settings.force_sandbox == ""
     assert settings.gcp_project == ""
     assert settings.gcp_gcs_bucket == ""
@@ -137,7 +136,7 @@ def test_isolation_actually_blocks_a_dotenv_that_exists_on_disk(tmp_path, monkey
     (tmp_path / ".env").write_text("OPENRESEARCH_DEFAULT_SANDBOX=docker\n")
 
     # Blocked: the autouse isolation is in force, so the file is not read.
-    assert Settings().default_sandbox == "runpod"
+    assert Settings().default_sandbox == "local"
 
     # Re-enable the disk read and the very same file IS honoured — proving the
     # assertion above passed because of the block, not because the file was

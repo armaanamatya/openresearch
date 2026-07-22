@@ -345,7 +345,7 @@ def test_start_run_request_preserves_existing_defaults():
     assert req.mode == "rlm"
     assert req.provider == "anthropic"
     assert req.executionMode == "max"  # default flipped efficient→max in 738478a
-    assert req.sandbox == "gcp"  # default flipped runpod→gcp (cloud-posture 2026-07)
+    assert req.sandbox == "local"  # single coherent default (runpod/brev removed; gcp/gke parked)
     assert req.gpuMode == "auto"
     assert req.model == "sonnet"
     assert req.paper_id is None

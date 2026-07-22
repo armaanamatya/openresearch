@@ -78,16 +78,11 @@ _RUN_EXPERIMENT_RETRYABLE_FAILURES = {
     "pod_unavailable",
     # Existing classifier labels for backend/network transients.
     "network_flake",
-    "runpod_capacity",
-    "runpod_transient_500",
-    "runpod_ssh_timeout",
 }
 _RUN_EXPERIMENT_FATAL_FAILURES = {
     "balance_too_low",
     "auth_failed",
     "quota_exceeded",
-    # Existing classifier label for the same fatal funding state.
-    "runpod_balance_too_low",
 }
 
 
@@ -1435,8 +1430,8 @@ def resolve_gpu_requirements(
     settings = get_settings()
 
     # Select the cloud provider from the run's sandbox_mode: azure → azure SKUs
-    # (ONDEMAND tier, multi-GPU VM-size aware); everything else → runpod (default,
-    # byte-for-byte identical to the pre-azure behaviour).
+    # (ONDEMAND tier, multi-GPU VM-size aware); gcp → gcp SKUs; aws → EKS
+    # metadata; everything else (local/docker) → an informational gcp plan.
     from backend.agents.execution import SandboxMode as _SandboxMode
     _sb_mode = getattr(ctx, "sandbox_mode", None)
     try:
@@ -1485,12 +1480,11 @@ def resolve_gpu_requirements(
         cloud_types = ("ONDEMAND",)
         _provisioned_skus = None
     else:
-        _provider = "runpod"
-        cloud_types = (
-            ("COMMUNITY", "SECURE")
-            if getattr(settings, "runpod_cloud_type", "COMMUNITY") == "SECURE"
-            else ("COMMUNITY",)
-        )
+        # Default path (local/docker): resolve an informational plan against the
+        # GCP ONDEMAND rows. Local runs don't provision a node pool, so no SKU
+        # allowlist applies.
+        _provider = "gcp"
+        cloud_types = ("ONDEMAND",)
         _provisioned_skus = None
 
     if not _is_aws:
@@ -1563,18 +1557,15 @@ _ENV_REPAIR_SYSTEM = (
 
 
 def _normalize_runpod_from_line(dockerfile: str) -> str:
-    """Replace a hallucinated runpod/ base image tag with the configured one.
+    """Replace a hallucinated ``runpod/`` base image tag with a sane default.
 
-    The root model sometimes constructs env_spec dicts with non-existent runpod
-    image tags (e.g. ``runpod/pytorch:1.12.1``).  When the FROM line references
-    any ``runpod/`` image that doesn't match the settings-configured
-    ``OPENRESEARCH_RUNPOD_IMAGE`` (``config.runpod_image``), swap it in.
-    Non-runpod FROM lines (e.g.
-    ``python:3.11-slim``) are left untouched — they're valid CPU images.
+    The root model sometimes constructs env_spec dicts with non-existent
+    ``runpod/`` image tags (e.g. ``runpod/pytorch:1.12.1``). Since the RunPod
+    backend has been removed, any ``runpod/`` FROM line is invalid — swap it for
+    a valid CUDA base image. Non-runpod FROM lines (e.g. ``python:3.11-slim``)
+    are left untouched — they're valid CPU images.
     """
-    from backend.config import get_settings
-
-    configured = get_settings().runpod_image
+    configured = "pytorch/pytorch:2.1.0-cuda11.8-cudnn8-devel"
     lines = dockerfile.split("\n")
     for i, line in enumerate(lines):
         stripped = line.strip()
@@ -1651,42 +1642,6 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
             "skipped": True,
             "note": "aws sandbox: EKS cells use the pinned ECR aws_base_image; build_environment is a no-op",
         }, PrimitiveOutcome.ok)
-    # C6 (2026-06-16): under runpod the locally-built image is NEVER used — the
-    # pod boots OPENRESEARCH_RUNPOD_IMAGE and runs over SSH in a per-run venv
-    # (runpod_backend.py). The local `docker build` below is therefore wasted
-    # work that STILL hard-requires a local daemon, so a runpod run on a
-    # daemon-less host dies in SandboxRuntimeError(backend_unavailable) for an
-    # image it will never touch. Short-circuit to a no-op (mirroring local/azure)
-    # BEFORE any docker client is reached. Flag-gated so the prior
-    # daemon-requiring behaviour is restorable byte-for-byte:
-    # OPENRESEARCH_RUNPOD_SKIP_BUILD=0 keeps the local build.
-    # RunPod sandbox: the pod boots OPENRESEARCH_RUNPOD_IMAGE over SSH and pulls
-    # its base image from Docker Hub directly — a locally-built image is never
-    # pushed to a registry, so a local `docker build` is wasted work that STILL
-    # hard-requires a local daemon (a daemon-less host would die in
-    # SandboxRuntimeError for an image it never touches). Short-circuit with the
-    # configured RunPod image (so run_experiment can hand it to the RunPod
-    # backend, which uses self.image_name with higher priority anyway); deps from
-    # requirements.txt install on the pod via SSH bootstrap. Flag-gated so the
-    # prior daemon-requiring behaviour is restorable byte-for-byte:
-    # OPENRESEARCH_RUNPOD_SKIP_BUILD=0 falls through to the local build.
-    if _sb_key == "runpod" and os.environ.get(
-        "OPENRESEARCH_RUNPOD_SKIP_BUILD", "1"
-    ).strip().lower() in ("1", "true", "yes", "on"):
-        from backend.config import get_settings as _get_settings
-        _runpod_image = _get_settings().runpod_image
-        return _with_outcome({
-            "ok": True,
-            "image_tag": _runpod_image,
-            "attempts": 0,
-            "skipped": True,
-            "note": (
-                f"runpod sandbox: pod boots {_runpod_image} over SSH; the local "
-                "image is never used, so build_environment is a no-op "
-                "(set OPENRESEARCH_RUNPOD_SKIP_BUILD=0 to force the local build)"
-            ),
-        }, PrimitiveOutcome.ok)
-
     import asyncio
     import concurrent.futures
     import hashlib
@@ -3315,18 +3270,21 @@ def _backend_for_sandbox_mode(
     """Return a RuntimeBackend instance for the given sandbox mode.
 
     ``SandboxMode.docker`` (and ``None`` / the default) map to
-    ``LocalDockerBackend``.  ``SandboxMode.runpod`` is now fully wired: this
-    function calls ``ensure_runpod_available()`` (fast fail on missing creds)
-    and constructs a real ``RunpodBackend``, forwarding ``run_budget`` so the
-    ``max_pod_seconds`` cap is enforced at each ``exec()`` call.
+    ``LocalDockerBackend``; ``SandboxMode.local`` to ``LocalProcessBackend``.
+    ``azure``/``aws`` construct the AKS/EKS Job backends after their availability
+    checks.
 
-    Any other unsupported mode (local, auto, brev, simulate) falls back to
+    ``SandboxMode.gcp`` (and its ``gke`` alias) is PARKED: it raises a clear
+    ``RuntimeError`` unless ``OPENRESEARCH_ALLOW_GKE`` is set, in which case the
+    ``GkeJobBackend`` is constructed as before. The supported GCP path is the
+    campaign VM route (``--sandbox local --billing-sandbox gcp``).
+
+    Any other unsupported mode (auto, simulate) falls back to
     ``LocalDockerBackend`` with a WARNING rather than crashing, so the run still
     produces a result while making the misconfiguration visible.
 
     ``run_budget=None`` is safe for all modes — no cap is enforced.
-    ``gpu_plan=None`` is safe for all modes — RunpodBackend falls back to
-    legacy Settings defaults when None.  Non-runpod backends ignore it.
+    ``gpu_plan=None`` is safe for all modes.
     """
     from backend.agents.execution import SandboxMode
     from backend.services.runtime.local_docker import LocalDockerBackend
@@ -3349,17 +3307,6 @@ def _backend_for_sandbox_mode(
         from backend.services.runtime.local_process import LocalProcessBackend
         return LocalProcessBackend()
 
-    if mode is SandboxMode.runpod:
-        import backend.services.runtime as _runtime
-        from backend.services.runtime.runpod_backend import RunpodBackend
-
-        _runtime.ensure_runpod_available()
-        logger.info(
-            "sandbox=runpod is a LEGACY backend - GCP (--sandbox gcp) and Azure "
-            "(--sandbox azure) are the supported primary clouds."
-        )
-        return RunpodBackend(run_budget=run_budget, gpu_plan=gpu_plan)
-
     if mode is SandboxMode.azure:
         import backend.services.runtime as _runtime
         from backend.services.runtime.aks_job_backend import AksJobBackend
@@ -3375,18 +3322,29 @@ def _backend_for_sandbox_mode(
         return EksJobBackend(run_budget=run_budget, gpu_plan=gpu_plan)
 
     if mode is SandboxMode.gcp:
+        if os.environ.get("OPENRESEARCH_ALLOW_GKE", "").strip().lower() not in (
+            "1",
+            "true",
+            "yes",
+        ):
+            raise RuntimeError(
+                "sandbox=gcp/gke routes to GKE, which is PARKED — use the "
+                "campaign VM path: `campaign --campaign-driver unified "
+                "--sandbox local --billing-sandbox gcp`; set "
+                "OPENRESEARCH_ALLOW_GKE=1 to revive."
+            )
         import backend.services.runtime as _runtime
         from backend.services.runtime.gke_job_backend import GkeJobBackend
 
         _runtime.ensure_gcp_available()
         return GkeJobBackend(run_budget=run_budget, gpu_plan=gpu_plan)
 
-    # All other modes (auto, brev, simulate) are not yet wired
-    # for the RLM path.  Fall back with a loud WARNING so the operator knows.
+    # All other modes (auto, simulate) are not yet wired for the RLM path.
+    # Fall back with a loud WARNING so the operator knows.
     logger.warning(
         "_execute_in_sandbox: sandbox_mode=%r is not supported in the RLM "
         "path — falling back to LocalDockerBackend.  "
-        "Set --sandbox docker, --sandbox runpod, --sandbox azure, --sandbox aws, or --sandbox gcp for a supported backend.",
+        "Set --sandbox docker, --sandbox local, --sandbox azure, or --sandbox aws for a supported backend.",
         mode.value,
     )
     return LocalDockerBackend()
@@ -4815,15 +4773,6 @@ async def _execute_in_sandbox(
             break
         # Transient retry: sleep then loop.
         await asyncio.sleep(_backoff)
-
-    # PR-ζ: sandbox fallback — when RunPod retries are exhausted and the host
-    # supports local docker + GPU, optionally swap ctx.sandbox_mode to local
-    # for the remainder of the run. Opt-in via OPENRESEARCH_RUNPOD_AUTO_FALLBACK=true
-    # (default off). The ctx object is not available inside _execute_in_sandbox
-    # (it does not receive ctx); fallback is handled in run_experiment which
-    # calls this function. See _apply_sandbox_fallback_if_eligible in run_experiment.
-    # TODO(PR-ζ-followup): thread ctx into _execute_in_sandbox so fallback can
-    # be applied here with the correct emit surface.
 
     # Contract: paper's code writes $OUTPUT_DIR/metrics.json (host: artifact_root/metrics.json).
     metrics: dict = {}
@@ -7555,76 +7504,13 @@ def run_experiment(
                     ),
                 }
             except Exception as exc:  # noqa: BLE001
-                # RunPod infrastructure failures bubble up as SandboxRuntimeError
-                # tagged with a sentinel prefix from runpod_backend. Treat them
-                # like an OOM — advance the ladder, retry. Any other unexpected
-                # exception still produces a fail-soft error dict (consistent
-                # with the rest of this function never raising).
+                # Any unexpected exception produces a fail-soft error dict
+                # (consistent with the rest of this function never raising).
                 exc_msg = str(exc)
-                if "RUNPOD_CAPACITY_EXHAUSTED" in exc_msg:
-                    infra_error_kind = "runpod_capacity"
-                    result = {
-                        "success": False, "metrics": {},
-                        "error": f"runpod capacity exhausted on {gpu_plan.short_name if gpu_plan else 'unknown'}",
-                    }
-                elif "RUNPOD_SSH_TIMEOUT" in exc_msg:
-                    infra_error_kind = "runpod_ssh_timeout"
-                    result = {
-                        "success": False, "metrics": {},
-                        "error": f"runpod SSH timeout on {gpu_plan.short_name if gpu_plan else 'unknown'}",
-                    }
-                elif "RUNPOD_TRANSIENT_500" in exc_msg:
-                    # Lane 3: unlabelled 500s from RunPod are typically transient
-                    # infra hiccups — advance the ladder so the run doesn't dead-end.
-                    # This is intentionally the same path as CAPACITY_EXHAUSTED
-                    # because: (a) the 500 may itself be capacity under a different
-                    # marker, and (b) _execute_in_sandbox already exhausted 3 retries
-                    # with exponential backoff before bubbling up here, so a genuine
-                    # transient would have recovered. BUG-NEW-049: consider adding
-                    # a same-tier retry before escalating if TRANSIENT_500 is the
-                    # sole failure mode (CAPACITY_EXHAUSTED still escalates
-                    # immediately). Bounded by dynamic_gpu_max_escalations so a
-                    # request-shape bug cannot burn the whole catalog.
-                    infra_error_kind = "runpod_transient_500"
-                    result = {
-                        "success": False, "metrics": {},
-                        "error": f"run_experiment: {type(exc).__name__}: {exc_msg[:300]}",
-                    }
-                else:
-                    result = {
-                        "success": False, "metrics": {},
-                        "error": f"run_experiment: {type(exc).__name__}: {exc_msg[:300]}",
-                    }
-                # PR-ζ: opt-in sandbox fallback after transient retry exhaustion.
-                # When OPENRESEARCH_RUNPOD_AUTO_FALLBACK=true and the exception carries
-                # _retry_attempts (set by _execute_in_sandbox after exhausting
-                # transient retries), check whether local docker + GPU is viable
-                # and if so mutate ctx.sandbox_mode for the rest of this run.
-                import os as _os_fallback
-                if _os_fallback.environ.get("OPENRESEARCH_RUNPOD_AUTO_FALLBACK", "").lower() == "true":
-                    _retry_attempts_on_exc = getattr(exc, "_retry_attempts", None)
-                    _mode_str_fb = str(getattr(ctx, "sandbox_mode", "") or "").lower()
-                    if (
-                        _retry_attempts_on_exc
-                        and "runpod" in _mode_str_fb
-                    ):
-                        try:
-                            from backend.agents.execution import SandboxMode as _SandboxMode, _docker_reachable
-                            from backend.services.runtime.gpu_resolution import host_supports_nvidia_gpu
-                            if host_supports_nvidia_gpu() and _docker_reachable():
-                                ctx.sandbox_mode = _SandboxMode.docker
-                                _emit_dashboard_event(ctx, event_type="sandbox_fallback", payload={
-                                    "from": "runpod",
-                                    "to": "local",
-                                    "reason": "max_retries_exhausted_after_transient_failures",
-                                    "attempts": _retry_attempts_on_exc,
-                                })
-                                logger.warning(
-                                    "run_experiment: RunPod transient retries exhausted — "
-                                    "auto-fallback to local docker for the rest of this run."
-                                )
-                        except Exception:  # noqa: BLE001 — fallback must never crash the run
-                            logger.exception("run_experiment: sandbox fallback check failed")
+                result = {
+                    "success": False, "metrics": {},
+                    "error": f"run_experiment: {type(exc).__name__}: {exc_msg[:300]}",
+                }
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
 
@@ -7633,7 +7519,7 @@ def run_experiment(
         # means legacy mode — no ladder to advance), or cap reached.
         if result.get("success") or gpu_plan is None or escalations >= max_escalations:
             break
-        # Detect escalation trigger: CUDA OOM in logs OR RunPod capacity/SSH-timeout.
+        # Detect escalation trigger: CUDA OOM in logs.
         stderr_tail = (result.get("logs") or "")[-4096:]
         exit_code = int(result.get("exit_code", 1))  # _execute_in_sandbox may not surface exit_code; default 1
         # F-04: also catch a watchdog-killed OOM whose marker is buried earlier

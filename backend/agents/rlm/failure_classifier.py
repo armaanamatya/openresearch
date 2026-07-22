@@ -2,9 +2,9 @@
 
 Every recent failure mode this session falls into a small set of
 recognisable shapes — ``ModuleNotFoundError``, ``CUDA out of memory``,
-RunPod 500 ``RUNPOD_CAPACITY_EXHAUSTED``, the 755 MB torch wheel that
-truncated mid-stream, requirements.txt missing, attempt_isolation
-PermissionError, etc.  Classifying them programmatically and surfacing
+the 755 MB torch wheel that truncated mid-stream, requirements.txt
+missing, attempt_isolation PermissionError, etc.  Classifying them
+programmatically and surfacing
 the class + a concrete suggested fix in the ``experiment_completed``
 event makes the next iteration's ``repair_context`` actionable instead
 of an opaque traceback the agent has to re-diagnose every time.
@@ -35,10 +35,6 @@ FAILURE_CLASSES: Final[tuple[str, ...]] = (
     "cuda_oom",                  # torch.cuda.OutOfMemoryError or similar
     "cuda_device_assert",        # CUDA device-side assert (out-of-range index / BCE input)
     "oom_killed",                # process/container SIGKILL from memory pressure
-    "runpod_capacity",           # RUNPOD_CAPACITY_EXHAUSTED / no instances
-    "runpod_transient_500",      # Bare RunPod 500 (treated as escalation trigger)
-    "runpod_ssh_timeout",        # Pod created but never reachable via SSH
-    "runpod_balance_too_low",    # Funding exhausted
     "requirements_not_found",    # pip CWD vs requirements.txt path mismatch
     "missing_dataset",           # HuggingFace datasets URI failure / dataset 404
     "exec_timeout",              # Per-command 4h cap hit
@@ -74,7 +70,7 @@ def _suggest(klass: str, *, extra: str = "") -> str:
             "verify the Dockerfile parsed cleanly",
         "torch_redundancy":
             "remove torch / torchvision / torchaudio from requirements.txt — the "
-            "runpod/pytorch base image already provides them",
+            "base image already provides them",
         "network_flake":
             "transient — the next attempt should succeed; consider mounting a "
             "persistent pip cache via OPENRESEARCH_RUNPOD_NETWORK_VOLUME_ID",
@@ -93,17 +89,6 @@ def _suggest(klass: str, *, extra: str = "") -> str:
         "oom_killed":
             "process was killed by the host/container OOM killer; reduce memory use, "
             "lower batch size, or raise the Docker/container memory floor",
-        "runpod_capacity":
-            "RunPod has no available instances of the requested SKU — escalator "
-            "advances the ladder automatically; ensure OPENRESEARCH_DYNAMIC_GPU_MAX_ESCALATIONS "
-            "is high enough or switch tier (SECURE has better availability than COMMUNITY)",
-        "runpod_transient_500":
-            "bare 500 from RunPod — automatic ladder advance; if the next SKU also "
-            "500s, RunPod itself may be experiencing an outage",
-        "runpod_ssh_timeout":
-            "pod created but SSH never reached READY — the ladder advances automatically",
-        "runpod_balance_too_low":
-            "add funds at https://runpod.io/console/user/billing — non-retryable until fixed",
         "requirements_not_found":
             "auto-derive should have written requirements.txt to code/; check that "
             "the Dockerfile exists at runs/<id>/Dockerfile and parses cleanly",
@@ -271,15 +256,6 @@ def classify_failure(result: dict) -> tuple[str, str]:
         ):
             return ("oom_killed", _suggest("oom_killed"))
 
-        # RunPod-specific sentinels (from runpod_backend exceptions)
-        if "runpod_capacity_exhausted" in haystack:
-            return ("runpod_capacity", _suggest("runpod_capacity"))
-        if "runpod_transient_500" in haystack:
-            return ("runpod_transient_500", _suggest("runpod_transient_500"))
-        if "runpod_ssh_timeout" in haystack:
-            return ("runpod_ssh_timeout", _suggest("runpod_ssh_timeout"))
-        if "runpod_balance_too_low" in haystack or "balance is too low" in haystack:
-            return ("runpod_balance_too_low", _suggest("runpod_balance_too_low"))
 
         # Timeout sentinels
         if "timed out after" in haystack and "run_experiment" in haystack:

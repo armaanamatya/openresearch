@@ -41,7 +41,8 @@ def test_per_gpu_cap_none_means_no_cap():
     assert "gcp_h100_80x8" in {s.short_name for s in ladder}
 
 
-def test_runpod_catalog_unchanged_by_gcp_additions():
-    runpod = find_ladder(24, None)  # default provider
-    assert all(s.provider == "runpod" for s in runpod)
-    assert "gcp_l4_24" not in {s.short_name for s in runpod}
+def test_default_ladder_returns_only_gcp_rows():
+    default = find_ladder(24, None)  # default provider is gcp
+    assert default, "default gcp ladder must be non-empty"
+    assert all(s.provider == "gcp" for s in default)
+    assert "gcp_l4_24" in {s.short_name for s in default}

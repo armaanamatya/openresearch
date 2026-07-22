@@ -131,46 +131,6 @@ MODEL_PRICING: dict[str, ModelPriceEntry] = {
 # Keys mirror GpuSku.short_name from gpu_catalog.py so GpuPlan.short_name can
 # be used as a direct lookup key without a translation layer.
 GPU_PRICING: dict[str, GpuPriceEntry] = {
-    "rtx4090": GpuPriceEntry(
-        usd_per_hour=0.34,
-        last_audited_utc=_AUDITED,
-        cloud_type="COMMUNITY",
-    ),
-    "a5000": GpuPriceEntry(
-        usd_per_hour=0.36,
-        last_audited_utc=_AUDITED,
-        cloud_type="COMMUNITY",
-    ),
-    "a100_40": GpuPriceEntry(
-        usd_per_hour=1.19,
-        last_audited_utc=_AUDITED,
-        cloud_type="COMMUNITY",
-    ),
-    "a6000": GpuPriceEntry(
-        usd_per_hour=0.49,
-        last_audited_utc=_AUDITED,
-        cloud_type="COMMUNITY",
-    ),
-    "l40s": GpuPriceEntry(
-        usd_per_hour=0.86,
-        last_audited_utc=_AUDITED,
-        cloud_type="COMMUNITY",
-    ),
-    "a100_80": GpuPriceEntry(
-        usd_per_hour=1.89,
-        last_audited_utc=_AUDITED,
-        cloud_type="COMMUNITY",
-    ),
-    "h100_80": GpuPriceEntry(
-        usd_per_hour=4.39,
-        last_audited_utc=_AUDITED,
-        cloud_type="COMMUNITY",
-    ),
-    "h200": GpuPriceEntry(
-        usd_per_hour=7.99,
-        last_audited_utc=_AUDITED,
-        cloud_type="SECURE",
-    ),
     # Azure SKUs — eastus on-demand list rates; refresh quarterly.
     "azure_a10_24": GpuPriceEntry(
         usd_per_hour=1.20,

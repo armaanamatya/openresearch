@@ -1,4 +1,4 @@
-<!-- doc-meta: status=current; last-verified=2026-07-20 -->
+<!-- doc-meta: status=current; last-verified=2026-07-22 -->
 # Engineering guide
 
 This is the compressed replacement for the old plans, handoffs, and incident
@@ -43,18 +43,21 @@ report or a maximized demo score.
 
 | Surface | Use it for | Status |
 |---|---|---|
-| `local` | development and CPU/local-GPU experiments | supported |
+| `local` | development, CPU/local-GPU, and GCP single-VM GPU runs | supported (default) |
 | `docker` | isolated local execution | supported when Docker is available |
-| `runpod` | remote GPU execution | supported with explicit credentials |
-| `gcp` / `gke` | Kubernetes cell execution | operator-gated; preflight first |
+| `gcp` (single VM) | remote GPU execution | supported: fresh GPU VM + `--sandbox local` + auto-delete |
+| `gcp` / `gke` (Kubernetes) | GKE cell execution | parked (`OPENRESEARCH_ALLOW_GKE` to revive) |
 | `azure` | AKS cell execution | operator-gated; preflight first |
-| `aws` / `eks` | EKS cell execution | experimental |
+| `aws` / `eks` | EKS cell execution | experimental; operator-gated; preflight first |
 
 Cloud availability is an operational fact, not a code fact. Never bill a run
 until credentials, image, storage, quota, and the selected execution route have
-been checked. GCP/GKE and Azure/AKS are primary; `auto` is deliberately local
-only, RunPod is an explicit legacy route, and EKS is experimental. Durable
-cloud control requires a lease/fence, persistent state, and a terminal receipt.
+been checked. The go-forward GCP GPU route is the single-VM path (fresh VM +
+`reproduce --sandbox local` + auto-delete —
+[`docs/runbooks/2026-07-22-gcp-vm-e2e-run-procedure.md`](runbooks/2026-07-22-gcp-vm-e2e-run-procedure.md)),
+NOT GKE (parked). Azure runs on AKS, AWS on EKS; `auto` is deliberately local
+only. RunPod/Brev/Railway were removed 2026-07-22. Durable cloud control
+requires a lease/fence, persistent state, and a terminal receipt.
 
 ## Evidence model
 

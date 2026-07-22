@@ -1,4 +1,4 @@
-"""Static GPU SKU catalog for RunPod and Azure dynamic GPU selection.
+"""Static GPU SKU catalog for GCP, Azure, and AWS dynamic GPU selection.
 
 Vendored prices are approximate snapshots refreshed quarterly. The resolver's
 ranking between SKUs is what matters; absolute prices may drift ±20%.
@@ -15,20 +15,21 @@ from dataclasses import dataclass, field
 class GpuSku:
     """One row of the catalog.
 
-    `runpod_id` is the literal string RunPod's API accepts for `gpu_type`.
-    For Azure SKUs this field is reused as the Azure VM size string (e.g.
-    "Standard_NC24ads_A100_v4") — it is the opaque provider SKU identifier in
-    both cases; callers that need to distinguish providers must check `provider`.
+    `runpod_id` is the opaque provider SKU identifier — the literal string the
+    provider's API accepts (a GCE machine type for GCP, e.g. "a2-highgpu-1g";
+    an Azure VM size for Azure, e.g. "Standard_NC24ads_A100_v4"). The field name
+    is retained for schema stability; callers that need to distinguish providers
+    must check `provider`.
 
     `aliases` is a tuple of lowercase substrings that the alias resolver matches
     against paper text — order does not matter, longest first wins on tie.
 
-    `provider` identifies the cloud backend: "runpod" (default) or "azure".
-    Note: `cloud_type` is a *tier* within a provider (COMMUNITY/SECURE for
-    RunPod, ONDEMAND for Azure) — it is distinct from `provider`.
+    `provider` identifies the cloud backend: "gcp" (default), "azure", or "aws".
+    Note: `cloud_type` is a *tier* within a provider (ONDEMAND for GCP/Azure) —
+    it is distinct from `provider`.
 
-    `gpu_count` is the number of GPUs per node for this SKU. All RunPod rows
-    use 1; Azure multi-GPU VM sizes (e.g. NC48/NC96) use 2 or 4.
+    `gpu_count` is the number of GPUs per node for this SKU. Single-GPU rows use
+    1; multi-GPU VM sizes (e.g. NC48/NC96, a2-highgpu-8g) use 2/4/8.
     """
     runpod_id: str
     short_name: str
@@ -36,7 +37,7 @@ class GpuSku:
     cloud_type: str
     approx_usd_per_hr: float
     aliases: tuple[str, ...] = field(default_factory=tuple)
-    provider: str = "runpod"
+    provider: str = "gcp"
     gpu_count: int = 1
 
 
@@ -57,37 +58,17 @@ def usd_per_gpu_hr(sku: GpuSku) -> float:
     node — an 8×A100-80 machine ($31.44 total = $3.93/GPU) failed the default
     $10/GPU cap and a genuine multi-GPU paper could not resolve at all.
 
-    For every ``gpu_count == 1`` row — which is EVERY RunPod row plus the
-    single-GPU azure/gcp rows — this returns ``approx_usd_per_hr`` unchanged, so
-    the RunPod path is byte-for-byte identical.
+    For every ``gpu_count == 1`` row — the single-GPU azure/gcp rows — this
+    returns ``approx_usd_per_hr`` unchanged.
     """
     return sku.approx_usd_per_hr / max(1, sku.gpu_count)
 
 
 CATALOG: tuple[GpuSku, ...] = (
-    # RunPod rows — sorted by (vram_gb ASC, approx_usd_per_hr ASC) for human readability.
-    # find_ladder() re-sorts the filtered result by price for selection.
-    GpuSku("NVIDIA GeForce RTX 4090",     "rtx4090",   24, "COMMUNITY", 0.34,
-           aliases=("rtx 4090", "geforce 4090", "rtx4090", "4090")),
-    GpuSku("NVIDIA RTX A5000",            "a5000",     24, "COMMUNITY", 0.36,
-           aliases=("a5000", "rtx a5000")),
-    GpuSku("NVIDIA A100 40GB PCIe",       "a100_40",   40, "COMMUNITY", 1.19,
-           aliases=("a100 40", "a100 40gb", "a100-40", "a100 40 gb")),
-    GpuSku("NVIDIA RTX A6000",            "a6000",     48, "COMMUNITY", 0.49,
-           aliases=("a6000", "rtx a6000")),
-    GpuSku("NVIDIA L40S",                 "l40s",      48, "COMMUNITY", 0.86,
-           aliases=("l40s", "l40 s")),
-    GpuSku("NVIDIA A100 80GB PCIe",       "a100_80",   80, "COMMUNITY", 1.89,
-           aliases=("a100 80", "a100 80gb", "a100-80", "a100")),
-    GpuSku("NVIDIA H100 80GB HBM3",       "h100_80",   80, "COMMUNITY", 4.39,
-           aliases=("h100", "h100 80", "h100 80gb", "h100-80")),
-    GpuSku("NVIDIA H200",                 "h200",     141, "SECURE",    7.99,
-           aliases=("h200",)),
-    # ---------------------------------------------------------------------------
-    # Azure rows — appended; sorted by effective capacity (vram_gb * gpu_count)
+    # Azure rows — sorted by effective capacity (vram_gb * gpu_count)
     # then price within each tier.  Azure VM sizes serve as the provider SKU id
     # (reused in the runpod_id field).  Prices are eastus on-demand list rates;
-    # refresh quarterly alongside the RunPod rows above.
+    # refresh quarterly.
     GpuSku("Standard_NV36ads_A10_v5",   "azure_a10_24",    24, "ONDEMAND",  1.20,
            aliases=("a10", "a10 24"),         provider="azure", gpu_count=1),
     GpuSku("Standard_NC24ads_A100_v4",  "azure_a100_80",   80, "ONDEMAND",  3.67,
@@ -142,26 +123,23 @@ CATALOG: tuple[GpuSku, ...] = (
 def find_ladder(
     min_vram_gb: int,
     max_per_gpu_usd_per_hr: float | None,
-    cloud_types: tuple[str, ...] = ("COMMUNITY",),
+    cloud_types: tuple[str, ...] = ("ONDEMAND",),
     *,
-    provider: str = "runpod",
+    provider: str = "gcp",
 ) -> list[GpuSku]:
     """Return SKUs meeting all filters, sorted by ascending effective capacity then price.
 
     Args:
         min_vram_gb: minimum required VRAM per GPU in GB; SKU must have vram_gb >= this
         max_per_gpu_usd_per_hr: per-GPU $/hr cap; None or 0 means no cap
-        cloud_types: which cloud types are acceptable (e.g. ("COMMUNITY",) for
-            RunPod, ("ONDEMAND",) for Azure)
-        provider: restrict to this provider; defaults to "runpod" so all existing
-            callers see an unchanged result.  Azure callers pass provider="azure".
+        cloud_types: which cloud types are acceptable (e.g. ("ONDEMAND",) for
+            GCP/Azure)
+        provider: restrict to this provider; defaults to "gcp".  Azure callers
+            pass provider="azure".
 
     Returns:
         Filtered list sorted by (effective_vram_gb ASC, approx_usd_per_hr ASC);
         empty list when no SKU qualifies.
-
-        For RunPod (provider="runpod", gpu_count always 1) effective_vram_gb ==
-        vram_gb, so the sort order is identical to the previous price-only sort.
     """
     cap = max_per_gpu_usd_per_hr if max_per_gpu_usd_per_hr and max_per_gpu_usd_per_hr > 0 else None
     filtered = [
@@ -174,7 +152,7 @@ def find_ladder(
     return sorted(filtered, key=lambda s: (effective_vram_gb(s), s.approx_usd_per_hr))
 
 
-def find_by_alias(phrase: str, *, provider: str = "runpod") -> GpuSku | None:
+def find_by_alias(phrase: str, *, provider: str = "gcp") -> GpuSku | None:
     """Lookup the first SKU whose alias appears as a substring of `phrase` (case-insensitive).
 
     Longest alias wins on tie to avoid 'a100' matching when 'a100 80gb' is present.
@@ -182,8 +160,7 @@ def find_by_alias(phrase: str, *, provider: str = "runpod") -> GpuSku | None:
 
     Args:
         phrase: free-form text to search (e.g. from a paper)
-        provider: restrict search to this provider; defaults to "runpod" so all
-            existing callers are unchanged.
+        provider: restrict search to this provider; defaults to "gcp".
     """
     needle = phrase.lower()
     best: tuple[int, GpuSku] | None = None

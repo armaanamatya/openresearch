@@ -45,8 +45,9 @@ python -m backend.cli campaign <paper> --max-llm-usd X --max-gpu-usd Y --max-gpu
 ```
 
 Common flags: `--mode {rlm(default),rdr,rlm-pure}`, `--provider`, `--sandbox
-{auto,docker,local,gcp,azure,runpod}` (gcp/azure are the primary clouds; auto = docker/local only, never a paid remote; runpod is legacy),
-`--model`, `--models role=token,…`, `--vram-gb`, `--max-usd`.
+{auto,docker,local,aws,azure,gcp}` (default `local`; `aws`=EKS, `azure`=AKS are the primary
+clouds; `gcp`/`gke` is PARKED and raises unless `OPENRESEARCH_ALLOW_GKE=1`; auto = docker/local
+only, never a paid remote), `--model`, `--models role=token,…`, `--vram-gb`, `--max-usd`.
 Root-model vocabulary, the two auth surfaces, per-role selection, Foundry/Grok, and the full flag
 catalog live in **`backend/agents/rlm/CLAUDE.md`**; sandbox/GPU knobs in
 **`backend/services/runtime/CLAUDE.md`**.
@@ -104,7 +105,7 @@ Load-bearing invariants; the owning nested file/spec carries the full rule + inc
 - **Delegation.** The session's lead model owns design + reviews **every diff**; delegate
   mechanical impl + wide recon to Sonnet/`Explore` sub-agents against a tight spec. → memory.
 - **Docker daemon** is a prerequisite only for the `docker`/`auto` sandboxes; `build_environment` is
-  a no-op for `local`/`runpod`/`azure`. → `backend/services/runtime/CLAUDE.md`
+  a no-op for `local`/`azure`/`aws`/`gcp`. → `backend/services/runtime/CLAUDE.md`
 - **New feature flags** use `os.environ.get("FLAG","").strip().lower() in ("1","true","yes")`,
   default-OFF and byte-identical when off; a default-flip needs ≥3 paired A/B runs + the grader-σ
   gate. → `backend/agents/rlm/CLAUDE.md`
@@ -138,5 +139,5 @@ blocked-vs-redirected table.
 Root stays lean — orientation + always-on rules + pointers. When you add a primitive, SSE event,
 sandbox, or flag, update the **nested** `CLAUDE.md` that owns it, not this file. Fidelity anchors
 kept current here + guarded by `tests/test_claude_md_fidelity.py` (which reads the root **and**
-nested set): the bound primitive count is **19**, and the RunPod cloud-type default is `SECURE`.
+nested set): the bound primitive count is **19**, and the default sandbox is `local`.
 `docs/architecture.md` = the system map; this = the day-to-day.

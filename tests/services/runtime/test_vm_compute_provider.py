@@ -28,6 +28,8 @@ _ENV_KEYS = (
     "OPENRESEARCH_GCP_ZONE",
     "OPENRESEARCH_REMOTE_DIR",
     "OPENRESEARCH_GCP_CPU_INSTANCE",
+    "OPENRESEARCH_GCP_GPU_MACHINE_TYPE",
+    "OPENRESEARCH_GCP_CPU_MACHINE_TYPE",
 )
 
 
@@ -75,6 +77,41 @@ def _ok() -> VmExecResult:
 
 def _err(stderr: str) -> VmExecResult:
     return VmExecResult(returncode=1, stderr=stderr)
+
+
+# ---------------------------------------------------------------------------
+# Machine-type override (env + VmSpec precedence)
+# ---------------------------------------------------------------------------
+
+
+def test_gpu_machine_type_defaults_when_unset():
+    """With no VmSpec override and no env, the GPU machine type is the catalog default."""
+    prov = VmComputeProvider(CloudProfile(cloud="gcp", vm=VmSpec()), runner=lambda a: _ok())
+    assert prov._gpu_machine_type == "a2-highgpu-4g"
+    assert prov._cpu_machine_type == "e2-standard-16"
+
+
+def test_gpu_machine_type_env_override(monkeypatch):
+    """OPENRESEARCH_GCP_GPU_MACHINE_TYPE / _CPU_MACHINE_TYPE override the defaults."""
+    monkeypatch.setenv("OPENRESEARCH_GCP_GPU_MACHINE_TYPE", "g2-standard-8")
+    monkeypatch.setenv("OPENRESEARCH_GCP_CPU_MACHINE_TYPE", "n2-standard-8")
+    prov = VmComputeProvider(CloudProfile(cloud="gcp", vm=VmSpec()), runner=lambda a: _ok())
+    assert prov._gpu_machine_type == "g2-standard-8"
+    assert prov._cpu_machine_type == "n2-standard-8"
+
+
+def test_vmspec_machine_type_wins_over_env(monkeypatch):
+    """An explicit VmSpec machine type takes precedence over the env override."""
+    monkeypatch.setenv("OPENRESEARCH_GCP_GPU_MACHINE_TYPE", "g2-standard-8")
+    monkeypatch.setenv("OPENRESEARCH_GCP_CPU_MACHINE_TYPE", "n2-standard-8")
+    prov = VmComputeProvider(
+        CloudProfile(cloud="gcp", vm=VmSpec(
+            gpu_machine_type="a2-ultragpu-8g", cpu_machine_type="e2-standard-32",
+        )),
+        runner=lambda a: _ok(),
+    )
+    assert prov._gpu_machine_type == "a2-ultragpu-8g"
+    assert prov._cpu_machine_type == "e2-standard-32"
 
 
 # ---------------------------------------------------------------------------

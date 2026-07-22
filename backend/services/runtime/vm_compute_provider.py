@@ -224,11 +224,15 @@ class VmComputeProvider(ComputeProvider):
 
     @property
     def _gpu_machine_type(self) -> str:
-        return self._vm.gpu_machine_type or _DEFAULT_GPU_MACHINE_TYPE
+        return self._vm.gpu_machine_type or _env(
+            "OPENRESEARCH_GCP_GPU_MACHINE_TYPE", _DEFAULT_GPU_MACHINE_TYPE
+        )
 
     @property
     def _cpu_machine_type(self) -> str:
-        return self._vm.cpu_machine_type or _DEFAULT_CPU_MACHINE_TYPE
+        return self._vm.cpu_machine_type or _env(
+            "OPENRESEARCH_GCP_CPU_MACHINE_TYPE", _DEFAULT_CPU_MACHINE_TYPE
+        )
 
     @property
     def _cpu_instance(self) -> str:

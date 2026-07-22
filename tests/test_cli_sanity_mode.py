@@ -63,7 +63,7 @@ def test_cmd_reproduce_sanity_writes_stable_artifacts(tmp_path, monkeypatch):
     assert "REQUIRE_GPU = False" in (run_dir / "code" / "sanity.py").read_text()
 
 
-def test_cmd_reproduce_sanity_requires_and_threads_runpod_gpu(tmp_path, monkeypatch):
+def test_cmd_reproduce_sanity_requires_and_threads_cloud_gpu(tmp_path, monkeypatch):
     import backend.cli as cli
     import backend.agents.execution as execution
     import backend.agents.rlm.primitives as primitives
@@ -71,13 +71,13 @@ def test_cmd_reproduce_sanity_requires_and_threads_runpod_gpu(tmp_path, monkeypa
     monkeypatch.setattr(
         execution,
         "resolve_sandbox_mode",
-        lambda sandbox, pipeline_mode: SimpleNamespace(value="runpod"),
+        lambda sandbox, pipeline_mode: SimpleNamespace(value="gcp"),
     )
     monkeypatch.setattr(execution, "ensure_sandbox_mode_available", lambda mode: None)
     observed = {}
 
     def fake_run_experiment(code_path, env_id, *, model_id, eval_env, ctx):
-        observed["script"] = (tmp_path / "prj_runpod_sanity" / "code" / "sanity.py").read_text()
+        observed["script"] = (tmp_path / "prj_cloud_sanity" / "code" / "sanity.py").read_text()
         observed["gpu_mode"] = ctx.gpu_mode
         return {"success": True, "metrics": {"sanity_ok": 1.0, "gpu_visible": 1.0}}
 
@@ -85,8 +85,8 @@ def test_cmd_reproduce_sanity_requires_and_threads_runpod_gpu(tmp_path, monkeypa
 
     result = cli._cmd_reproduce_sanity(Namespace(
         source="2512.24601",
-        project_id="prj_runpod_sanity",
-        sandbox="runpod",
+        project_id="prj_cloud_sanity",
+        sandbox="gcp",
         gpu_mode="prefer",
         max_usd=None,
         max_wall_clock=1800,

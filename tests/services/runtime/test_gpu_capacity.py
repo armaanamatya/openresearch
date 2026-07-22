@@ -113,23 +113,6 @@ def test_fits_unknown_capacity_never_blocks():
 
 # --- cloud / azure ----------------------------------------------------------
 
-def test_runpod_from_plan_can_escalate():
-    plan = {"vram_gb": 80, "gpu_count": 1, "short_name": "h100_80"}
-    cap = gc.describe_capacity(_ctx(sandbox_mode="runpod", gpu_plan=plan, gpu_device_ids=None))
-    assert cap.backend_kind == "runpod"
-    assert cap.can_escalate is True
-    assert cap.per_gpu_vram_gb == 80
-    assert cap.num_gpus == 1
-    assert cap.detail["sku"] == "h100_80"
-
-
-def test_runpod_defaults_when_plan_missing():
-    cap = gc.describe_capacity(_ctx(sandbox_mode="runpod", gpu_plan=None, gpu_device_ids=None))
-    assert cap.backend_kind == "runpod"
-    assert cap.num_gpus == 1
-    assert cap.can_escalate is True
-
-
 def test_azure_returns_gpu_capacity_not_stub():
     # _describe_azure is now implemented (spec 2026-06-03-azure-aks-gpu-backend-design.md).
     # It must return a GpuCapacity rather than raising NotImplementedError.

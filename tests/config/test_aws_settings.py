@@ -6,7 +6,7 @@ from backend.config import Settings
 def test_aws_settings_defaults_do_not_select_or_configure_aws():
     settings = Settings(_env_file=None)
 
-    assert settings.default_sandbox == "runpod"
+    assert settings.default_sandbox == "local"
     assert settings.aws_region == "us-east-1"
     assert settings.aws_eks_cluster == ""
     assert settings.aws_s3_bucket == ""

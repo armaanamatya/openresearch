@@ -1,4 +1,4 @@
-<!-- doc-meta: status=current; last-verified=2026-07-20 -->
+<!-- doc-meta: status=current; last-verified=2026-07-22 -->
 # Operations
 
 ## Start locally
@@ -12,9 +12,8 @@ make dev
 `make dev` starts the API on `:8000` and the frontend on `:3000`. Use
 `make dev-backend` only when running the frontend separately.
 
-For a no-cloud smoke run, explicitly use `--sandbox local`; `gcp` is the
-configured cloud default and `auto` only resolves to `docker` or `local`.
-Then run:
+For a no-cloud smoke run, use `--sandbox local`; `local` is the configured
+default and `auto` only resolves to `docker` or `local`. Then run:
 
 ```bash
 .venv/bin/python -m backend.cli reproduce demo_paper.pdf --sandbox local
@@ -33,8 +32,12 @@ two commands while iterating.
 
 ## Cloud runs
 
-Cloud sandboxes are operator-only. GCP/GKE and Azure/AKS are the primary cloud
-routes; RunPod is a legacy explicit route, and AWS/EKS remains experimental.
+Cloud sandboxes are operator-only. For GCP the supported GPU route is the
+single-VM path (a fresh GPU VM running `reproduce --sandbox local`, then
+auto-delete — see
+[`2026-07-22-gcp-vm-e2e-run-procedure.md`](runbooks/2026-07-22-gcp-vm-e2e-run-procedure.md));
+GKE is parked behind a fail-loud guard (`OPENRESEARCH_ALLOW_GKE` to revive).
+Azure runs on AKS and AWS on EKS. (RunPod/Brev/Railway were removed 2026-07-22.)
 Configure the matching provider variables, validate identity, capacity, image,
 storage, and budget preflight, then choose the sandbox explicitly. A submitted
 Job is not a successful run: wait for the terminal receipt and authoritative

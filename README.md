@@ -1,7 +1,7 @@
-<!-- doc-meta: status=current; last-verified=2026-07-06 -->
+<!-- doc-meta: status=current; last-verified=2026-07-22 -->
 # OpenResearch
 
-> **Doc status:** Current · last verified 2026-07-06 against `backend/` + `CLAUDE.md`.
+> **Doc status:** Current · last verified 2026-07-22 against `backend/` + `CLAUDE.md`.
 > This README is the public front door (source-of-truth tier 3): it must not claim
 > anything the code or [`CLAUDE.md`](CLAUDE.md) don't back. Freshness is
 > enforced by `make docs-check` — see [Documentation](#documentation).
@@ -49,7 +49,7 @@ flowchart TD
     Understand -->|LLM sub-calls| SubLLM[Sub-LLM Queries]
     Impl -->|Claude Agent SDK| Coder[Coding Agent]
     Env -->|Docker build| Sandbox
-    Exec --> Sandbox[Sandbox: Docker / RunPod GPU / Local]
+    Exec --> Sandbox[Sandbox: Local / Docker / GCP VM / AKS / EKS]
 
     Score --> Rubric[(Rubric JSON)]
     Sandbox --> Metrics[Experiment Metrics]
@@ -80,7 +80,7 @@ flowchart TD
 2. **Understand** -- The RLM root calls `understand_section` and `extract_hyperparameters` to map the paper's claims, methods, and training recipes.
 3. **Environment** -- `detect_environment` reads framework/package clues; `build_environment` creates and repairs a Docker image.
 4. **Plan & Implement** -- `plan_reproduction` defines the reproduction contract; `implement_baseline` dispatches a coding agent (Claude Sonnet via `claude-agent-sdk`) to write the code.
-5. **Execute** -- `run_experiment` runs the code inside a sandboxed environment (Docker, RunPod GPU pod, or local process).
+5. **Execute** -- `run_experiment` runs the code inside a sandboxed environment (local process or Docker for CPU/dev; a GCP single-VM GPU for remote runs; AKS or EKS for cluster GPU).
 6. **Score** -- `verify_against_rubric` grades the reproduction against a PaperBench-style rubric.
 7. **Improve** -- `propose_improvements` generates hypotheses; the root evaluates them and iterates. The loop continues until the rubric target is met or budget is exhausted.
 8. **Report** -- `final_report.json` and `final_report.md` with verdict, rubric scores, cost breakdown, and model metadata.
@@ -94,7 +94,7 @@ flowchart TD
 | RLM Engine | [`rlms`](https://pypi.org/project/rlms/) library (Algorithm 1 reference implementation) |
 | Sub-agents | Claude Agent SDK (Sonnet) |
 | Root models | GPT-5, Claude (API or OAuth), Qwen3-Coder, Azure OpenAI |
-| Sandbox | Docker (CPU), RunPod (GPU), local process |
+| Sandbox | Local / Docker (CPU/dev), GCP single-VM GPU, Azure AKS, AWS EKS |
 | PDF Parsing | PyMuPDF, BeautifulSoup (arXiv HTML), Tesseract OCR |
 | Evaluation | PaperBench rubric framework |
 
@@ -106,8 +106,8 @@ flowchart TD
 - Node.js >= 20.19 (< 21) or >= 22.12
 - At least one LLM API key (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`), or `claude login` for OAuth
 - A Docker daemon (Docker Desktop / OrbStack) — required only for the
-  `docker`/`auto` sandboxes (`local` and `runpod` build no local image; the
-  pod boots its own). No Docker yet? `local` and `runpod` work without it —
+  `docker`/`auto` sandboxes (`local` builds no local image; the cloud cell
+  images are prebuilt). No Docker yet? `local` works without it —
   `.env.example` ships `OPENRESEARCH_DEFAULT_SANDBOX=local`.
 
 ### Setup
@@ -124,15 +124,17 @@ cd frontend && npm ci && cd ..
 # Environment
 cp .env.example .env
 # Edit .env: set at least one API key. The example pins
-# OPENRESEARCH_DEFAULT_SANDBOX=local (no Docker/RunPod needed);
-# switch to runpod/docker once credentials + a daemon are in place.
+# OPENRESEARCH_DEFAULT_SANDBOX=local (no Docker needed); switch to
+# docker once a daemon is in place, or a cloud sandbox once its
+# credentials + preflight are green.
 ```
 
 ### Run
 
 **One command starts the full stack** — backend (`:8000`) + frontend (`:3000`)
-together — with RunPod/GKE/Docker preflight and automatic Node selection via `nvm`
-(the system Node is often outside Next's supported range):
+together — with sandbox preflight (Docker for local, or the selected cloud) and
+automatic Node selection via `nvm` (the system Node is often outside Next's
+supported range):
 
 ```bash
 ./start.sh
@@ -140,14 +142,18 @@ together — with RunPod/GKE/Docker preflight and automatic Node selection via `
 # → frontend http://localhost:3000   ← open this
 ```
 
-For remote GPU campaigns, `gcp`/`gke` use the validated cell-matrix route. The
-optional `aws` sandbox is an EKS+S3/IRSA cell-matrix adapter (never a generic
-remote shell): configure its pinned image, one-GPU node pool, explicit verified
-rate, and IRSA first, then run `python -m backend.cli aws-preflight --project-id
-<project> --run-id <probe>` before a billed run. See
-[`docs/operations.md`](docs/operations.md).
+For remote GPU work on **GCP**, the supported path is a single VM: provision a
+fresh GPU VM, run `reproduce --sandbox local` on it, and auto-delete when done —
+the validated end-to-end procedure is
+[`docs/runbooks/2026-07-22-gcp-vm-e2e-run-procedure.md`](docs/runbooks/2026-07-22-gcp-vm-e2e-run-procedure.md).
+GKE is **parked** behind a fail-loud guard (`OPENRESEARCH_ALLOW_GKE` to revive)
+and is not the go-forward GCP route. The optional `aws` sandbox is an EKS+S3/IRSA
+cell-matrix adapter (never a generic remote shell): configure its pinned image,
+one-GPU node pool, explicit verified rate, and IRSA first, then run `python -m
+backend.cli aws-preflight --project-id <project> --run-id <probe>` before a billed
+run. `azure` runs on AKS. See [`docs/operations.md`](docs/operations.md).
 
-`OPENRESEARCH_DEFAULT_SANDBOX` (shell env > `.env` > `runpod`) selects the sandbox and
+`OPENRESEARCH_DEFAULT_SANDBOX` (shell env > `.env` > `local`) selects the sandbox and
 which preflight runs. Escape hatches: `START_BACKEND_ONLY=1`, `START_FRONTEND_ONLY=1`,
 `START_SKIP_PREFLIGHT=1`. `Ctrl-C` tears down both processes.
 
@@ -168,11 +174,11 @@ npm run dev
 
 ```bash
 python -m backend.cli reproduce paper.pdf --sandbox docker
-python -m backend.cli reproduce 2605.15155 --sandbox runpod
+python -m backend.cli reproduce 2605.15155 --sandbox local  # incl. a GCP GPU VM
 python -m backend.cli ingest 2512.24601  # ingest only
 ```
 
-**Flags:** `--mode {rlm,rdr,rlm-pure}`, `--provider {anthropic,openai}`, `--sandbox {auto,local,docker,runpod}`, `--model {gpt-5,claude,claude-oauth,qwen3-coder,azure}`, `--max-usd`, `--max-wall-clock`, `--vram-gb`
+**Flags:** `--mode {rlm,rdr,rlm-pure}`, `--provider {anthropic,openai}`, `--sandbox {auto,local,docker,azure,aws,gcp}`, `--model {gpt-5,claude,claude-oauth,qwen3-coder,azure}`, `--max-usd`, `--max-wall-clock`, `--vram-gb`
 
 ### Docker
 
@@ -187,10 +193,10 @@ docker compose up --build
 |---|---|---|
 | `OPENAI_API_KEY` | One auth path | Root model when `--model gpt-5` (the default root). |
 | `ANTHROPIC_API_KEY` | Optional | Sub-agents (Sonnet) and `--model claude`. **Leave empty to use Claude CLI OAuth** (`claude login`). A no-credit key does *not* fall back to OAuth — it hard-fails; see `CLAUDE.md` → "RLM auth". |
-| `OPENRESEARCH_DEFAULT_SANDBOX` | No | `auto` / `local` / `docker` / `runpod` / `azure` |
+| `OPENRESEARCH_DEFAULT_SANDBOX` | No | `auto` / `local` / `docker` / `azure` / `aws` / `gcp` (default `local`) |
 | `OPENRESEARCH_AZURE_*` | For Azure | AKS GPU sandbox (cluster, storage, base image) |
-| `OPENRESEARCH_RUNPOD_API_KEY` | For RunPod | RunPod GPU sandbox |
-| `OPENRESEARCH_RUNPOD_SSH_KEY_PATH` | For RunPod | SSH key for pod access |
+| `OPENRESEARCH_AWS_*` | For AWS | EKS GPU sandbox (cluster, S3 bucket, pinned image, IRSA) |
+| `OPENRESEARCH_GCP_*` | For GCP | GCP config (single-VM GPU path is the supported route; GKE parked) |
 | `OPENRESEARCH_DEMO_SECRET` | No | Gate run-start endpoints with a shared secret |
 | `OPENRESEARCH_DYNAMIC_GPU` | No | `true` (default): auto-select GPU SKU per paper |
 | `OPENRESEARCH_MAX_RUN_GPU_USD` | No | Per-run GPU spend cap (float, default 10.0) |
@@ -245,7 +251,7 @@ backend/
     resilience/       # Budget, cost tracking, failure classification
   services/
     ingestion/        # Paper parsing: PDF, HTML, OCR, arXiv fetcher
-    runtime/          # Sandbox backends: Docker, RunPod, local, GPU catalog
+    runtime/          # Sandbox backends: local, Docker, GCP VM, AKS, EKS, GPU catalog
     events/           # SSE event stream, run lifecycle
   evals/              # PaperBench scoring, leaf scorer, A/B testing
   routes/             # HTTP routes: leaderboard, messages, reports
@@ -264,7 +270,7 @@ frontend/
     lib/              # Shared utilities, event types, auth
 
 tests/                # ~3,600 backend tests (pytest)
-scripts/              # Dev tools: RunPod preflight, PaperBench runners, monitoring
+scripts/              # Dev tools: cloud preflight, PaperBench runners, monitoring
 third_party/          # Vendored PaperBench bundles (rubrics + paper markdown)
 docs/                 # Small current-doc set and generated references
 ```
@@ -279,7 +285,7 @@ docs/                 # Small current-doc set and generated references
 
 ## Dynamic GPU Selection
 
-When `OPENRESEARCH_DYNAMIC_GPU=true` (default), the root model estimates VRAM requirements from the paper and the system selects the cheapest matching RunPod SKU from a static catalog (8 GPUs, RTX 4090 through H200). On CUDA OOM, the system auto-escalates to the next tier (up to 2 escalations). Override with `--vram-gb <n>`.
+When `OPENRESEARCH_DYNAMIC_GPU=true` (default), the root model estimates VRAM requirements from the paper and the system selects the cheapest matching GPU SKU from a static catalog (8 GPUs, RTX 4090 through H200). On CUDA OOM, the system auto-escalates to the next tier (up to 2 escalations). Override with `--vram-gb <n>`.
 
 ## LLM Auth Model
 
@@ -294,7 +300,7 @@ For local development: use OpenAI for the root (~$1/run), OAuth for sub-agents (
 
 - Single-user local deployment. No multi-tenant auth or distributed state.
 - Cost ledger reports $0 for OAuth runs (SDK doesn't surface token counts).
-- No GPU sandbox without RunPod account and API key.
+- GPU execution needs a cloud account: a GCP GPU VM (single-VM path), or AKS/EKS with its preflight green.
 - Frontend engines: Node >=20.19 <21 or >=22.12 (enforced via package.json `engines`).
 
 ## Documentation

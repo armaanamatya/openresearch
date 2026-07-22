@@ -190,11 +190,6 @@
       "class": "advisory", "cost": "network", "false_block": "none", "default": "off",
       "rationale": "OFF everywhere. Advisory-only: emits run_warnings about un-corroborated paper claims; NEVER changes the rubric/target/weight/verdict/score (cannot block). It also makes external HTTP calls to literature connectors and is a NO-OP without the separate OPENRESEARCH_LITERATURE_GROUNDING flag. Zero evidence-layer effect for an external-network dependency -> not worth it in either tier; the fitness signal is on-disk evidence, not literature corroboration of the paper's own numbers."
     },
-    "OPENRESEARCH_REMOTE_STALL_GUARD": {
-      "triage_screen": "off", "verify_deep": "off",
-      "class": "reliability", "cost": "stdlib", "false_block": "low", "default": "off",
-      "rationale": "OFF everywhere. RunPod-ONLY: remote_stall.py is imported solely by runpod_backend.py; the GKE/gcp k8s backends and the local screen path never reach it. The production substrate is GKE (verify_deep --sandbox gcp) and triage runs --sandbox local, so this guard is STRUCTURALLY INERT in both profiles. A decision with a substrate reason, not an omission."
-    },
     "OPENRESEARCH_WATCHDOG_KILL_SECONDS": {
       "triage_screen": "off", "verify_deep": "off",
       "class": "value-knob", "cost": "stdlib", "false_block": "n/a", "default": "1500 (25min)",

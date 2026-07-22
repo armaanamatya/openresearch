@@ -14,8 +14,8 @@ Per-backend providers (``describe_capacity`` dispatches on ``ctx.sandbox_mode``)
 backend             capacity source                            can_escalate
 ==================  =========================================  ============
 local / docker      local_gpu_allocator.discover_gpus()        False
-runpod / brev       provisioned pod SKU (ctx.gpu_plan)          True
 azure               AKS settings + gpu_plan.json (plan-aware)  False (see _describe_azure)
+gcp / aws           GKE/EKS settings + gpu_plan.json           False
 ==================  =========================================  ============
 
 The descriptor reports **raw physical** capacity; the headroom multiplier
@@ -45,7 +45,7 @@ class GpuCapacity:
     """A backend-agnostic snapshot of usable GPU capacity for one run.
 
     Attributes:
-        backend_kind:    ``"local"`` | ``"docker"`` | ``"runpod"`` | ``"brev"`` | ``"azure"``.
+        backend_kind:    ``"local"`` | ``"docker"`` | ``"azure"`` | ``"gcp"`` | ``"aws"``.
         num_gpus:        Usable GPU count — the leased/free cards (local) or the
                          provisioned pod's GPU count (cloud).
         per_gpu_vram_gb: VRAM of the *smallest* usable card — the binding per-cell
@@ -94,8 +94,6 @@ def describe_capacity(ctx: Any) -> GpuCapacity:
     via ``getattr`` so a partial/duck-typed context (or a test namespace) works.
     """
     kind = _backend_kind(ctx)
-    if kind in ("runpod", "brev"):
-        return _describe_cloud(ctx, kind)
     if kind == "azure":
         return _describe_azure(ctx)
     if kind == "gcp":
@@ -108,7 +106,7 @@ def describe_capacity(ctx: Any) -> GpuCapacity:
 def _backend_kind(ctx: Any) -> str:
     raw = getattr(ctx, "sandbox_mode", None)
     name = (getattr(raw, "value", None) or getattr(raw, "name", None) or str(raw or "")).lower()
-    for k in ("runpod", "brev", "azure", "gcp", "aws", "docker"):
+    for k in ("azure", "gcp", "aws", "docker"):
         if k in name:
             return k
     return "local"
@@ -155,26 +153,6 @@ def _describe_local(ctx: Any, kind: str) -> GpuCapacity:
     total = sum(d.memory_total_mb for d in free) / _MB_PER_GB
     return GpuCapacity(kind, len(free), per_gpu, ids, can_escalate=False,
                        total_vram_gb=total, detail={"leased": False})
-
-
-# ---------------------------------------------------------------------------
-# Cloud (runpod / brev) — provisioned pod
-# ---------------------------------------------------------------------------
-
-def _describe_cloud(ctx: Any, kind: str) -> GpuCapacity:
-    plan = getattr(ctx, "gpu_plan", None)
-    vram = _plan_attr(plan, "vram_gb") or _vram_override_gb(ctx)
-    try:
-        count = int(_plan_attr(plan, "gpu_count") or 1)
-    except (TypeError, ValueError):
-        count = 1
-    count = max(1, count)
-    # On the pod, gpu_cell_runner re-discovers via nvidia-smi; indices suffice.
-    ids = tuple(str(i) for i in range(count))
-    vram_f = float(vram or 0.0)
-    return GpuCapacity(kind, count, vram_f, ids, can_escalate=True,
-                       total_vram_gb=vram_f * count,
-                       detail={"sku": _plan_attr(plan, "short_name")})
 
 
 def _describe_azure(ctx: Any) -> GpuCapacity:
