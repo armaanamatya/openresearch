@@ -98,7 +98,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["check_leaf", "DETERMINISTIC_CHECK_KINDS"]
+__all__ = ["check_leaf", "DETERMINISTIC_CHECK_KINDS", "COEFFICIENTS_KEY"]
 
 # The three always-on recognized check kinds. A leaf whose ``check_kind`` is not
 # in this set falls through to the LLM (returns None).
@@ -106,6 +106,13 @@ CHECK_HPARAM = "deterministic:hparam"
 CHECK_ARTIFACT = "deterministic:artifact"
 CHECK_NUMERIC = "deterministic:numeric"
 DETERMINISTIC_CHECK_KINDS = frozenset({CHECK_HPARAM, CHECK_ARTIFACT, CHECK_NUMERIC})
+
+# The paper-declared-coefficient namespace, re-exported from its owner so a
+# consumer of the checker never hard-codes the string. ``provenance`` is the
+# single source of truth for the address (``coefficients.<name>``); importing it
+# here means a rename breaks loudly at import instead of silently emitting
+# assertions that resolve to nothing.
+from backend.agents.rlm.provenance import COEFFICIENTS_KEY  # noqa: E402
 
 # W2 (GroundEval): trace-coherence state contracts. A SEPARATE kind gated by its
 # own default-OFF flag — off ⇒ the kind is unrecognized ⇒ routed to the LLM,
