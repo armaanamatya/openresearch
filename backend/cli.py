@@ -2391,6 +2391,7 @@ def cmd_campaign(args: argparse.Namespace) -> int:
         execution_mode=args.execution_mode,
         gpu_mode=args.gpu_mode,
         minimize_compute=bool(args.minimize_compute),
+        authority_spec_path=getattr(args, "authority_spec_path", None),
     )
 
     campaign = build_campaign(project_id, opts)
@@ -3033,6 +3034,15 @@ def _build_parser() -> argparse.ArgumentParser:
     campaign.add_argument(
         "--paper-class", dest="paper_class", default="generic",
         help="Paper class label recorded on admitted positive recipes (default generic).",
+    )
+    campaign.add_argument(
+        "--authority-spec", dest="authority_spec_path", default=None,
+        help=(
+            "Path to a paper-owned authoritative scheduler spec JSON. Constructs "
+            "the SchedulerAuthorityController only when BOTH "
+            "OPENRESEARCH_SCHEDULER_TREE and OPENRESEARCH_SCHEDULER_AUTHORITATIVE "
+            "are on (default None; unset ⇒ no controller)."
+        ),
     )
     campaign.add_argument(
         "--require-cpu-tier", dest="require_cpu_tier", action="store_true",

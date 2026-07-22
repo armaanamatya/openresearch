@@ -30,9 +30,12 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from backend.agents.rlm import doomed_run_comparator as doomed
+
+if TYPE_CHECKING:
+    from backend.agents.rlm.scheduler_authority_controller import SchedulerAuthorityController
 
 
 class CampaignLedgerError(Exception):
@@ -413,6 +416,7 @@ class ReproductionCampaign:
         stages: CampaignStages,
         resume: bool = False,
         branch_tree_event_store: Any | None = None,
+        scheduler_controller: "SchedulerAuthorityController | None" = None,
     ) -> None:
         self.run_dir = Path(run_dir)
         self.project_id = project_id
@@ -433,6 +437,11 @@ class ReproductionCampaign:
         # controller EventStore only when the tree flag is enabled; default-off
         # campaigns neither construct nor touch it.
         self._branch_tree_event_store = branch_tree_event_store
+        # Optional authoritative scheduler controller, constructed by the
+        # campaign composition root ONLY when both scheduler flags and an
+        # explicit authority spec are present (byte-identical-OFF otherwise).
+        # Mirrors the ``branch_tree_event_store`` optional-injection precedent.
+        self.scheduler_controller = scheduler_controller
 
     def _new_state(self, *, state: str) -> CampaignState:
         now = time.time()
