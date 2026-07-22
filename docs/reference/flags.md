@@ -7,7 +7,7 @@
 - **Total distinct flags:** 505
 - **Managed by `config.py` Settings (typed, default known):** 140
 - **Ad-hoc `os.environ` reads (no central default):** 365
-- **Mentioned in a `CLAUDE.md`:** 141 (27%)
+- **Mentioned in a `CLAUDE.md`:** 136 (26%)
 
 Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **sites** = ad-hoc read count; **default** = literal default at first read site (best effort).
 
@@ -250,7 +250,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **si
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_CAMPAIGN_` |  | ✅ |  | |
 | `OPENRESEARCH_CAMPAIGN_DRIVER` |  |  | 1 | `"live"` |
-| `OPENRESEARCH_CAMPAIGN_MAX_` |  | ✅ |  | |
+| `OPENRESEARCH_CAMPAIGN_MAX_` |  |  |  | |
 | `OPENRESEARCH_CAMPAIGN_MAX_ATTEMPTS` |  |  |  | |
 | `OPENRESEARCH_CAMPAIGN_MAX_GPU_HOURS` |  |  |  | |
 | `OPENRESEARCH_CAMPAIGN_MAX_GPU_USD` |  |  |  | |
@@ -279,7 +279,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **si
 | `OPENRESEARCH_CELL_ERROR_SALVAGE` |  | ✅ | 1 | `""` |
 | `OPENRESEARCH_CELL_FENCE_EPOCH` |  |  | 1 | `""` |
 | `OPENRESEARCH_CELL_FINGERPRINT` |  |  |  | |
-| `OPENRESEARCH_CELL_GPU_COUNT` |  | ✅ |  | |
+| `OPENRESEARCH_CELL_GPU_COUNT` |  |  |  | |
 | `OPENRESEARCH_CELL_GRAD_CHECKPOINT` |  | ✅ |  | |
 | `OPENRESEARCH_CELL_ID` |  |  | 3 | `SPEC.get("framework", "execute"` |
 | `OPENRESEARCH_CELL_MAX_OOM_RETRIES` |  |  | 1 | |
@@ -465,7 +465,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **si
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_DURABLE_CONTROLLER` |  | ✅ |  | |
+| `OPENRESEARCH_DURABLE_CONTROLLER` |  |  |  | |
 
 ### `OPENRESEARCH_DYNAMIC_*`
 
@@ -653,7 +653,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **si
 | `OPENRESEARCH_GCP_GKE_CLUSTER` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_GPUS_PER_NODE` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_GPU_MACHINE_TYPE` |  |  |  | |
-| `OPENRESEARCH_GCP_GPU_SKUS` | ✅ | ✅ |  | `Field(...)` |
+| `OPENRESEARCH_GCP_GPU_SKUS` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_GPU_USD_PER_HOUR` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_INSTANCE` |  |  |  | |
 | `OPENRESEARCH_GCP_JOB_BACKOFF_LIMIT` | ✅ |  |  | `Field(...)` |
@@ -1113,7 +1113,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **si
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_RUNPOD_API_KEY` |  | ✅ |  | |
+| `OPENRESEARCH_RUNPOD_API_KEY` |  |  |  | |
 | `OPENRESEARCH_RUNPOD_BOOTSTRAP_COMMAND` |  |  |  | |
 | `OPENRESEARCH_RUNPOD_NETWORK_VOLUME_ID` |  |  |  | |
 | `OPENRESEARCH_RUNPOD_VOLUME_MOUNT_PATH` |  |  | 4 | `""` |
