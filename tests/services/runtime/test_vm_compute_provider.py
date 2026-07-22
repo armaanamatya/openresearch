@@ -327,3 +327,29 @@ def test_watch_probe_error_does_not_false_complete():
     import itertools
     states = [s.state for s in itertools.islice(prov.watch(handle), 2)]
     assert states == ["running", "running"]
+
+
+def test_collect_tars_evidence_artifacts():
+    """collect() must include the evidence-audit artifacts (rubric, evidence
+    bundle, validation verdict, rubric tree) in the remote tar allow-list, not
+    just the report + ledger -- so a collected clean run is auditable."""
+    captured = {"tar_cmd": None}
+    def fake_runner(argv):
+        joined = " ".join(argv)
+        if "tar czf" in joined:
+            captured["tar_cmd"] = joined
+        return VmExecResult(returncode=0, stdout="")
+    prov = VmComputeProvider(_gcp_profile(), runner=fake_runner)
+    handle = RunHandle(id="prj_test", lease=_lease())
+    bundle = prov.collect(handle)
+    assert bundle.ok is True
+    tar = captured["tar_cmd"]
+    for existing in ("final_report.json", "experiment_runs.jsonl", "code/metrics.json"):
+        assert existing in tar, f"regression: {existing} dropped from collect tar"
+    for evidence in (
+        "generated_rubric.json",
+        "rlm_state/evidence_bundle.json",
+        "rlm_state/validation_verdict.json",
+        "rubric_tree.json",
+    ):
+        assert evidence in tar, f"{evidence} missing from collect tar allow-list"

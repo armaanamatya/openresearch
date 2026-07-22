@@ -724,7 +724,10 @@ class VmComputeProvider(ComputeProvider):
         tar_cmd = (
             f"cd {remote_run_dir} 2>/dev/null && tar czf {tgz_path} "
             f"final_report.json final_report.md demo_status.json cost_ledger.jsonl "
-            f"experiment_runs.jsonl dashboard_events.jsonl code/metrics.json 2>/dev/null; echo tarred"
+            f"experiment_runs.jsonl dashboard_events.jsonl code/metrics.json "
+            f"generated_rubric.json rubric_tree.json "
+            f"rlm_state/evidence_bundle.json rlm_state/validation_verdict.json "
+            f"2>/dev/null; echo tarred"
         )
         self._run(self._ssh_argv(tar_cmd))
 
