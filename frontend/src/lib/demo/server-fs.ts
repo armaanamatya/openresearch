@@ -119,7 +119,7 @@ export function buildFixtureMeta(
   llmProvider?: DemoProvider,
   verificationProvider?: DemoProvider,
   executionMode: DemoExecutionMode = "max",
-  sandboxMode: DemoSandboxMode = "runpod",
+  sandboxMode: DemoSandboxMode = "local",
   gpuMode: DemoGpuMode = "auto"
 ): LiveDemoMeta {
   return {
@@ -246,7 +246,7 @@ export function metaFromStatus(
   >
 ): LiveDemoMeta {
   const executionMode = status?.executionMode ?? "efficient";
-  const sandboxMode = status?.sandboxMode ?? "runpod";
+  const sandboxMode = status?.sandboxMode ?? "local";
   const verificationProvider = status?.verificationProvider;
   const gpuMode = status?.gpuMode ?? "auto";
 

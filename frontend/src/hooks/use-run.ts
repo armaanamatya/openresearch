@@ -483,7 +483,7 @@ export function useRun(
       const params = new URLSearchParams({
         mode: runMode,
         executionMode: prefs.executionMode ?? "efficient",
-        sandbox: prefs.sandbox ?? "runpod",
+        sandbox: prefs.sandbox ?? "local",
         gpuMode: "auto",
         model
       });
@@ -526,7 +526,7 @@ export function useRun(
       const formData = new FormData();
       formData.set("mode", runMode);
       formData.set("executionMode", prefs.executionMode ?? "efficient");
-      formData.set("sandbox", prefs.sandbox ?? "runpod");
+      formData.set("sandbox", prefs.sandbox ?? "local");
       formData.set("gpuMode", "auto");
       formData.set("model", model);
       if (opts.rootProvider) formData.set("rootProvider", opts.rootProvider);
@@ -591,7 +591,7 @@ export function useRun(
           url: normalisedUrl,
           mode: runMode,
           executionMode: prefs.executionMode ?? "efficient",
-          sandbox: prefs.sandbox ?? "runpod",
+          sandbox: prefs.sandbox ?? "local",
           gpuMode: "auto",
           model,
           ...(opts.rootProvider ? { root_provider: opts.rootProvider } : {}),

@@ -4,13 +4,13 @@ export type DemoProvider = "anthropic" | "openai";
 
 export type DemoExecutionMode = "efficient" | "max";
 
-export type DemoSandboxMode = "auto" | "docker" | "local" | "runpod" | "azure" | "aws" | "gcp";
+export type DemoSandboxMode = "auto" | "docker" | "local" | "azure" | "aws" | "gcp";
 
 export type DemoGpuMode = "off" | "auto" | "prefer" | "max";
 
 export type DemoGpuParallelism = "auto" | "single" | "multi";
 
-export type DemoAccelerator = "off" | "auto" | "local" | "runpod" | "azure" | "endpoint";
+export type DemoAccelerator = "off" | "auto" | "local" | "azure" | "endpoint";
 
 export type DemoModelChoice = string;
 
