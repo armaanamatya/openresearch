@@ -43,7 +43,17 @@ def test_force_sandbox_gke_override(monkeypatch):
     assert resolve_sandbox_mode("auto", pipeline_mode="rlm") is SandboxMode.gcp
 
 
-def test_gke_token_constructs_gke_backend():
+def test_gke_token_parked_raises_without_flag(monkeypatch):
+    """PARKED: the gke alias raises unless OPENRESEARCH_ALLOW_GKE is set."""
+    monkeypatch.delenv("OPENRESEARCH_ALLOW_GKE", raising=False)
+    from backend.agents.rlm.primitives import _backend_for_sandbox_mode
+
+    with pytest.raises(RuntimeError, match="PARKED"):
+        _backend_for_sandbox_mode(SandboxMode("gke"), run_budget=None)
+
+
+def test_gke_token_constructs_gke_backend(monkeypatch):
+    monkeypatch.setenv("OPENRESEARCH_ALLOW_GKE", "1")
     with patch("backend.services.runtime.ensure_gcp_available", lambda: None):
         from backend.agents.rlm.primitives import _backend_for_sandbox_mode
         from backend.services.runtime.gke_job_backend import GkeJobBackend
@@ -52,7 +62,8 @@ def test_gke_token_constructs_gke_backend():
         assert isinstance(backend, GkeJobBackend)
 
 
-def test_force_sandbox_gke_threads_run_budget():
+def test_force_sandbox_gke_threads_run_budget(monkeypatch):
+    monkeypatch.setenv("OPENRESEARCH_ALLOW_GKE", "1")
     budget = SimpleNamespace(name="fake_budget")
     with patch("backend.services.runtime.ensure_gcp_available", lambda: None):
         from backend.agents.rlm.primitives import _backend_for_sandbox_mode
@@ -67,7 +78,7 @@ def test_build_environment_noop_for_gke_via_gcp_member():
     assert SandboxMode("gke").value == "gcp"
 
 
-@pytest.mark.parametrize("token", ["gcp", "azure", "runpod", "local", "docker"])
+@pytest.mark.parametrize("token", ["gcp", "azure", "local", "docker"])
 def test_existing_tokens_round_trip_identically(token):
     assert SandboxMode(token).value == token
 

@@ -225,14 +225,14 @@ describe("UploadView unavailable providers are disabled", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Sandbox radio group — Local + the three GPU clouds (RunPod, GCP, Azure)
+// Sandbox radio group — Local + the GPU clouds (GCP, Azure, AWS)
 // ---------------------------------------------------------------------------
 
 describe("UploadView sandbox radios", () => {
-  it("renders the Local, RunPod, GCP, and Azure sandbox options", () => {
+  it("renders the Local, GCP, Azure, and AWS sandbox options", () => {
     const { container } = render(<UploadView {...DEFAULT_PROPS} />);
     const fieldset = container.querySelector('fieldset:has(input[name="sandbox"])');
-    for (const value of ["docker", "runpod", "gcp", "azure", "aws"]) {
+    for (const value of ["docker", "gcp", "azure", "aws"]) {
       expect(fieldset?.querySelector(`input[value="${value}"]`)).not.toBeNull();
     }
   });

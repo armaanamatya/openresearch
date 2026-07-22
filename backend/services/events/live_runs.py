@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 RunMode = Literal["rlm", "rdr", "rlm-pure"]
 Provider = Literal["anthropic", "openai"]
 ExecutionMode = Literal["efficient", "max"]
-SandboxMode = Literal["auto", "docker", "local", "runpod", "azure", "aws", "gcp"]
+SandboxMode = Literal["auto", "docker", "local", "azure", "aws", "gcp"]
 GpuMode = Literal["off", "auto", "prefer", "max"]
 ModelChoice = str
 RunStatus = Literal[
@@ -178,7 +178,7 @@ class StartRunRequest(BaseModel):
     provider: Provider = "anthropic"
     verificationProvider: Provider | None = None
     executionMode: ExecutionMode = "max"
-    sandbox: SandboxMode = "gcp"  # GCP/Azure primary; runpod legacy (cloud-posture 2026-07)
+    sandbox: SandboxMode = "local"  # single coherent default; azure/aws primary clouds, gcp/gke parked
     gpuMode: GpuMode = "auto"
     model: ModelChoice = "sonnet"
     # rdr-specific: PaperBench bundle paper_id (directory name under
@@ -195,7 +195,7 @@ class StartRunRequest(BaseModel):
     dynamic_gpu: bool | None = None
     force_single_gpu: bool | None = None
     gpu_parallelism: str | None = None  # "auto" (default) | "single" | "multi" — controls multi-GPU vs single in generated train.py
-    accelerator: str | None = None  # off|auto|local|runpod|azure|endpoint
+    accelerator: str | None = None  # off|auto|local|azure|endpoint
     max_gpu_usd_per_hour: float | None = None
     vram_gb: int | None = None
     # User-selectable GPU count. None => existing auto-resolution (gpu_resolver
@@ -521,7 +521,7 @@ def apply_autonomous_profile_override(request: StartRunRequest) -> StartRunReque
 
     ``sandbox="gcp"`` (deliberately NOT the literal ``"gke"``) is the
     canonical in-Literal GKE selector: ``StartRunRequest.sandbox`` is typed
-    ``Literal["auto","docker","local","runpod","azure","gcp"]`` — "gke" is
+    ``Literal["auto","docker","local","azure","aws","gcp"]`` — "gke" is
     not a member of that Literal (the gke->gcp alias lives only in the
     unrelated ``backend.agents.execution.SandboxMode`` enum, whose
     ``_missing_`` hook remaps it). "gcp" is already in the Literal and
@@ -662,8 +662,8 @@ class FileLiveRunService:
 
         # Load .env file if present (subprocess doesn't inherit dotenv).
         # OPENRESEARCH_* keys in .env are always authoritative: a stale shell
-        # export from a previous login (e.g. OPENRESEARCH_RUNPOD_SSH_KEY_PATH
-        # pointing to a different user's home) must not override the
+        # export from a previous login (e.g. OPENRESEARCH_GCP_SSH_USER
+        # pointing to a different user) must not override the
         # project-level .env which reflects the operator's deliberate config.
         # Non-REPROLAB keys (API keys, PATH tweaks, etc.) respect the
         # standard precedence: shell export > .env.
@@ -1443,7 +1443,7 @@ class FileLiveRunService:
                 continue
             if execution_mode and (status.get("executionMode") or "efficient") != execution_mode:
                 continue
-            if sandbox and (status.get("sandboxMode") or "runpod") != sandbox:
+            if sandbox and (status.get("sandboxMode") or "local") != sandbox:
                 continue
             if verification_provider and status.get("verificationProvider") != verification_provider:
                 continue

@@ -34,7 +34,7 @@ from backend.services.events.live_runs import _credential_handoff_preamble
 _SENTINELS = {
     "ANTHROPIC_API_KEY": "sentinel-anthropic-e2e-not-real",
     "OPENAI_API_KEY": "sentinel-openai-e2e-not-real",
-    "OPENRESEARCH_RUNPOD_API_KEY": "sentinel-runpod-e2e-not-real",
+    "AZURE_FOUNDRY_API_KEY": "sentinel-foundry-e2e-not-real",
 }
 _VALUES = sorted(_SENTINELS.values())
 

@@ -175,17 +175,6 @@ def test_settings_falls_back_to_openresearch_prefix(monkeypatch: pytest.MonkeyPa
     assert settings.openai_api_key == "sk-openresearch-scoped"
 
 
-def test_settings_accepts_unprefixed_runpod_api_key(monkeypatch: pytest.MonkeyPatch):
-    """RunPod is the default sandbox, so its standard env name must work
-    from either shell env or .env without an os.environ bootstrap."""
-
-    monkeypatch.delenv("OPENRESEARCH_RUNPOD_API_KEY", raising=False)
-    monkeypatch.setenv("RUNPOD_API_KEY", "runpod-from-shell-env")
-    settings = get_settings(_force_reload=True)
-
-    assert settings.runpod_api_key == "runpod-from-shell-env"
-
-
 @pytest.mark.ambient_env  # exercises real .env-file loading; opt out of env-file isolation
 def test_settings_reads_unprefixed_provider_keys_from_dotenv(
     dotenv_disk_reads_enabled,
@@ -200,9 +189,7 @@ def test_settings_reads_unprefixed_provider_keys_from_dotenv(
     session-wide (see the ENV HERMETICITY block in tests/conftest.py). It still
     reads only the .env it writes into tmp_path, never the repo's real one."""
 
-    (tmp_path / ".env").write_text(
-        "OPENAI_API_KEY=sk-from-dotenv\nRUNPOD_API_KEY=runpod-from-dotenv\n"
-    )
+    (tmp_path / ".env").write_text("OPENAI_API_KEY=sk-from-dotenv\n")
     # Hermeticity: the repo's real .env was loaded into os.environ at import
     # (load_dotenv), and process env OUTRANKS this tmp dotenv — scrub every
     # spelling so the test exercises the dotenv path on any machine.
@@ -211,14 +198,12 @@ def test_settings_reads_unprefixed_provider_keys_from_dotenv(
         # legacy names, and the AliasChoices read those too (a naming sweep
         # once collapsed this list and un-scrubbed the legacy copies).
         "OPENAI_API_KEY", "OPENRESEARCH_OPENAI_API_KEY", "REPROLAB_OPENAI_API_KEY",
-        "RUNPOD_API_KEY", "OPENRESEARCH_RUNPOD_API_KEY", "REPROLAB_RUNPOD_API_KEY",
     ):
         monkeypatch.delenv(_k, raising=False)
     monkeypatch.chdir(tmp_path)
     settings = get_settings(_force_reload=True)
 
     assert settings.openai_api_key == "sk-from-dotenv"
-    assert settings.runpod_api_key == "runpod-from-dotenv"
 
 
 # ---------------------------------------------------------------------------

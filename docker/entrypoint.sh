@@ -9,8 +9,8 @@ cd /app
 # Compose mounts .env read-only for local development. Load it here rather
 # than using docker-compose env_file so `docker compose config` does not print
 # secret values. Parse it as KEY=VALUE *data* instead of `source`ing it:
-# python-dotenv accepts unquoted values with spaces, so a perfectly valid
-# `OPENRESEARCH_RUNPOD_GPU_TYPE=NVIDIA GeForce RTX 4090` line made bash run
+# python-dotenv accepts unquoted values with spaces, so a value containing a
+# space (e.g. a GPU type like `NVIDIA GeForce RTX 4090`) made bash run
 # `GeForce` as a command and kill the container with exit 127 under set -e
 # (and `source` would happily execute $(...) in values). The parse itself is
 # delegated to python-dotenv inside load_env.sh — a hand-rolled bash loop
@@ -24,19 +24,6 @@ cd /app
 # the compose-set OPENRESEARCH_DATABASE_URL and broke event-store persistence.
 . /load_env.sh
 load_env_file /app/.env /opt/venv/bin/python
-
-# --- SSH key injection (Railway / env-only deployments) ---------------------
-# Railway can't mount files, so inject the private key as a base64 env var.
-# Set OPENRESEARCH_RUNPOD_SSH_KEY_B64 in Railway Variables and this block writes
-# it to disk and points OPENRESEARCH_RUNPOD_SSH_KEY_PATH at it automatically.
-if [[ -n "${OPENRESEARCH_RUNPOD_SSH_KEY_B64:-}" ]]; then
-    # $HOME-relative (not /root): the container runs as the non-root `app`
-    # user since audit 2026-06-10.
-    mkdir -p "${HOME}/.ssh"
-    echo "$OPENRESEARCH_RUNPOD_SSH_KEY_B64" | base64 -d > "${HOME}/.ssh/runpod_id_rsa"
-    chmod 600 "${HOME}/.ssh/runpod_id_rsa"
-    export OPENRESEARCH_RUNPOD_SSH_KEY_PATH="${HOME}/.ssh/runpod_id_rsa"
-fi
 
 # --- Backend: FastAPI via uvicorn -------------------------------------------
 # Uses the venv copied from the python-deps stage. No --reload in prod.

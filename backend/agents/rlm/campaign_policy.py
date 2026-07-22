@@ -194,7 +194,7 @@ class EnforcementContext:
     enforcement knobs."""
 
     driver_kind: str  # "live" | "unified"
-    sandbox: str  # "local"|"docker"|"runpod"|"gcp"|"gke"|"azure"|...
+    sandbox: str  # "local"|"docker"|"gcp"|"gke"|"azure"|"aws"|...
     mode: str  # "unattended" | "checkpoint"
     tiering_strategy: str | None  # None when no VM provider involved
     max_gpu_count: int  # >=1; the structural bound used for hours/$ math
@@ -326,13 +326,6 @@ def check_enforceability(envelope: AttemptEnvelope, ctx: EnforcementContext) -> 
     # Rule 5 — VM control-plane ceiling is ALWAYS explicit; never the 28h
     # ``max-run-duration`` default.
     vm_ceiling_s = effective_wall_s + FINALIZE_HEADROOM_S
-
-    # Rule 5b — on runpod, ``--max-pod-seconds`` is the control-plane
-    # ceiling analog (``RunBudget.max_pod_seconds`` enforces it); make it
-    # explicit too, appended after --max-run-gpu-usd for a deterministic
-    # cli_args order.
-    if ctx.sandbox == "runpod":
-        cli_args.append(("--max-pod-seconds", _fmt_g(vm_ceiling_s)))
 
     # Rule 6 — F3 hard guarantee: an unattended stage_on_gpu run needs a real
     # CPU tier ahead of the GPU lease, or an explicit alternative tiering.

@@ -410,28 +410,6 @@ def test_enforcement_plan_cli_args_deterministic_order():
     assert plan_a.env == {"OPENRESEARCH_MAX_RUN_GPU_USD": "20"}
 
 
-def test_runpod_sandbox_appends_max_pod_seconds_after_gpu_usd():
-    # The runpod control-plane ceiling analog (RunBudget.max_pod_seconds)
-    # must be made explicit, deterministically ordered after --max-run-gpu-usd.
-    envelope = _envelope(gpu_usd=10.0, gpu_hours=5.0)
-    runpod_ctx = _ctx(sandbox="runpod", tiering_strategy=None, max_gpu_count=1, gpu_usd_per_hr=2.0)
-    plan = check_enforceability(envelope, runpod_ctx)
-
-    names = [name for name, _ in plan.cli_args]
-    assert names == ["--max-usd", "--max-wall-clock", "--max-run-gpu-usd", "--max-pod-seconds"]
-    assert dict(plan.cli_args)["--max-pod-seconds"] == "19800"
-    assert plan.vm_ceiling_s == pytest.approx(19800.0)
-
-    # --max-pod-seconds is a runpod-only knob -- absent on local and gcp.
-    local_plan = check_enforceability(envelope, _ctx(sandbox="local", tiering_strategy=None, max_gpu_count=1))
-    assert all(name != "--max-pod-seconds" for name, _ in local_plan.cli_args)
-
-    gcp_plan = check_enforceability(
-        envelope, _ctx(sandbox="gcp", tiering_strategy=None, max_gpu_count=1, gpu_usd_per_hr=2.0)
-    )
-    assert all(name != "--max-pod-seconds" for name, _ in gcp_plan.cli_args)
-
-
 # ---------------------------------------------------------------------------
 # attempt_estimate
 # ---------------------------------------------------------------------------

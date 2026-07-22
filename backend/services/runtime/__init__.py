@@ -37,8 +37,6 @@ from backend.services.runtime.local_docker import (
     ensure_local_docker_available,
 )
 from backend.services.runtime.local_process import LocalProcessBackend
-from backend.services.runtime.brev_backend import BrevBackend, ensure_brev_available
-from backend.services.runtime.runpod_backend import RunpodBackend, ensure_runpod_available
 from backend.services.runtime.aks_job_backend import AksJobBackend, ensure_azure_available
 from backend.services.runtime.eks_job_backend import (
     EksJobBackend,
@@ -56,7 +54,6 @@ from backend.services.runtime.service import (
 
 __all__ = [
     "AksJobBackend",
-    "BrevBackend",
     "EksJobBackend",
     "GkeJobBackend",
     "CommandExecuted",
@@ -70,7 +67,6 @@ __all__ = [
     "InvalidSandboxTransition",
     "LocalDockerBackend",
     "LocalProcessBackend",
-    "RunpodBackend",
     "RuntimeAppService",
     "RuntimeBackend",
     "RuntimeCauseKind",
@@ -89,10 +85,8 @@ __all__ = [
     "ensure_aws_available",
     "verify_aws_pod_readiness",
     "verify_aws_remote_readiness",
-    "ensure_brev_available",
     "ensure_gcp_available",
     "ensure_local_docker_available",
-    "ensure_runpod_available",
     "initialize_run_artifacts",
     "utc_now_iso",
     "write_json",

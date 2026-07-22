@@ -39,11 +39,3 @@ def test_azure_excludes_repo(tmp_path):
 def test_gcs_excludes_repo(tmp_path):
     from backend.services.runtime import gcs_blob
     assert "repo" in gcs_blob._EXCLUDED_DIR_PARTS
-
-
-def test_runpod_walk_skips_repo(tmp_path):
-    from backend.services.runtime.runpod_backend import _runpod_upload_relpaths
-    _make_tree(tmp_path)
-    rels = _runpod_upload_relpaths(tmp_path)
-    assert "code/train.py" in rels
-    assert all(not r.startswith("repo/") and r != "repo" for r in rels)

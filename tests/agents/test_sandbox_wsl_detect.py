@@ -186,15 +186,15 @@ def test_explicit_docker_not_overridden_on_wsl(monkeypatch):
 
 
 def test_OPENRESEARCH_FORCE_SANDBOX_still_wins(monkeypatch):
-    """OPENRESEARCH_FORCE_SANDBOX=runpod overrides even WSL+no-docker auto resolution."""
+    """OPENRESEARCH_FORCE_SANDBOX=azure overrides even WSL+no-docker auto resolution."""
     _is_wsl.cache_clear()
     _docker_reachable.cache_clear()
-    monkeypatch.setenv("OPENRESEARCH_FORCE_SANDBOX", "runpod")
+    monkeypatch.setenv("OPENRESEARCH_FORCE_SANDBOX", "azure")
     monkeypatch.setattr("backend.agents.execution._is_wsl", lambda: True)
     monkeypatch.setattr("backend.agents.execution._docker_reachable", lambda: False)
 
     result = resolve_sandbox_mode("auto", pipeline_mode="rlm")
-    assert result is SandboxMode.runpod
+    assert result is SandboxMode.azure
 
     _is_wsl.cache_clear()
     _docker_reachable.cache_clear()

@@ -43,7 +43,7 @@ from backend.services.runtime.feasibility_triage import FeasibilityTriage
 from backend.services.runtime.gpu_catalog import find_by_alias
 from backend.services.runtime.run_plan import RequiredAsset, RunPlan
 
-_SKU = find_by_alias("rtx4090")
+_SKU = find_by_alias("l4")
 
 
 class FakeComputeProvider(ComputeProvider):

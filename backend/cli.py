@@ -156,7 +156,6 @@ def _warn_on_shell_env_override() -> None:
         "FEATHERLESS_API_KEY", "OPENROUTER_API_KEY",
         "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_DEPLOYMENT",
         "AZURE_FOUNDRY_API_KEY", "AZURE_FOUNDRY_ENDPOINT", "AZURE_FOUNDRY_DEPLOYMENT",
-        "OPENRESEARCH_RUNPOD_API_KEY",
     )
     def _prefix(s: str) -> str:
         return f"{s[:10]}…{s[-4:]}" if len(s) > 14 else "<set>"
@@ -403,6 +402,11 @@ def _mark_demo_status_stopped(
         merged = {
             **existing,
             "status": "stopped",
+            # ``status`` and ``process_status`` are distinct UI contracts, but
+            # a terminal CLI exit must close both.  Leaving process_status as
+            # "running" makes a stopped run appear live to consumers that use
+            # the subprocess lifecycle rather than the verdict lifecycle.
+            "process_status": "completed",
             "updatedAt": now_iso,
             "completedAt": now_iso,
             "error": reason,
@@ -456,6 +460,7 @@ def _mark_demo_status_failed(
         merged = {
             **existing,
             "status": "failed",
+            "process_status": "completed",
             "updatedAt": now_iso,
             "completedAt": now_iso,
             "error": reason,
@@ -532,6 +537,7 @@ def _mark_demo_status_killed(
         merged = {
             **existing,
             "status": "killed",
+            "process_status": "completed",
             "killReason": kill_reason,
             "updatedAt": now_iso,
             "completedAt": now_iso,
@@ -1283,7 +1289,7 @@ def _cmd_reproduce_sanity(args: argparse.Namespace, runs_root: Path) -> int:
         getattr(args, "sandbox", "auto"), pipeline_mode="rlm"
     )
     requested_gpu_mode = str(getattr(args, "gpu_mode", "auto") or "auto").lower()
-    require_gpu = sandbox_mode.value == "runpod" and requested_gpu_mode != "off"
+    require_gpu = sandbox_mode.value in ("azure", "aws", "gcp") and requested_gpu_mode != "off"
     code_dir.mkdir(parents=True, exist_ok=True)
     (project_dir / "cost_ledger.jsonl").touch(exist_ok=True)
     (code_dir / "sanity.py").write_text(
@@ -1301,7 +1307,7 @@ def _cmd_reproduce_sanity(args: argparse.Namespace, runs_root: Path) -> int:
         "    except (OSError, subprocess.SubprocessError):\n"
         "        pass\n"
         "if REQUIRE_GPU and not gpu_name:\n"
-        "    raise RuntimeError('RunPod sanity requested a GPU but nvidia-smi found none')\n"
+        "    raise RuntimeError('GPU sanity requested a GPU but nvidia-smi found none')\n"
         "with open(os.path.join(out, 'metrics.json'), 'w', encoding='utf-8') as fh:\n"
         "    json.dump({'sanity_ok': 1.0, 'gpu_visible': float(bool(gpu_name))}, fh)\n"
         "print('reprolab sanity ok' + (': ' + gpu_name if gpu_name else ''))\n",
@@ -1355,7 +1361,7 @@ def _cmd_reproduce_sanity(args: argparse.Namespace, runs_root: Path) -> int:
         process_status="running",
         verdict="unknown",
     )
-    env_id = get_settings().runpod_image if sandbox_mode.value == "runpod" else "python:3.11-slim"
+    env_id = "python:3.11-slim"
     result = run_experiment(
         {"ok": True, "code_path": str(code_dir), "files": ["commands.json", "sanity.py"]},
         env_id,
@@ -2529,16 +2535,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     reproduce.add_argument(
         "--sandbox",
-        choices=("auto", "local", "docker", "runpod", "azure", "aws", "gcp", "gke"),
+        choices=("auto", "local", "docker", "azure", "aws", "gcp", "gke"),
         default=DEFAULT_SANDBOX_MODE.value,
         help=(
             f"Experiment backend (default: {DEFAULT_SANDBOX_MODE.value}). "
             "azure dispatches training cells as AKS Jobs on Azure GPU nodes; "
             "aws dispatches short-lived Jobs to a pre-existing EKS cluster; "
-            "gcp dispatches training cells as GKE Jobs on Google Cloud GPU nodes "
-            "(gke is an alias for gcp); runpod uses a remote GPU Pod; docker is "
-            "isolated local Docker; local runs commands on the host; auto resolves "
-            "to the configured default."
+            "gcp/gke routes to GKE, which is PARKED (raises unless "
+            "OPENRESEARCH_ALLOW_GKE=1 — use --sandbox local --billing-sandbox gcp); "
+            "docker is isolated local Docker; local runs commands on the host; "
+            "auto resolves to the configured default."
         ),
     )
     reproduce.add_argument(
@@ -2570,11 +2576,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     reproduce.add_argument(
         "--accelerator",
-        choices=("off", "auto", "local", "runpod", "azure", "endpoint"),
+        choices=("off", "auto", "local", "azure", "endpoint"),
         default=None,
         help=(
             "Route cheap RLM calls to a fast accelerator endpoint: "
-            "off|auto|local(vLLM on local GPUs)|runpod|azure|endpoint. Default off."
+            "off|auto|local(vLLM on local GPUs)|azure|endpoint. Default off."
         ),
     )
     reproduce.add_argument(
@@ -2621,11 +2627,8 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help=(
-            "Maximum elapsed seconds a RunPod pod may run AFTER SSH connect "
-            "(not from POST /pods — boot time is not budgeted) before the next "
-            "exec() raises BudgetExhausted and the pod is force-destroyed. "
-            "Persistent pods (OPENRESEARCH_RUNPOD_POD_ID) are NOT auto-deleted; "
-            "an ERROR log is emitted and manual cleanup is required. "
+            "Maximum elapsed seconds of remote GPU compute (the run-budget "
+            "pod/VM-time ceiling) before the next exec() raises BudgetExhausted. "
             "Also read from OPENRESEARCH_MAX_POD_SECONDS env var."
         ),
     )
@@ -2655,7 +2658,7 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="max_run_gpu_usd",
         type=float,
         default=None,
-        help="Total RunPod USD cap per run (default: from OPENRESEARCH_MAX_RUN_GPU_USD=10.0).",
+        help="Total GPU USD cap per run (default: from OPENRESEARCH_MAX_RUN_GPU_USD=10.0).",
     )
     reproduce.add_argument(
         "--dynamic-gpu-headroom",
@@ -2994,7 +2997,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     campaign.add_argument(
         "--sandbox", dest="sandbox",
-        choices=("auto", "local", "docker", "runpod", "azure", "aws", "gcp", "gke"),
+        choices=("auto", "local", "docker", "azure", "aws", "gcp", "gke"),
         default="local", help="Experiment backend for attempts (default local).",
     )
     campaign.add_argument(

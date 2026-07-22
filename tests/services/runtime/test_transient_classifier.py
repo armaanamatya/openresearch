@@ -18,9 +18,7 @@ from backend.services.runtime.transient_classifier import (
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("marker", [
-    "RUNPOD_BALANCE_TOO_LOW",
     "balance_too_low",
-    "RUNPOD_AUTH_FAILED",
     "auth_failed",
     "Unauthorized",
     "quota_exceeded",
@@ -43,9 +41,6 @@ def test_fatal_markers_classify_as_fatal(marker):
     "502 Bad Gateway",
     "503 Service Unavailable",
     "NO_CAPACITY_AVAILABLE",
-    "RUNPOD_CAPACITY_EXHAUSTED",
-    "RUNPOD_SSH_TIMEOUT",
-    "RUNPOD_TRANSIENT_500",
     "network is unreachable",
     "Operation timed out",
 ])
@@ -101,7 +96,7 @@ def test_sandbox_runtime_error_with_connection_closed():
 def test_sandbox_runtime_error_with_balance_too_low():
     exc = SandboxRuntimeError(
         RuntimeCauseKind.backend_unavailable,
-        "RUNPOD_BALANCE_TOO_LOW: RunPod account has insufficient funds",
+        "billing error: balance_too_low — account has insufficient funds",
     )
     assert classify_exception(exc) == TransientClass.fatal
 
@@ -121,5 +116,5 @@ def test_sandbox_runtime_error_with_attribute_error():
 def test_fatal_takes_priority_over_transient_when_both_appear():
     # Contrived: a message containing both a fatal and a transient marker.
     # Fatal markers are checked first, so fatal wins.
-    exc = RuntimeError("RUNPOD_BALANCE_TOO_LOW: Connection closed during deduction check")
+    exc = RuntimeError("balance_too_low: Connection closed during deduction check")
     assert classify_exception(exc) == TransientClass.fatal

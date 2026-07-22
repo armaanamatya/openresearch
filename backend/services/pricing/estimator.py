@@ -479,13 +479,7 @@ async def estimate_paper_budget(
         confidence=0.5,
     )
     try:
-        from backend.config import get_settings as _gs
-        _settings = _gs()
-        _cloud_types: tuple[str, ...] = (
-            ("COMMUNITY", "SECURE")
-            if getattr(_settings, "runpod_cloud_type", "COMMUNITY") == "SECURE"
-            else ("COMMUNITY",)
-        )
+        _cloud_types: tuple[str, ...] = ("ONDEMAND",)
         gpu_plan = _resolve_gpu(
             default_req,
             dynamic_gpu_enabled=True,
@@ -498,9 +492,9 @@ async def estimate_paper_budget(
         sku_id = gpu_plan.short_name
         usd_per_hour = gpu_plan.sku_usd_per_hr
     except Exception as exc:  # noqa: BLE001
-        logger.warning("estimator: GPU resolution failed (%s), using rtx4090 fallback", exc)
-        sku_id = "rtx4090"
-        usd_per_hour = GPU_PRICING["rtx4090"].usd_per_hour
+        logger.warning("estimator: GPU resolution failed (%s), using gcp_l4_24 fallback", exc)
+        sku_id = "gcp_l4_24"
+        usd_per_hour = GPU_PRICING["gcp_l4_24"].usd_per_hour
 
     # Codex I6 fix: derive label from the resolved SKU's cloud_type instead
     # of hardcoded "COMMUNITY".

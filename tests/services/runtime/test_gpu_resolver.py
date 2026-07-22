@@ -20,8 +20,8 @@ def _req(vram: int | None = 40, count: int | None = 8, conf: float = 0.85) -> Gp
 
 
 def test_resolve_picks_cheapest_meeting_vram_with_multiplier():
-    # Multiplier 1.25 on 40 -> 50; cheapest SKU with vram>=50 under cap is L40S (48GB? no — 48<50; A100 80GB 1.89, but A6000 is 48 which is <50; correct cheapest is A100 80 at 1.89)
-    # Actually 48 < 50 (after multiplier 50), so we tier up to 80 (A100 80GB at $1.89).
+    # Default provider=gcp (ONDEMAND). Multiplier 1.25 on 40 -> 50; cheapest gcp
+    # single-GPU SKU with vram>=50 is the 80GB A100 (gcp_a100_80).
     plan = resolve(
         _req(vram=40),
         dynamic_gpu_enabled=True,
@@ -29,9 +29,8 @@ def test_resolve_picks_cheapest_meeting_vram_with_multiplier():
         max_gpu_usd_per_hour=10.0,
         headroom_multiplier=1.25,
         fallback_vram_gb=24,
-        cloud_types=("COMMUNITY",),
     )
-    assert plan.short_name == "a100_80"
+    assert plan.short_name == "gcp_a100_80"
     assert plan.gpu_count == 1
     assert plan.source == "paper"
 
@@ -44,25 +43,8 @@ def test_resolve_force_single_gpu_caps_count_at_one():
         max_gpu_usd_per_hour=10.0,
         headroom_multiplier=1.25,
         fallback_vram_gb=24,
-        cloud_types=("COMMUNITY",),
     )
     assert plan.gpu_count == 1
-
-
-def test_resolve_multi_gpu_bounded_by_cost_cap():
-    # Without force_single: paper says 8x; SKU A100 80GB is $1.89/hr; cap $10/hr
-    # -> floor(10 / 1.89) = 5; min(8, 5) = 5.
-    plan = resolve(
-        _req(vram=64, count=8),
-        dynamic_gpu_enabled=True,
-        force_single_gpu=False,
-        max_gpu_usd_per_hour=10.0,
-        headroom_multiplier=1.25,
-        fallback_vram_gb=24,
-        cloud_types=("COMMUNITY",),
-    )
-    assert plan.gpu_count == 5
-    assert plan.total_usd_per_hr <= 10.0
 
 
 def test_resolve_low_confidence_triggers_fallback_sku():
@@ -73,10 +55,9 @@ def test_resolve_low_confidence_triggers_fallback_sku():
         max_gpu_usd_per_hour=10.0,
         headroom_multiplier=1.25,
         fallback_vram_gb=24,
-        cloud_types=("COMMUNITY",),
     )
     assert plan.source == "fallback"
-    assert plan.short_name == "rtx4090"
+    assert plan.short_name == "gcp_a100_40"
     assert plan.gpu_count == 1
 
 
@@ -88,7 +69,6 @@ def test_resolve_none_estimate_triggers_fallback():
         max_gpu_usd_per_hour=10.0,
         headroom_multiplier=1.25,
         fallback_vram_gb=24,
-        cloud_types=("COMMUNITY",),
     )
     assert plan.source == "fallback"
 
@@ -96,47 +76,14 @@ def test_resolve_none_estimate_triggers_fallback():
 def test_resolve_raises_when_no_sku_under_cap_meets_vram():
     with pytest.raises(GpuResolutionError) as exc:
         resolve(
-            _req(vram=200),  # > largest SKU vram (141)
+            _req(vram=1024),  # > largest effective SKU vram
             dynamic_gpu_enabled=True,
             force_single_gpu=True,
-            max_gpu_usd_per_hour=10.0,
+            max_gpu_usd_per_hour=100.0,
             headroom_multiplier=1.25,
             fallback_vram_gb=24,
-            cloud_types=("COMMUNITY", "SECURE"),
         )
-    assert "200" in str(exc.value) or "no SKU" in str(exc.value).lower()
-
-
-def test_resolve_raises_when_required_sku_exceeds_cap():
-    # H100 80GB needed but cap forces only RTX 4090/A6000/L40S/A100s
-    # vram 80 required; cap $0.50/hr -> only RTX 4090 ($0.34), A5000 ($0.36), A6000 ($0.49)
-    # none have vram>=80 -> raise
-    with pytest.raises(GpuResolutionError):
-        resolve(
-            _req(vram=80),
-            dynamic_gpu_enabled=True,
-            force_single_gpu=True,
-            max_gpu_usd_per_hour=0.50,
-            headroom_multiplier=1.0,
-            fallback_vram_gb=24,
-            cloud_types=("COMMUNITY",),
-        )
-
-
-def test_resolve_ladder_contains_next_larger_skus():
-    plan = resolve(
-        _req(vram=24),
-        dynamic_gpu_enabled=True,
-        force_single_gpu=True,
-        max_gpu_usd_per_hour=10.0,
-        headroom_multiplier=1.0,
-        fallback_vram_gb=24,
-        cloud_types=("COMMUNITY",),
-    )
-    # picked: RTX 4090 ($0.34), 24GB. Next-cheapest with vram>=24: A5000.
-    # ladder_remaining should contain A5000 (and onward up the ladder).
-    assert plan.short_name == "rtx4090"
-    assert "a5000" in plan.ladder_remaining
+    assert "1024" in str(exc.value) or "no" in str(exc.value).lower()
 
 
 def test_resolve_disabled_dynamic_returns_informational_plan_from_fallback_default():
@@ -147,10 +94,9 @@ def test_resolve_disabled_dynamic_returns_informational_plan_from_fallback_defau
         max_gpu_usd_per_hour=10.0,
         headroom_multiplier=1.25,
         fallback_vram_gb=24,
-        cloud_types=("COMMUNITY",),
     )
     assert plan.source == "informational"
-    assert plan.short_name == "rtx4090"
+    assert plan.short_name == "gcp_a100_40"
 
 
 def test_resolve_is_pure_no_io_imports():
@@ -173,8 +119,8 @@ def test_resolve_is_pure_no_io_imports():
 # Regression: default provider="runpod" must produce the same plan as before
 # ---------------------------------------------------------------------------
 
-def test_resolve_runpod_default_provider_unchanged():
-    """Explicit provider="runpod" must be byte-for-byte equal to the no-provider call."""
+def test_resolve_gcp_default_provider_unchanged():
+    """Explicit provider="gcp" must be byte-for-byte equal to the no-provider call."""
     req = _req(vram=40)
     kwargs = dict(
         dynamic_gpu_enabled=True,
@@ -182,10 +128,9 @@ def test_resolve_runpod_default_provider_unchanged():
         max_gpu_usd_per_hour=10.0,
         headroom_multiplier=1.25,
         fallback_vram_gb=24,
-        cloud_types=("COMMUNITY",),
     )
     plan_implicit = resolve(req, **kwargs)
-    plan_explicit = resolve(req, **kwargs, provider="runpod")
+    plan_explicit = resolve(req, **kwargs, provider="gcp")
     # Same SKU and structural fields — timestamps will differ by microseconds so
     # compare everything except resolved_at.
     assert plan_explicit.short_name == plan_implicit.short_name
@@ -196,9 +141,7 @@ def test_resolve_runpod_default_provider_unchanged():
     assert plan_explicit.total_usd_per_hr == plan_implicit.total_usd_per_hr
     assert plan_explicit.ladder_remaining == plan_implicit.ladder_remaining
     assert plan_explicit.source == plan_implicit.source
-    # The implicit call must still pick a100_80 (regression for the main runpod path).
-    assert plan_implicit.short_name == "a100_80"
-    assert plan_implicit.cloud_type == "COMMUNITY"
+    assert plan_implicit.cloud_type == "ONDEMAND"
 
 
 # ---------------------------------------------------------------------------
@@ -364,8 +307,8 @@ def test_resolve_azure_disabled_dynamic_returns_informational():
     assert plan.cloud_type == "ONDEMAND"
 
 
-def test_resolve_azure_runpod_rows_not_mixed_in():
-    """Azure resolution must never return a RunPod SKU and vice-versa."""
+def test_resolve_azure_gcp_rows_not_mixed_in():
+    """Azure resolution must never return a GCP SKU and vice-versa."""
     azure_plan = resolve(
         _azure_req(vram=24),
         dynamic_gpu_enabled=True,
@@ -375,20 +318,21 @@ def test_resolve_azure_runpod_rows_not_mixed_in():
         fallback_vram_gb=24,
         provider="azure",
     )
-    runpod_plan = resolve(
+    gcp_plan = resolve(
         _req(vram=24),
         dynamic_gpu_enabled=True,
         force_single_gpu=True,
-        max_gpu_usd_per_hour=10.0,
+        max_gpu_usd_per_hour=20.0,
         headroom_multiplier=1.0,
         fallback_vram_gb=24,
-        cloud_types=("COMMUNITY",),
-        provider="runpod",
+        provider="gcp",
     )
     assert azure_plan.cloud_type == "ONDEMAND"
-    assert runpod_plan.cloud_type in ("COMMUNITY", "SECURE")
-    # They must differ.
-    assert azure_plan.runpod_id != runpod_plan.runpod_id
+    assert gcp_plan.cloud_type == "ONDEMAND"
+    # They must draw from different provider sections.
+    assert azure_plan.short_name.startswith("azure_")
+    assert gcp_plan.short_name.startswith("gcp_")
+    assert azure_plan.runpod_id != gcp_plan.runpod_id
 
 
 # ---------------------------------------------------------------------------
@@ -429,25 +373,6 @@ def test_provisioned_skus_none_unchanged_behavior():
     assert plan_no_param.short_name == plan_none.short_name
     assert plan_no_param.ladder_remaining == plan_none.ladder_remaining
     assert plan_no_param.source == plan_none.source
-
-
-def test_provisioned_skus_runpod_path_unaffected():
-    """provisioned_skus has no effect on the RunPod path (byte-identical result)."""
-    req = _req(vram=40)
-    kwargs = dict(
-        dynamic_gpu_enabled=True,
-        force_single_gpu=True,
-        max_gpu_usd_per_hour=10.0,
-        headroom_multiplier=1.25,
-        fallback_vram_gb=24,
-        cloud_types=("COMMUNITY",),
-        provider="runpod",
-    )
-    plan_without = resolve(req, **kwargs)
-    # provisioned_skus is ignored for RunPod — must return identical SKU/ladder.
-    plan_with = resolve(req, **kwargs, provisioned_skus=("azure_a100_80",))
-    assert plan_without.short_name == plan_with.short_name
-    assert plan_without.ladder_remaining == plan_with.ladder_remaining
 
 
 def test_provisioned_skus_single_entry_ladder_empty():

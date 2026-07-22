@@ -257,22 +257,22 @@ class Settings(BaseSettings):
     environment_build_max_attempts: int = 3
 
     # Default sandbox mode for dashboard requests that omit a sandbox. CLI
-    # defaults remain controlled separately by argparse flags. Local launchers
-    # set this to runpod for GPU-backed dev runs; deployments can set it to
-    # docker or local in env.
+    # defaults remain controlled separately by argparse flags. Deployments can
+    # set this to a cloud (azure/aws/gcp) in env for GPU-backed runs.
     # "gke" is a first-class alias for "gcp" (SandboxMode._missing_ maps it to the
     # gcp member); accepted here so OPENRESEARCH_DEFAULT_SANDBOX=gke boots and the
-    # start.sh gcp/gke preflight branch is reachable.
-    # Default is "gcp": GCP/Azure are the primary clouds, runpod is legacy
-    # (cloud-posture, 2026-07). Override with OPENRESEARCH_DEFAULT_SANDBOX.
-    default_sandbox: Literal["auto", "local", "docker", "runpod", "azure", "aws", "gcp", "gke"] = "gcp"
+    # start.sh gcp/gke preflight branch is reachable. Note: sandbox=gcp/gke is
+    # PARKED — it raises unless OPENRESEARCH_ALLOW_GKE=1 (see primitives.py).
+    # Default is "local": the single coherent default. Override with
+    # OPENRESEARCH_DEFAULT_SANDBOX.
+    default_sandbox: Literal["auto", "local", "docker", "azure", "aws", "gcp", "gke"] = "local"
 
     # Optional hard override for every run's sandbox mode, regardless of what
     # the client requested. Empty means "honor the request/default_sandbox".
-    # Deployments that must forbid RunPod should set OPENRESEARCH_FORCE_SANDBOX to
-    # "docker" or "local" explicitly; the code default must stay empty so a
-    # missing/commented .env line does not silently rewrite sandbox=runpod.
-    force_sandbox: Literal["", "auto", "local", "docker", "runpod", "azure", "aws", "gcp", "gke"] = ""
+    # Deployments that must pin a sandbox set OPENRESEARCH_FORCE_SANDBOX to
+    # "docker"/"local"/a cloud explicitly; the code default stays empty so a
+    # missing/commented .env line does not silently rewrite the sandbox.
+    force_sandbox: Literal["", "auto", "local", "docker", "azure", "aws", "gcp", "gke"] = ""
 
     # Force the LLM provider for every run regardless of what the client
     # requested — analogous to force_sandbox. The UI hard-codes provider=
@@ -286,43 +286,6 @@ class Settings(BaseSettings):
     # Empty = gate disabled (local dev). When set, POST /runs and
     # POST /runs/upload require a matching X-Demo-Secret header.
     demo_secret: str = ""
-
-    runpod_api_key: str = Field(
-        default="",
-        validation_alias=AliasChoices(
-            "RUNPOD_API_KEY",
-            "OPENRESEARCH_RUNPOD_API_KEY",
-            "REPROLAB_RUNPOD_API_KEY",
-        ),
-    )
-    runpod_api_base_url: str = "https://rest.runpod.io/v1"
-    # Reverted from -runtime- back to -devel-: runtime variant lacks CUDA dev
-    # headers, which breaks bitsandbytes / flash-attn / deepspeed at pip-install
-    # time (no precompiled wheel → tries to JIT, fails). SDAR run hit this:
-    # bitsandbytes silently failed under chained `pip install -q ... && python`,
-    # train.py then ModuleNotFoundError'd on transformers. The 14GB cold-start
-    # savings aren't worth the breakage. Override via OPENRESEARCH_RUNPOD_IMAGE
-    # if you have a paper that genuinely doesn't need dev headers.
-    runpod_image: str = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"
-    runpod_gpu_type: str = "NVIDIA GeForce RTX 4090"
-    runpod_gpu_count: int = 1
-    runpod_cloud_type: Literal["SECURE", "COMMUNITY"] = "SECURE"
-    runpod_container_disk_gb: int = 50
-    runpod_volume_gb: int = 20
-    runpod_volume_mount_path: str = "/workspace"
-    runpod_network_volume_id: str = ""
-    runpod_data_center_ids: str = ""
-    runpod_ssh_key_path: str = ""
-    runpod_ssh_public_key: str = ""
-    runpod_ssh_user: str = "root"
-    runpod_boot_timeout_seconds: int = 900
-    runpod_delete_on_destroy: bool = True
-    runpod_bootstrap_command: str = ""
-    # When set, the Runpod backend attaches to this existing pod ID
-    # instead of creating a fresh pod per run. The pod is NEVER deleted
-    # by the backend (the _owned_pod_ids allowlist enforces this even
-    # if delete_on_destroy=true). Useful for persistent shared workers.
-    runpod_pod_id: str = ""
 
     # --- AWS EKS GPU runtime foundation (--sandbox aws) ---
     # These defaults are intentionally inert.  Merely importing Settings or
@@ -734,11 +697,11 @@ class Settings(BaseSettings):
             "OPENRESEARCH_DYNAMIC_GPU_ENABLED",
             "OPENRESEARCH_DYNAMIC_GPU",
         ),
-        description="Wire paper hardware clues to RunPod SKU choice",
+        description="Wire paper hardware clues to cloud GPU SKU choice",
     )
-    force_single_gpu: bool = Field(default=True, description="Cap RunPod GPU count at 1 regardless of paper")
+    force_single_gpu: bool = Field(default=True, description="Cap cloud GPU count at 1 regardless of paper")
     max_gpu_usd_per_hour: float = Field(default=10.0, ge=0.0, description="Per-GPU $/hr cap; 0 disables")
-    max_run_gpu_usd: float = Field(default=10.0, ge=0.0, description="Total RunPod $ per run cap; 0 disables")
+    max_run_gpu_usd: float = Field(default=10.0, ge=0.0, description="Total GPU $ per run cap; 0 disables")
     gpu_count: int | None = Field(
         default=None,
         description=(
@@ -778,7 +741,7 @@ class Settings(BaseSettings):
 
     # Budget-awareness prompt for implement_baseline. Tells the baseline-writing
     # agent to scale train.py to fit remaining_s wall-clock.
-    #   "auto"   — inject only on cost-bearing sandboxes (runpod / brev)
+    #   "auto"   — inject only on cost-bearing sandboxes (azure / aws / gcp)
     #   "always" — inject regardless of sandbox
     #   "never"  — skip regardless (paper-faithful epoch counts)
     budget_awareness_mode: str = Field(

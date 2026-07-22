@@ -47,7 +47,6 @@ _DOCUMENTED_ENV_VARS = [
     "OPENRESEARCH_SUBRLM_OPENAI_TIMEOUT_S",
     "OPENRESEARCH_DISABLE_TORCHRUN_WRAP",
     "OPENROUTER_API_KEY",
-    "OPENRESEARCH_RUNPOD_CLOUD_TYPE",
 ]
 
 
@@ -63,18 +62,6 @@ def test_custom_tools_count_matches_doc():
     n = len(PRIMITIVE_REGISTRY)
     assert n == 19, f"PRIMITIVE_REGISTRY has {n} entries; update the doc + this test together"
     assert "19" in _CLAUDE, "CLAUDE.md should state the bound custom_tools count (19)"
-
-
-def test_runpod_cloud_type_default_matches_config():
-    from backend.config import Settings
-
-    default = Settings.model_fields["runpod_cloud_type"].default
-    assert default == "SECURE"
-    # some CLAUDE.md doc line (root or nested) must name SECURE as the default (SBX-2)
-    matches = re.findall(r"OPENRESEARCH_RUNPOD_CLOUD_TYPE.*", _CLAUDE)
-    assert any("SECURE" in m and "default" in m.lower() for m in matches), (
-        "no CLAUDE.md line names SECURE as the OPENRESEARCH_RUNPOD_CLOUD_TYPE default"
-    )
 
 
 def test_all_doc_citations_resolve():

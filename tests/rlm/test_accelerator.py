@@ -228,37 +228,6 @@ class TestResolveLocal:
 
 
 # ---------------------------------------------------------------------------
-# resolve_accelerator("runpod")
-# ---------------------------------------------------------------------------
-
-
-class TestResolveRunpod:
-    def test_raises_when_no_url_set_explicit(self, monkeypatch):
-        monkeypatch.delenv("OPENRESEARCH_ACCELERATOR_BASE_URL", raising=False)
-        with pytest.raises(AcceleratorError, match="auto-provisioning not yet implemented"):
-            resolve_accelerator("runpod")
-
-    def test_returns_endpoint_when_url_set_and_probe_ok(self, monkeypatch):
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_BASE_URL", "http://runpod-proxy:8001/v1")
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_MODEL", "my-model")
-        with patch(
-            "backend.agents.rlm.accelerator.probe_endpoint", side_effect=_probe_true
-        ):
-            ep = resolve_accelerator("runpod")
-        assert ep is not None
-        assert ep.kind == "runpod"
-
-    def test_raises_when_url_set_but_probe_fails_explicit(self, monkeypatch):
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_BASE_URL", "http://runpod-proxy:8001/v1")
-        monkeypatch.setenv("OPENRESEARCH_ACCELERATOR_MODEL", "my-model")
-        with patch(
-            "backend.agents.rlm.accelerator.probe_endpoint", side_effect=_probe_false
-        ):
-            with pytest.raises(AcceleratorError, match="probe failed"):
-                resolve_accelerator("runpod")
-
-
-# ---------------------------------------------------------------------------
 # resolve_accelerator("azure")
 # ---------------------------------------------------------------------------
 

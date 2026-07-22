@@ -54,7 +54,6 @@ function toSandboxMode(request: Request): DemoSandboxMode | undefined {
   return value === "auto" ||
     value === "docker" ||
     value === "local" ||
-    value === "runpod" ||
     value === "azure" ||
     value === "aws" ||
     value === "gcp"
@@ -135,7 +134,7 @@ function toGpuParallelism(request: Request): DemoGpuParallelism | undefined {
 
 function toAccelerator(request: Request): DemoAccelerator | undefined {
   const v = search(request).get("accelerator");
-  return v === "off" || v === "auto" || v === "local" || v === "runpod" || v === "azure" || v === "endpoint"
+  return v === "off" || v === "auto" || v === "local" || v === "azure" || v === "endpoint"
     ? v
     : undefined;
 }
@@ -236,7 +235,7 @@ export async function POST(request: Request) {
       provider: toProvider(request) ?? "anthropic",
       verificationProvider: toVerificationProvider(request),
       executionMode: toExecutionMode(request) ?? "max",
-      sandbox: toSandboxMode(request) ?? "runpod",
+      sandbox: toSandboxMode(request) ?? "local",
       gpuMode: toGpuMode(request) ?? "auto",
       model: toModelChoice(request) ?? "sonnet"
     };

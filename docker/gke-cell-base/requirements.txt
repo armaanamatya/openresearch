@@ -1,6 +1,6 @@
 # GKE cell base image — Python dependencies
 # NOTE: torch/transformers/vLLM are runtime-only (CUDA kernel build not needed).
-#       Matching the repo runpod image philosophy: cuda-runtime, not cuda-devel.
+#       cuda-runtime, not cuda-devel.
 #
 # Pin the google-cloud-storage SDK so the Workload Identity token exchange is
 # stable; updates must be tested against Application Default Credentials

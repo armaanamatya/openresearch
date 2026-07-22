@@ -10,12 +10,11 @@ import { BudgetPanel, type PaperBudgetEstimate, type RecipeMode } from "./budget
 // ---------------------------------------------------------------------------
 // Sandbox options — where the reproduction runs its code. "auto"/"local" exist
 // in the type but the lab path defaults docker on local hardware; they're not
-// meaningful picks for users, so the surfaced set is Local + the three GPU
-// clouds (RunPod, GCP/GKE, Azure/AKS, AWS/EKS).
+// meaningful picks for users, so the surfaced set is Local + the GPU
+// clouds (GCP/GKE, Azure/AKS, AWS/EKS).
 // ---------------------------------------------------------------------------
 const SANDBOX_OPTIONS: { value: DemoSandboxMode; label: string; hint: string }[] = [
   { value: "docker", label: "Local (Docker)", hint: "Runs on this machine, CPU-only. Fast to start, no cloud cost." },
-  { value: "runpod", label: "RunPod GPU",     hint: "A rented GPU pod on RunPod. Needs a funded RunPod account (≈$0.34/hr RTX 4090)." },
   { value: "gcp",    label: "GPU on GCP",     hint: "Scale-to-zero A100 pool on Google Kubernetes Engine — $0 when idle." },
   { value: "azure",  label: "GPU on Azure",   hint: "A100 pool on Azure Kubernetes Service. Needs AKS infrastructure." },
   { value: "aws",    label: "GPU on AWS",     hint: "GPU cells on Amazon EKS. Requires an operator-configured EKS/S3/IRSA pool and strict caps." },
@@ -755,7 +754,6 @@ export function UploadView({
               <option value="off">Off</option>
               <option value="auto">Auto</option>
               <option value="local">Local (vLLM)</option>
-              <option value="runpod">RunPod</option>
               <option value="azure">Azure</option>
               <option value="endpoint">Endpoint</option>
             </select>

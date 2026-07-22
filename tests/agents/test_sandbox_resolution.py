@@ -37,14 +37,11 @@ def test_auto_without_docker_resolves_local(monkeypatch):
     assert resolve_sandbox_mode("auto", pipeline_mode="rlm") is SandboxMode.local
 
 
-def test_auto_never_resolves_runpod(monkeypatch):
+def test_auto_never_resolves_paid_cloud(monkeypatch):
     monkeypatch.setattr(ex, "_docker_reachable", lambda: True)
     monkeypatch.setattr(ex, "_is_wsl", lambda: False)
-    assert resolve_sandbox_mode("auto", pipeline_mode="rlm") is not SandboxMode.runpod
-
-
-def test_explicit_runpod_unchanged():
-    assert resolve_sandbox_mode("runpod", pipeline_mode="rlm") is SandboxMode.runpod
+    resolved = resolve_sandbox_mode("auto", pipeline_mode="rlm")
+    assert resolved in (SandboxMode.docker, SandboxMode.local)
 
 
 def test_force_env_still_wins(monkeypatch):
