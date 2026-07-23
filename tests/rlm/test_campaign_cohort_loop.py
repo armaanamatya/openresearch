@@ -294,3 +294,47 @@ def test_off_dispatches_serial_loop_byte_identical(tmp_path, monkeypatch):
     assert picked == ["_loop"]
     # sanity: the real bound methods still exist (dispatch is the only change).
     assert callable(real_loop) and callable(real_cohort)
+
+
+def test_run_entrypoint_reaches_cohort_loop_under_authority(tmp_path):
+    """Phase B exit bar: a REAL campaign ``run()`` under a live authority
+    controller routes through the campaign's own entrypoint
+    (``_run_body`` -> ``_run_fresh`` -> ``_drive`` -> ``_cohort_loop``) -- NOT a
+    throwaway harness -- and drives freeze/promote from VERIFIED on-disk
+    receipts to a terminal the deterministic decision (never authority)
+    renders. This is the same code path a flags-ON campaign takes; the
+    both-flags+spec construction is covered by test_authority_controller_wiring."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    controller = SchedulerAuthorityController(run_dir, campaign_id="proj_1", spec=_spec())
+    assert controller.bootstrap() == 3
+    stages_obj = _CohortStages(run_dir, controller=controller)
+    campaign = ReproductionCampaign(
+        run_dir=run_dir, project_id="proj_1", paper_ref="2605.15155",
+        budget=_default_budget(), mode="unattended", driver="live_cli",
+        stages=stages_obj.as_stages(), scheduler_controller=controller,
+    )
+    (run_dir / "campaign").mkdir(parents=True, exist_ok=True)
+
+    # Full entrypoint -- not _cohort_loop directly.
+    terminal = campaign.run()
+    assert terminal["kind"] == "REPRODUCED"
+
+    # Authority applied THROUGH the campaign entrypoint: the underperformer was
+    # frozen (reversible), the others promoted.
+    assert controller.branches["ambiguity"].state == "frozen"
+    assert controller.branches["faithful"].state != "frozen"
+    assert controller.branches["discovery"].state != "frozen"
+
+    # A frozen branch is revivable at its checkpoint (the revive substrate).
+    revived = controller.revive("ambiguity")
+    assert revived.state == "queued"
+
+    # Every verified receipt persisted on disk carries the deterministic metric,
+    # NEVER the planted 0.01 grade -- the evidence-not-grade red line, end to end
+    # from the campaign entrypoint.
+    receipts = sorted((run_dir / "campaign" / "scheduler_receipts").glob("*.json"))
+    assert receipts, "an authority run must persist verified receipts"
+    for rp in receipts:
+        payload = json.loads(rp.read_text(encoding="utf-8"))
+        assert payload["metric"]["value"] != 0.01
