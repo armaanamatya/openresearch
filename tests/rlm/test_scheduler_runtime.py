@@ -265,6 +265,27 @@ def test_explicit_zero_gpu_width_freezes_a_single_ready_branch(tmp_path):
     assert runtime.branches["only"].state == "frozen"
 
 
+def test_adam_authority_spec_config_loads_with_four_branches_and_rungs():
+    config = Path(__file__).resolve().parents[2] / "configs" / "adam_authority_spec.json"
+    spec = load_authority_spec(config, paper_ref="1412.6980")
+    assert len(spec.branches) == 4
+    assert spec.ladder.paper_ref == "1412.6980"
+    assert spec.ladder.rung_steps == (100, 300, 1000)
+    assert spec.ladder.r_max_steps == 1000
+    assert spec.ladder.direction == "minimize"
+    # Exactly one faithful safety-bracket branch, two discovery, one ambiguity.
+    types = sorted(branch.branch_type for branch in spec.branches)
+    assert types == ["ambiguity", "discovery", "discovery", "faithful"]
+    assert [b.branch_id for b in spec.branches if b.is_safety_bracket] == ["adam-faithful-lr1e-3"]
+    # Distinct F10 fingerprints and distinct seeds.
+    assert len({b.hypothesis_fingerprint for b in spec.branches}) == 4
+    assert sorted(b.seed for b in spec.branches) == [1, 2, 3, 4]
+    # The safety bracket forces safety_gpu_usd_budget; discovery forces discovery budget.
+    assert spec.safety_gpu_usd_budget == 2.0
+    assert spec.discovery_gpu_usd_budget == 2.0
+    assert spec.a100_cap == 1
+
+
 def test_authority_spec_requires_existing_f10s_and_separate_reservations(tmp_path):
     raw = {
         "schema_version": 1,

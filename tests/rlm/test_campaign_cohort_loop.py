@@ -26,6 +26,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from backend.agents.rlm import cell_checkpoint
 from backend.agents.rlm.reproduction_campaign import (
     CampaignStages,
     CampaignState,
@@ -81,10 +82,20 @@ def _materialize_cell(cell_out: Path, *, metric_value: float) -> None:
         json.dumps({"eval.accuracy": metric_value, "final_report": {"score": 0.01}}),
         encoding="utf-8",
     )
-    components = cell_out / "checkpoint_components"
-    components.mkdir(exist_ok=True)
-    for name in ("model", "optimizer", "lr_scheduler", "rng", "data_order"):
-        (components / name).write_bytes(f"{name}-bytes".encode("utf-8"))
+    # Write the REAL trainer checkpoint layout: <cell_out>/checkpoints/step_<N>/
+    # with the 5 components, exactly what gpu_cell_runner points
+    # OPENRESEARCH_CELL_CHECKPOINT_DIR at and cell_checkpoint.latest_checkpoint_dir
+    # resolves. The step number is cosmetic (the receipt's to_step comes from
+    # the launch, not the checkpoint).
+    cell_checkpoint.write_checkpoint(
+        cell_out / "checkpoints",
+        100,
+        model=b"model-bytes",
+        optimizer=b"optimizer-bytes",
+        lr_scheduler=b"lr_scheduler-bytes",
+        rng=b"rng-bytes",
+        data_order=b"data_order-bytes",
+    )
     (cell_out / "dataset_manifest.json").write_text('{"dataset":"pinned"}', encoding="utf-8")
     (cell_out / "run_spec.json").write_text('{"image":"pinned@sha256"}', encoding="utf-8")
 

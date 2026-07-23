@@ -993,6 +993,7 @@ class ReproductionCampaign:
 
         controller = self.scheduler_controller
         assert controller is not None  # dispatch guard guarantees this
+        from backend.agents.rlm import cell_checkpoint
         from backend.agents.rlm.scheduler_receipt_producer import build_raw_receipt
         from backend.agents.rlm.scheduler_runtime import SchedulerRuntimeError
 
@@ -1066,6 +1067,23 @@ class ReproductionCampaign:
                 # the on-disk evidence and fails closed if it is absent.
                 cell_out = self._cohort_cell_output_dir(handle, payload)
 
+                # Resolve the REAL latest 5-component checkpoint the trainer
+                # wrote under ``<cell_out>/checkpoints/step_<N>/`` (the dir
+                # ``gpu_cell_runner`` points ``OPENRESEARCH_CELL_CHECKPOINT_DIR``
+                # at). If none exists, this branch produced no resumable
+                # checkpoint, so it CANNOT yield a verified receipt -- fail
+                # CLOSED rather than fabricate one from a stub layout. The
+                # message deliberately omits "incomplete" so the decide_rung
+                # handler below does not swallow it as an under-cap tail.
+                checkpoint_components_dir = cell_checkpoint.latest_checkpoint_dir(
+                    cell_out / "checkpoints"
+                )
+                if checkpoint_components_dir is None:
+                    raise SchedulerRuntimeError(
+                        "cohort branch produced no resumable checkpoint under "
+                        f"{cell_out / 'checkpoints'} -- refusing to fabricate a receipt"
+                    )
+
                 # termination_cause is 'training_diverged' ONLY when the
                 # deterministic failure classifier says so; every other cause
                 # (including a reversible underperformance freeze) is None.
@@ -1078,7 +1096,7 @@ class ReproductionCampaign:
                 raw = build_raw_receipt(
                     run_dir=self.run_dir,
                     cell_output_dir=cell_out,
-                    checkpoint_components_dir=cell_out / "checkpoint_components",
+                    checkpoint_components_dir=checkpoint_components_dir,
                     ladder=ladder,
                     campaign_id=self.project_id,
                     branch_id=launch.branch_id,
