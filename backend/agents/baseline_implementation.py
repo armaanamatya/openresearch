@@ -73,6 +73,7 @@ _HARNESS_CODE_HELPERS: tuple[str, ...] = (
     "webshop_env.py",
     "provenance.py",  # D2: emit_provenance / emit_figure_sidecar — legibility for the grader
     "eval_provenance.py",  # eval-metric provenance producer (record_eval) — verifiable held-out metric sidecar
+    "cell_checkpoint.py",  # 5-field checkpoint contract writer (write_checkpoint) — receipt-ready checkpoints for authority
     "convergence_evidence.py",  # Module A: structured convergence/sweep evidence (rubric_guard consults it)
     "fair_comparison.py",  # Module B: identical-init snapshot + verifiable init fingerprint
     "verl_metrics_adapter.py",  # execute-mode seam: verl-shaped val logs/summary → canonical metrics.json
