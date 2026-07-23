@@ -841,7 +841,7 @@ class ReproductionCampaign:
         state.state = "attempt_loop"
         state.updated_at = time.time()
         self.ledger.write_state(state)
-        return self._loop(state)
+        return self._drive(state)
 
     def _finish_synthetic_terminal(self, state: CampaignState, *, kind: str, rule: str, stop_reason: str) -> dict:
         # No stages.decide() ran (INIT error / UNDERSTAND block / PLAN refusal);
@@ -878,7 +878,7 @@ class ReproductionCampaign:
             state.state = "attempt_loop"
             state.updated_at = time.time()
             self.ledger.write_state(state)
-            return self._loop(state)
+            return self._drive(state)
 
         if state.in_flight is not None:
             return self._resume_in_flight(state)
@@ -891,16 +891,16 @@ class ReproductionCampaign:
 
         if "assessed" in latest and "decided" not in latest:
             outcome = self._decide_and_continue(state, rows)
-            return outcome if outcome is not None else self._loop(state)
+            return outcome if outcome is not None else self._drive(state)
 
         if "decided" in latest:
             decision = latest["decided"].get("decision") or {}
             if decision.get("kind") == "CONTINUE":
                 self._apply_continue(state, decision)
-                return self._loop(state)
+                return self._drive(state)
             return self._finish_from_decision(state, decision)
 
-        return self._loop(state)
+        return self._drive(state)
 
     def _resume_in_flight(self, state: CampaignState) -> dict:
         in_flight = state.in_flight
@@ -922,7 +922,7 @@ class ReproductionCampaign:
                 in_flight.attempt_n, self.stages.assess(raw_result, planned)
             )
             outcome = self._record_assessment_and_continue(state, in_flight.attempt_n, assessment)
-            return outcome if outcome is not None else self._loop(state)
+            return outcome if outcome is not None else self._drive(state)
 
         # Dead. The attempt may have COMPLETED while the campaign process was
         # down (its own "assessed" row already landed before the crash) or it
@@ -943,11 +943,11 @@ class ReproductionCampaign:
             # judging a quarantined dir and double-counting spend.
             assessment = dict(latest["assessed"].get("assessment") or {})
             outcome = self._apply_assessment_tail(state, assessment)
-            return outcome if outcome is not None else self._loop(state)
+            return outcome if outcome is not None else self._drive(state)
 
         assessment = self.stages.assess_from_disk(in_flight)
         outcome = self._record_assessment_and_continue(state, in_flight.attempt_n, assessment)
-        return outcome if outcome is not None else self._loop(state)
+        return outcome if outcome is not None else self._drive(state)
 
     def _resume_orphaned_intent(self, state: CampaignState, launched_row: dict) -> dict:
         # Crash between write-ahead 2a (intent row) and 2b (in_flight write):
@@ -961,7 +961,215 @@ class ReproductionCampaign:
             launched_at=float(launched_row.get("launched_at", 0.0)),
         )
         self.stages.quarantine(synthetic)
-        return self._loop(state, allow_supersede=True)
+        return self._drive(state, allow_supersede=True)
+
+    def _drive(self, state: CampaignState, *, allow_supersede: bool = False) -> dict:
+        # Single dispatch seam between the serial attempt loop and the
+        # receipt-gated cohort loop. OFF (no controller) is byte-identical to
+        # the historical serial ``_loop`` -- this is the whole of the B3.2
+        # flag-guard: an authority controller is constructed by
+        # ``build_campaign`` ONLY when both scheduler flags AND an explicit
+        # authority spec are present, so ``scheduler_controller is None`` on
+        # every default path.
+        if self.scheduler_controller is not None:
+            return self._cohort_loop(state, allow_supersede=allow_supersede)
+        return self._loop(state, allow_supersede=allow_supersede)
+
+    def _cohort_loop(self, state: CampaignState, *, allow_supersede: bool = False) -> dict:
+        # Receipt-gated authority cohort loop (Phase B3.2). Drives the already
+        # bootstrapped ``SchedulerAuthorityController`` through
+        # ``claim -> run -> receipt -> decide_rung -> apply``, then lets the
+        # campaign's OWN deterministic ``stages.decide`` render a terminal
+        # verdict that ALWAYS wins over the authority reordering. The
+        # controller only reorders the CONTINUE cohort (promote/freeze/kill of
+        # same-rung branches); it never flips or suppresses a terminal.
+        #
+        # ``allow_supersede`` is accepted for dispatch-signature parity with
+        # ``_loop`` (the orphaned-intent relaunch seam); the cohort loop plans
+        # per-branch launches from the controller's queue rather than the
+        # serial write-ahead ledger, so there is no single-attempt double-launch
+        # to supersede here.
+        del allow_supersede
+
+        controller = self.scheduler_controller
+        assert controller is not None  # dispatch guard guarantees this
+        from backend.agents.rlm.scheduler_receipt_producer import build_raw_receipt
+        from backend.agents.rlm.scheduler_runtime import SchedulerRuntimeError
+
+        ladder = controller.spec.ladder
+        # Monotonic per-branch attempt counter: each branch launch gets its own
+        # ``attempt_n`` for its write-ahead + assessed ledger rows AND its
+        # receipt, so a 2-wide wave never collides two rows on one key.
+        attempt_counter = state.next_attempt_n
+        # Per-branch cell id counter (audit-stable, per launch).
+        cell_counter = 0
+        # Deterministic provider GPU-$ per branch, ACCUMULATED across waves:
+        # ``decide_rung`` requires a cost for EVERY branch at the rung, and an
+        # under-cap rung is filled by several claim waves (a100_cap<cohort), so
+        # a per-wave dict would drop the earlier waves' costs. Never sourced
+        # from cost_ledger.jsonl -- only each branch's own deterministic assess.
+        provider_gpu: dict[str, float] = {}
+
+        while True:
+            launches = controller.claim_launches(max_parallel=controller.spec.a100_cap)
+
+            # Termination: nothing left to claim AND no branch still in an
+            # active state ⇒ fall through to a normal terminal decision.
+            if not launches:
+                active = any(
+                    branch.state in {"queued", "launching", "awaiting_receipt"}
+                    for branch in controller.branches.values()
+                )
+                if not active:
+                    break
+
+            # The rung of the wave we are about to run (all claimed branches at
+            # one wave share a rung by the claim policy, but read it per-branch
+            # to be safe and decide the lowest claimed rung).
+            wave_rungs: set[int] = set()
+
+            for launch in launches:
+                cell_counter += 1
+                attempt_n = attempt_counter
+                attempt_counter += 1
+                wave_rungs.add(launch.rung)
+
+                # Build a production-shaped launch payload keyed to this branch.
+                # ``plan_attempt`` owns the campaign directives; we reuse it for
+                # the CONTINUE-cohort attempt, then annotate the branch identity
+                # so the runner writes into this branch's own run dir.
+                rows = self.ledger.read_rows()
+                planned = self.stages.plan_attempt(state, rows)
+                payload = self._cohort_launch_payload(planned, launch)
+
+                handle = self.stages.launch(payload)
+                raw_result = self.stages.await_result(dict(handle))
+                assessment = self.stages.assess(dict(raw_result), payload)
+
+                # Provider GPU-$ comes ONLY from the deterministic assessment
+                # (never cost_ledger.jsonl). Missing/malformed ⇒ conservative 0.
+                cost = assessment.get("cost") or {}
+                gpu_usd = cost.get("gpu_usd", 0.0)
+                try:
+                    gpu_usd = float(gpu_usd)
+                    if gpu_usd < 0.0 or gpu_usd != gpu_usd:  # neg / NaN
+                        gpu_usd = 0.0
+                except (TypeError, ValueError):
+                    gpu_usd = 0.0
+                provider_gpu[launch.branch_id] = gpu_usd
+
+                # The cell output dir + its checkpoint_components/ are produced
+                # by the branch attempt's runner under its run dir. Ordinary
+                # serial cells do not yet emit a controller-attested paper-step
+                # checkpoint receipt (rlm CLAUDE.md), so the run_dir/cell layout
+                # is the production-shaped source; the receipt producer verifies
+                # the on-disk evidence and fails closed if it is absent.
+                cell_out = self._cohort_cell_output_dir(handle, payload)
+
+                # termination_cause is 'training_diverged' ONLY when the
+                # deterministic failure classifier says so; every other cause
+                # (including a reversible underperformance freeze) is None.
+                termination_cause = (
+                    "training_diverged"
+                    if assessment.get("failure_class") == "training_diverged"
+                    else None
+                )
+
+                raw = build_raw_receipt(
+                    run_dir=self.run_dir,
+                    cell_output_dir=cell_out,
+                    checkpoint_components_dir=cell_out / "checkpoint_components",
+                    ladder=ladder,
+                    campaign_id=self.project_id,
+                    branch_id=launch.branch_id,
+                    parent_branch_id=launch.parent_branch_id,
+                    attempt_n=attempt_n,
+                    cell_id=f"{launch.branch_id}-cell-{cell_counter}",
+                    from_step=launch.from_step,
+                    to_step=launch.to_step,
+                    seed=launch.seed,
+                    termination_cause=termination_cause,
+                    dataset_manifest_path=self._cohort_pinned_dataset_manifest(cell_out),
+                    run_spec_path=self._cohort_pinned_run_spec(cell_out),
+                )
+                # ``attest`` MUST be the campaign's real fail-closed ledger
+                # appender -- never a worker-authored write. Receipt rows carry
+                # no "status" key, so ``latest_by_status`` ignores them and the
+                # attempt-status ledger stays coherent.
+                controller.record_cell_receipt(raw, attest=self.ledger.append_row)
+
+            # When every branch at the current rung has a receipt, apply the
+            # two-meter authority policy. A branch still lacking a receipt (the
+            # under-cap tail of a wave) makes decide_rung raise "incomplete":
+            # that is FAIL-CLOSED and correct -- loop back to claim_launches to
+            # run the tail; never force a decision or synthesize a receipt.
+            for rung in sorted(wave_rungs):
+                try:
+                    controller.decide_rung(
+                        rung=rung, provider_gpu_usd_by_branch=provider_gpu,
+                    )
+                except SchedulerRuntimeError as exc:
+                    if "incomplete" in str(exc):
+                        continue
+                    raise
+
+            # Terminal deterministic decision ALWAYS wins. Run the campaign's
+            # own decide against the durable ledger; a terminal verdict returns
+            # immediately (authority can never flip or suppress it). On CONTINUE
+            # we simply proceed to the next claim_launches wave -- authority has
+            # already reordered the cohort (promotions re-queued at rung+1).
+            #
+            # We deliberately do NOT route CONTINUE through
+            # ``_decide_and_continue`` here: that bumps ``next_attempt_n``, may
+            # PAUSE in checkpoint mode, and returns a PAUSED dict -- all of which
+            # would break the cohort drive. The cohort's forward motion is the
+            # controller's re-queue, not a serial attempt increment.
+            rows = self.ledger.read_rows()
+            decision = self.stages.decide(state, rows)
+            if decision.get("kind") != "CONTINUE":
+                return self._finish_from_decision(state, decision)
+
+        # No active branches remain: render the terminal decision.
+        rows = self.ledger.read_rows()
+        decision = self.stages.decide(state, rows)
+        return self._finish_from_decision(state, decision)
+
+    def _cohort_launch_payload(self, planned: Mapping[str, Any], launch: Any) -> dict:
+        # Production-shaped per-branch launch payload. Starts from the campaign
+        # directives ``plan_attempt`` produced (carrying the CONTINUE-cohort
+        # envelope + run spec) and annotates the branch identity so the runner
+        # keys artifacts to this branch's seed/rung/run dir. Kept a plain dict
+        # so an injected stub ``launch`` can read the branch coordinates
+        # directly without reconstructing directives.
+        payload = dict(planned)
+        payload["branch_id"] = launch.branch_id
+        payload["branch_type"] = launch.branch_type
+        payload["seed"] = launch.seed
+        payload["rung"] = launch.rung
+        payload["from_step"] = launch.from_step
+        payload["to_step"] = launch.to_step
+        payload["parent_branch_id"] = launch.parent_branch_id
+        payload["resume_checkpoint_path"] = launch.resume_checkpoint_path
+        return payload
+
+    def _cohort_cell_output_dir(self, handle: Mapping[str, Any], payload: Mapping[str, Any]) -> Path:
+        # The branch attempt's cell output dir (where the runner wrote
+        # metrics.json + checkpoint_components/). Production shape mirrors the
+        # ordinary attempt layout: ``<branch_run_dir>/code``. An injected stub
+        # runner materializes the same layout under the handle's run dir.
+        run_dir = handle.get("run_dir") or payload.get("run_dir") or str(self.run_dir)
+        return Path(run_dir) / "code"
+
+    @staticmethod
+    def _cohort_pinned_dataset_manifest(cell_out: Path) -> Path:
+        # Pinned dataset manifest for the receipt fingerprints. Deterministic,
+        # per-cell path; the runner writes it beside the cell metrics.
+        return Path(cell_out) / "dataset_manifest.json"
+
+    @staticmethod
+    def _cohort_pinned_run_spec(cell_out: Path) -> Path:
+        # Pinned run spec for the receipt fingerprints (image/env pin).
+        return Path(cell_out) / "run_spec.json"
 
     def _loop(self, state: CampaignState, *, allow_supersede: bool = False) -> dict:
         # PLAN -> WRITE-AHEAD -> LAUNCH -> AWAIT -> ASSESS, repeated per attempt.
