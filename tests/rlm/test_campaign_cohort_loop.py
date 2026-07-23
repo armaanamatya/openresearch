@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import Any
 
 from backend.agents.rlm import cell_checkpoint
+from backend.agents.rlm.campaign_directives import AttemptDirectives
+from backend.agents.rlm.campaign_policy import AttemptEnvelope
 from backend.agents.rlm.reproduction_campaign import (
     CampaignStages,
     CampaignState,
@@ -50,6 +52,39 @@ def _default_budget() -> dict:
 
 def _zero_cost() -> dict:
     return {"llm_usd": 0.0, "gpu_usd": 0.0, "gpu_hours": 0.0, "wall_s": 0.0}
+
+
+def _directives(project_id: str, paper_ref: str, attempt_n: int) -> AttemptDirectives:
+    # A production-shaped AttemptDirectives -- the object the REAL driver
+    # attribute-accesses. Required fields filled minimally; the rest None/
+    # defaults. This is the regression fixture: the cohort loop must hand the
+    # driver this OBJECT, never a dict (the stub read a dict, so the live
+    # attribute-access crash was never exercised).
+    return AttemptDirectives(
+        attempt_n=attempt_n,
+        project_id=project_id,
+        paper_ref=paper_ref,
+        enforcement={"cli_args": [], "env": {}},
+        target_floor=None,
+        understanding_ref=None,
+        unresolved_warnings=(),
+        leaf_repair_plan=None,
+        improvement_notes=(),
+        failure_capsules_ref=None,
+        prior_evidence_ref=None,
+        memory_hints=(),
+        injected_lesson_signatures=(),
+        scope_spec=None,
+        scope_rung=0,
+        seed_lineage="fresh",
+        seed_pointer=None,
+        envelope=AttemptEnvelope(
+            llm_usd=1.0, gpu_usd=1.0, gpu_hours=0.1, wall_s=600.0, vm_ceiling_s=2400.0
+        ),
+        extra_guidance="",
+        run_spec_path=None,
+        fingerprint=f"dsha-{attempt_n}",
+    )
 
 
 def _spec() -> SchedulerAuthoritySpec:
@@ -110,6 +145,9 @@ class _CohortStages:
         self.controller = controller
         self.decide_calls = 0
         self.receipt_values: dict[str, list[float]] = {}
+        # Every (branch_id, run_dir) the launch stage materialized -- used to
+        # assert branches never collide on one run dir.
+        self.launched_run_dirs: list[tuple[str, str]] = []
 
     # -- injected callables (bound methods) --------------------------------- #
     def validate_init(self) -> list:
@@ -120,6 +158,9 @@ class _CohortStages:
 
     def plan_attempt(self, state: CampaignState, rows: list) -> dict:
         n = state.next_attempt_n
+        # launch_payload is a REAL AttemptDirectives (the production shape),
+        # NOT a dict -- so the per-branch derivation + the driver hand-off are
+        # exercised the way the live path runs them.
         return {
             "attempt_n": n,
             "directives_sha256": f"dsha-{n}",
@@ -128,17 +169,27 @@ class _CohortStages:
             "run_dir": str(self.run_dir / f"attempt_{n}"),
             "refusal": None,
             "downgrade_to_checkpoint": False,
-            "launch_payload": {"attempt_n": n},
+            "launch_payload": _directives(state.project_id, state.paper_ref, n),
         }
 
-    def launch(self, payload: dict) -> dict:
-        # A per-branch run dir keyed to the branch id keeps two concurrent
-        # cohort launches from clobbering each other's cell output.
-        branch_id = payload["branch_id"]
-        rung = payload["rung"]
-        branch_run_dir = self.run_dir / f"branch_{branch_id}_rung_{rung}"
+    def launch(self, directives: Any) -> dict:
+        # REGRESSION GUARD: the cohort loop must hand the driver the per-branch
+        # AttemptDirectives OBJECT, never the outer dict payload. Passing a dict
+        # is exactly the live crash this test locks out.
+        assert not isinstance(directives, dict) and hasattr(directives, "paper_ref"), (
+            "cohort loop must pass an AttemptDirectives object to launch, not a dict"
+        )
+        # The branch id is recovered from the DISTINCT per-branch project_id the
+        # cohort derived (``<project_id>__<sanitized_branch_id>``; the spec
+        # branch ids are already [A-Za-z]+ so sanitize is identity). Materialize
+        # each branch's cell under its own project_id-keyed run dir so
+        # concurrent launches never collide.
+        branch_id = str(directives.project_id).rsplit("__", 1)[-1]
+        assert branch_id in _BRANCH_METRIC, f"unexpected branch id {branch_id!r}"
+        branch_run_dir = self.run_dir / f"branch_{directives.project_id}"
         cell_out = branch_run_dir / "code"
         _materialize_cell(cell_out, metric_value=_BRANCH_METRIC[branch_id])
+        self.launched_run_dirs.append((branch_id, str(branch_run_dir)))
         return {"pid": None, "run_dir": str(branch_run_dir), "lease_ref": None, "branch_id": branch_id}
 
     def await_result(self, handle: dict) -> dict:
@@ -273,6 +324,22 @@ def test_cohort_loop_drives_claim_receipt_decide_apply(tmp_path):
     assert seen["ambiguity"] == 0.10
     assert seen["faithful"] == 0.90
     assert seen["discovery"] == 0.50
+
+    # Branches never collided on one run dir: each distinct branch launched into
+    # a DISTINCT run dir (the per-branch ``__<branch>`` project_id derivation).
+    by_branch: dict[str, set[str]] = {}
+    for bid, rd in stages_obj.launched_run_dirs:
+        by_branch.setdefault(bid, set()).add(rd)
+    for bid in ("faithful", "ambiguity", "discovery"):
+        assert by_branch.get(bid), f"branch {bid} never launched"
+    all_dirs = [rd for _bid, rd in stages_obj.launched_run_dirs]
+    # No two DIFFERENT branches share a run dir (a branch may relaunch at a
+    # higher rung into its own dir, so compare across branches only).
+    for a_bid, a_rd in stages_obj.launched_run_dirs:
+        for b_bid, b_rd in stages_obj.launched_run_dirs:
+            if a_bid != b_bid:
+                assert a_rd != b_rd, f"branches {a_bid}/{b_bid} collided on {a_rd}"
+    assert len(all_dirs) >= 3
 
 
 def test_off_dispatches_serial_loop_byte_identical(tmp_path, monkeypatch):

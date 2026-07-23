@@ -20,8 +20,10 @@ constructed and every code path below is byte-identical to before.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
+import re
 import signal
 import socket
 import tempfile
@@ -1043,7 +1045,14 @@ class ReproductionCampaign:
                 planned = self.stages.plan_attempt(state, rows)
                 payload = self._cohort_launch_payload(planned, launch)
 
-                handle = self.stages.launch(payload)
+                # The launch stage forwards to the REAL driver, which
+                # attribute-accesses an AttemptDirectives object (paper_ref,
+                # project_id, enforcement, ...) -- NOT the outer dict payload.
+                # ``_cohort_launch_payload`` builds a per-branch directives
+                # object under ``payload["launch_payload"]`` with a DISTINCT
+                # project_id so the driver keys the handle to this branch's own
+                # run dir. (The serial ``_loop`` does the same at ~1277.)
+                handle = self.stages.launch(payload["launch_payload"])
                 raw_result = self.stages.await_result(dict(handle))
                 assessment = self.stages.assess(dict(raw_result), payload)
 
@@ -1152,14 +1161,58 @@ class ReproductionCampaign:
         decision = self.stages.decide(state, rows)
         return self._finish_from_decision(state, decision)
 
+    @staticmethod
+    def _sanitize_branch_id(branch_id: Any) -> str:
+        # Branch ids carry hyphens/dots (e.g. ``faithful-cell-3``); a project
+        # id is used as a run-dir path component and threaded through the CLI,
+        # so collapse anything outside [A-Za-z0-9_] to '_'.
+        return re.sub(r"[^A-Za-z0-9_]", "_", str(branch_id))
+
     def _cohort_launch_payload(self, planned: Mapping[str, Any], launch: Any) -> dict:
         # Production-shaped per-branch launch payload. Starts from the campaign
         # directives ``plan_attempt`` produced (carrying the CONTINUE-cohort
-        # envelope + run spec) and annotates the branch identity so the runner
-        # keys artifacts to this branch's seed/rung/run dir. Kept a plain dict
-        # so an injected stub ``launch`` can read the branch coordinates
-        # directly without reconstructing directives.
+        # envelope + run spec) and derives a DISTINCT per-branch directives
+        # object under ``launch_payload`` -- the object the REAL driver
+        # attribute-accesses (paper_ref/project_id/enforcement/...). A distinct
+        # ``project_id`` per branch keeps concurrent cohort launches from
+        # colliding: ``LiveCliDriver.launch`` computes ``run_dir =
+        # runs_root / directives.project_id``, so each branch lands in its own
+        # run dir automatically. The outer dict keeps the branch coordinates a
+        # stub launch + the receipt/cell logic read directly.
+        base_lp = planned["launch_payload"]
+        branch_project_id = f"{planned['project_id']}__{self._sanitize_branch_id(launch.branch_id)}"
+
+        if dataclasses.is_dataclass(base_lp) and not isinstance(base_lp, type):
+            # Production: base_lp is a frozen AttemptDirectives. Only carry the
+            # branch_type over when it is a valid BranchType; keep the safety
+            # marker only for a faithful branch so __post_init__ (which raises
+            # on is_safety_bracket && branch_type != "faithful") never trips.
+            bt = (
+                launch.branch_type
+                if launch.branch_type in {"faithful", "ambiguity", "discovery"}
+                else getattr(base_lp, "branch_type", "faithful")
+            )
+            branch_lp: Any = dataclasses.replace(
+                base_lp,
+                project_id=branch_project_id,
+                branch_type=bt,
+                is_safety_bracket=bool(getattr(base_lp, "is_safety_bracket", False)) and bt == "faithful",
+            )
+        else:
+            # Stub/mapping launch_payload (unit tests): stay a plain dict so the
+            # injected stub can read the branch coordinates directly.
+            branch_lp = {
+                **dict(base_lp),
+                "project_id": branch_project_id,
+                "branch_id": launch.branch_id,
+                "rung": launch.rung,
+                "seed": launch.seed,
+            }
+
         payload = dict(planned)
+        payload["launch_payload"] = branch_lp
+        payload["project_id"] = branch_project_id
+        payload["run_dir"] = str(self.run_dir.parent / branch_project_id)
         payload["branch_id"] = launch.branch_id
         payload["branch_type"] = launch.branch_type
         payload["seed"] = launch.seed
