@@ -178,12 +178,26 @@ trap 'echo "[start.sh] forwarding shutdown" >&2; \
 
 # 3f. Watchdog: exit (tearing down the survivor) as soon as EITHER child
 # dies, so a crashed backend doesn't leave a zombie frontend serving 502s (or
-# vice versa). The `|| EXIT_CODE=$?` is load-bearing: this file runs under
-# `set -euo pipefail`, so a bare `wait -n`/`wait` returning nonzero would kill
-# this script immediately, skipping the teardown of the surviving process
-# below (matches docker/entrypoint.sh's watchdog).
+# vice versa).
+#
+# PORTABILITY (BUG: macOS): `wait -n` is bash 4.3+, but the default macOS
+# /bin/bash is 3.2 — under `set -euo pipefail` `wait -n` fails INSTANTLY with
+# "wait: -n: invalid option", which the `|| EXIT_CODE=$?` catches as a crash and
+# tears both servers down before they ever serve a request. So block by POLLING
+# both PIDs with `kill -0` (presence check, no signal) until one exits — the same
+# bash-3.2-safe pattern scripts/dev.sh already uses. Then reap the dead child for
+# its real exit code. `kill -0`/`wait` in a loop-condition or `&&/||` chain don't
+# trip `set -e`, so the teardown below always runs.
+EXIT_CODE=0
 if [[ -n "${BACKEND_PID}" && -n "${FRONTEND_PID}" ]]; then
-    wait -n "${BACKEND_PID}" "${FRONTEND_PID}" && EXIT_CODE=0 || EXIT_CODE=$?
+    while kill -0 "${BACKEND_PID}" 2>/dev/null && kill -0 "${FRONTEND_PID}" 2>/dev/null; do
+        sleep 1
+    done
+    if ! kill -0 "${BACKEND_PID}" 2>/dev/null; then
+        wait "${BACKEND_PID}" && EXIT_CODE=0 || EXIT_CODE=$?
+    else
+        wait "${FRONTEND_PID}" && EXIT_CODE=0 || EXIT_CODE=$?
+    fi
     echo "[start.sh] one of (backend=${BACKEND_PID}, frontend=${FRONTEND_PID}) exited with ${EXIT_CODE}; tearing down"
     kill -TERM "${BACKEND_PID}" "${FRONTEND_PID}" 2>/dev/null || true
     wait "${BACKEND_PID}" "${FRONTEND_PID}" 2>/dev/null || true
