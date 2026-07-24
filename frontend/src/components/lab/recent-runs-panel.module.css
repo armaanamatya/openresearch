@@ -205,13 +205,18 @@
 }
 
 .replayLink {
+  /* Shared by the <Link> "Replay" chip and the <button> "Resume" chip below —
+     the button reset (background/font/cursor) is a no-op on the <a> usage. */
   font-size: var(--fs-xs, 11px);
+  font-family: inherit;
   font-weight: 500;
   color: var(--muted);
   text-decoration: none;
   padding: 2px 7px;
   border: 1px solid var(--line);
   border-radius: var(--r-xs, 3px);
+  background: transparent;
+  cursor: pointer;
   transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
   white-space: nowrap;
 }

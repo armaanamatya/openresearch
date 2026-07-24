@@ -235,6 +235,13 @@ class StartRunRequest(BaseModel):
     run_spec: str | None = None
 
 
+# Single source of truth for "what executionMode means when unspecified" —
+# read off the StartRunRequest field default so a future default-flip (like
+# the 2026-0x efficient→max change) can't silently re-drift the fallbacks
+# below out of sync with the field they're supposed to mirror.
+_DEFAULT_EXECUTION_MODE: str = StartRunRequest.model_fields["executionMode"].default
+
+
 class TelemetryRecordPublic(BaseModel):
     agent_id: str | None = None
     model: str | None = None
@@ -761,14 +768,23 @@ class FileLiveRunService:
     ) -> LiveRunState | None:
         """Re-spawn an orchestrator subprocess for an existing project_id.
 
-        The orchestrator's ``run(resume=True)`` is the default and auto-
-        resumes from the persisted pipeline_state.json checkpoint, so the
-        subprocess picks up at the last completed stage rather than
-        restarting from scratch. The original run config is read back from
-        the existing demo_status.json; ``request_overrides`` lets callers
-        bump knobs like ``executionMode=max`` to push past whatever caused
-        the original failure (e.g. a wall-clock timeout on baseline-
-        implementation).
+        For RDR-mode runs this is a real checkpoint resume: the orchestrator
+        reads back the persisted ``pipeline_state.json`` and picks up at the
+        last completed stage. For the default RLM mode there is NO such
+        checkpoint — `rlms`'s ``RLM.completion()`` takes no message history
+        and always starts a fresh root loop — so this restarts the RLM
+        reasoning loop from iteration 0 under the SAME ``project_id``. It is
+        still a genuine "warm start" in three narrower ways: (1) prior
+        ``code/`` is preserved (not archived) so `implement_baseline` can
+        cache-hit instead of re-running the ~5-min sub-agent, per
+        ``attempt_isolation.maybe_archive_prior_attempt``'s warm-retry path;
+        (2) cell-level resume (``OPENRESEARCH_CELL_RESUME_AUTO``/
+        ``OPENRESEARCH_RESUME_CELLS``) can skip already-completed GPU cells;
+        (3) prior-attempt lessons/recipes get injected into the new attempt's
+        prompt. The original run config is read back from the existing
+        demo_status.json; ``request_overrides`` lets callers bump knobs like
+        ``executionMode=max`` to push past whatever caused the original
+        failure (e.g. a wall-clock timeout on baseline-implementation).
 
         Returns None if the project doesn't exist. Refuses to re-spawn
         if the original process is still alive.
@@ -785,7 +801,7 @@ class FileLiveRunService:
             "mode": status.get("runMode", "rlm"),
             "provider": status.get("llmProvider", "anthropic"),
             "verificationProvider": status.get("verificationProvider"),
-            "executionMode": status.get("executionMode", "efficient"),
+            "executionMode": status.get("executionMode", _DEFAULT_EXECUTION_MODE),
             "sandbox": status.get("sandboxMode", get_settings().default_sandbox),
             "gpuMode": status.get("gpuMode", "auto"),
             "model": status.get("model", "sonnet"),
@@ -1441,7 +1457,7 @@ class FileLiveRunService:
                 continue
             if provider and (status.get("llmProvider") or _provider_from_project_id(status_path.parent.name)) != provider:
                 continue
-            if execution_mode and (status.get("executionMode") or "efficient") != execution_mode:
+            if execution_mode and (status.get("executionMode") or _DEFAULT_EXECUTION_MODE) != execution_mode:
                 continue
             if sandbox and (status.get("sandboxMode") or "local") != sandbox:
                 continue

@@ -3102,16 +3102,23 @@ def _count_iterations(project_dir: Path) -> int:
 
 def _read_last_rubric(project_dir: Path) -> float:
     """Read the last rubric overall_score from rlm_state/ or final_report.json."""
-    # Try final_report.json first (may exist from a prior partial run).
-    for p in (project_dir / "final_report.json", project_dir / "final_report.json"):
-        if p.exists():
-            try:
-                data = json.loads(p.read_text(encoding="utf-8"))
-                score = (data.get("rubric") or {}).get("overall_score")
-                if score is not None:
-                    return float(score)
-            except (OSError, json.JSONDecodeError, TypeError, ValueError):
-                pass
+    # Try final_report.json first (may exist from a prior partial run). Tries
+    # the canonical nested report["rubric"]["overall_score"] shape, then the
+    # flat projection/legacy shapes — mirrors scripts/batch_reproduce.py's
+    # _extract_score, which a prior copy-paste bug here left this function
+    # blind to (it read the same nested-only path twice).
+    report_path = project_dir / "final_report.json"
+    if report_path.exists():
+        try:
+            data = json.loads(report_path.read_text(encoding="utf-8"))
+            rubric = data.get("rubric")
+            if isinstance(rubric, dict) and rubric.get("overall_score") is not None:
+                return float(rubric["overall_score"])
+            for key in ("rubric_overall_score", "overall_score", "rubric_score"):
+                if data.get(key) is not None:
+                    return float(data[key])
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
     # Try dashboard_events.jsonl for the last rubric_score event.
     events_path = project_dir / "dashboard_events.jsonl"
     if events_path.exists():

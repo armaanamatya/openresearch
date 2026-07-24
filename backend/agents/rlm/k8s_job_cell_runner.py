@@ -2224,6 +2224,38 @@ def _run_cell_job(
                     "k8s_job_cell_runner: adopting owned %s Job=%s for cell=%s after 409",
                     "succeeded" if succeeded else "active", job_name, cell_id,
                 )
+            elif is_resume_armed():
+                # Resume/retry is explicitly armed (OPENRESEARCH_RESUME_CELLS):
+                # the operator has already signalled "retry incomplete/failed
+                # cells". A Job the Job-level condition confirms Failed (not a
+                # transient retryable-pod count — _job_is_terminal only
+                # returns True on an authoritative Complete/Failed condition)
+                # is definitively not running any GPU work, so deleting it and
+                # resubmitting fresh is NOT "unreserved duplicate GPU work" —
+                # there is nothing duplicate to race against. Default (resume
+                # NOT armed) behavior below is unchanged: fail closed and let
+                # an operator inspect/delete manually.
+                try:
+                    k8s.batch.delete_namespaced_job(
+                        job_name, namespace,
+                        propagation_policy="Foreground",
+                    )
+                    k8s.batch.create_namespaced_job(namespace, manifest)
+                    logger.info(
+                        "k8s_job_cell_runner: deleted+resubmitted owned terminal-failed "
+                        "Job=%s for cell=%s (resume armed)", job_name, cell_id,
+                    )
+                except Exception as retry_exc:
+                    safe_retry_exc = CredentialBroker.redact_text(str(retry_exc)) or "error (redacted)"
+                    logger.error(
+                        "k8s_job_cell_runner: delete+resubmit failed for owned terminal-failed "
+                        "Job=%s cell=%s: %s", job_name, cell_id, safe_retry_exc,
+                    )
+                    return CellResult(
+                        cell_id=cell_id, status=STATUS_ERROR, metrics=None,
+                        gpu=f"{_cs}:unassigned", retries=0,
+                        error=f"job resubmit after owned terminal failure failed: {safe_retry_exc}",
+                    )
             else:
                 logger.error(
                     "k8s_job_cell_runner: owned terminal failed Job=%s blocks resubmit cell=%s",
