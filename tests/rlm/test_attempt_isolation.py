@@ -77,8 +77,16 @@ def _seed_paper_artifacts(run_dir: Path) -> None:
 
 
 class TestFirstRun:
-    def test_noop_when_no_prior_final_report(self, tmp_path):
-        """First-ever run: run dir exists but has no final_report.json — no-op."""
+    def test_warm_retry_shape_isolates_logs_but_keeps_code_when_no_final_report(
+        self, tmp_path
+    ):
+        """``_seed_artifacts(include_final_report=False)`` always seeds
+        ``code/train.py`` — i.e. this is the warm-retry shape (no
+        final_report.json, but code/ present), not a true first-ever run
+        (which would have no code/ at all — see TestWarmRetry's
+        ``test_empty_code_dir_is_not_warm_retry``). Event/log files must be
+        isolated into attempts/, while code/ and paper-level artifacts stay
+        in place."""
         run_dir = _make_run_dir(tmp_path, "proj_first")
         # Seed some files but NOT final_report.json (run never completed).
         _seed_artifacts(run_dir, include_final_report=False)
@@ -86,11 +94,15 @@ class TestFirstRun:
 
         result = maybe_archive_prior_attempt("proj_first", tmp_path)
 
-        assert result is None, "Expected None (no-op) when no final_report.json"
-        assert not (run_dir / "attempts").exists(), "attempts/ dir must not be created"
-        # Existing files must still be in place.
-        assert (run_dir / "experiment_runs.jsonl").exists()
+        assert result is not None
+        assert result["reason"] == "warm_retry"
+        assert "code/" not in result["moved"]
+        # code/ and paper-level files stay in place.
+        assert (run_dir / "code" / "train.py").exists()
         assert (run_dir / "paperMeta.json").exists()
+        # Event/log files were isolated into the new attempt dir.
+        assert not (run_dir / "experiment_runs.jsonl").exists()
+        assert (Path(result["attempt_dir"]) / "experiment_runs.jsonl").exists()
 
     def test_noop_when_run_dir_absent(self, tmp_path):
         """Run dir does not exist yet — must not crash."""
@@ -297,13 +309,15 @@ class TestPaperArtifactsNeverMoved:
 class TestWarmRetry:
     """Kill-and-relaunch: prior code/ exists but final_report.json is absent.
 
-    The function must NOT archive — leaving the code in place lets
+    code/ must NOT be archived — leaving it in place lets
     implement_baseline's cache short-circuit the ~5-min Sonnet sub-agent on
-    the next iteration.
+    the next iteration. Every OTHER per-attempt artifact (event/log files,
+    per-attempt rlm_state/ files) IS still archived, so the resumed attempt's
+    fresh events never commingle with the interrupted attempt's old ones.
     """
 
     def test_warm_retry_preserves_code_when_commands_json_present(self, tmp_path):
-        """commands.json on disk → warm retry → NO archive."""
+        """commands.json on disk → warm retry → code/ preserved, logs archived."""
         run_dir = _make_run_dir(tmp_path, "proj_warm_a")
         # Seed only the code/ — NOT final_report.json (kill mid-run).
         code_dir = run_dir / "code"
@@ -315,12 +329,17 @@ class TestWarmRetry:
 
         result = maybe_archive_prior_attempt("proj_warm_a", tmp_path)
 
-        assert result is None, "Warm retry must NOT trigger archive"
-        # code/ stays in place.
+        assert result is not None, "Warm retry must still isolate event/log files"
+        assert result.get("reason") == "warm_retry"
+        # code/ stays in place — NOT moved into the attempt dir.
         assert (run_dir / "code" / "commands.json").exists()
         assert (run_dir / "code" / "train.py").exists()
-        # attempts/ dir must NOT have been created.
-        assert not (run_dir / "attempts").exists()
+        assert "code/" not in result["moved"]
+        # But the run-derived log file WAS isolated into attempts/.
+        attempt_dir = Path(result["attempt_dir"])
+        assert attempt_dir.parent == run_dir / "attempts"
+        assert (attempt_dir / "experiment_runs.jsonl").exists()
+        assert not (run_dir / "experiment_runs.jsonl").exists()
 
     def test_warm_retry_preserves_code_with_only_train_py(self, tmp_path):
         """train.py alone (no commands.json yet) is also a warm-retry marker."""
@@ -331,9 +350,9 @@ class TestWarmRetry:
 
         result = maybe_archive_prior_attempt("proj_warm_b", tmp_path)
 
-        assert result is None
+        assert result is not None
         assert (run_dir / "code" / "train.py").exists()
-        assert not (run_dir / "attempts").exists()
+        assert "code/" not in result["moved"]
 
     def test_empty_code_dir_is_not_warm_retry(self, tmp_path):
         """code/ exists but is empty (no marker files) → fall through to no-op,

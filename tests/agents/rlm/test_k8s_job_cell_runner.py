@@ -1706,6 +1706,30 @@ class TestConflictRecovery:
         assert "refusing unreserved duplicate GPU retry" in results["cell-a"]["error"]
         assert len(batch.created_jobs) == 1
 
+    def test_409_owned_failed_job_resubmits_when_resume_armed(self, tmp_path, monkeypatch):
+        """OPENRESEARCH_RESUME_CELLS armed: an owned, authoritatively-Failed
+        Job (not a duplicate-GPU-work risk — it has already terminated) is
+        deleted and resubmitted fresh instead of permanently blocking the
+        cell, closing the documented "failed cell Job isn't cleaned up ->
+        409 on retry" resume gap. Deletion only fires because ownership +
+        terminal-Failed were already verified above — the unarmed default
+        path (previous test) is unaffected."""
+        monkeypatch.setenv("OPENRESEARCH_RESUME_CELLS", "1")
+        batch = _ConflictBatch(existing=_owned_conflict_job_for(
+            run_id="outer-run", cell_id="cell-a", terminal="Failed",
+        ))
+        deleted: list[str] = []
+        batch.delete_namespaced_job = lambda name, namespace, **kw: deleted.append(name)  # type: ignore[method-assign]
+
+        results = self._run(tmp_path, monkeypatch, batch)
+
+        assert len(deleted) == 1, "Job must be deleted exactly once"
+        # The deleted name matches the job the first (conflicting) submit used.
+        assert deleted[0] == batch.created_jobs[0]["metadata"]["name"]
+        assert results["cell-a"]["status"] == "ok"
+        # First create hit the 409; the second is the post-delete resubmit.
+        assert len(batch.created_jobs) == 2
+
     def test_409_foreign_job_is_never_adopted_or_retried(self, tmp_path, monkeypatch):
         foreign = _owned_conflict_job_for(run_id="other-run", cell_id="cell-a", terminal="Failed")
         batch = _ConflictBatch(existing=foreign)
