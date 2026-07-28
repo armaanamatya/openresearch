@@ -1,5 +1,5 @@
-import { render, screen } from "@testing-library/react";
-import { describe, it, expect } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
 import { RecentRunsPanel } from "./recent-runs-panel";
 import type { LeaderboardRow } from "@/lib/leaderboard/types";
 
@@ -105,5 +105,65 @@ describe("RecentRunsPanel", () => {
       ]} />
     );
     expect(document.querySelectorAll("li").length).toBe(3);
+  });
+
+  describe("interrupted-run resume affordance", () => {
+    it("renders no interrupted section when interruptedRows is empty", () => {
+      render(<RecentRunsPanel rows={[]} />);
+      expect(screen.queryByRole("list", { name: "Interrupted runs" })).not.toBeInTheDocument();
+    });
+
+    it("renders no interrupted section when onResume is not provided, even with interrupted rows", () => {
+      render(
+        <RecentRunsPanel
+          rows={[]}
+          interruptedRows={[row({ project_id: "b", status: "interrupted" })]}
+        />
+      );
+      expect(screen.queryByRole("list", { name: "Interrupted runs" })).not.toBeInTheDocument();
+    });
+
+    it("surfaces a Resume button for an interrupted run instead of hiding it", () => {
+      const onResume = vi.fn();
+      render(
+        <RecentRunsPanel
+          rows={[]}
+          interruptedRows={[
+            row({ project_id: "b", status: "interrupted", paper_title: "Interrupted Paper" }),
+          ]}
+          onResume={onResume}
+        />
+      );
+
+      expect(
+        screen.getByRole("button", { name: /Resume run for Interrupted Paper/i })
+      ).toBeInTheDocument();
+    });
+
+    it("calls onResume with the project id when Resume is clicked", () => {
+      const onResume = vi.fn();
+      render(
+        <RecentRunsPanel
+          rows={[]}
+          interruptedRows={[row({ project_id: "prj_interrupted_1", status: "interrupted" })]}
+          onResume={onResume}
+        />
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /Resume run for/i }));
+
+      expect(onResume).toHaveBeenCalledWith("prj_interrupted_1");
+    });
+
+    it("keeps the normal rows list rendering unaffected by an interrupted section", () => {
+      render(
+        <RecentRunsPanel
+          rows={[row({ project_id: "a", status: "completed", paper_title: "Done Paper" })]}
+          interruptedRows={[row({ project_id: "b", status: "interrupted" })]}
+          onResume={vi.fn()}
+        />
+      );
+      expect(screen.getByText("Done Paper")).toBeInTheDocument();
+    });
   });
 });

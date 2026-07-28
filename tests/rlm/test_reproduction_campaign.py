@@ -15,6 +15,7 @@ import json
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -334,6 +335,74 @@ def test_scheduler_lineage_root_reemit_is_idempotent_on_existing_f10_fact(tmp_pa
 
     assert len(list(store.load(AggregateId("branch-tree:proj_1")))) == 1
     store.close()
+
+
+def test_serial_branch_spawn_emitted_when_no_controller(tmp_path, monkeypatch):
+    """Default path (no authority controller): the serial campaign is still the
+    branch-tree lineage writer and emits the root ``BranchSpawned``."""
+    monkeypatch.setenv("OPENRESEARCH_SCHEDULER_TREE", "yes")
+    store = SqliteEventStore(f"sqlite:///{tmp_path / 'controller-events.db'}")
+    campaign = _campaign(
+        tmp_path,
+        _make_stages(tmp_path / "run", _Recorder()),
+        branch_tree_event_store=store,
+    )
+    assert campaign.scheduler_controller is None
+
+    assert campaign.run()["kind"] == "REPRODUCED"
+
+    events = list(store.load(AggregateId("branch-tree:proj_1")))
+    assert len(events) == 1
+    assert events[0].event_type == "branch_spawned"
+    store.close()
+
+
+def test_serial_branch_spawn_suppressed_under_authority(tmp_path, monkeypatch):
+    """When an authority controller is live it is the SOLE branch-tree writer:
+    the serial ``_maybe_emit_root_branch_spawned`` is suppressed to avoid a
+    double-write / expected_version collision on the shared
+    ``branch-tree:<campaign_id>`` aggregate.
+
+    Tested at the guarded method directly (not through ``run()``): under B3.2 a
+    live controller routes ``run()`` to ``_cohort_loop``, so the serial emit is
+    never even reached that way. The SAME launch that emits WITHOUT a controller
+    writes NOTHING with one live -- isolating the controller guard as the cause
+    (not F10 idempotency). Tree flag ON so the ONLY suppressor is the guard."""
+    monkeypatch.setenv("OPENRESEARCH_SCHEDULER_TREE", "yes")
+
+    # Baseline: no controller -> the serial writer emits exactly one fact, and
+    # gives us a real (state, launch) pair to replay.
+    store_a = SqliteEventStore(f"sqlite:///{tmp_path / 'a-events.db'}")
+    campaign_a = _campaign(
+        tmp_path / "a",
+        _make_stages(tmp_path / "a" / "run", _Recorder()),
+        branch_tree_event_store=store_a,
+    )
+    assert campaign_a.scheduler_controller is None
+    assert campaign_a.run()["kind"] == "REPRODUCED"
+    state = campaign_a._state
+    assert state is not None
+    launch = next(
+        row for row in CampaignLedger(tmp_path / "a" / "run" / "campaign").read_rows()
+        if row["status"] == "launched"
+    )
+    assert len(list(store_a.load(AggregateId("branch-tree:proj_1")))) == 1
+    store_a.close()
+
+    # Authority live: replaying the SAME launch through the guarded method
+    # produces NO serial emit -- the controller owns the aggregate as sole
+    # writer, so the guard early-returns before any append.
+    store_b = SqliteEventStore(f"sqlite:///{tmp_path / 'b-events.db'}")
+    campaign_b = _campaign(
+        tmp_path / "b",
+        _make_stages(tmp_path / "b" / "run", _Recorder()),
+        branch_tree_event_store=store_b,
+        scheduler_controller=SimpleNamespace(),
+    )
+    assert campaign_b.scheduler_controller is not None
+    campaign_b._maybe_emit_root_branch_spawned(state, launch)
+    assert list(store_b.load(AggregateId("branch-tree:proj_1"))) == []
+    store_b.close()
 
 
 @pytest.mark.parametrize("store_kind", ["outage", "concurrency"])

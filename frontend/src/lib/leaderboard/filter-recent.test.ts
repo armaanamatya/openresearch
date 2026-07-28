@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { filterRecentRows } from "./filter-recent";
+import { filterRecentRows, filterInterruptedRows } from "./filter-recent";
 import type { LeaderboardRow } from "./types";
 
 function makeRow(overrides: Partial<LeaderboardRow>): LeaderboardRow {
@@ -81,5 +81,50 @@ describe("filterRecentRows", () => {
       makeRow({ project_id: `p${i}`, status: "completed" })
     );
     expect(filterRecentRows(rows, 3)).toHaveLength(3);
+  });
+});
+
+describe("filterInterruptedRows", () => {
+  it("keeps only rows where status is interrupted", () => {
+    const rows = [
+      makeRow({ project_id: "a", status: "completed" }),
+      makeRow({ project_id: "b", status: "interrupted" }),
+      makeRow({ project_id: "c", status: "failed" }),
+      makeRow({ project_id: "d", status: "interrupted" }),
+    ];
+    const result = filterInterruptedRows(rows);
+    expect(result.map((r) => r.project_id)).toEqual(["b", "d"]);
+  });
+
+  it("caps the result to 3 rows by default", () => {
+    const rows = Array.from({ length: 6 }, (_, i) =>
+      makeRow({ project_id: `p${i}`, status: "interrupted" })
+    );
+    expect(filterInterruptedRows(rows)).toHaveLength(3);
+  });
+
+  it("respects a custom cap argument", () => {
+    const rows = Array.from({ length: 6 }, (_, i) =>
+      makeRow({ project_id: `p${i}`, status: "interrupted" })
+    );
+    expect(filterInterruptedRows(rows, 1)).toHaveLength(1);
+  });
+
+  it("returns an empty array when no rows are interrupted", () => {
+    const rows = [
+      makeRow({ project_id: "a", status: "completed" }),
+      makeRow({ project_id: "b", status: "failed" }),
+    ];
+    expect(filterInterruptedRows(rows)).toHaveLength(0);
+  });
+
+  it("is disjoint from filterRecentRows on the same input", () => {
+    const rows = [
+      makeRow({ project_id: "a", status: "completed" }),
+      makeRow({ project_id: "b", status: "interrupted" }),
+    ];
+    const recent = filterRecentRows(rows).map((r) => r.project_id);
+    const interrupted = filterInterruptedRows(rows).map((r) => r.project_id);
+    expect(recent.some((id) => interrupted.includes(id))).toBe(false);
   });
 });

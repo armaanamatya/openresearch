@@ -107,6 +107,16 @@ def _scheduler_tree_enabled() -> bool:
     return os.environ.get("OPENRESEARCH_SCHEDULER_TREE", "").strip().lower() in ("1", "true", "yes")
 
 
+def _scheduler_authoritative_enabled() -> bool:
+    """The authority flag's locked default-OFF truthiness contract.
+
+    Mirrors ``_scheduler_tree_enabled`` byte-for-byte; the authoritative
+    controller is only ever constructed when this AND the tree flag are on
+    (and an explicit ``authority_spec_path`` is present).
+    """
+    return os.environ.get("OPENRESEARCH_SCHEDULER_AUTHORITATIVE", "").strip().lower() in ("1", "true", "yes")
+
+
 def _scheduler_metadata(data: Mapping[str, Any]) -> tuple[str, bool]:
     """Read only explicit, well-typed durable scheduler metadata.
 
@@ -188,6 +198,7 @@ class CampaignOptions:
     execution_mode: str = "max"
     gpu_mode: str = "auto"
     minimize_compute: bool = False
+    authority_spec_path: str | None = None
 
 
 # --- small stateless helpers ------------------------------------------------
@@ -1283,6 +1294,21 @@ def build_campaign(project_id: str, opts: CampaignOptions) -> ReproductionCampai
         "max_wall_clock_s": opts.wall_clock_s,
     }
 
+    # Authoritative scheduler controller (both flags + an explicit spec).
+    # Constructing it side-effects the run dir at __init__ (writes
+    # campaign/scheduler_ladder.json + scheduler_tree_state.json, mkdirs
+    # campaign/), so the OFF path (any gate condition false) must construct
+    # NOTHING -- no controller, no files, and the imports stay lazy so an OFF
+    # campaign imports neither the controller nor the runtime.
+    scheduler_controller = None
+    if _scheduler_tree_enabled() and _scheduler_authoritative_enabled() and opts.authority_spec_path:
+        from backend.agents.rlm.scheduler_authority_controller import SchedulerAuthorityController
+        from backend.agents.rlm.scheduler_runtime import load_authority_spec
+
+        spec = load_authority_spec(opts.authority_spec_path, paper_ref=opts.paper_ref)
+        scheduler_controller = SchedulerAuthorityController(run_dir, campaign_id=project_id, spec=spec)
+        scheduler_controller.bootstrap()
+
     stages = CampaignStages(
         validate_init=lambda: _validate_init_impl(opts),
         understand=lambda: _understand_impl(run_dir, opts),
@@ -1311,4 +1337,5 @@ def build_campaign(project_id: str, opts: CampaignOptions) -> ReproductionCampai
         driver=opts.driver,
         stages=stages,
         resume=opts.resume,
+        scheduler_controller=scheduler_controller,
     )

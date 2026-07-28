@@ -73,6 +73,7 @@ _HARNESS_CODE_HELPERS: tuple[str, ...] = (
     "webshop_env.py",
     "provenance.py",  # D2: emit_provenance / emit_figure_sidecar — legibility for the grader
     "eval_provenance.py",  # eval-metric provenance producer (record_eval) — verifiable held-out metric sidecar
+    "cell_checkpoint.py",  # 5-field checkpoint contract writer (write_checkpoint) — receipt-ready checkpoints for authority
     "convergence_evidence.py",  # Module A: structured convergence/sweep evidence (rubric_guard consults it)
     "fair_comparison.py",  # Module B: identical-init snapshot + verifiable init fingerprint
     "verl_metrics_adapter.py",  # execute-mode seam: verl-shaped val logs/summary → canonical metrics.json
@@ -1359,15 +1360,25 @@ _CELL_CONTRACT_BLOCK = (
     "    The harness nests it at per_model.<model_key>.<env>.<baseline> and aggregates the grid;\n"
     "    do NOT write the per_model nesting yourself in a cell — emit only this cell's leaf.\n"
     "\n"
-    "SPOT-PREEMPTION RESILIENCE — checkpoint + resume: the harness sets\n"
+    "SPOT-PREEMPTION RESILIENCE — receipt-ready 5-field checkpoint + resume: the harness sets\n"
     "  OPENRESEARCH_CELL_CHECKPOINT_DIR (a stable per-cell dir on a persistent disk) and\n"
-    "  OPENRESEARCH_CELL_CHECKPOINT_INTERVAL_S (seconds, default 600).\n"
-    "In train_cell.py: (1) at startup, if OPENRESEARCH_CELL_CHECKPOINT_DIR holds a checkpoint,\n"
-    "  RESUME from the latest (model + optimizer + step/epoch); (2) during training, SAVE a\n"
-    "  checkpoint there at least every OPENRESEARCH_CELL_CHECKPOINT_INTERVAL_S seconds (and/or\n"
-    "  every K steps) — atomically (write to a temp file then rename) so a kill mid-write can't\n"
-    "  corrupt it; (3) keep writing metrics.json as you go (partial-timeout scoring reads whatever\n"
-    "  is flushed). This makes a preemption lose only the steps since the last checkpoint.\n"
+    "  OPENRESEARCH_CELL_CHECKPOINT_INTERVAL_S (seconds, default 600), and ships a stdlib-only\n"
+    "  helper `cell_checkpoint.py` (import it). At ladder/interval boundaries call the ONE\n"
+    "  receipt-ready contract — ALL FIVE components, no more, no fewer:\n"
+    "    cell_checkpoint.write_checkpoint(OPENRESEARCH_CELL_CHECKPOINT_DIR, step,\n"
+    "        model=<serialized model.state_dict()>, optimizer=<serialized optimizer.state_dict()>,\n"
+    "        lr_scheduler=<serialized lr_scheduler.state_dict()>, rng=<serialized RNG state>,\n"
+    "        data_order=<serialized data ordering>)\n"
+    "  (serialize each to bytes with e.g. torch.save into an io.BytesIO buffer; RNG state via\n"
+    "  cell_checkpoint.capture_rng_state()). The harness hashes these five into the receipt.\n"
+    "In train_cell.py: (1) at startup, RESUME from\n"
+    "  cell_checkpoint.latest_checkpoint_dir(OPENRESEARCH_CELL_CHECKPOINT_DIR) when it is not None\n"
+    "  (cell_checkpoint.read_checkpoint(...) returns the five blobs — restore model + optimizer +\n"
+    "  lr_scheduler + rng + data_order + step); (2) during training call write_checkpoint at least\n"
+    "  every OPENRESEARCH_CELL_CHECKPOINT_INTERVAL_S seconds (and/or every K steps) — it writes\n"
+    "  atomically for you, so a kill mid-write can't corrupt it; (3) keep writing metrics.json as\n"
+    "  you go (partial-timeout scoring reads whatever is flushed). This makes a preemption lose only\n"
+    "  the steps since the last checkpoint.\n"
     "\n"
     "cells.json (a top-level file in code/) enumerates EVERY cell — it is the ONLY place the\n"
     "baseline axis is declared (the harness scope is model x dataset x seed, with no baseline\n"

@@ -3651,9 +3651,11 @@ async def run_pipeline_rlm(
     if _disk_warn_reason:
         logger.warning("%s", _disk_warn_reason)
 
-    # Archive prior-attempt artifacts before touching anything else.
-    # Fires only when final_report.json exists (a completed prior run);
-    # first-ever runs and incomplete-but-failed runs are handled gracefully.
+    # Archive prior-attempt artifacts before touching anything else. Fires
+    # when final_report.json exists (a completed prior run, full archive) OR
+    # on a warm retry (code/ present, no final_report.json — archives
+    # events/logs but preserves code/ for the implement_baseline cache);
+    # first-ever runs are handled gracefully (no-op).
     from backend.services.runs.attempt_isolation import maybe_archive_prior_attempt
     _archived = maybe_archive_prior_attempt(project_id, runs_root)
     if _archived:

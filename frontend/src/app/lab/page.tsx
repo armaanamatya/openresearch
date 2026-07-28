@@ -3,7 +3,7 @@ import { fetchRunById, backendBaseUrl } from "@/lib/demo/server-run";
 import { fetchRecentRunsResult } from "@/lib/runs/server-list";
 import { fetchModels } from "@/lib/models/server-fetch";
 import { fetchLeaderboardRows } from "@/lib/leaderboard/server-fetch";
-import { filterRecentRows } from "@/lib/leaderboard/filter-recent";
+import { filterRecentRows, filterInterruptedRows } from "@/lib/leaderboard/filter-recent";
 import type { AuthStatus, DemoSandboxMode } from "@/lib/demo/demo-run-types";
 
 // The current run is identified by the `?projectId=` query param — that
@@ -58,6 +58,7 @@ export default async function LabPage({
       serverDefaultSandbox={serverDefaultSandbox}
       presentationMode="internal"
       initialLeaderboardRows={filterRecentRows(leaderboardResult.rows)}
+      interruptedLeaderboardRows={filterInterruptedRows(leaderboardResult.rows)}
       initialLeaderboardError={leaderboardResult.error}
     />
   );

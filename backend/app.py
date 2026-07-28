@@ -388,8 +388,13 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
     ):
         """Re-spawn the orchestrator subprocess for an existing project.
 
-        The orchestrator's resume-from-checkpoint logic picks up at the
-        last completed stage. ``request_overrides`` (optional body) lets
+        Real checkpoint resume (picks up at the last completed stage) only
+        applies to RDR-mode runs. The default RLM mode has no such
+        checkpoint — it restarts the RLM reasoning loop from iteration 0
+        under the same project id, warm-started only via preserved
+        ``code/`` (implement_baseline cache), cell-level resume, and
+        prior-attempt lesson injection; see ``LiveRunService.resume_run``
+        for the full explanation. ``request_overrides`` (optional body) lets
         callers bump e.g. executionMode=max to push past a wall-clock
         failure without losing the work already done.
         """

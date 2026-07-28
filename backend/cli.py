@@ -2391,6 +2391,7 @@ def cmd_campaign(args: argparse.Namespace) -> int:
         execution_mode=args.execution_mode,
         gpu_mode=args.gpu_mode,
         minimize_compute=bool(args.minimize_compute),
+        authority_spec_path=getattr(args, "authority_spec_path", None),
     )
 
     campaign = build_campaign(project_id, opts)
@@ -3035,6 +3036,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Paper class label recorded on admitted positive recipes (default generic).",
     )
     campaign.add_argument(
+        "--authority-spec", dest="authority_spec_path", default=None,
+        help=(
+            "Path to a paper-owned authoritative scheduler spec JSON. Constructs "
+            "the SchedulerAuthorityController only when BOTH "
+            "OPENRESEARCH_SCHEDULER_TREE and OPENRESEARCH_SCHEDULER_AUTHORITATIVE "
+            "are on (default None; unset ⇒ no controller)."
+        ),
+    )
+    campaign.add_argument(
         "--require-cpu-tier", dest="require_cpu_tier", action="store_true",
         default=_campaign_bool_env("OPENRESEARCH_CAMPAIGN_REQUIRE_CPU_TIER"),
         help="Unattended attempts require a validated real-CPU-tier strategy (default off).",
@@ -3092,16 +3102,23 @@ def _count_iterations(project_dir: Path) -> int:
 
 def _read_last_rubric(project_dir: Path) -> float:
     """Read the last rubric overall_score from rlm_state/ or final_report.json."""
-    # Try final_report.json first (may exist from a prior partial run).
-    for p in (project_dir / "final_report.json", project_dir / "final_report.json"):
-        if p.exists():
-            try:
-                data = json.loads(p.read_text(encoding="utf-8"))
-                score = (data.get("rubric") or {}).get("overall_score")
-                if score is not None:
-                    return float(score)
-            except (OSError, json.JSONDecodeError, TypeError, ValueError):
-                pass
+    # Try final_report.json first (may exist from a prior partial run). Tries
+    # the canonical nested report["rubric"]["overall_score"] shape, then the
+    # flat projection/legacy shapes — mirrors scripts/batch_reproduce.py's
+    # _extract_score, which a prior copy-paste bug here left this function
+    # blind to (it read the same nested-only path twice).
+    report_path = project_dir / "final_report.json"
+    if report_path.exists():
+        try:
+            data = json.loads(report_path.read_text(encoding="utf-8"))
+            rubric = data.get("rubric")
+            if isinstance(rubric, dict) and rubric.get("overall_score") is not None:
+                return float(rubric["overall_score"])
+            for key in ("rubric_overall_score", "overall_score", "rubric_score"):
+                if data.get(key) is not None:
+                    return float(data[key])
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
     # Try dashboard_events.jsonl for the last rubric_score event.
     events_path = project_dir / "dashboard_events.jsonl"
     if events_path.exists():

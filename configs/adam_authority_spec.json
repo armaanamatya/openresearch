@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "ladder": {
+    "paper_ref": "1412.6980",
+    "metric_id": "train_loss",
+    "direction": "minimize",
+    "r_max_steps": 1000,
+    "rung_steps": [100, 300, 1000],
+    "schedule_source_sha256": "63d1424c5ec66d097089b40b1879c048faa676c5240d6275dcc277600daac439"
+  },
+  "width": {
+    "gpu_usd_budget": 6.0,
+    "a100_cap": 1,
+    "safety_gpu_usd_budget": 2.0,
+    "discovery_gpu_usd_budget": 2.0,
+    "eta": 3.0,
+    "noise_floor": 0.0
+  },
+  "branches": [
+    {
+      "branch_id": "adam-faithful-lr1e-3",
+      "branch_type": "faithful",
+      "hypothesis_fingerprint": "6a7aecfd47beff7776e9f474b004d310b85ac2849f03a8f3f275c54fa44c95bc",
+      "seed": 1,
+      "is_safety_bracket": true
+    },
+    {
+      "branch_id": "adam-ambiguity-beta1-0p9",
+      "branch_type": "ambiguity",
+      "hypothesis_fingerprint": "e5e20a0d4424f2e1112a582fba6633cc677f7d961e2fd0c367f79488c7fc284b",
+      "seed": 2
+    },
+    {
+      "branch_id": "adam-discovery-lr1e-4",
+      "branch_type": "discovery",
+      "hypothesis_fingerprint": "7e6916d114e95b3cb63116b74d4ca749415ae15f00b63cd8600a1171a3cd67ac",
+      "seed": 3
+    },
+    {
+      "branch_id": "adam-discovery-eps1e-8",
+      "branch_type": "discovery",
+      "hypothesis_fingerprint": "e0df94990e0e682e9ca5f531ef92235602f90e02862754571652217e4c5f2a34",
+      "seed": 4
+    }
+  ]
+}
