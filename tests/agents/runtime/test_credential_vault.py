@@ -464,6 +464,11 @@ def test_handoff_rejects_malformed_json(monkeypatch):
         vault.receive_handoff()
 
 
+@pytest.mark.skipif(
+    not os.path.exists("/proc/self/environ"),
+    reason="/proc/self/environ is Linux-only; the execve-snapshot disclosure vector "
+    "(and this guard test) does not exist on macOS/Windows",
+)
 def test_proc_environ_guard_detects_a_credential_in_the_exec_snapshot():
     """The headline guard: a credential in THIS process's execve env must be caught.
 

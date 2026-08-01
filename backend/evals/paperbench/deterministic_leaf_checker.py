@@ -181,37 +181,47 @@ def _dotted_get(obj: Any, dotted: str) -> tuple[bool, Any]:
     return (True, cur)
 
 
-def _find_provenance_field(prov: Any, field: str) -> tuple[bool, Any]:
-    """Locate ``field`` in a provenance manifest, fail-soft.
+def _find_provenance_values(prov: Any, field: str) -> list[Any]:
+    """Every value of ``field`` locatable in a provenance manifest (existential).
 
-    Search order (first hit wins):
-      1. manifest top level (dotted-aware) — e.g. ``run_id``.
-      2. each ``experiments[*]`` record (dotted-aware) — where the agent's
-         emitter writes ``epochs``/``batch_size``/``seed``/``per_optimizer.*``.
+    Searches the manifest top level and each ``experiments[*]`` record
+    (dotted-aware), and — for a bare (un-dotted) field — one level into
+    ``per_optimizer.<opt>.<field>`` (the agent emitter nests optimizer hparams
+    there while the cell route writes them flat, so a bare ``lr`` must resolve
+    against both). Returns ALL matches so the caller can apply existential
+    (any-satisfies) or universal (``!=``, all-satisfy) semantics; an empty list
+    means the field could not be located.
 
-    Per-experiment search makes the common rubric assertion ("epochs == 45")
-    resolve even though ``epochs`` lives one level down per experiment rather
-    than at the manifest root.
+    A hyperparameter SEARCH writes one record per candidate, so grading only the
+    first located value would fail a faithful run whose paper-valued cell is not
+    first — hence "collect all", not "first hit wins".
     """
+    values: list[Any] = []
     if not isinstance(prov, dict):
-        return (False, None)
-    # 1. top level.
-    found, val = _dotted_get(prov, field)
-    if found:
-        return (True, val)
-    # 2. inside experiments.
-    exps = prov.get("experiments")
+        return values
+
+    def _collect(node: Any) -> None:
+        found, val = _dotted_get(node, field)
+        if found:
+            values.append(val)
+        # bare field → also descend one level into per_optimizer.<opt>.<field>.
+        if "." not in field and isinstance(node, dict):
+            per_opt = node.get("per_optimizer")
+            if isinstance(per_opt, dict):
+                for opt in per_opt.values():
+                    f2, v2 = _dotted_get(opt, field)
+                    if f2:
+                        values.append(v2)
+
+    _collect(prov)  # 1. top level (+ its per_optimizer).
+    exps = prov.get("experiments")  # 2. each experiment record.
     if isinstance(exps, dict):
         for exp in exps.values():
-            found, val = _dotted_get(exp, field)
-            if found:
-                return (True, val)
+            _collect(exp)
     elif isinstance(exps, list):
         for exp in exps:
-            found, val = _dotted_get(exp, field)
-            if found:
-                return (True, val)
-    return (False, None)
+            _collect(exp)
+    return values
 
 
 def _provenance_paths(run_dir: Path) -> list[Path]:
@@ -377,6 +387,25 @@ def _result(leaf_id: str, kind: str, score: float, justification: str) -> dict[s
     }
 
 
+def _route_or_zero(
+    leaf_id: str, kind: str, assertion: dict, justification: str
+) -> dict[str, Any] | None:
+    """Cannot-LOCATE the evidence: route to the LLM when the (auto-generated)
+    assertion carries the ``on_missing: "llm"`` valve, else fail closed to a
+    deterministic 0.0.
+
+    The valve exists because ``emit_provenance`` is fail-soft and OPTIONAL: a
+    faithful run that simply skipped the manifest must fall through to the LLM,
+    not be auto-zeroed — the "route to the LLM on missing evidence, never
+    auto-zero" red line. It fires ONLY on a genuine cannot-locate; a located
+    value that mismatches is still a real, deterministic 0.0 (handled by the
+    caller, not here). Absent the valve, the default is unchanged: 0.0.
+    """
+    if assertion.get("on_missing") == "llm":
+        return None
+    return _result(leaf_id, kind, 0.0, justification)
+
+
 # --------------------------------------------------------------------------- #
 # the three kind-specific checkers.
 # --------------------------------------------------------------------------- #
@@ -394,31 +423,51 @@ def _check_hparam(leaf_id: str, assertion: dict, run_dir: Path) -> dict[str, Any
 
     prov_paths = _provenance_paths(run_dir)
     if not prov_paths:
-        return _result(leaf_id, CHECK_HPARAM, 0.0, f"provenance_missing:{field}")
+        return _route_or_zero(
+            leaf_id, CHECK_HPARAM, assertion, f"provenance_missing:{field}")
 
-    # Read newest-first; the first manifest that *contains* the field wins.
-    found = False
-    actual: Any = None
+    # Read newest-first; the first manifest that *contains* the field wins, but
+    # collect ALL of that manifest's located values (a search writes one record
+    # per candidate; the emitter nests optimizer hparams under per_optimizer).
+    values: list[Any] = []
     for p in prov_paths:
         prov = _load_json(p)
         if prov is None:
             continue
-        f, v = _find_provenance_field(prov, field)
-        if f:
-            found, actual = True, v
+        found = _find_provenance_values(prov, field)
+        if found:
+            values = found
             break
-    if not found:
-        return _result(leaf_id, CHECK_HPARAM, 0.0, f"provenance_missing:{field}")
+    if not values:
+        return _route_or_zero(
+            leaf_id, CHECK_HPARAM, assertion, f"provenance_missing:{field}")
 
-    ok = _compare(actual, op, expected, tol)
-    if ok:
+    if op == "!=":
+        # PROHIBITION — universal: it must hold for EVERY located record, else a
+        # search grid could satisfy it trivially with one compliant cell.
+        offending = [v for v in values if not _compare(v, op, expected, tol)]
+        if offending:
+            return _result(
+                leaf_id, CHECK_HPARAM, 0.0,
+                f"provenance {field}={offending[0]!r} fails {op} {expected!r}",
+            )
         return _result(
             leaf_id, CHECK_HPARAM, 1.0,
-            f"provenance {field}={actual!r} satisfies {op} {expected!r}",
+            f"provenance {field} satisfies {op} {expected!r} "
+            f"for all {len(values)} record(s)",
         )
+
+    # existential — any located record that satisfies the assertion passes (the
+    # paper-valued cell in a search grid need not be first).
+    for v in values:
+        if _compare(v, op, expected, tol):
+            return _result(
+                leaf_id, CHECK_HPARAM, 1.0,
+                f"provenance {field}={v!r} satisfies {op} {expected!r}",
+            )
     return _result(
         leaf_id, CHECK_HPARAM, 0.0,
-        f"provenance {field}={actual!r} fails {op} {expected!r}",
+        f"provenance {field}={values[0]!r} fails {op} {expected!r}",
     )
 
 
@@ -520,11 +569,13 @@ def _check_numeric(leaf_id: str, assertion: dict, run_dir: Path) -> dict[str, An
 
     metrics = _latest_metrics(run_dir)
     if metrics is None:
-        return _result(leaf_id, CHECK_NUMERIC, 0.0, f"metric_missing:{metric_key}")
+        return _route_or_zero(
+            leaf_id, CHECK_NUMERIC, assertion, f"metric_missing:{metric_key}")
 
     found, raw_val = _find_metric_value(metrics, metric_key)
     if not found:
-        return _result(leaf_id, CHECK_NUMERIC, 0.0, f"metric_missing:{metric_key}")
+        return _route_or_zero(
+            leaf_id, CHECK_NUMERIC, assertion, f"metric_missing:{metric_key}")
 
     if direction in {"trend_up", "trend_down"}:
         return _grade_trend(leaf_id, metric_key, direction, raw_val)
