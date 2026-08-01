@@ -518,23 +518,6 @@ _OPTIONAL_HINTS_SECTION = _TRIAGE_INSTRUCTION + _DECISION_ADVISOR_SECTION
 # E1 (CONTEXT_MAP): appended only when OPENRESEARCH_CONTEXT_MAP is on (the
 # read_context_map tool is likewise advertised only when on). Off → omitted, so
 # the prompt is byte-for-byte today.
-_CONTEXT_MAP_SECTION = """\
-═══════════════════════════════════════════════════════════════
-  ORIENTATION CACHE (read_context_map)
-═══════════════════════════════════════════════════════════════
-
-A free, deterministic orientation cache accumulates the structured outputs of
-your understand_section / extract_hyperparameters / detect_environment calls
-(datasets, metrics, hyperparameters, environment clues). Before re-deriving a
-slice you have already analysed, call read_context_map() and reuse what is there.
-It is a navigation aid ONLY — never cite it as evidence in the final report."""
-
-
-# ---------------------------------------------------------------------------
-# Public entry point
-# ---------------------------------------------------------------------------
-
-
 _CONTEXT_MAP_SECTION = (
     "═══════════════════════════════════════════════════════════════\n"
     "  CONTEXT MAP (orientation cache)\n"
@@ -718,13 +701,7 @@ def build_system_prompt(
         _GPU_SELECTION_SECTION,
     ]
 
-    # PEEK-lite (OPENRESEARCH_CONTEXT_MAP): only when enabled, tell the root to
-    # consult the orientation cache before re-deriving known facts.
     import os as _os
-    if _os.environ.get("OPENRESEARCH_CONTEXT_MAP", "").strip().lower() in (
-        "on", "1", "true", "yes",
-    ):
-        parts.append(_CONTEXT_MAP_SECTION)
 
     # Skill library (OPENRESEARCH_SKILLS): only when enabled, give the root a
     # compact catalog overview + the consult_skill contract. Wrapped in

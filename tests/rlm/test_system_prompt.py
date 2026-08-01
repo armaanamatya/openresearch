@@ -404,3 +404,32 @@ class TestGpuSelectionSection:
     def test_estimated_vram_gb_key_mentioned(self, prompt_gpt5):
         """The prompt must name the 'estimated_vram_gb' key so the root knows the schema."""
         assert "estimated_vram_gb" in prompt_gpt5
+
+
+class TestContextMapSectionIdempotent:
+    """OPENRESEARCH_CONTEXT_MAP is probed at two sites in build_system_prompt
+    (an inline env check and ``context_map._enabled()``, both reading the same
+    flag with the same truthy set). The orientation-cache section must be
+    injected EXACTLY ONCE — regression guard against the double-append."""
+
+    _MARKER = "CONTEXT MAP (orientation cache)"
+
+    def test_section_appears_once_when_enabled(
+        self, monkeypatch, gpt5_model, sample_context_metadata
+    ):
+        monkeypatch.setenv("OPENRESEARCH_CONTEXT_MAP", "1")
+        prompt = build_system_prompt(
+            context_metadata=sample_context_metadata,
+            root_model=gpt5_model,
+        )
+        assert prompt.count(self._MARKER) == 1
+
+    def test_section_absent_when_disabled(
+        self, monkeypatch, gpt5_model, sample_context_metadata
+    ):
+        monkeypatch.delenv("OPENRESEARCH_CONTEXT_MAP", raising=False)
+        prompt = build_system_prompt(
+            context_metadata=sample_context_metadata,
+            root_model=gpt5_model,
+        )
+        assert self._MARKER not in prompt
