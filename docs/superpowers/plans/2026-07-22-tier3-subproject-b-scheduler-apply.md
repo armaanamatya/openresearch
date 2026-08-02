@@ -4,7 +4,9 @@
 > roadmap and were not ticked during execution. All 8 tasks (B1.1, B1.2, B2.1+B2.2, B2.3,
 > B3.2, B3.3, and the Phase C checkpoint/resume substrate) landed; 506 tests green. Ground truth:
 > `docs/progress/2026-07-22-tier3-adam-progress.md` and the spec's status banner. Phase C
-> (billed ADAM A/B on real GPU) remains gated on operator GPU budget.
+> (billed ADAM A/B on real GPU) ran (treat2_grok, treat3_gpt, ~$5–6); both fail-closed at
+> receipt production — the current gate is harness-forced checkpoint emission, not GPU budget
+> (see `docs/open-issues.md`).
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax. **Every task here carries logic next to the evidence red line — run the FULL two-stage review (spec compliance, then code quality) on each task.**
 

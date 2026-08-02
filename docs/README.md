@@ -9,6 +9,7 @@ new hire should need:
 - [engineering-guide.md](engineering-guide.md) — durable technical decisions.
 - [operations.md](operations.md) — setup, local development, checks, and runs.
 - [policies/artifacts.md](policies/artifacts.md) — what belongs in Git.
+- [open-issues.md](open-issues.md) — the honest ledger of genuinely unresolved issues (delete rows as they close)
 
 [reference/flags.md](reference/flags.md) is generated operator reference, not
 required onboarding reading. Code is authoritative when it conflicts with prose.
