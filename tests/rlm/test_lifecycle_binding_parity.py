@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from backend.agents.dashboard_emitter import DashboardEmitter
 from backend.agents.resilience.cost import RunCostLedger
