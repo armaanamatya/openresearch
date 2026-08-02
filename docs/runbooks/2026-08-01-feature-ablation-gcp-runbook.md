@@ -71,8 +71,21 @@ Use the `baseline` arm on ResNet (fastest). Follow the "Validated direct recipe"
 > ```
 > (The harness's `env_pin` local-torch-core did NOT auto-install it on the DLVM uv venv — install explicitly.)
 
-For each `(paper, arm, seed)`: provision an **auto-delete** L4 VM (`--max-run-duration=Ns
---instance-termination-action=DELETE`), stage code + the merged run-spec, run:
+> 🛑 **CAP + TERMINATION-ACTION — the #1 killer of these runs (root-caused 2026-08-02).**
+> The single-L4 ResNet cell-matrix run takes **longer than 6 h**. VMs provisioned with
+> `--max-run-duration=21600s` (6 h) auto-STOPped mid-run with `compute.instances.deferredStop`
+> and produced **no score** — this was misread as "host maintenance," it was the cap. RULES:
+> - **`--max-run-duration=64800s` (18 h) minimum**, or omit the cap and tear down manually. Never
+>   cap below the observed completion time.
+> - **`--instance-termination-action=STOP`, NEVER `DELETE`** — DELETE on the first run destroyed
+>   the results (`deferredDelete`). STOP preserves the boot disk so artifacts survive a stop.
+> - **Poll + scp `final_report.json` the instant it appears** (below) so no completed score is ever
+>   lost to a stop. Details: `docs/2026-08-01-feature-ablation-results.md` (root-cause section).
+
+For each `(paper, arm, seed)`: provision an L4 VM with an **18 h cap and STOP termination**
+(`--max-run-duration=64800s --instance-termination-action=STOP`), stage code + the merged
+run-spec, and start a background pull loop that scps `final_report.json` out the moment it lands.
+Then run:
 ```bash
 python scripts/merge_run_spec.py <arm> > /tmp/arm_<arm>.json   # scp to VM
 # on the VM:
@@ -80,10 +93,13 @@ OPENRESEARCH_AB_ARM=<arm> OPENRESEARCH_AB_PAIR_ID=<paper>-<seed> \
   .venv/bin/python -m backend.cli reproduce <arxiv_id> \
     --sandbox local --run-spec /tmp/arm_<arm>.json \
     --model opus-foundry --models executor=sonnet-foundry,grader=sonnet-foundry,verifier=sonnet-foundry \
-    --seed <seed> --force-single-gpu --max-wall-clock 25000 \
+    --seed <seed> --force-single-gpu --max-wall-clock 60000 \
     --project-id <paper>_<arm>_s<seed>
-# pull runs/<paper>_<arm>_s<seed>/{final_report.json,rubric_evaluation.json,experiment_arm...}; DELETE VM
+# pull runs/<paper>_<arm>_s<seed>/{final_report.json,rubric_evaluation.json,experiment_arm...}; then STOP (not delete) VM
 ```
+> ⚠️ `--max-wall-clock` (app-level) must ALSO exceed real completion time and stay **below** the VM
+> `--max-run-duration` cap — `25000s` (~6.9 h) was too short; use `60000s` (~16.7 h) under an 18 h
+> VM cap. Two independent timers; whichever is smaller kills the run.
 Each run stamps `experiment_arm={arm, ab_pair_id}` into its report (the A/B harness).
 
 ## STEP 3 — fan-out (phased)
@@ -107,11 +123,17 @@ deterministic evidence (cells converged / lower error) — never the grade alone
   ≥ every 30 min for the campaign's life — progress, failures (with log paths), infra issues,
   cost (from Azure Cost Mgmt + `gcloud`, not the ledger), next action.
 - **Stray-VM check** after every run: `gcloud compute instances list --project deepinvent-ext-ut`
-  — expect no lingering RUNNING instance (auto-delete should have fired). Run
+  — with STOP termination the VM will be TERMINATED (not gone) after its run; confirm it's not
+  still RUNNING and idle-billing, then delete it once artifacts are pulled. Run
   `python scripts/gcp_vm_audit.py` on a timer.
 
 ## Honest risk notes
-- This path has **never completed a multi-run campaign first-try** (July runs mostly failed).
-  The smoke gate (Step 1) exists to catch that before the fan-out spends.
+- **The runs that "GCP killed" were killed by our own `--max-run-duration` cap, not host
+  maintenance** (root-caused 2026-08-02 via `compute.instances.deferredStop` in the audit log +
+  exact-6 h timing; see `docs/2026-08-01-feature-ablation-results.md`). The real reliability lever
+  is: cap ≥ completion time, STOP not DELETE, and poll-scp the score the instant it lands.
+- This path has **never completed a multi-run campaign first-try** (July runs mostly failed; the
+  Aug runs died on the 6 h cap above). The smoke gate (Step 1) exists to catch that before the
+  fan-out spends — and the smoke MUST run under the corrected cap/termination settings.
 - The generic (non-SDAR) VM launch is the **direct-recipe** steps — there is no one-command
   multi-paper campaign launcher yet; the fan-out is a scripted loop over the Step-2 unit.

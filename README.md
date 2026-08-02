@@ -28,15 +28,24 @@ Per-feature reproduction scores — each row is the fixed honest baseline plus O
 on GCP (L4) with `sonnet-foundry` (real Claude via Foundry API key; **never OAuth**). Full
 scoreboard + method: [`docs/2026-08-01-feature-ablation-results.md`](docs/2026-08-01-feature-ablation-results.md).
 
-| Feature | Rubric score | Δ vs baseline | Date (UTC) |
-|---|---:|---:|---|
-| baseline (no test features) | _running_ | — | 2026-08-01 |
-| bes · champion · recipes · expmem · lessons · audit · leafgate | _pending_ | _pending_ | — |
-| all_on (all features combined) | _pending_ | _pending_ | — |
+**Testing sequence:** `baseline` → **Tree-A** (the 7 within-run features below + `all_on`) →
+**Tree-B** (scheduler authority: freeze/branch/revive/kill — *gated* on the A1/A2 checkpoint build,
+runs via `campaign` not `reproduce`) → **combo of both**. `all_on` here = all 7 Tree-A features,
+**not** freezing/Tree-B — see the roadmap in the results doc.
 
-_Paper: ResNet (1512.03385), seed 1. Scores populate as each ~1.5 h run completes; the pipeline
-is validated end-to-end on `sonnet-foundry`. A full per-feature verdict needs ≥3 seeds through the
-grader-σ gate — this is the 1-seed screen._
+| Feature | Rubric score | Verdict | Δ vs baseline | Date (UTC) |
+|---|---:|---|---:|---|
+| baseline (no test features) | **0.433** | failed (target 0.6) | — (reference) | 2026-08-02 |
+| bes · champion · recipes · expmem · lessons · audit · leafgate | _pending_ | — | _pending_ | — |
+| all_on (all features combined) | _pending_ | — | _pending_ | — |
+
+_Paper: ResNet (1512.03385), seed 1, L4, `sonnet-foundry`._ The **baseline completed end-to-end**
+(recovered from disk 2026-08-02): shallow nets matched the paper (resnet20-optA **8.64%** vs 8.75%),
+deep nets diverged (resnet110 **62.9%** — missing LR warmup), and the fail-closed evidence gate
+correctly refused credit (root-writable metrics, no checkpoint contract) → `failed`. **0.433 is a
+real partial-repro score, not a suppressed pass.** Feature rows populate as arms run; a full
+per-feature verdict needs ≥3 seeds through the grader-σ gate — this is the 1-seed screen. Details +
+the path to a real pass: [`docs/2026-08-01-feature-ablation-results.md`](docs/2026-08-01-feature-ablation-results.md).
 
 ## Architecture
 

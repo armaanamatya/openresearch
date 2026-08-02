@@ -3707,6 +3707,22 @@ def _metrics_completeness_violation(result: dict) -> tuple[str, str] | None:
     return None
 
 
+def _iter_leaf_statuses(node: Any):
+    """Yield lowercased ``status`` strings from every leaf under ``node``.
+
+    A dict carrying a ``status`` key is a leaf (its status is yielded and its
+    children are NOT descended). This handles both the flat monolithic
+    ``per_model[model] = {status}`` and the nested cells
+    ``per_model[model][env][baseline] = {status}`` shapes with one walk.
+    """
+    if isinstance(node, dict):
+        if "status" in node:
+            yield str(node.get("status", "")).lower()
+            return
+        for v in node.values():
+            yield from _iter_leaf_statuses(v)
+
+
 def _all_models_failed_violation(result: dict) -> tuple[str, str] | None:
     """Detect a ``success=True`` run whose per_model is non-empty but NO entry
     reached an ok status — every model errored/failed at load/train, yet the
@@ -3736,11 +3752,15 @@ def _all_models_failed_violation(result: dict) -> tuple[str, str] | None:
     per_model = metrics.get("per_model")
     if not isinstance(per_model, dict) or not per_model:
         return None
-    ok = [
-        m for m, mv in per_model.items()
-        if isinstance(mv, dict) and str(mv.get("status", "")).lower() in _OK_STATUSES
-    ]
-    if ok:
+    # Descend to the LEAF status. The monolithic route is flat
+    # (``per_model[model] = {status, ...}``) but the cells route nests it —
+    # ``per_model[model][env][baseline] = {status, ...}`` (cell_matrix
+    # aggregate_cell_metrics) — so a model-level ``.get("status")`` misses the
+    # real status two levels down and FALSE-POSITIVES on every completed cells
+    # run (base_rn ResNet, 2026-08-02). A dict carrying a ``status`` key IS a
+    # leaf; otherwise recurse. Mirrors the cells-route ``any_ok`` rule so the
+    # guard still fires on a genuine all-failed grid but not on ok leaves.
+    if any(s in _OK_STATUSES for s in _iter_leaf_statuses(per_model)):
         return None
     names = ", ".join(map(str, list(per_model.keys())[:4]))
     return (
