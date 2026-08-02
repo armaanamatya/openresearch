@@ -1,5 +1,12 @@
 # ReproLab GKE Helm chart (L2 in-cluster scaffold)
 
+> # ⛔ GKE is NOT USED — operator directive (2026-07-22)
+> The GKE backend fail-closes (`_backend_for_sandbox_mode` raises on `gcp`/`gke`; the
+> `OPENRESEARCH_ALLOW_GKE=1` hatch is inert and not a supported path). These Terraform/Helm
+> layers are kept in-tree **for reference only — do not provision from them.** The supported
+> GCP path is the single-VM campaign route:
+> [`docs/runbooks/2026-07-22-gcp-vm-e2e-run-procedure.md`](../../../docs/runbooks/2026-07-22-gcp-vm-e2e-run-procedure.md).
+
 This chart installs the **static in-cluster scaffold** required by the ReproLab
 GCP GKE GPU execution backend.  It is Layer 2 in the layer split (L1 = Terraform,
 L2 = this chart, L3 = runtime Jobs emitted by `gke_job_backend`).

@@ -1,5 +1,12 @@
 # ReproLab — GCP GKE GPU Backend: Terraform L1
 
+> # ⛔ GKE is NOT USED — operator directive (2026-07-22)
+> The GKE backend fail-closes (`_backend_for_sandbox_mode` raises on `gcp`/`gke`; the
+> `OPENRESEARCH_ALLOW_GKE=1` hatch is inert and not a supported path). These Terraform/Helm
+> layers are kept in-tree **for reference only — do not provision from them.** The supported
+> GCP path is the single-VM campaign route:
+> [`docs/runbooks/2026-07-22-gcp-vm-e2e-run-procedure.md`](../../docs/runbooks/2026-07-22-gcp-vm-e2e-run-procedure.md).
+
 **Client:** DeepInvent  
 **Layer:** L1 (GCP infrastructure). GCP-native mirror of `infra/azure/`.
 
