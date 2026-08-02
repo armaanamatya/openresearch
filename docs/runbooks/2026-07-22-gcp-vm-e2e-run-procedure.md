@@ -1,4 +1,4 @@
-<!-- doc-meta: status=current; last-verified=2026-07-22 -->
+<!-- doc-meta: status=current; last-verified=2026-08-01 -->
 # GCP single-VM end-to-end run procedure (canonical)
 
 **Date:** 2026-07-22 · **Status:** current — this is the go-forward "normal" GCP GPU path.
@@ -9,10 +9,11 @@ runbooks for day-to-day use.
 
 ## Where this fits (read first)
 
-- **GKE is parked.** As of 2026-07-22, `--sandbox gcp` / `--sandbox gke` **fails loud**
-  (`_backend_for_sandbox_mode` raises: *"GKE parked — use the campaign VM path"*). Set
-  `OPENRESEARCH_ALLOW_GKE=1` to revive it, but only once the two blocked IAM grants are
-  fixed (artifactregistry.reader + workloadIdentityUser). Design + rationale:
+- **GKE is NOT USED.** As of 2026-07-22, `--sandbox gcp` / `--sandbox gke` **fails loud**
+  (`_backend_for_sandbox_mode` raises — GKE is NOT USED; use the campaign VM path; wording
+  updated in commit `bf3a937e`). The `OPENRESEARCH_ALLOW_GKE=1` escape hatch exists but is
+  **inert and not a supported path** — the two missing IAM grants
+  (artifactregistry.reader + workloadIdentityUser) were never applied. Design + rationale:
   [`docs/superpowers/specs/2026-07-22-restore-gcp-vm-path-surgical-degke-design.md`](../superpowers/specs/2026-07-22-restore-gcp-vm-path-surgical-degke-design.md).
 - **The supported GCP GPU path is the single-VM `VmComputeProvider`**
   (`backend/services/runtime/vm_compute_provider.py`), reached via the **campaign**, NOT via
@@ -81,7 +82,7 @@ Cost Management (`az`), not the ledger.
 
 The single-VM path is driven by the **`unified` campaign driver** with a **local** run
 sandbox and a **gcp billing sandbox** (the `--billing-sandbox gcp` is what routes provisioning
-through `VmComputeProvider`; `--sandbox gcp` would instead hit the parked/fail-loud GKE path):
+through `VmComputeProvider`; `--sandbox gcp` would instead hit the fail-loud GKE path (NOT USED)):
 
 ```bash
 python -m backend.cli campaign <paper> \
@@ -252,8 +253,8 @@ gcloud compute instances list --project=deepinvent-ext-ut    # confirm no stray 
 | Reproduces SDAR instead of your paper | `scripts/sdar_gcp_run.sh` hardcodes `2605.15155`; `VmComputeProvider.launch` treats `paper_id` as a hint only | Run `reproduce <paper>` directly on the VM (recipe above), or build a generic VM launcher |
 | Campaign VM path always 4×A100 | `attempt_driver` builds `VmSpec` with no machine type → default `a2-highgpu-4g` | Set `OPENRESEARCH_GCP_GPU_MACHINE_TYPE=g2-standard-8` (commit `aa205f94`) |
 | SSH hangs on a passphrase prompt | first `gcloud compute ssh` generates a key interactively | Always pass `--quiet` |
-| `--sandbox gcp/gke` raises "GKE parked" | Intentional fail-loud (commit `86c00abe`) | Use the VM path; set `OPENRESEARCH_ALLOW_GKE=1` only after the IAM grants are fixed |
-| verdict `failed`, evidence `no commands.json` | `grok` is NOT a validated executor (doesn't emit the cell/commands manifest) | Use a validated executor (Sonnet) via a working Anthropic key/OAuth |
+| `--sandbox gcp/gke` raises the GKE guard | Initial fail-loud added in `86c00abe`; guard message reworded to NOT USED in `bf3a937e` | Use the VM path — GKE is NOT USED; the `OPENRESEARCH_ALLOW_GKE=1` hatch is not a supported path |
+| verdict `failed`, evidence `no commands.json` | `grok` is NOT a validated executor (doesn't emit the cell/commands manifest) | Use a validated executor (Sonnet) via a funded Anthropic key or Foundry (⛔ never OAuth) |
 | Fear of stray VM billing | teardown / self-stop can be missed | Provision with `--max-run-duration=Ns --instance-termination-action=DELETE`; ALWAYS `gcloud compute instances list` after |
 | `add-iam-policy-binding` PERMISSION_DENIED | operator account lacks `setIamPolicy` (only the owner has it) — this is exactly why GKE is blocked | The single-VM path needs NO IAM grants (uses the instance SA) — that is the whole reason it's the go-forward path |
 
