@@ -76,8 +76,19 @@ def test_full_coverage_when_all_leaves_graded(tmp_path: Path):
     assert result["coverage_pct"] == pytest.approx(1.0)
 
 
-def test_partial_coverage_when_batch_errors(tmp_path: Path):
+def test_partial_coverage_when_batch_errors(tmp_path: Path, monkeypatch):
     from backend.evals.paperbench.leaf_scorer import score_reproduction
+
+    # The T5 grader fallback chain (grader_transport.build_fallback_chain) would,
+    # on a dev box with an active `claude login`, grade the leaves via an OAuth
+    # subprocess that bypasses pytest-socket — making this hermetic coverage-math
+    # test environment-dependent. Neutralize it so a primary-grader failure
+    # genuinely leaves every leaf ungraded, the exact scenario under test.
+    monkeypatch.setattr(
+        "backend.agents.rlm.grader_transport.build_fallback_chain",
+        lambda: [],
+        raising=False,
+    )
 
     rubric = _make_rubric(3)
     # Stub LLM to fail (batch_error) — all leaves get _graded=False

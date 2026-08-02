@@ -4,9 +4,9 @@
 
 ## Summary
 
-- **Total distinct flags:** 505
+- **Total distinct flags:** 507
 - **Managed by `config.py` Settings (typed, default known):** 140
-- **Ad-hoc `os.environ` reads (no central default):** 365
+- **Ad-hoc `os.environ` reads (no central default):** 367
 - **Mentioned in a `CLAUDE.md`:** 136 (26%)
 
 Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **sites** = ad-hoc read count; **default** = literal default at first read site (best effort).
@@ -345,7 +345,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **si
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_CONTEXT_MAP` |  | ✅ | 2 | `""` |
+| `OPENRESEARCH_CONTEXT_MAP` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_CONTROLLER_*`
 
@@ -655,8 +655,10 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **si
 | `OPENRESEARCH_GCP_GPU_MACHINE_TYPE` |  |  |  | |
 | `OPENRESEARCH_GCP_GPU_SKUS` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_GPU_USD_PER_HOUR` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_GCP_IMAGE_FAMILY` |  |  | 1 | `""` |
 | `OPENRESEARCH_GCP_INSTANCE` |  |  |  | |
 | `OPENRESEARCH_GCP_JOB_BACKOFF_LIMIT` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_GCP_MACHINE_IMAGE` |  |  | 1 | `""` |
 | `OPENRESEARCH_GCP_MAX_NODES` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_NAMESPACE` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_NODE_POOL_NAME` | ✅ |  |  | `Field(...)` |
@@ -1130,7 +1132,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **si
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_SCHEDULER_AUTHORITATIVE` |  | ✅ | 1 | `""` |
+| `OPENRESEARCH_SCHEDULER_AUTHORITATIVE` |  | ✅ | 2 | `""` |
 | `OPENRESEARCH_SCHEDULER_TREE` |  | ✅ | 3 | `""` |
 
 ### `OPENRESEARCH_SCOPE_*`

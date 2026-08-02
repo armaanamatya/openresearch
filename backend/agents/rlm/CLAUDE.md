@@ -29,6 +29,13 @@ Each run is a **long-lived subprocess**. State in `runs/<project_id>/`:
 SQLite (`OPENRESEARCH_DATABASE_URL`, canonical default `sqlite:///openresearch.db`) is the event/persistence store (CQRS projections); a `Settings` model-validator falls back to the legacy `sqlite:///reprolab.db` only when `openresearch.db` doesn't exist on disk but `reprolab.db` does (keeps pre-rename local installs/volumes working — an explicit `OPENRESEARCH_DATABASE_URL` always wins). Iteration state checkpointed atomically after each loop.
 
 ## RLM auth — two surfaces, billed separately
+> ⛔ **NEVER USE OAuth — operator directive (2026-08-01).** Do NOT use `--model claude-oauth`,
+> `CLAUDE_CODE_OAUTH_TOKEN`, or Keychain `claude login` — for any tier, local or remote. **API
+> keys only.** Sanctioned: `--model sonnet-foundry`/`opus-foundry` (real Claude via
+> `AZURE_FOUNDRY_API_KEY`, needs the `_anthropic_thinking_patch`) or `--model claude` (funded
+> `ANTHROPIC_API_KEY`). The `claude-oauth` entries below are documented for completeness only —
+> they are OFF-LIMITS. Full guidance: `docs/runbooks/2026-08-01-remote-run-llm-auth.md`.
+
 Two distinct LLM auth surfaces, NOT interchangeable:
 
 1. **Root model** (`rlm` library, `_completion_turn` in `rlm/core/rlm.py`) talks raw HTTP. Pick one model + provide its credential:

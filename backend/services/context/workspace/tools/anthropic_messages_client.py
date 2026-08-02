@@ -166,6 +166,13 @@ class AnthropicMessagesClient:
             "system": system,
             "messages": [{"role": "user", "content": user}],
         }
+        # Foundry claude-sonnet-5/opus-4-8 default to extended thinking, which on a
+        # complex grading/rubric prompt eats the max_tokens budget and truncates the
+        # structured JSON (empty/unparseable rubric — GCP smoke 2026-08-01). Disable it
+        # on those models; every other model (sonnet-4-6 grader) stays byte-identical.
+        from backend.agents.rlm._anthropic_thinking_patch import disable_thinking_for
+        if disable_thinking_for(self._model):
+            base["thinking"] = {"type": "disabled"}
         if not self._omit_temperature:
             try:
                 return self._client.messages.create(temperature=temperature, **base)

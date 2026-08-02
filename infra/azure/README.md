@@ -1,6 +1,6 @@
 # ReproLab — Azure AKS GPU Backend: Bicep L1
 
-**Client:** DeepInvent  
+**Organization:** DeepInvent (Austin, TX)  
 **Design lock:** 2026-06-03 · IaC sole-survivor update: 2026-06-12  
 **Layer:** L1 (Azure infrastructure). See §3-layer split below.
 

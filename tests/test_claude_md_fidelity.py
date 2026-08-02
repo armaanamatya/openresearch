@@ -69,3 +69,77 @@ def test_all_doc_citations_resolve():
     cited = set(re.findall(r"docs/[A-Za-z0-9_./-]+\.md", _CLAUDE))
     missing = sorted(p for p in cited if not (_REPO / p).exists())
     assert missing == [], f"CLAUDE.md cites nonexistent docs: {missing}"
+
+
+# --- Cloud/auth posture guards (operator directives 2026-07-22 and 2026-08-01) ---
+
+_POSTURE_DOCS = [
+    "README.md",
+    "CLAUDE.md",
+    "ONBOARDING.md",
+    "coworker.md",
+    "docs/architecture.md",
+    "docs/engineering-guide.md",
+    "docs/operations.md",
+    "docs/runbooks/2026-07-22-gcp-vm-e2e-run-procedure.md",
+    "docs/runbooks/2026-08-01-remote-run-llm-auth.md",
+    "docs/runbooks/2026-08-01-feature-ablation-gcp-runbook.md",
+    "backend/agents/rlm/CLAUDE.md",
+    "backend/services/runtime/CLAUDE.md",
+    "infra/gcp/README.md",
+    "infra/gcp/helm/README.md",
+    "infra/azure/README.md",
+    "docker/gke-cell-base/README.md",
+]
+
+
+def _posture_texts():
+    for rel in _POSTURE_DOCS:
+        path = _REPO / rel
+        assert path.exists(), f"posture doc missing: {rel}"
+        yield rel, path.read_text(encoding="utf-8")
+
+
+def test_gke_posture_says_not_used_never_parked():
+    """Directive 2026-07-22: every cloud-posture doc says GKE is NOT USED, never 'parked'."""
+    # A '"' between the words exempts meta-rules that merely QUOTE the forbidden word,
+    # e.g. runtime CLAUDE.md's: "GKE is not used," never "parked."
+    parked_near_gke = re.compile(r'\bgke\b[^.!?\n"]{0,60}\bparked\b|\bparked\b[^.!?\n"]{0,60}\bgke\b')
+    failures = []
+    for rel, text in _posture_texts():
+        low = text.lower()
+        if "gke" not in low:
+            continue
+        if "not used" not in low:
+            failures.append(f"{rel}: mentions GKE but never states it is NOT USED")
+        if parked_near_gke.search(low):
+            failures.append(f"{rel}: uses forbidden 'parked' wording for GKE")
+    assert not failures, "\n".join(failures)
+
+
+def test_oauth_marked_forbidden_where_mentioned():
+    """Directive 2026-08-01: any current doc that mentions OAuth must mark it forbidden."""
+    marker = re.compile(r"(?i)(never use oauth|oauth is forbidden|never oauth|⛔[^\n]*oauth)")
+    failures = []
+    for rel, text in _posture_texts():
+        if "oauth" not in text.lower():
+            continue
+        if not marker.search(text):
+            failures.append(f"{rel}: mentions OAuth without the forbidden marker")
+    assert not failures, "\n".join(failures)
+
+
+def test_no_oauth_recommendation_phrases_survive():
+    """Exact stale phrases that recommended OAuth as a usable path must be gone."""
+    banned = [
+        "Leave empty to use Claude CLI OAuth",
+        "`claude login` for OAuth",
+        "falls back to Claude CLI OAuth (free on subscription)",
+        "Anthropic key/OAuth",
+    ]
+    failures = []
+    for rel, text in _posture_texts():
+        for phrase in banned:
+            if phrase in text:
+                failures.append(f"{rel}: stale OAuth recommendation survives: {phrase!r}")
+    assert not failures, "\n".join(failures)

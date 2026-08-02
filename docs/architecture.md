@@ -1,9 +1,11 @@
-<!-- doc-meta: status=current; last-verified=2026-07-22 -->
+<!-- doc-meta: status=current; last-verified=2026-07-25 -->
 # Architecture
 
-OpenResearch is a single-user paper-reproduction system: ingest a paper, let an
-RLM root model orchestrate domain primitives, run generated experiments in a
-sandbox, score the output, and write a report.
+OpenResearch is the paper-reproduction engine behind
+[deepinvent.ai](https://deepinvent.ai) (DeepInvent, Austin, TX). The code surface
+here is single-user: ingest a paper, let an RLM root model orchestrate domain
+primitives, run generated experiments in a sandbox, score the output, and write a
+report.
 
 ## Topology
 

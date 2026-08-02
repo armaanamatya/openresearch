@@ -47,6 +47,15 @@ gcloud compute regions describe us-central1 \
 
 ## LLM configuration — Azure Foundry is the live path
 
+> **2026-08-01 UPDATE — ⛔ NEVER USE OAuth (operator directive). Read
+> [`2026-08-01-remote-run-llm-auth.md`](2026-08-01-remote-run-llm-auth.md) FIRST.**
+> API keys only — do NOT use `--model claude-oauth` / `CLAUDE_CODE_OAUTH_TOKEN` / `claude login`.
+> The sanctioned remote surface is **`--model sonnet-foundry`** (real Claude via
+> `AZURE_FOUNDRY_API_KEY`), now thinking-patched — its `claude-sonnet-5` deployment defaults to
+> extended thinking, which crashed the root at iteration 0 + produced unscoreable rubric-less runs
+> (2026-08-01 smoke) until fixed (`backend/agents/rlm/_anthropic_thinking_patch.py`). Alternative:
+> a funded `ANTHROPIC_API_KEY` with `--model claude`.
+
 As of 2026-07-22 the only working LLM auth surface is **Azure Foundry (OAuth-free)**:
 
 - The `.env` OpenAI key is **DEAD** (401 — stale `sk-svcacct-`, rotated per the 2026-07-21

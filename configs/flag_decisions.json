@@ -95,6 +95,11 @@
       "class": "reliability", "cost": "stdlib", "false_block": "low", "default": "off",
       "rationale": "On an implement_baseline SDK-aclose-stall give-up, returns repairable implement_timeout_abandoned instead of caching 'ok' over half-written code (the harvest-race that false-blocked a faithful SDAR impl). Both tiers."
     },
+    "OPENRESEARCH_K8S_COLLISION_GUARD": {
+      "triage_screen": "off", "verify_deep": "off",
+      "class": "reliability", "cost": "stdlib", "false_block": "none", "default": "off",
+      "rationale": "Cloud-only strict-ownership guard for GKE/AKS Job-name collisions (full-ID + uploaded-code/config digest identity; adopts only a controller-owned active/success Job; a mismatched 409 fails closed). off/off = byte-identical legacy Job-name/manifest/409 behavior. Neither reproduction profile exercises the multi-writer K8s-collision scenario this guards (EKS already uses the strict protocol unconditionally), so it is off in both; enabling it is a cloud-ops decision, not a scientific-verdict one."
+    },
     "OPENRESEARCH_ORPHAN_GUARD": {
       "triage_screen": "on", "verify_deep": "on",
       "class": "reliability", "cost": "stdlib", "false_block": "low", "default": "off",

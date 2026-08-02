@@ -1,7 +1,7 @@
-<!-- doc-meta: status=current; last-verified=2026-07-22 -->
+<!-- doc-meta: status=current; last-verified=2026-07-25 -->
 # OpenResearch
 
-> **Doc status:** Current · last verified 2026-07-22 against `backend/` + `CLAUDE.md`.
+> **Doc status:** Current · last verified 2026-07-25 against `backend/` + `CLAUDE.md`.
 > This README is the public front door (source-of-truth tier 3): it must not claim
 > anything the code or [`CLAUDE.md`](CLAUDE.md) don't back. Freshness is
 > enforced by `make docs-check` — see [Documentation](#documentation).
@@ -11,13 +11,32 @@
 
 Automated research paper reproduction. Given a paper (arXiv link or PDF), OpenResearch ingests it, builds a compute environment, implements and runs the experiments, scores the reproduction against a rubric, and outputs a benchmark report.
 
-> **Status (2026-06-03):** Single-user, locally-run research tool — not a hosted
-> product. End-to-end reproduction works on arXiv IDs and PDFs (see
-> [`best_runs/`](best_runs/README.md) for scored reproductions). Multi-tenant
-> auth, hosted deployment, and a stable public API are **not** built. See
-> [Current Limitations](#current-limitations).
+> **Status (2026-07-25):** OpenResearch is the paper-reproduction engine behind
+> [deepinvent.ai](https://deepinvent.ai) — DeepInvent (Austin, TX), founded by
+> Dr. Marcus Weller. It originated as a hackathon build; the team was
+> subsequently hired by DeepInvent to develop it. The code surface in this repo
+> remains single-user and locally-run — multi-tenant auth, hosted deployment,
+> and a stable public API are **not** built here. End-to-end reproduction works
+> on arXiv IDs and PDFs (see [`best_runs/`](best_runs/README.md) for scored
+> reproductions). See [Current Limitations](#current-limitations).
 
 Built on the [Recursive Language Model](https://arxiv.org/abs/2512.24601) (RLM) paradigm. The paper is offloaded as a REPL variable; an LLM root model writes Python to orchestrate the reproduction through domain-specific primitives. There is no fixed pipeline -- the model decides what to call and when.
+
+## Feature-ablation scores
+
+Per-feature reproduction scores — each row is the fixed honest baseline plus ONE feature, run
+on GCP (L4) with `sonnet-foundry` (real Claude via Foundry API key; **never OAuth**). Full
+scoreboard + method: [`docs/2026-08-01-feature-ablation-results.md`](docs/2026-08-01-feature-ablation-results.md).
+
+| Feature | Rubric score | Δ vs baseline | Date (UTC) |
+|---|---:|---:|---|
+| baseline (no test features) | _running_ | — | 2026-08-01 |
+| bes · champion · recipes · expmem · lessons · audit · leafgate | _pending_ | _pending_ | — |
+| all_on (all features combined) | _pending_ | _pending_ | — |
+
+_Paper: ResNet (1512.03385), seed 1. Scores populate as each ~1.5 h run completes; the pipeline
+is validated end-to-end on `sonnet-foundry`. A full per-feature verdict needs ≥3 seeds through the
+grader-σ gate — this is the 1-seed screen._
 
 ## Architecture
 
@@ -299,7 +318,7 @@ For local development: use OpenAI for the root (~$1/run), OAuth for sub-agents (
 
 ## Current Limitations
 
-- Single-user local deployment. No multi-tenant auth or distributed state.
+- Single-user local deployment (this repo's code surface). No multi-tenant auth or distributed state.
 - Cost ledger reports $0 for OAuth runs (SDK doesn't surface token counts).
 - GPU execution needs a cloud account: a GCP GPU VM (single-VM path), or AKS/EKS with its preflight green.
 - Frontend engines: Node >=20.19 <21 or >=22.12 (enforced via package.json `engines`).
