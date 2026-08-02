@@ -163,8 +163,8 @@ For laptop-independent campaigns, also build the full CPU orchestrator image
 with `scripts/build_orchestrator_image.sh`, enable the Helm chart's
 `orchestrator.enabled` resources, and set
 `OPENRESEARCH_GCP_ORCHESTRATOR_IMAGE` to its pinned tag. Filestore/RWX is
-mandatory for this path. See
-`docs/runbooks/2026-07-17-cross-cloud-durable-controller.md`.
+mandatory for this path. See `docs/periods/2026-07.md`
+(consolidated dossier; the original cross-cloud durable-controller runbook was pruned 2026-07-22).
 
 ### 9. Smoke test
 

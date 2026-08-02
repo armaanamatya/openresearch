@@ -162,8 +162,8 @@ scripts/azure_build_cell_image.sh   # wraps az acr build -r <acr-name>
 For laptop-independent campaigns, also build `docker/orchestrator/Dockerfile`
 to a pinned ACR tag, enable the Helm chart's `orchestrator.enabled` resources,
 and set `OPENRESEARCH_AZURE_ORCHESTRATOR_IMAGE`. Azure Files/RWX is mandatory
-for this path. See
-`docs/runbooks/2026-07-17-cross-cloud-durable-controller.md`.
+for this path. See `docs/periods/2026-07.md`
+(consolidated dossier; the original cross-cloud durable-controller runbook was pruned 2026-07-22).
 
 ### 8. Smoke test (hello-GPU Job)
 

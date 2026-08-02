@@ -139,8 +139,8 @@ per-pod label on GKE (unlike Azure's `azure.workload.identity/use`).
 
 Dynamic per-run durable Jobs need `orchestrator.enabled=true`, but do not require
 the fixed-paper Deployment or CronJob. They also require the `reprolab-cache`
-PVC, a pinned full orchestrator image, and explicit campaign budgets. See
-`docs/runbooks/2026-07-17-cross-cloud-durable-controller.md`.
+PVC, a pinned full orchestrator image, and explicit campaign budgets. See `docs/periods/2026-07.md`
+(consolidated dossier; the original cross-cloud durable-controller runbook was pruned 2026-07-22).
 Autonomous mode additionally requires `orchestrator.azureFoundry.enabled=true`,
 its non-secret endpoint, and a populated `azure-foundry-api-key` Secret Manager
 version.

@@ -8,6 +8,9 @@
 > recorded here). For an accurate, current history use **`git log`**. This file
 > is kept for the manual narrative it does contain; treat it as a partial,
 > hand-maintained log, not a complete record. *(flagged 2026-06-03)*
+>
+> Note (2026-08-01): `docs/history/*` paths cited in entries below were consolidated into
+> `docs/periods/<month>.md` dossiers on 2026-07-22 and no longer exist on disk.
 
 All notable changes to OpenResearch land here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
