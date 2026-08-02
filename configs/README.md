@@ -1,4 +1,4 @@
-<!-- doc-meta: status=current; last-verified=2026-07-13 -->
+<!-- doc-meta: status=current; last-verified=2026-08-01 -->
 # configs/ — run-spec profiles
 
 `--run-spec <path.json>` (`backend/cli.py`) loads a flat JSON object of
