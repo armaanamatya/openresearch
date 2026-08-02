@@ -1,4 +1,4 @@
-<!-- doc-meta: status=current; last-verified=2026-07-05 -->
+<!-- doc-meta: status=current; last-verified=2026-08-01 -->
 # tests/CLAUDE.md
 
 > Loaded when working in the test suite. Root context: ../CLAUDE.md.
@@ -31,9 +31,14 @@ Pytest config lives in `pyproject.toml` under `[tool.pytest.ini_options]`: `test
 `tests/test_claude_md_fidelity.py` keeps the doc set honest against the code — it fails the suite the moment a documented claim goes stale:
 - `test_documented_env_var_is_read_in_code` — every var in its `_DOCUMENTED_ENV_VARS` list must appear in the doc text AND be `git grep`-able somewhere under `backend/`.
 - `test_custom_tools_count_matches_doc` — imports `PRIMITIVE_REGISTRY` from `backend.agents.rlm.primitives`, asserts `len(...) == 19`, and asserts the literal `"19"` appears in the doc.
-- `test_runpod_cloud_type_default_matches_config` — asserts `Settings.model_fields["runpod_cloud_type"].default == "SECURE"` and that the doc's `OPENRESEARCH_RUNPOD_CLOUD_TYPE` line names `SECURE` as the default.
 - `test_all_doc_citations_resolve` — every `docs/`-rooted markdown path cited anywhere in the doc set must exist on disk.
 
-As of today the guard reads only the root file (`_CLAUDE = (_REPO / "CLAUDE.md").read_text()`). Post-split, it is being extended to read the concatenated root + nested `CLAUDE.md` set — once that lands, a documented env var, the primitive count, or a `docs/*.md` citation may legitimately live in root OR in any nested file (this one included), and the guard only needs to find it somewhere in the set, not specifically in root. If you add a doc-fidelity claim to a nested file, check the guard's actual current file list rather than assuming it still checks root alone.
+The guard reads the root file **plus every nested `CLAUDE.md`** (`_read_claude_docs()`
+concatenates the set — landed 2026-07-05), so a documented env var, the primitive count, or a
+`docs/*.md` citation may live in root OR in any nested file; the guard only needs to find it
+somewhere in the set. If you add a doc-fidelity claim to a nested file, check the guard's
+actual file list in `_read_claude_docs()` first. The file also carries three cloud/auth
+posture guards over `_POSTURE_DOCS` (GKE must be "NOT USED" — never "parked"; any OAuth
+mention needs a forbidden marker; known stale OAuth-recommendation phrases are banned).
 
 When you add a primitive, change `PRIMITIVE_REGISTRY`'s size, or touch a `_DOCUMENTED_ENV_VARS` entry, update the doc(s) and this test together, in the same change.
