@@ -1,4 +1,4 @@
-<!-- doc-meta: status=current; last-verified=2026-07-22 -->
+<!-- doc-meta: status=current; last-verified=2026-07-25 -->
 # Engineering guide
 
 This is the compressed replacement for the old plans, handoffs, and incident
@@ -7,9 +7,11 @@ the concise [development timeline](periods/) rather than a raw historical log.
 
 ## What we are building
 
-OpenResearch is a single-user research-reproduction tool. It ingests a paper,
-creates a reproduction, executes experiments, checks evidence against a rubric,
-and produces a report. The goal is trustworthy evidence, not a fluent-looking
+OpenResearch is the paper-reproduction engine behind
+[deepinvent.ai](https://deepinvent.ai) (DeepInvent, Austin, TX); it originated as a
+hackathon build. The engine is a single-user research-reproduction tool: it ingests
+a paper, creates a reproduction, executes experiments, checks evidence against a
+rubric, and produces a report. The goal is trustworthy evidence, not a fluent-looking
 report or a maximized demo score.
 
 ## Non-negotiable rules

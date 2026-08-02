@@ -91,6 +91,13 @@ from backend.agents.rlm._oauth_backend_patch import (
 from backend.agents.rlm._anthropic_foundry_patch import (
     apply_anthropic_foundry_backend_patch,
 )
+# Make rlm's AnthropicClient tolerate extended-THINKING responses: Foundry
+# claude-sonnet-5/opus return a ThinkingBlock as content[0], and the stock
+# client's content[0].text crashed the root at iteration 0 (GCP smoke 2026-08-01).
+from backend.agents.rlm._anthropic_thinking_patch import (
+    apply_anthropic_thinking_safe_patch,
+    apply_anthropic_sdk_thinking_patch,
+)
 from backend.agents.rlm.forced_iteration import (
     _TERMINAL_FAILURE_CLASSES,
     _WALL_CLOCK_FLOOR_S,
@@ -135,6 +142,8 @@ _sys_for_recursion.setrecursionlimit(10000)
 apply_oauth_backend_patch()
 apply_anthropic_caching_patch()
 apply_anthropic_foundry_backend_patch()
+apply_anthropic_thinking_safe_patch()
+apply_anthropic_sdk_thinking_patch()
 # Lane H — install the FINAL_VAR interceptor once. Per-run policies are
 # pushed via the forced_iteration_policy context manager around rlm.completion.
 apply_forced_iteration_patch()

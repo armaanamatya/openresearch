@@ -1,4 +1,4 @@
-<!-- doc-meta: status=current; last-verified=2026-07-07 -->
+<!-- doc-meta: status=current; last-verified=2026-07-25 -->
 # CLAUDE.md
 
 > **Tier-2 day-to-day reference.** Read `docs/architecture.md` before
@@ -18,7 +18,8 @@ implement and run a baseline, score it against an auto-generated rubric, and exp
 
 - **Today — autonomous reproduction.** A bare arXiv ID or PDF runs the full pipeline unattended;
   the `campaign` loop repeats until reproduced/exhausted. This is the reproduction engine behind
-  **deepinvent.ai** (the product surface).
+  **deepinvent.ai** (the product surface) — DeepInvent (Austin, TX; founded by Dr. Marcus Weller),
+  which hired the team that built it at a hackathon.
 - **Next — experiment ideation.** The same evidence-grounded harness is the substrate for a
   research-ideation layer: propose and test *new* experiments, not only replicate existing ones.
 
@@ -96,7 +97,9 @@ Load-bearing invariants; the owning nested file/spec carries the full rule + inc
   developer's `~/.claude`. → `backend/agents/rlm/CLAUDE.md`
 - **Two LLM auth surfaces, billed separately** (root model vs Sonnet sub-agents). A no-credit
   `ANTHROPIC_API_KEY` does **not** fall back to OAuth; a stale shell export shadows `.env`.
-  → `backend/agents/rlm/CLAUDE.md`
+  **⛔ NEVER USE OAuth (operator directive 2026-08-01)** — no `claude-oauth`/`CLAUDE_CODE_OAUTH_TOKEN`/
+  `claude login`, ever; API keys only (`sonnet-foundry` or funded `ANTHROPIC_API_KEY`).
+  → `backend/agents/rlm/CLAUDE.md`, `docs/runbooks/2026-08-01-remote-run-llm-auth.md`
 - **Cost visibility.** `cost_ledger.jsonl`/`demo_status.json` are **blind** to Foundry-routed LLM
   spend and idle GPU-node time — a `$0` there is not proof of $0. Verify real cost via
   `tokens_total.json` + `kubectl get nodes` (stray A100s), never the ledger alone.
