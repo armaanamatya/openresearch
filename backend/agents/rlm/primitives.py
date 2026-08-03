@@ -6252,6 +6252,58 @@ def _read_prior_weak_leaves(project_dir) -> list[dict]:
         return []
 
 
+def _cell_iter_budget() -> int | None:
+    """OPENRESEARCH_CELL_ITER_BUDGET — the scheduler-authority rung-step cap (default OFF).
+
+    In an authority campaign a branch launch carries a ``from_step``/``to_step``
+    off the paper-step ladder; the campaign threads ``to_step`` into the child's
+    ``enforcement["env"]`` as ``OPENRESEARCH_CELL_ITER_BUDGET`` so successive-
+    halving-at-rungs actually caps the training the child does (the trainer keys
+    its ``iters`` off the cell dict, so without this cap it ignores the ladder and
+    runs the full ``cells.json`` ``iters``). Returns the positive-int budget or
+    ``None``. FAIL-SAFE: an unset/empty/non-int/``<=0`` value reads as ``None`` so
+    the pre-dispatch rewrite is a no-op and behaviour is byte-identical to today.
+    """
+    raw = os.environ.get("OPENRESEARCH_CELL_ITER_BUDGET", "").strip()
+    if not raw:
+        return None
+    try:
+        budget = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return budget if budget > 0 else None
+
+
+def _apply_cell_iter_budget(cells: list, budget: int | None) -> list:
+    """Harness-owned pre-dispatch cap of every cell's ``iters`` to *budget*.
+
+    Deterministic, cell-dict-only rewrite (the field the trainer already reads —
+    NEVER a trainer-cooperative convention): with a positive-int *budget* every
+    cell's ``iters`` is set to *budget*, and any ``lr_milestones`` /
+    ``warmup_max_iters`` beyond *budget* are clamped ``<= budget`` so the LR
+    decay schedule + final-eval boundary (which the ResNet trainer keys off
+    ``iters``) stay coherent under the shorter rung. Mutates in place and returns
+    the same list. FAIL-SAFE: a falsy/non-positive/non-int *budget* is a no-op and
+    the cells are returned byte-identical (the OFF flag invariant).
+    """
+    if not isinstance(budget, int) or isinstance(budget, bool) or budget <= 0:
+        return cells
+    for cell in cells:
+        if not isinstance(cell, dict):
+            continue
+        cell["iters"] = budget
+        milestones = cell.get("lr_milestones")
+        if isinstance(milestones, list):
+            cell["lr_milestones"] = [
+                min(m, budget) if isinstance(m, int) and not isinstance(m, bool) else m
+                for m in milestones
+            ]
+        warmup_max = cell.get("warmup_max_iters")
+        if isinstance(warmup_max, int) and not isinstance(warmup_max, bool) and warmup_max > budget:
+            cell["warmup_max_iters"] = budget
+    return cells
+
+
 def _maybe_replicate_seeds(ctx, cells: list, manifest, emit) -> list:
     """Replicate the headline model across the demanded seeds — deterministic L5.
 
@@ -6379,6 +6431,15 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         return {"success": False, "metrics": {}, "logs": "",
                 "error": "cells.json present but enumerated no valid cells",
                 "failure_class": "contract_guard"}
+
+    # Scheduler-authority rung cap (OPENRESEARCH_CELL_ITER_BUDGET, default OFF):
+    # in an authority campaign the branch launch's ladder ``to_step`` is threaded
+    # into this child's env, and the harness deterministically caps every cell's
+    # ``iters`` (clamping any LR milestones/warmup boundary keyed off it) BEFORE
+    # any GPU is spent — so successive-halving-at-rungs actually bounds the real
+    # trainer instead of it running its own ``cells.json`` iters. Fail-SAFE:
+    # unset/malformed budget ⇒ no rewrite, byte-identical to today.
+    all_cells = _apply_cell_iter_budget(all_cells, _cell_iter_budget())
 
     # Contract normalization (2026-06-09): every cell must carry the three
     # per_model tree axes (model_key/env/baseline) or the aggregate loses it —
