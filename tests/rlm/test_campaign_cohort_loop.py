@@ -416,3 +416,110 @@ def test_run_entrypoint_reaches_cohort_loop_under_authority(tmp_path):
     for rp in receipts:
         payload = json.loads(rp.read_text(encoding="utf-8"))
         assert payload["metric"]["value"] != 0.01
+
+
+# --------------------------------------------------------------------------- #
+# Rung-step -> trainer iteration-budget wire (Edit 1)                          #
+#                                                                             #
+# The per-branch launch payload must carry the ladder ``to_step`` into the    #
+# child ``reproduce`` subprocess's env as ``OPENRESEARCH_CELL_ITER_BUDGET``   #
+# (and ``_FROM`` = ``from_step``) via ``enforcement["env"]`` -- the existing  #
+# ``attempt_driver.build_attempt_env`` forward path -- so the real trainer's  #
+# cell ``iters`` is capped to the rung. Without it the child ignores the      #
+# ladder and runs its full ``cells.json`` iters, and successive-halving-at-   #
+# rungs never actually happens on real cells.                                  #
+# --------------------------------------------------------------------------- #
+from backend.agents.rlm.reproduction_campaign import (  # noqa: E402
+    _branch_iter_budget_enforcement,
+)
+from backend.agents.rlm.scheduler_authority_controller import (  # noqa: E402
+    SchedulerLaunch,
+)
+
+
+def _launch(branch_id: str, *, from_step: int, to_step: int,
+            resume: str | None = None) -> SchedulerLaunch:
+    return SchedulerLaunch(
+        branch_id=branch_id,
+        branch_type="faithful",
+        hypothesis_fingerprint=_f10(branch_id),
+        rung=1,
+        from_step=from_step,
+        to_step=to_step,
+        seed=1,
+        parent_branch_id=None,
+        resume_checkpoint_path=resume,
+        is_safety_bracket=False,
+    )
+
+
+def test_branch_iter_budget_enforcement_carries_to_step():
+    # The factored env-merge: to_step -> OPENRESEARCH_CELL_ITER_BUDGET,
+    # from_step -> OPENRESEARCH_CELL_ITER_FROM, merged onto existing env.
+    base = {"cli_args": [("--x", "1")], "env": {"KEEP": "yes"}}
+    launch = _launch("faithful", from_step=10, to_step=50)
+    merged = _branch_iter_budget_enforcement(base, launch)
+    env = merged["env"]
+    assert env["OPENRESEARCH_CELL_ITER_BUDGET"] == "50"
+    assert env["OPENRESEARCH_CELL_ITER_FROM"] == "10"
+    # Existing env keys + non-env enforcement keys are preserved untouched.
+    assert env["KEEP"] == "yes"
+    assert merged["cli_args"] == [("--x", "1")]
+    # The base enforcement mapping is not mutated in place.
+    assert "OPENRESEARCH_CELL_ITER_BUDGET" not in base["env"]
+
+
+def test_branch_iter_budget_enforcement_handles_missing_env_key():
+    # A base enforcement with no ``env`` key still gets one carrying the budget.
+    merged = _branch_iter_budget_enforcement({"cli_args": []}, _launch("d", from_step=0, to_step=10))
+    assert merged["env"]["OPENRESEARCH_CELL_ITER_BUDGET"] == "10"
+    assert merged["env"]["OPENRESEARCH_CELL_ITER_FROM"] == "0"
+
+
+def test_cohort_launch_payload_threads_budget_into_branch_enforcement(tmp_path):
+    # End to end through the real ``_cohort_launch_payload``: the per-branch
+    # AttemptDirectives the driver receives carries the budget in its
+    # enforcement env, and the base directives' env keys survive.
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    campaign = ReproductionCampaign(
+        run_dir=run_dir, project_id="proj_1", paper_ref="2605.15155",
+        budget=_default_budget(), mode="unattended", driver="live_cli",
+        stages=_CohortStages(run_dir).as_stages(), scheduler_controller=None,
+    )
+    base_directives = AttemptDirectives(
+        attempt_n=1,
+        project_id="proj_1",
+        paper_ref="2605.15155",
+        enforcement={"cli_args": [], "env": {"PRESERVED": "1"}},
+        target_floor=None,
+        understanding_ref=None,
+        unresolved_warnings=(),
+        leaf_repair_plan=None,
+        improvement_notes=(),
+        failure_capsules_ref=None,
+        prior_evidence_ref=None,
+        memory_hints=(),
+        injected_lesson_signatures=(),
+        scope_spec=None,
+        scope_rung=0,
+        seed_lineage="fresh",
+        seed_pointer=None,
+        envelope=AttemptEnvelope(
+            llm_usd=1.0, gpu_usd=1.0, gpu_hours=0.1, wall_s=600.0, vm_ceiling_s=2400.0
+        ),
+        extra_guidance="",
+        run_spec_path=None,
+        fingerprint="dsha-1",
+    )
+    planned = {"project_id": "proj_1", "launch_payload": base_directives}
+    launch = _launch("faithful", from_step=10, to_step=50)
+    payload = campaign._cohort_launch_payload(planned, launch)
+
+    branch_lp = payload["launch_payload"]
+    env = dict(branch_lp.enforcement["env"])
+    assert env["OPENRESEARCH_CELL_ITER_BUDGET"] == "50"
+    assert env["OPENRESEARCH_CELL_ITER_FROM"] == "10"
+    assert env["PRESERVED"] == "1"
+    # The base directives object was NOT mutated (per-branch replace only).
+    assert "OPENRESEARCH_CELL_ITER_BUDGET" not in dict(base_directives.enforcement["env"])

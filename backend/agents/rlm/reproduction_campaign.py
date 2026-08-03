@@ -405,6 +405,33 @@ def default_liveness_probe(in_flight: InFlight) -> bool:
     return False
 
 
+def _branch_iter_budget_enforcement(
+    base_enforcement: Mapping[str, Any], launch: Any
+) -> dict[str, Any]:
+    """Merge the branch launch's ladder step budget into a copy of *base_enforcement*.
+
+    The scheduler-authority rung-step -> trainer iteration-budget wire: a branch
+    launch carries ``from_step``/``to_step`` off the paper-step ladder, but the
+    driver forwards ONLY ``enforcement["env"]`` to the child ``reproduce``
+    subprocess. So we stamp the ladder boundary INTO that env
+    (``OPENRESEARCH_CELL_ITER_BUDGET`` = ``to_step``,
+    ``OPENRESEARCH_CELL_ITER_FROM`` = ``from_step``), where the child's harness-
+    owned ``_apply_cell_iter_budget`` pass reads it and caps every cell's
+    ``iters`` — so successive-halving-at-rungs actually bounds the real trainer.
+    Rides the existing ``build_attempt_env`` -> ``enforcement["env"]`` forward
+    path with NO driver change.
+
+    Returns a NEW enforcement dict (base is never mutated); existing ``env`` keys
+    and every non-``env`` enforcement key (e.g. ``cli_args``) are preserved.
+    """
+    merged: dict[str, Any] = dict(base_enforcement or {})
+    env: dict[str, Any] = dict(merged.get("env") or {})
+    env["OPENRESEARCH_CELL_ITER_BUDGET"] = str(launch.to_step)
+    env["OPENRESEARCH_CELL_ITER_FROM"] = str(launch.from_step)
+    merged["env"] = env
+    return merged
+
+
 class ReproductionCampaign:
     def __init__(
         self,
@@ -1192,11 +1219,19 @@ class ReproductionCampaign:
                 if launch.branch_type in {"faithful", "ambiguity", "discovery"}
                 else getattr(base_lp, "branch_type", "faithful")
             )
+            # Thread the ladder step budget into THIS branch's enforcement env so
+            # the child trainer caps its cell ``iters`` to the rung (successive-
+            # halving); rides the existing build_attempt_env forward path with no
+            # driver change. Merged per-branch (base is never mutated).
+            branch_enforcement = _branch_iter_budget_enforcement(
+                getattr(base_lp, "enforcement", None) or {}, launch
+            )
             branch_lp: Any = dataclasses.replace(
                 base_lp,
                 project_id=branch_project_id,
                 branch_type=bt,
                 is_safety_bracket=bool(getattr(base_lp, "is_safety_bracket", False)) and bt == "faithful",
+                enforcement=branch_enforcement,
             )
         else:
             # Stub/mapping launch_payload (unit tests): stay a plain dict so the
@@ -1207,6 +1242,9 @@ class ReproductionCampaign:
                 "branch_id": launch.branch_id,
                 "rung": launch.rung,
                 "seed": launch.seed,
+                "enforcement": _branch_iter_budget_enforcement(
+                    dict(base_lp).get("enforcement") or {}, launch
+                ),
             }
 
         payload = dict(planned)
