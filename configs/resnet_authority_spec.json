@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "ladder": {
+    "paper_ref": "1512.03385",
+    "metric_id": "test_error",
+    "direction": "minimize",
+    "r_max_steps": 1000,
+    "rung_steps": [
+      300,
+      1000
+    ],
+    "schedule_source_sha256": "a366747f3e7a56edabf554d362fd119f45c30406c9be1a59617cc7a74e2f2b5a"
+  },
+  "width": {
+    "gpu_usd_budget": 6.0,
+    "a100_cap": 1,
+    "safety_gpu_usd_budget": 2.0,
+    "discovery_gpu_usd_budget": 2.0,
+    "eta": 3.0,
+    "noise_floor": 0.0
+  },
+  "branches": [
+    {
+      "branch_id": "resnet-faithful-s1",
+      "branch_type": "faithful",
+      "hypothesis_fingerprint": "35052cd847761ef2aa508c591dc0a7a64c2667a693b484c4556bd365dfa2e1bd",
+      "seed": 1,
+      "is_safety_bracket": true
+    },
+    {
+      "branch_id": "resnet-ambiguity-s2",
+      "branch_type": "ambiguity",
+      "hypothesis_fingerprint": "a88f2ed51498f79486ca58ae3acad70ca1087b21d77f6ebce97c5197e967052c",
+      "seed": 2
+    },
+    {
+      "branch_id": "resnet-discovery-s3",
+      "branch_type": "discovery",
+      "hypothesis_fingerprint": "0061631859a683876a792d2fba9f80de56225abb9b8170b037ec6d3e80cbebb1",
+      "seed": 3
+    }
+  ]
+}
