@@ -130,6 +130,11 @@ def test_validate_passes_when_every_key_applies():
         "OPENRESEARCH_REPRO_CONTRACT",
         "OPENRESEARCH_USE_AUTHOR_REPO",
         "OPENRESEARCH_REUSE_RUBRIC",
+        # Scheduler-authority rung-step -> trainer iteration-budget wire: the
+        # campaign threads these into the branch's enforcement env; they must be
+        # recognized run-spec keys so no run-spec assertion silently drops them.
+        "OPENRESEARCH_CELL_ITER_BUDGET",
+        "OPENRESEARCH_CELL_ITER_FROM",
         "models",
         "baseline_extra_guidance",
     ]
