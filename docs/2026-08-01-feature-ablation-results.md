@@ -11,7 +11,7 @@ PaperBench rubric (`rubric.overall_score`). Method + launch: `docs/runbooks/2026
 
 | Feature (arm) | What it adds | Rubric score | Verdict | Δ vs baseline | Date/time (UTC) | Status |
 |---|---|---:|---|---:|---|---|
-| **baseline** | fixed honest infra, no test features | **0.433** (rubric) | **failed** (evidence gate; target 0.6) | — (reference) | 2026-08-02 14:01 UTC | ✅ completed, recovered from disk |
+| **baseline** | fixed honest infra, no test features | **0.466** (rubric) | **partial** (credited; target 0.6) | — (reference) | 2026-08-03 14:40 UTC | ✅ completed + credited (base_rn3) |
 | bes | best-of-N candidate pool | _pending_ | — | — | — | ⏳ queued |
 | champion | champion-artifact + evidence-fingerprint rails | _pending_ | — | — | — | ⏳ queued |
 | recipes | cross-run positive recipes | _pending_ | — | — | — | ⏳ queued |
@@ -148,6 +148,23 @@ nested `per_model`; even if fixed it would **not** grant this run a score (the r
 deep-net divergence stand). Recovered artifacts: `runs_logs/recovered/base_rn/`.
 
 ## Run log
+- **2026-08-03 — BASELINE PROPERLY CREDITED (base_rn3): `partial`, 0.466.** First run where a
+  completed cells-route reproduction is credited instead of clamped to `failed` — validates the
+  `all_models_failed` guard fix (leaf-status descent) + the launch fix end-to-end. Ran the full
+  ~6 h (08:38→14:40 UTC), **2 experiments both `success=True, status=complete`**, `verdict_clamped:
+  None`. Contrast the recovered `base_rn` (0.433, `failed`, clamped) — same paper/seed, now
+  credited because the guard no longer false-fires on the nested `per_model`.
+  - **New gotcha found + fixed — venv MUST be on PATH.** The cell trainer resolves its interpreter
+    via `command -v python3`, which finds SYSTEM `/usr/bin/python3` (no torch) unless the run venv
+    is on PATH. Launching `.venv/bin/python -m backend.cli` is NOT enough — the child cells don't
+    inherit the venv. Two runs (`base_rn2`,`all_on_rn2`) died with `overall:None` / preflight
+    `No module named 'torch'` before this was caught. Fix: `export PATH=$HOME/or/.venv/bin:$PATH`
+    before launch (or launch from an activated venv). Now in the runbook.
+  - **Reliable launch = GCE startup-script**, not interactive SSH. OS-Login/IAP rate-limits SSH
+    hard under rapid calls; a startup-script launches the run on boot (verify via the serial
+    console — both API, no SSH) and SSH is used only for sparse collection.
+  - `all_on_rn3` was SIGTERM-interrupted mid-run (iter 14) by an orchestrator bug (macOS bash 3.2
+    has no `declare -A`) → invalid; re-running clean as `all_on_rn4`.
 - **2026-08-01** — GCP pipeline validated on `sonnet-foundry`: root crash fixed, rubric-gen
   fixed (thinking-disable patch), executor generates code. Two prior Foundry-Sonnet blockers
   found + fixed (see `docs/runbooks/2026-08-01-remote-run-llm-auth.md`).

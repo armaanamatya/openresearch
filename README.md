@@ -35,17 +35,18 @@ runs via `campaign` not `reproduce`) → **combo of both**. `all_on` here = all 
 
 | Feature | Rubric score | Verdict | Δ vs baseline | Date (UTC) |
 |---|---:|---|---:|---|
-| baseline (no test features) | **0.433** | failed (target 0.6) | — (reference) | 2026-08-02 |
+| baseline (no test features) | **0.466** | partial (credited) | — (reference) | 2026-08-03 |
 | bes · champion · recipes · expmem · lessons · audit · leafgate | _pending_ | — | _pending_ | — |
-| all_on (all features combined) | _pending_ | — | _pending_ | — |
+| all_on (all features combined) | _running_ | — | _pending_ | — |
 
-_Paper: ResNet (1512.03385), seed 1, L4, `sonnet-foundry`._ The **baseline completed end-to-end**
-(recovered from disk 2026-08-02): shallow nets matched the paper (resnet20-optA **8.64%** vs 8.75%),
-deep nets diverged (resnet110 **62.9%** — missing LR warmup), and the fail-closed evidence gate
-correctly refused credit (root-writable metrics, no checkpoint contract) → `failed`. **0.433 is a
-real partial-repro score, not a suppressed pass.** Feature rows populate as arms run; a full
-per-feature verdict needs ≥3 seeds through the grader-σ gate — this is the 1-seed screen. Details +
-the path to a real pass: [`docs/2026-08-01-feature-ablation-results.md`](docs/2026-08-01-feature-ablation-results.md).
+_Paper: ResNet (1512.03385), seed 1, L4, `sonnet-foundry`._ The **baseline completed end-to-end and
+is now credited** (`base_rn3`, 2026-08-03): ~6 h, 2 experiments both `success=True`, **verdict
+`partial` (0.466)** — the first run credited instead of clamped to `failed`, validating the
+`all_models_failed` guard fix (leaf-status descent) + the venv-PATH launch fix. Shallow nets match
+the paper (resnet20-optA ~8.6% vs 8.75%); deep nets under-train (`iters 2000` vs the paper's 64000),
+which caps the score below 0.6 — a compute-budget follow-up, not a harness bug. Feature rows populate
+as arms run; a full per-feature verdict needs ≥3 seeds through the grader-σ gate — this is the 1-seed
+screen. Details: [`docs/2026-08-01-feature-ablation-results.md`](docs/2026-08-01-feature-ablation-results.md).
 
 ## Architecture
 

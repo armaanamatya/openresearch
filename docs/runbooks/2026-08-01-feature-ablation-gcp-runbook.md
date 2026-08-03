@@ -71,6 +71,24 @@ Use the `baseline` arm on ResNet (fastest). Follow the "Validated direct recipe"
 > ```
 > (The harness's `env_pin` local-torch-core did NOT auto-install it on the DLVM uv venv — install explicitly.)
 
+> 🛑 **PUT THE VENV ON PATH AT LAUNCH — else torch is invisible to the cells (root-caused 2026-08-03).**
+> The cell trainer resolves its interpreter with `command -v python3`, which finds SYSTEM
+> `/usr/bin/python3` (no torch) — NOT the run venv. Launching `.venv/bin/python -m backend.cli` is
+> **not** enough; the child cell subprocesses don't inherit the venv, so every cell fails the
+> preflight import smoke (`No module named 'torch'`) → `overall:None`, no score. FIX: launch with
+> the venv on PATH:
+> ```bash
+> cd ~/or && export PATH=$HOME/or/.venv/bin:$HOME/.local/bin:$PATH
+> python -m backend.cli reproduce ...   # now `command -v python3` -> venv python3 (with torch)
+> ```
+> **Reliable launch mechanism = a GCE startup-script, not interactive SSH.** OS-Login/IAP
+> rate-limits SSH hard under rapid calls (255s); set the launch as `--metadata-from-file
+> startup-script=...` (runs on boot as the user, with the PATH export above), start the VM, and
+> verify via `gcloud compute instances get-serial-port-output` (`STARTUP_LAUNCHED` marker) — all
+> API, zero SSH. Reserve SSH for the single sparse `scp` that collects the score. And **poll with
+> plain shell** — macOS bash 3.2 has no `declare -A`; an associative-array dedup silently misfires
+> and can SIGTERM a still-running arm.
+
 > 🛑 **CAP + TERMINATION-ACTION — the #1 killer of these runs (root-caused 2026-08-02).**
 > The single-L4 ResNet cell-matrix run takes **longer than 6 h**. VMs provisioned with
 > `--max-run-duration=21600s` (6 h) auto-STOPped mid-run with `compute.instances.deferredStop`
