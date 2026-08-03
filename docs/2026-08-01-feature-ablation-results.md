@@ -148,6 +148,20 @@ nested `per_model`; even if fixed it would **not** grant this run a score (the r
 deep-net divergence stand). Recovered artifacts: `runs_logs/recovered/base_rn/`.
 
 ## Run log
+- **2026-08-03 — TREE-B AUTHORITY VALIDATED HERMETICALLY (Phase 1+2 done).** The scheduler
+  authority chain (freeze/branch/revive/true-kill) was found **already built** — a recon claim that
+  the checkpoint *producer* was missing turned out false: `gpu_cell_runner` always sets
+  `OPENRESEARCH_CELL_CHECKPOINT_DIR`, the trainer scaffold emits the 5-field checkpoint, and
+  `reproduction_campaign._authority_dispatch_impl` reads it → `build_raw_receipt` →
+  `controller.record_cell_receipt` → applies ASHA. The real gap was **it had never run with a real
+  trainer** (all tests used synthetic checkpoint bytes). New hermetic test
+  `tests/rlm/test_authority_e2e_real_checkpoint.py` (4 tests) drives the REAL controller from a REAL
+  tiny-CPU-torch trainer's checkpoint through a real **promote + freeze + true-kill** with the
+  matching `branch_lineage` DomainEvents, plus fail-closed / kill-gating / NaN-rejection guards.
+  **No production changes needed** (chain already correct). 143/143 authority+scheduler regression
+  green. Design+plan: `docs/superpowers/{specs,plans}/2026-08-03-tree-b-authority-e2e-validation*`.
+  Remaining: **Phase 3** = one real GPU authority campaign (`--authority-spec-path
+  configs/adam_authority_spec.json` + `SCHEDULER_TREE=1 SCHEDULER_AUTHORITATIVE=1`).
 - **2026-08-03 — BASELINE PROPERLY CREDITED (base_rn3): `partial`, 0.466.** First run where a
   completed cells-route reproduction is credited instead of clamped to `failed` — validates the
   `all_models_failed` guard fix (leaf-status descent) + the launch fix end-to-end. Ran the full
