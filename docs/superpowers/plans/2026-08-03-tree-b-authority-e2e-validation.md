@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.12, pytest (`pytest.importorskip("torch")`), stdlib `cell_checkpoint`, `scheduler_authority_controller`, `scheduler_receipt_producer`, `scheduler_evidence`.
 
+> **STATUS 2026-08-03:** Tasks 1-4 ✅ DONE (hermetic E2E test `tests/rlm/test_authority_e2e_real_checkpoint.py`, 4 tests; NO production changes needed — chain was already correct; commits `5ed925c2`/`35e40184`). Task 5 (GPU run) had an unforeseen prerequisite discovered during setup: the ladder `to_step` was never wired into the trainer's iters. That **rung-step→iters wire is now BUILT + tested** (commits `834ba242`/`2c0002a1`/`46628d85`; `tests/rlm/test_cell_iter_budget.py`) + a **ResNet authority spec** (`configs/resnet_authority_spec.json`, `bb32338a`). The **GPU campaign itself is NOT yet launched** — exact launch procedure is in `docs/2026-08-01-feature-ablation-results.md` (CURRENT STATE section). Resume-for-rung-climb deferred (cold-start climb still demonstrates freeze/promote/kill).
+
 ---
 
 ## Reference interfaces (verified 2026-08-03)

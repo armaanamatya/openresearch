@@ -147,7 +147,58 @@ checks **model-level** `status`, but the cells route nests `status` at the leaf 
 nested `per_model`; even if fixed it would **not** grant this run a score (the root-writable clamp +
 deep-net divergence stand). Recovered artifacts: `runs_logs/recovered/base_rn/`.
 
+## ⏸️ CURRENT STATE + HOW TO RESUME (2026-08-03, pre-compaction)
+
+**Scores in hand:** baseline `base_rn3` = **partial 0.466** (credited, committed). `all_on_rn5`
+(Tree-A, all 7 features) = **still running on allon-vm** — its lifecycle poller pulls the score +
+baseline Δ when it lands (`runs_logs/recovered/all_on_rn5/`).
+
+**Tree-B:** authority chain **hermetically validated** (4 tests, committed) AND the missing
+**rung-step → trainer iters wire is built + tested** (commits `834ba242`/`2c0002a1`/`46628d85`,
+465 tests green, env-gated byte-identical-off). ResNet authority spec added
+(`configs/resnet_authority_spec.json`, committed `bb32338a`). The **first-ever GPU authority
+campaign has NOT been launched yet** (held before compaction).
+
+**VM states:** allon-vm RUNNING (all_on_rn5); treeb-vm TERMINATED (bootstrapped, ready);
+**base-vm TERMINATED — operator's friend's, DO NOT TOUCH**; adam-tier3-vm old/terminated.
+
+**To launch the ResNet Tree-B GPU campaign (the one remaining GPU run):**
+1. `gcloud compute instances start treeb-vm --zone us-central1-a --project deepinvent-ext-ut`
+2. scp the 3 wired files to the VM (treeb-vm has pre-wire code):
+   `backend/agents/rlm/primitives.py`, `backend/agents/rlm/reproduction_campaign.py`,
+   `configs/resnet_authority_spec.json`.
+3. On the VM (venv MUST be on PATH):
+   ```bash
+   cd ~/or && export PATH=$HOME/or/.venv/bin:$HOME/.local/bin:$PATH
+   OPENRESEARCH_MIN_DISK_GB=0 OPENRESEARCH_SCHEDULER_TREE=1 OPENRESEARCH_SCHEDULER_AUTHORITATIVE=1 \
+   OPENRESEARCH_ROLE_MODELS='{"executor":"sonnet-foundry","grader":"sonnet-foundry","verifier":"sonnet-foundry"}' \
+   setsid nohup python -m backend.cli campaign 1512.03385 --campaign-driver unified --sandbox local \
+     --authority-spec configs/resnet_authority_spec.json --root-model sonnet-foundry \
+     --max-llm-usd 15 --max-gpu-usd 20 --max-gpu-hours 12 --project-id treeb_resnet \
+     > ~/treeb_resnet.log 2>&1 &
+   ```
+   (`campaign` uses `--root-model` + `OPENRESEARCH_ROLE_MODELS` env — NOT `--model`/`--models`.)
+4. It's NOVEL — early-checkpoint ~14 min in (authority constructed? branches spawned?
+   `CELL_ITER_BUDGET` in the log? errors?) before committing to a long poll. Verify Tree-B via the
+   `branch-tree:<campaign>` events + `python -m backend.agents.rlm.asha_shadow_report <run_dir>`,
+   never the ledger. Expect fresh integration issues (novel run). Resume-for-rung-climb is DEFERRED
+   (cold-start climb still fires freeze/promote/kill; see Tree-B run-log entry).
+
 ## Run log
+- **2026-08-03 — TREE-B RUNG-STEP WIRE BUILT (Phase-3 enabler).** The authority campaign never ran
+  on hardware because the ladder `to_step` was stamped into the branch payload but **never consumed**
+  into the trainer's iteration budget (the trainer ran its own `cells.json iters`, ignoring the
+  ladder). Fixed: `reproduction_campaign._branch_iter_budget_enforcement` threads
+  `OPENRESEARCH_CELL_ITER_BUDGET=to_step` into the branch `enforcement["env"]` (the only surface the
+  driver forwards to the child), and `primitives._apply_cell_iter_budget` (in `_execute_cell_matrix`,
+  before `normalize_cell_axes`) deterministically rewrites every cell's `iters`→budget (+ clamps
+  `lr_milestones`), the field the ResNet trainer already honors. Env-gated: **byte-identical when
+  `OPENRESEARCH_CELL_ITER_BUDGET` unset**. TDD: `tests/rlm/test_cell_iter_budget.py` (7) +
+  cohort/env-thread tests; 465 authority/campaign tests green. **Resume-for-rung-climb DEFERRED** —
+  `gpu_cell_runner:804` unconditionally overwrites `OPENRESEARCH_CELL_CHECKPOINT_DIR` per-cell, so a
+  cross-branch checkpoint pointer is clobbered; a cold-start rung climb still produces a valid
+  checkpoint+metric, so freeze/promote/kill is demonstrated without it. Commits `834ba242`,
+  `2c0002a1`, `46628d85`; ResNet spec `bb32338a`.
 - **2026-08-03 — TREE-B AUTHORITY VALIDATED HERMETICALLY (Phase 1+2 done).** The scheduler
   authority chain (freeze/branch/revive/true-kill) was found **already built** — a recon claim that
   the checkpoint *producer* was missing turned out false: `gpu_cell_runner` always sets
