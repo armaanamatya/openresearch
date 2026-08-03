@@ -1492,6 +1492,21 @@ class ReproductionCampaign:
             state = self._new_state(state="terminal")
             self._state = state
 
+        # Persist the full traceback before it is degraded to a bare
+        # ``campaign_error:<ClassName>`` stop-reason. A campaign that dies this
+        # way otherwise leaves NO traceback anywhere on disk (the summary line
+        # names only the exception class), which makes an authority/dispatch
+        # seam failure effectively undiagnosable post-mortem. Best-effort only.
+        try:
+            import traceback as _tb
+
+            tb_text = _tb.format_exc()
+            if tb_text and "NoneType: None" not in tb_text:
+                (self.campaign_dir / "campaign_error_traceback.txt").write_text(tb_text)
+                print(f"[campaign] campaign_error traceback:\n{tb_text}", flush=True)
+        except Exception:  # noqa: BLE001 -- diagnostics must never mask the real error
+            pass
+
         decision = {
             "kind": "EXHAUSTED", "rule": "campaign_error",
             "stop_reason": f"campaign_error:{type(exc).__name__}", "next_plan": None,

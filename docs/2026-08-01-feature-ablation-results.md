@@ -172,12 +172,17 @@ campaign has NOT been launched yet** (held before compaction).
    cd ~/or && export PATH=$HOME/or/.venv/bin:$HOME/.local/bin:$PATH
    OPENRESEARCH_MIN_DISK_GB=0 OPENRESEARCH_SCHEDULER_TREE=1 OPENRESEARCH_SCHEDULER_AUTHORITATIVE=1 \
    OPENRESEARCH_ROLE_MODELS='{"executor":"sonnet-foundry","grader":"sonnet-foundry","verifier":"sonnet-foundry"}' \
-   setsid nohup python -m backend.cli campaign 1512.03385 --campaign-driver unified --sandbox local \
+   setsid nohup python -m backend.cli campaign 1512.03385 --campaign-driver live --sandbox local \
      --authority-spec configs/resnet_authority_spec.json --root-model sonnet-foundry \
-     --max-llm-usd 15 --max-gpu-usd 20 --max-gpu-hours 12 --project-id treeb_resnet \
-     > ~/treeb_resnet.log 2>&1 &
+     --max-llm-usd 15 --max-gpu-usd 20 --max-gpu-hours 12 --project-id treeb_rn_live \
+     > ~/treeb_rn_live.log 2>&1 &
    ```
    (`campaign` uses `--root-model` + `OPENRESEARCH_ROLE_MODELS` env — NOT `--model`/`--models`.)
+   ⚠️ **Driver MUST be `live`, not `unified`** — the authority cohort child needs a real
+   `reproduce` subprocess that trains + writes checkpoints, AND `LiveCliDriver.launch` is the
+   only driver that forwards `enforcement["env"]` (the rung-step wire's
+   `OPENRESEARCH_CELL_ITER_BUDGET`) to the child. `unified`'s in-process child tore down in 3.6s
+   with $0 and never forwarded the env (2026-08-03 first-launch diagnosis; run-log below).
 4. It's NOVEL — early-checkpoint ~14 min in (authority constructed? branches spawned?
    `CELL_ITER_BUDGET` in the log? errors?) before committing to a long poll. Verify Tree-B via the
    `branch-tree:<campaign>` events + `python -m backend.agents.rlm.asha_shadow_report <run_dir>`,
@@ -185,6 +190,25 @@ campaign has NOT been launched yet** (held before compaction).
    (cold-start climb still fires freeze/promote/kill; see Tree-B run-log entry).
 
 ## Run log
+- **2026-08-03 — FIRST-EVER RESNET TREE-B GPU LAUNCH + driver-mismatch fix.** Launched the authority
+  campaign on treeb-vm (L4, `configs/resnet_authority_spec.json`, `SCHEDULER_TREE=1`
+  `SCHEDULER_AUTHORITATIVE=1`, sonnet-foundry). Cleared argparse (the `--root-model`+`ROLE_MODELS`
+  path works — no repeat of the Adam `--model`/`--models` failure) and ingested fine, but died in
+  **~3.6 s** with `campaign_error:SchedulerRuntimeError`, `$0` spent. Root cause (traceback below):
+  the fail-closed guard at `reproduction_campaign._cohort_loop:1118` ("cohort branch produced no
+  resumable checkpoint … refusing to fabricate a receipt") fired because the cohort child produced
+  no checkpoint — because I launched with **`--campaign-driver unified`**. `UnifiedRunDriver`'s
+  in-process `build_reproduction_run` child tore down in 3.6 s without training AND its `launch()`
+  reads `enforcement` only for wall/vm-ceiling — it **never forwards `enforcement["env"]`**, so the
+  rung-step wire's `OPENRESEARCH_CELL_ITER_BUDGET` (purpose-built to ride that env) was a total
+  no-op. `LiveCliDriver.launch` is the correct path: it spawns a real `reproduce` subprocess (the
+  proven training path all_on_rn5 uses) AND `build_attempt_env(directives, …)` merges
+  `enforcement["env"]` into the child. Fix = `--campaign-driver live` (procedure above corrected).
+  Re-launched as `treeb_rn_live` → branch child `treeb_rn_live__resnet_ambiguity_s2` spawned a real
+  `reproduce` subprocess, RLM loop running (iter 14+). Sibling improvement: `_degrade_to_campaign_error`
+  now persists the full traceback to `campaign/campaign_error_traceback.txt` (+ stderr) — a
+  `campaign_error:<ClassName>` summary was otherwise undiagnosable post-mortem; regression
+  `tests/rlm/test_campaign_cohort_loop.py::test_degrade_to_campaign_error_persists_traceback`.
 - **2026-08-03 — TREE-B RUNG-STEP WIRE BUILT (Phase-3 enabler).** The authority campaign never ran
   on hardware because the ladder `to_step` was stamped into the branch payload but **never consumed**
   into the trainer's iteration budget (the trainer ran its own `cells.json iters`, ignoring the

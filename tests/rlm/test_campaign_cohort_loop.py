@@ -523,3 +523,43 @@ def test_cohort_launch_payload_threads_budget_into_branch_enforcement(tmp_path):
     assert env["PRESERVED"] == "1"
     # The base directives object was NOT mutated (per-branch replace only).
     assert "OPENRESEARCH_CELL_ITER_BUDGET" not in dict(base_directives.enforcement["env"])
+
+
+def test_degrade_to_campaign_error_persists_traceback(tmp_path):
+    # A campaign that degrades to a bare ``campaign_error:<ClassName>`` stop
+    # reason must leave the FULL traceback on disk. Without it an
+    # authority/dispatch-seam failure (e.g. the fail-closed no-checkpoint raise
+    # at ``_cohort_loop`` line ~1118) is undiagnosable post-mortem -- the
+    # summary line names only the exception class. This is exactly how the
+    # first ResNet Tree-B GPU launch surfaced its driver mismatch.
+    from backend.agents.rlm.scheduler_runtime import SchedulerRuntimeError
+
+    run_dir = tmp_path / "run"
+    campaign = ReproductionCampaign(
+        run_dir=run_dir, project_id="proj_1", paper_ref="2605.15155",
+        budget=_default_budget(), mode="unattended", driver="live_cli",
+        stages=_CohortStages(run_dir).as_stages(), scheduler_controller=None,
+    )
+    (run_dir / "campaign").mkdir(parents=True, exist_ok=True)
+
+    # Call the degrade path from inside a REAL except block -- mirrors run()'s
+    # ``except Exception as exc: return self._degrade_to_campaign_error(exc)``
+    # -- so ``traceback.format_exc()`` captures the live traceback. The report
+    # write inside the degrade path may fail on the stub stages; we assert the
+    # traceback file only (it is written BEFORE any report work).
+    try:
+        raise SchedulerRuntimeError(
+            "cohort branch produced no resumable checkpoint -- refusing to fabricate a receipt"
+        )
+    except SchedulerRuntimeError as exc:
+        try:
+            campaign._degrade_to_campaign_error(exc)
+        except Exception:  # noqa: BLE001 -- report writing is not under test here
+            pass
+
+    tb_path = run_dir / "campaign" / "campaign_error_traceback.txt"
+    assert tb_path.exists(), "campaign_error traceback must be persisted to disk"
+    text = tb_path.read_text(encoding="utf-8")
+    assert "Traceback" in text
+    assert "SchedulerRuntimeError" in text
+    assert "no resumable checkpoint" in text
