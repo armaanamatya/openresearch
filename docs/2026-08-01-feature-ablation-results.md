@@ -158,14 +158,20 @@ The 0.233 rubric grades static/code leaves only — **NOT a valid reproduction s
 to the baseline's evidence-backed 0.466. This is agent code-bug variance, not a feature effect;
 `all_on` needs a clean re-run (`all_on_rn6`) before any baseline-vs-all_on Δ is meaningful.
 
-**Tree-B:** authority chain **hermetically validated** (4 tests, committed) AND the missing
-**rung-step → trainer iters wire is built + tested** (commits `834ba242`/`2c0002a1`/`46628d85`,
-465 tests green, env-gated byte-identical-off). ResNet authority spec added
-(`configs/resnet_authority_spec.json`, committed `bb32338a`). The **first-ever GPU authority
-campaign has NOT been launched yet** (held before compaction).
+**Tree-B:** authority chain **hermetically validated** (4 tests, committed) AND the
+**rung-step → trainer iters wire built + tested**. The **first-ever GPU authority campaign ran
+2026-08-04 (`treeb_rn_live`) and FAILED on branch provisioning** — the `live`-driver fix worked
+(real `reproduce` subprocess spawned) but the branch child **timed out at 2 h in the implement phase
+before any training** (`TimeoutExceededError` iter 18, 0 experiments), so no checkpoint → line-1118
+fail-closed → campaign died. **Design blocker (run-log below):** each branch is a full from-scratch
+reproduction (~6-8 h) that can't fit training into its ~2 h enforcement budget; needs
+seeded-implementation-per-branch (skip re-implement → straight to short rung training) or a much
+bigger budget. Authority MECHANISM already proven on real checkpoints hermetically; only branch
+*provisioning* is unproven on hardware. **`--campaign-driver live` (never `unified`).**
 
-**VM states:** allon-vm RUNNING (all_on_rn5); treeb-vm TERMINATED (bootstrapped, ready);
-**base-vm TERMINATED — operator's friend's, DO NOT TOUCH**; adam-tier3-vm old/terminated.
+**VM states (2026-08-04, all OUR VMs stopped):** allon-vm TERMINATED (all_on_rn5 collected+failed);
+treeb-vm TERMINATED (treeb_rn_live failed); **base-vm TERMINATED — operator's friend's, DO NOT TOUCH**;
+adam-tier3-vm old/terminated. **No GPU billing.**
 
 **To launch the ResNet Tree-B GPU campaign (the one remaining GPU run):**
 1. `gcloud compute instances start treeb-vm --zone us-central1-a --project deepinvent-ext-ut`
@@ -195,6 +201,24 @@ campaign has NOT been launched yet** (held before compaction).
    (cold-start climb still fires freeze/promote/kill; see Tree-B run-log entry).
 
 ## Run log
+- **2026-08-04 — TREE-B `treeb_rn_live` FAILED: branch timed out before training (design finding, not a bug).**
+  The `live`-driver relaunch worked as intended — the branch spawned a REAL `reproduce` subprocess and
+  ran the RLM loop (the driver fix is validated). But the child `resnet_ambiguity_s2` hit its wall-clock:
+  `TimeoutExceededError: after iteration 18: 7201.3s of 7200.0s limit`, `experiment_runs.jsonl` **empty
+  (0 experiments ran)** — it spent its **entire 2 h budget in the implement/rubric-gen phase and never
+  reached training**, so `code/checkpoints/` stayed empty → the fail-closed guard at `_cohort_loop:1118`
+  correctly refused a receipt → campaign died `campaign_error:SchedulerRuntimeError`. **Root cause is
+  design, not a flag:** each authority branch is a *full from-scratch reproduction* (understand→plan→
+  implement→train), which takes ~6-8 h for ResNet (the baseline took ~6 h), but the per-branch
+  enforcement co-tightens wall-clock to ~2 h (gpu-hours meter ÷ branches×rungs). The rung-step wire
+  correctly shortens *training* (300 iters) but cannot shorten the LLM *implement/rubric-gen* phases,
+  which alone exceed the branch budget. **To get a real hardware freeze/promote/kill the branches must
+  reuse a seeded/pre-built implementation (skip per-branch from-scratch implement → go straight to
+  short rung-budgeted training), OR be given a much larger per-branch budget (defeats ASHA efficiency).**
+  The authority MECHANISM itself is already proven on real checkpoints hermetically
+  (`test_authority_e2e_real_checkpoint.py`); what's unproven on hardware is only branch *provisioning*.
+  Bonus: the new `_degrade_to_campaign_error` traceback persistence dogfooded — `campaign/campaign_error_traceback.txt`
+  captured the exact line-1118 raise (that's how this was diagnosed). VM stopped.
 - **2026-08-04 01:00 UTC — all_on_rn5 FAILED (agent code bugs, not a feature effect).** The Tree-A
   all-features run finished after ~7.7 h (17:19Z→01:00Z) but verdict=`failed`, score 0.233,
   `reproduction_summary`="The RLM run produced no result". Root cause from the collected evidence
