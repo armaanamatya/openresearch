@@ -19,7 +19,7 @@ PaperBench rubric (`rubric.overall_score`). Method + launch: `docs/runbooks/2026
 | lessons | cross-run negative lessons | _pending_ | — | — | — | ⏳ queued |
 | audit | evidence-audit deterministic critic | _pending_ | — | — | — | ⏳ queued |
 | leafgate | per-leaf evidence gate (anti-fabrication) | _pending_ | — | — | — | ⏳ queued |
-| **all_on** | all 7 features combined | _pending_ | — | — | — | ⏳ queued |
+| **all_on** | all 7 features combined | 0.233 (rubric, **INVALID**) | **failed** | n/a | 2026-08-04 01:00 UTC | ❌ FAILED — agent code bugs, **0/2 experiments succeeded** → "produced no result"; 0.233 grades static leaves only, NOT a reproduction. Needs a clean re-run (`all_on_rn6`). |
 
 > Scores populate as each ~1.5 h run completes. The baseline is validated running end-to-end
 > (root → rubric-gen → executor producing code → GPU training → grade) on `sonnet-foundry`.
@@ -150,8 +150,13 @@ deep-net divergence stand). Recovered artifacts: `runs_logs/recovered/base_rn/`.
 ## ⏸️ CURRENT STATE + HOW TO RESUME (2026-08-03, pre-compaction)
 
 **Scores in hand:** baseline `base_rn3` = **partial 0.466** (credited, committed). `all_on_rn5`
-(Tree-A, all 7 features) = **still running on allon-vm** — its lifecycle poller pulls the score +
-baseline Δ when it lands (`runs_logs/recovered/all_on_rn5/`).
+(Tree-A, all 7 features) = **FAILED (collected 2026-08-04, `runs_logs/recovered/all_on_rn5/`)** —
+verdict `failed`, `reproduction_summary`="produced no result", `verdict_clamped`="zero
+success-compatible run_experiment calls". Both `run_experiment` calls failed
+(`cell_execution_error`: "2 cell(s) failed with non-OOM errors (likely code bugs), 0 succeed").
+The 0.233 rubric grades static/code leaves only — **NOT a valid reproduction score**, NOT comparable
+to the baseline's evidence-backed 0.466. This is agent code-bug variance, not a feature effect;
+`all_on` needs a clean re-run (`all_on_rn6`) before any baseline-vs-all_on Δ is meaningful.
 
 **Tree-B:** authority chain **hermetically validated** (4 tests, committed) AND the missing
 **rung-step → trainer iters wire is built + tested** (commits `834ba242`/`2c0002a1`/`46628d85`,
@@ -190,6 +195,19 @@ campaign has NOT been launched yet** (held before compaction).
    (cold-start climb still fires freeze/promote/kill; see Tree-B run-log entry).
 
 ## Run log
+- **2026-08-04 01:00 UTC — all_on_rn5 FAILED (agent code bugs, not a feature effect).** The Tree-A
+  all-features run finished after ~7.7 h (17:19Z→01:00Z) but verdict=`failed`, score 0.233,
+  `reproduction_summary`="The RLM run produced no result". Root cause from the collected evidence
+  (`runs_logs/recovered/all_on_rn5/`): both `run_experiment` calls failed —
+  `failure_class=cell_execution_error` "2 cell(s) failed with non-OOM errors (likely code bugs),
+  0 succeed" — so **zero success-compatible experiments** ran and the evidence gate correctly
+  refused to credit a `partial` (`verdict_clamped`). The 0.233 is the rubric grading static/code
+  leaves of a resultless run; it is NOT a reproduction score and is NOT comparable to the baseline's
+  evidence-backed 0.466. Conclusion: this is run-to-run variance in the agent's ResNet training-code
+  quality (the LLM shipped buggy cells), not a signal that the 7 features hurt. **`all_on` has no
+  valid data point yet — needs a clean re-run (`all_on_rn6`), ideally with the seeded rubric + a
+  working implementation.** The pre-compaction lifecycle poller stopped allon-vm on finalize; I
+  restarted it (no startup-script, so no re-launch), collected the artifacts, and re-stopped it.
 - **2026-08-03 — FIRST-EVER RESNET TREE-B GPU LAUNCH + driver-mismatch fix.** Launched the authority
   campaign on treeb-vm (L4, `configs/resnet_authority_spec.json`, `SCHEDULER_TREE=1`
   `SCHEDULER_AUTHORITATIVE=1`, sonnet-foundry). Cleared argparse (the `--root-model`+`ROLE_MODELS`
