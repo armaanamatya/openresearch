@@ -1035,7 +1035,8 @@ class SchedulerTreeRuntime:
                 not isinstance(raw_branches, list)
                 or not isinstance(receipt_sha256s, list)
                 or not isinstance(actions, list)
-                or len(raw_branches) != len(receipt_sha256s) != len(actions)
+                or len(raw_branches) != len(receipt_sha256s)
+                or len(receipt_sha256s) != len(actions)
             ):
                 raise SchedulerRuntimeError("scheduler authority batch is malformed")
             for raw_branch, receipt_sha in zip(raw_branches, receipt_sha256s):

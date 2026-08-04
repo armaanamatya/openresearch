@@ -191,10 +191,15 @@ def record_eval(
         }
 
         # Persist train_ids for the disjointness check (omit key when not supplied).
+        # The FULL id set is kept deliberately — unlike the heavy per-example
+        # ``records`` (capped for sidecar size), the disjointness/leakage guard
+        # reads this list to detect an eval example overlapping a TRAIN task, so
+        # truncating it would silently blind the guard to leakage past the cap.
+        # Task ids are short strings, so the full set is cheap to persist.
         try:
             if train_ids is not None:
                 all_train_ids = list(train_ids)
-                payload["train_ids"] = [str(tid) for tid in all_train_ids[:_RECORDS_SAMPLE_CAP]]
+                payload["train_ids"] = [str(tid) for tid in all_train_ids]
                 payload["n_train"] = len(all_train_ids)
         except Exception:  # noqa: BLE001 — fail-soft
             pass

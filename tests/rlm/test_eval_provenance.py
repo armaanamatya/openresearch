@@ -692,6 +692,40 @@ class TestDisjointnessCheck:
         assert detail is not None
         assert "overlap" in detail.lower() or "held-out" in detail.lower()
 
+    def test_producer_persists_full_train_ids_so_leakage_past_cap_is_caught(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression: record_eval must persist the FULL train_ids set, not
+        truncate it to _RECORDS_SAMPLE_CAP (64). An eval example overlapping a
+        training task PAST the cap must still be caught by the disjointness guard
+        — truncating train_ids silently blinded the leakage check at index >=64."""
+        monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        cell_dir = tmp_path / "outputs" / "run" / "cell_0"
+        cell_dir.mkdir(parents=True, exist_ok=True)
+        # 100 training task ids (> the 64 sample cap).
+        train_ids = [f"task_{i}" for i in range(100)]
+        # An eval record whose id overlaps training task #80 (well past the cap).
+        records = [{"id": "task_80", "outcome": 1.0}]
+        val = record_eval(
+            cell_dir,
+            model_key="m", env="e", baseline="b",
+            metric_name="success_rate",
+            records=records,
+            train_ids=train_ids,
+        )
+        (cell_dir / "metrics.json").write_text(
+            json.dumps({"status": "ok", "success_rate": val}), encoding="utf-8"
+        )
+        # The sidecar must carry the FULL train id set (not truncated to 64).
+        sc = json.loads((cell_dir / "eval_provenance.json").read_text())
+        assert len(sc["train_ids"]) == 100
+        assert "task_80" in sc["train_ids"]
+        # Guard must VETO: task_80 leaked from train into eval.
+        veto, detail = eval_provenance_should_veto(tmp_path)
+        assert veto is True
+        assert detail is not None
+        assert "overlap" in detail.lower() or "held-out" in detail.lower()
+
     def test_disjoint_no_veto(self, tmp_path, monkeypatch):
         """Eval ids {"e1","e2"} ∩ train_ids {"t1","t2"} = {} → veto False
         (value consistent → no veto from recompute check either)."""
