@@ -575,12 +575,10 @@ def extract_evaluations_from_readme(
             all_metrics.extend(metrics)
 
         if not all_metrics:
-            print(f"No metrics extracted from table")
+            print("No metrics extracted from table")
             return None
 
         # Build model-index structure
-        display_name = repo_id.split("/")[-1] if "/" in repo_id else repo_id
-
         results = [{
             "task": {"type": task_type},
             "dataset": {
@@ -764,7 +762,7 @@ def inspect_tables(repo_id: str) -> None:
                     print(f"      [{idx}] {header}")
 
             if analysis.get("sample_rows"):
-                print(f"\n   Sample rows (first column):")
+                print("\n   Sample rows (first column):")
                 for row_val in analysis["sample_rows"][:5]:
                     print(f"      - {row_val}")
 

@@ -14,7 +14,7 @@ Categories:
 """
 
 import re
-from typing import List, Any
+from typing import List
 
 # ==================== CORRECTNESS REWARDS ====================
 
@@ -68,7 +68,7 @@ def numeric_correctness_reward(prompts, completions, answer, tolerance=0.01, **k
                 rewards.append(2.0)
             else:
                 rewards.append(0.0)
-        except:
+        except Exception:
             rewards.append(0.0)
 
     return rewards
@@ -89,7 +89,7 @@ def code_execution_reward(prompts, completions, test_cases, **kwargs) -> List[fl
             # Execute code (sandboxed!)
             passed = run_test_cases(code, test_cases)
             rewards.append(2.0 if passed else 0.0)
-        except:
+        except Exception:
             rewards.append(0.0)
 
     return rewards
@@ -136,7 +136,7 @@ def json_format_reward(completions, **kwargs) -> List[float]:
         try:
             json.loads(r)
             rewards.append(0.5)
-        except:
+        except Exception:
             rewards.append(0.0)
 
     return rewards
@@ -306,6 +306,39 @@ def math_problem_reward(prompts, completions, answer, **kwargs) -> List[float]:
 
     return [f + c for f, c in zip(format_rewards, correctness_rewards)]
 
+def code_block_format_reward(completions, **kwargs) -> List[float]:
+    """
+    Reward completions that contain a fenced markdown code block.
+    Use for: Code generation tasks
+
+    Weight: 0.5
+    """
+    responses = [comp[0]['content'] for comp in completions]
+    return [0.5 if extract_code_block(r) else 0.0 for r in responses]
+
+def no_syntax_error_reward(completions, **kwargs) -> List[float]:
+    """
+    Reward completions whose extracted code parses without a SyntaxError.
+    Use for: Code generation tasks
+
+    Weight: 0.2
+    """
+    import ast
+
+    responses = [comp[0]['content'] for comp in completions]
+    rewards = []
+    for r in responses:
+        code = extract_code_block(r)
+        if not code:
+            rewards.append(0.0)
+            continue
+        try:
+            ast.parse(code)
+            rewards.append(0.2)
+        except SyntaxError:
+            rewards.append(0.0)
+    return rewards
+
 def code_generation_reward(prompts, completions, test_cases, **kwargs) -> List[float]:
     """
     Combined reward for code: format + execution + style.
@@ -358,7 +391,7 @@ def run_test_cases(code: str, test_cases: List[tuple]) -> bool:
             if result != expected:
                 return False
         return True
-    except:
+    except Exception:
         return False
 
 # ==================== REWARD FUNCTION PRESETS ====================
