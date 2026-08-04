@@ -312,7 +312,9 @@ def test_execute_cell_matrix_cloud_staged_search_never_falls_back_to_local_runne
     calls: list[list[str]] = []
     contexts: list[tuple[str, str, bool, bool]] = []
     budget = object()
-    sink = lambda *_: None
+
+    def sink(*_):
+        return None
 
     def fake_k8s_run_matrix(cells, script, **kw):
         calls.append([cell["id"] for cell in cells])

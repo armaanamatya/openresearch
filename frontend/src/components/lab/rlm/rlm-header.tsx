@@ -71,8 +71,6 @@ export function RlmHeader({
   onRerun,
   rerunBusy = false,
   inFlightPrimitive = null,
-  sandboxMode = null,
-  primitiveCalls = [],
 }: RlmHeaderProps) {
   const tone = statusTone(status);
   const latestWarning = warnings.length > 0 ? warnings[warnings.length - 1] : null;
