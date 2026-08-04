@@ -1,6 +1,12 @@
 # Parallel Feature-Ablation Campaign — Design & Execution Plan
 
-<!-- doc-meta: status=plan; authored=2026-07-31; last-verified=2026-08-01; owner=operator; state=ready-to-execute -->
+<!-- doc-meta: status=plan; authored=2026-07-31; last-verified=2026-08-04; owner=operator; state=paused -->
+
+> **STATUS 2026-08-04 — PAUSED.** Executed on GCP: baseline `base_rn3` credited (0.466); `all_on_rn5`
+> FAILED (agent code-bug variance); the first Tree-B GPU authority run (`treeb_rn_live`) FAILED on
+> branch-provisioning (each branch times out before training). Root causes + next steps tracked in
+> [`docs/open-issues.md`](../../open-issues.md) and the results run-log
+> ([`docs/2026-08-01-feature-ablation-results.md`](../../2026-08-01-feature-ablation-results.md)).
 
 **Goal.** Measure the *isolated* and *combined* score contribution of each quality
 feature (Tree-A within-run + Tree-B scheduler authority), via paired A/B runs, so a
