@@ -4,9 +4,9 @@
 
 ## Summary
 
-- **Total distinct flags:** 507
+- **Total distinct flags:** 509
 - **Managed by `config.py` Settings (typed, default known):** 140
-- **Ad-hoc `os.environ` reads (no central default):** 367
+- **Ad-hoc `os.environ` reads (no central default):** 369
 - **Mentioned in a `CLAUDE.md`:** 136 (26%)
 
 Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **sites** = ad-hoc read count; **default** = literal default at first read site (best effort).
@@ -282,6 +282,8 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **si
 | `OPENRESEARCH_CELL_GPU_COUNT` |  |  |  | |
 | `OPENRESEARCH_CELL_GRAD_CHECKPOINT` |  | ✅ |  | |
 | `OPENRESEARCH_CELL_ID` |  |  | 3 | `SPEC.get("framework", "execute"` |
+| `OPENRESEARCH_CELL_ITER_BUDGET` |  |  | 1 | `""` |
+| `OPENRESEARCH_CELL_ITER_FROM` |  |  |  | |
 | `OPENRESEARCH_CELL_MAX_OOM_RETRIES` |  |  | 1 | |
 | `OPENRESEARCH_CELL_MAX_STEPS` |  |  |  | |
 | `OPENRESEARCH_CELL_MEM_FRACTION` |  |  | 1 | |
