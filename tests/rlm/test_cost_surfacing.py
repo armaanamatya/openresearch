@@ -189,3 +189,60 @@ def test_compute_cost_summary_zero_iterations_no_crash() -> None:
     assert result["usd_total"] > 0.0
     assert result["iter_count"] == 0
     # No ZeroDivisionError
+
+
+# --- 11. Foundry cost visibility: unpriced rows are surfaced, never a silent $0 ---
+
+def _unpriced_entry(model: str = "grok-4.3", tokens_in: int = 40_000, tokens_out: int = 8_000) -> dict:
+    """A CostLedgerEntry.to_json()-shaped row for an unknown-rate model."""
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "agent_id": "rlm_root",
+        "primitive": "rlm_root",
+        "attempt_index": 0,
+        "provider": "openai",
+        "model": model,
+        "estimated_usd": None,
+        "cost_usd": 0.0,
+        "unpriced": True,
+        "input_tokens": tokens_in,
+        "output_tokens": tokens_out,
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+    }
+
+
+def test_compute_cost_summary_surfaces_unpriced_rows() -> None:
+    """Unpriced (Foundry/grok) rows must be counted + named, and drop the
+    confidence to "partial" — a $0 sum is not proof of $0."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_dir = Path(tmpdir)
+        _write_ledger(
+            project_dir,
+            [_entry(0.25), _unpriced_entry(), _unpriced_entry(tokens_in=10_000, tokens_out=2_000)],
+        )
+        result = _compute_cost_summary(project_dir, iteration_count=1)
+    assert abs(result["usd_total"] - 0.25) < 1e-6  # priced spend only
+    assert result["unpriced_rows"] == 2
+    assert result["unpriced_tokens"] == 60_000
+    assert result["unpriced_models"] == ["grok-4.3"]
+    assert result["cost_confidence"] == "partial"
+
+
+def test_compute_cost_summary_all_priced_is_complete() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        project_dir = Path(tmpdir)
+        _write_ledger(project_dir, [_entry(0.10), _entry(0.20)])
+        result = _compute_cost_summary(project_dir, iteration_count=1)
+    assert result["unpriced_rows"] == 0
+    assert result["unpriced_tokens"] == 0
+    assert result["unpriced_models"] == []
+    assert result["cost_confidence"] == "complete"
+
+
+def test_compute_cost_summary_missing_ledger_has_unpriced_fields() -> None:
+    """The empty/missing-ledger summaries carry the same schema (frontend-safe)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = _compute_cost_summary(Path(tmpdir), iteration_count=0)
+    assert result["unpriced_rows"] == 0
+    assert result["cost_confidence"] == "complete"

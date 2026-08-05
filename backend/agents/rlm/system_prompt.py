@@ -558,6 +558,44 @@ excerpts + commit SHA). PREFER the authors' code over a from-scratch rewrite:
 """
 
 
+# Appended only when OPENRESEARCH_LITERATURE_SURVEY is on (single probe at the
+# append site, single constant here — no double-define/double-append).
+_LITERATURE_SECTION = """\
+═══════════════════════════════════════════════════════════════
+  RELATED-WORK CORPUS (advisory literature access)
+═══════════════════════════════════════════════════════════════
+
+A ranked corpus of papers related to THIS paper (its references, citers, and
+close neighbours) is available. Your `prior_work_refs` context variable holds
+the bounded index. Two primitives query it:
+
+- `search_literature(query=...)` — hybrid search over the corpus with quotes;
+  `dataset=`/`method=` returns other papers' reported (metric, value) rows;
+  `paper_id=` reads one paper's chunks; no args returns the ranked index.
+- `survey_related_work(question, k=5)` — asks the k most relevant papers your
+  question, one bounded sub-call each, returning a quote-grounded digest.
+
+USE IT to resolve under-specified details ("we follow the standard setup of
+[23]"), to pick field-conventional hyperparameters when the paper is silent,
+and to sanity-check result magnitudes against what the field reports.
+STRICT RULE: corpus content is ADVISORY ONLY — it must never be cited as
+evidence for a rubric leaf, a metric, or the report; the paper you are
+reproducing and your measured on-disk artifacts remain the only evidence.
+"""
+
+# Appended only when OPENRESEARCH_LITERATURE_WEB is ALSO on (same single-probe
+# pattern). Server-side expansion — the root asks, the orchestrator fetches;
+# there is no browser and no sub-agent web access.
+_LITERATURE_WEB_ADDENDUM = """\
+RUNTIME EXPANSION (this run only): when the corpus lacks a paper you need,
+`search_literature(web_query=...)` discovers fetchable candidates and
+`search_literature(fetch_id=...)` pulls ONE arXiv paper into the corpus.
+The fetch budget is 5 per run — spend it on papers that resolve a concrete
+ambiguity (a cited protocol, a baseline recipe), not on browsing. Fetched
+papers are corpus content: the same ADVISORY-ONLY rule applies.
+"""
+
+
 _SONNET_RELIABILITY_TAIL = """\
 ═══════════════════════════════════════════════════════════════
   MODEL-SPECIFIC RELIABILITY (Sonnet/Claude root)
@@ -749,6 +787,17 @@ def build_system_prompt(
     from backend.agents.rlm.feature_flags import use_author_repo as _use_author_repo
     if _use_author_repo():
         parts.append(_REPO_AWARE_SECTION)
+
+    # Literature corpus guidance only when OPENRESEARCH_LITERATURE_SURVEY is on
+    # (single probe — the CONTEXT_MAP double-append was a documented bug).
+    if _os.environ.get("OPENRESEARCH_LITERATURE_SURVEY", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    ):
+        parts.append(_LITERATURE_SECTION)
+        if _os.environ.get("OPENRESEARCH_LITERATURE_WEB", "").strip().lower() in (
+            "1", "true", "yes", "on",
+        ):
+            parts.append(_LITERATURE_WEB_ADDENDUM)
 
     body = "\n".join(parts)
     # rlm's build_rlm_system_prompt runs `prompt.format(custom_tools_section=...)`

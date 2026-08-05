@@ -9618,6 +9618,304 @@ def consult_skill(
         return {"status": "error", "error": str(exc)[:300]}
 
 
+def _literature_survey_enabled() -> bool:
+    # Same truthy vocabulary as literature_corpus_enabled()/
+    # literature_grounding_enabled() (the repo flag convention) — the three
+    # literature flags must agree so the feature can't half-enable.
+    import os as _os
+
+    return _os.environ.get("OPENRESEARCH_LITERATURE_SURVEY", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _literature_store(ctx: "RunContext"):
+    """Open the global corpus store for this runs root. Caller handles errors."""
+    from backend.services.knowledge.corpus.store import CorpusStore, corpus_root
+
+    store = CorpusStore(corpus_root(ctx.runs_root))
+    store.initialize()
+    return store
+
+
+def _literature_target_id(ctx: "RunContext") -> "str | None":
+    """The target's corpus id from this run's literature spec (fail-soft None).
+
+    Resolution handles campaign width children (``<project_id>_w<k>``), whose
+    spec lives under the campaign parent's run dir.
+    """
+    import json as _json
+
+    try:
+        from backend.services.knowledge.corpus.manifest import resolve_spec_path
+
+        spec_path = resolve_spec_path(ctx.project_dir)
+        if spec_path is not None:
+            return _json.loads(spec_path.read_text(encoding="utf-8"))["target"]["id"]
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def search_literature(
+    query: str = "",
+    dataset: str = "",
+    method: str = "",
+    paper_id: str = "",
+    max_results: int = 5,
+    fetch_id: str = "",
+    web_query: str = "",
+    *,
+    ctx: "RunContext",
+) -> dict:
+    """Bounded retrieval over the related-paper corpus (the 20th primitive).
+
+    Progressive disclosure, mirroring ``consult_skill``:
+      - no args              -> corpus index (this run's ranked related papers)
+      - ``dataset``/``method`` -> deterministic ``lit_results`` lookup (exact,
+        case-insensitive) — "who else reports numbers on X"
+      - ``query``            -> hybrid retrieval (FTS5-BM25 + citation-graph
+        expansion, Lane-A deterministic; see corpus/retrieval.py)
+      - ``paper_id``         -> bounded chunk read of ONE corpus paper
+      - ``web_query``        -> Phase-3 runtime discovery: server-side
+        connector search, bounded metadata out (never page content)
+      - ``fetch_id``         -> Phase-3 runtime expansion: pull ONE arXiv
+        paper into the corpus (<=5 fetches/run, persisted budget)
+
+    The two Phase-3 modes additionally need ``OPENRESEARCH_LITERATURE_WEB``
+    (else ``{"status": "disabled"}`` from web_expand) — and every byte of
+    network I/O stays orchestrator-side behind the existing connectors;
+    sub-agents keep zero web tools.
+
+    Off-state (``OPENRESEARCH_LITERATURE_SURVEY`` unset) -> ``{"status":
+    "disabled"}`` so the registry count stays stable. ADVISORY context only:
+    corpus content is never citable report evidence. Never raises.
+    """
+    if not _literature_survey_enabled():
+        return {"status": "disabled"}
+    try:
+        n = max(1, min(int(max_results or 5), 15))
+        if web_query:
+            from backend.services.knowledge.corpus.web_expand import discover_papers
+
+            return discover_papers(web_query, limit=n)
+        store = _literature_store(ctx)
+        try:
+            if fetch_id:
+                from backend.services.knowledge.corpus.web_expand import fetch_paper
+
+                return fetch_paper(fetch_id, store=store, project_dir=ctx.project_dir)
+            if paper_id:
+                return _literature_paper_read(store, paper_id, n)
+            if dataset or method:
+                return _literature_results_lookup(store, dataset, method, n)
+            if query:
+                from backend.services.knowledge.corpus.retrieval import retrieve
+
+                result = retrieve(
+                    store,
+                    query,
+                    target_id=_literature_target_id(ctx),
+                    top_n=n,
+                    trace_path=ctx.project_dir / "rlm_state" / "literature_query_trace.json",
+                )
+                return {"status": "ok", "kind": "search", "hits": result["hits"]}
+            return _literature_index(ctx, store)
+        finally:
+            store.close()
+    except Exception as exc:  # noqa: BLE001 — a lookup tool must never break the run
+        return {"status": "error", "error": str(exc)[:300]}
+
+
+def _literature_index(ctx: "RunContext", store) -> dict:
+    import json as _json
+
+    papers: list[dict] = []
+    try:
+        from backend.services.knowledge.corpus.manifest import resolve_spec_path
+
+        spec_path = resolve_spec_path(ctx.project_dir)
+        if spec_path is not None:
+            spec = _json.loads(spec_path.read_text(encoding="utf-8"))
+            papers = [
+                {
+                    "id": p.get("id"),
+                    "title": (p.get("title") or "")[:200],
+                    "relation": p.get("relation"),
+                    "year": p.get("year"),
+                }
+                for p in (spec.get("papers") or [])[:25]
+            ]
+    except Exception:  # noqa: BLE001
+        papers = []
+    return {
+        "status": "ok",
+        "kind": "index",
+        "papers": papers,
+        "corpus_papers_total": store.paper_count(),
+        "note": (
+            "Related-paper corpus (ADVISORY — never cite as report evidence). "
+            "search_literature(query=...) for hybrid search; dataset=/method= "
+            "for reported numbers; paper_id= to read one paper."
+        ),
+    }
+
+
+def _literature_results_lookup(store, dataset: str, method: str, n: int) -> dict:
+    clauses, params = [], []
+    if dataset:
+        clauses.append("LOWER(dataset) = LOWER(?)")
+        params.append(dataset.strip())
+    if method:
+        clauses.append("LOWER(method) = LOWER(?)")
+        params.append(method.strip())
+    rows = store.connection.execute(
+        "SELECT paper_id, method, dataset, metric, value, span_quote"
+        f" FROM lit_results WHERE {' AND '.join(clauses)}"
+        " ORDER BY paper_id, metric LIMIT ?",
+        (*params, n),
+    ).fetchall()
+    return {
+        "status": "ok",
+        "kind": "results",
+        "rows": [
+            {
+                "paper_id": r["paper_id"],
+                "method": r["method"],
+                "dataset": r["dataset"],
+                "metric": r["metric"],
+                "value": r["value"],
+                "quote": (r["span_quote"] or "")[:200],
+            }
+            for r in rows
+        ],
+    }
+
+
+def _literature_paper_read(store, paper_id: str, n: int) -> dict:
+    row = store.get_paper(paper_id)
+    if row is None:
+        return {"status": "error", "error": f"unknown corpus paper: {paper_id[:80]}"}
+    chunks = store.connection.execute(
+        "SELECT section, text FROM lit_chunks WHERE paper_id = ? ORDER BY seq LIMIT ?",
+        (paper_id, max(n, 10)),
+    ).fetchall()
+    return {
+        "status": "ok",
+        "kind": "paper",
+        "id": paper_id,
+        "title": (row.get("title") or "")[:200],
+        "chunks": [
+            {"section": c["section"], "text": c["text"][:800]} for c in chunks
+        ],
+        "truncated": len(chunks) >= max(n, 10),
+    }
+
+
+def survey_related_work(question: str, k: int = 5, *, ctx: "RunContext") -> dict:
+    """Map-reduce survey over the related-paper corpus (the 21st primitive).
+
+    Retrieves the top-``k`` most relevant corpus papers for ``question``
+    (hybrid Lane-A retrieval), then fans out ONE bounded LLM sub-call per
+    paper — each sees only that paper's retrieved slices and must answer with
+    short direct quotes — and merges the per-paper answers into a digest
+    capped at ``_SURVEY_DIGEST_MAX`` chars. The fan-out rides the cheap
+    accelerator endpoint when configured, else the planner client.
+
+    ADVISORY output only (Lane B once the LLM has summarized): never cite the
+    digest as report evidence — verify against the paper text via
+    search_literature(paper_id=...). Off-state -> ``{"status": "disabled"}``.
+    Never raises.
+    """
+    if not _literature_survey_enabled():
+        return {"status": "disabled"}
+    try:
+        if not (question or "").strip():
+            return {"status": "error", "error": "question is required"}
+        kk = max(1, min(int(k or 5), 8))
+        store = _literature_store(ctx)
+        try:
+            from backend.services.knowledge.corpus.retrieval import retrieve
+
+            result = retrieve(
+                store, question, target_id=_literature_target_id(ctx), top_n=kk * 4
+            )
+            # Group hits by paper, preserving score order (best paper first).
+            per_paper: dict[str, list[dict]] = {}
+            for hit in result["hits"]:
+                per_paper.setdefault(hit["paper_id"], []).append(hit)
+            papers = list(per_paper.items())[:kk]
+            if not papers:
+                return {"status": "ok", "kind": "survey", "digest": "", "papers": []}
+
+            client, tier = _survey_client(ctx)
+            answers = []
+            for paper_id, hits in papers:
+                answers.append(_survey_one_paper(client, question, paper_id, hits))
+            digest = _merge_survey_digest(question, answers)
+            return {
+                "status": "ok",
+                "kind": "survey",
+                "digest": digest,
+                "papers": [p for p, _ in papers],
+                "llm_tier": tier,
+                "note": "ADVISORY digest — verify quotes via search_literature(paper_id=...).",
+            }
+        finally:
+            store.close()
+    except Exception as exc:  # noqa: BLE001 — a survey tool must never break the run
+        return {"status": "error", "error": str(exc)[:300]}
+
+
+_SURVEY_DIGEST_MAX = 4000
+_SURVEY_ANSWER_MAX = 600
+
+
+def _survey_client(ctx: "RunContext") -> "tuple[Any, str]":
+    """Cheap accelerator endpoint when configured, else the planner client."""
+    import os as _os
+
+    try:
+        from backend.agents.rlm.accelerator import (
+            build_accelerator_client,
+            resolve_accelerator,
+        )
+
+        ep = resolve_accelerator(_os.environ.get("OPENRESEARCH_ACCELERATOR", ""))
+        if ep is not None:
+            return build_accelerator_client(ep), "accelerator"
+    except Exception:  # noqa: BLE001 — accelerator trouble degrades to planner
+        pass
+    return ctx.llm_client, "planner"
+
+
+def _survey_one_paper(client: Any, question: str, paper_id: str, hits: list[dict]) -> dict:
+    excerpts = "\n\n".join(
+        f"[{h['section']}] {h['quote']}" for h in hits[:3]
+    )
+    title = hits[0].get("title") or paper_id
+    try:
+        text = client.complete(
+            system=(
+                "You answer a question about ONE research paper from provided "
+                "excerpts only. Quote directly (<=200 chars per quote), name the "
+                "section, and say 'not addressed' when the excerpts don't answer. "
+                "Max 80 words."
+            ),
+            user=f"Paper: {title}\n\nExcerpts:\n{excerpts}\n\nQuestion: {question}",
+        )
+        return {"paper_id": paper_id, "title": title, "answer": (text or "")[:_SURVEY_ANSWER_MAX]}
+    except Exception as exc:  # noqa: BLE001 — one failed sub-call must not sink the survey
+        return {"paper_id": paper_id, "title": title, "answer": f"(sub-call failed: {str(exc)[:120]})"}
+
+
+def _merge_survey_digest(question: str, answers: list[dict]) -> str:
+    parts = [f"Survey: {question}"]
+    for a in answers:
+        parts.append(f"- {a['title']} ({a['paper_id']}): {a['answer']}")
+    return "\n".join(parts)[:_SURVEY_DIGEST_MAX]
+
+
 PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "understand_section": understand_section,
     "extract_hyperparameters": extract_hyperparameters,
@@ -9638,6 +9936,8 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "read_context_map": read_context_map,  # PEEK-lite, OPENRESEARCH_CONTEXT_MAP
     "inspect_repository": inspect_repository,  # #62, OPENRESEARCH_USE_AUTHOR_REPO
     "consult_skill": consult_skill,  # skill-library playbooks, OPENRESEARCH_SKILLS
+    "search_literature": search_literature,  # related-paper corpus, OPENRESEARCH_LITERATURE_SURVEY
+    "survey_related_work": survey_related_work,  # per-paper fan-out survey, OPENRESEARCH_LITERATURE_SURVEY
 }
 
 PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
@@ -9750,4 +10050,27 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "name -> {status:'not_found', did_you_mean:[...]}. category=<cat> (no "
         "name) browses that category's skills. Neither arg -> an index of "
         "categories with counts. Returns {status:'disabled'} when the flag is off.",
+    "search_literature": "search_literature(query='', dataset='', method='', "
+        "paper_id='', max_results=5, fetch_id='', web_query='') -> dict — "
+        "ADVISORY related-paper corpus lookup (enabled by "
+        "OPENRESEARCH_LITERATURE_SURVEY). No args -> index of this paper's "
+        "ranked related work. query= -> hybrid search (BM25 + citation-graph "
+        "expansion) returning bounded quotes with paper ids. dataset=/method= "
+        "-> other papers' reported (metric, value) rows for exact entity "
+        "names. paper_id= -> bounded chunk read of one corpus paper. "
+        "web_query= -> discover fetchable papers via server-side connector "
+        "search; fetch_id= -> pull ONE arXiv paper into the corpus (<=5 "
+        "fetches/run) — both need OPENRESEARCH_LITERATURE_WEB too. NEVER cite "
+        "corpus content as report evidence — use it to disambiguate "
+        "protocols/hyperparameters and sanity-check magnitudes. Returns "
+        "{status:'disabled'} when the flag is off.",
+    "survey_related_work": "survey_related_work(question, k=5) -> dict — "
+        "ADVISORY map-reduce survey over the related-paper corpus (enabled by "
+        "OPENRESEARCH_LITERATURE_SURVEY): retrieves the k most relevant papers, "
+        "asks each one your question via a bounded per-paper sub-call, and "
+        "returns a merged quote-grounded digest (<=4000 chars) with per-paper "
+        "attribution. Use for cross-paper questions ('what warmup schedules do "
+        "similar papers use?'). Verify any quote via "
+        "search_literature(paper_id=...) before relying on it. Returns "
+        "{status:'disabled'} when the flag is off.",
 }

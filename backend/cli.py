@@ -2481,6 +2481,42 @@ def _build_parser() -> argparse.ArgumentParser:
     regen.add_argument("project_id", help="Run project id (e.g., prj_03271ba130d423fe).")
     regen.set_defaults(func=cmd_regenerate_report)
 
+    corpus = sub.add_parser(
+        "corpus",
+        help="Build/inspect the field-specific literature corpus (runs/_corpus/).",
+    )
+    corpus_sub = corpus.add_subparsers(dest="corpus_cmd", required=True)
+    corpus_build = corpus_sub.add_parser(
+        "build",
+        help="Seed from the paper's references + citation graph, rank, fetch top-K.",
+    )
+    corpus_build.add_argument("paper", help="arXiv id/URL or an ingested prj_ id.")
+    corpus_build.add_argument("--arxiv-id", default=None, help="arXiv id when PAPER is a prj_ id.")
+    corpus_build.add_argument("--title", default=None, help="Target title override (improves ranking/search).")
+    corpus_build.set_defaults(func=cmd_corpus)
+    corpus_status = corpus_sub.add_parser("status", help="Corpus store counts + target spec path.")
+    corpus_status.add_argument("paper", help="arXiv id/URL or an ingested prj_ id.")
+    corpus_status.add_argument("--arxiv-id", default=None, help=argparse.SUPPRESS)
+    corpus_status.set_defaults(func=cmd_corpus)
+    corpus_extract = corpus_sub.add_parser(
+        "extract",
+        help="Populate lit_entities/lit_results: free dictionary pass + grounded LLM pass.",
+    )
+    corpus_extract.add_argument("paper", help="arXiv id/URL or an ingested prj_ id.")
+    corpus_extract.add_argument("--max-papers", type=int, default=8, help="LLM calls cap per invocation.")
+    corpus_extract.add_argument("--force", action="store_true", help="Re-extract papers that already have rows.")
+    corpus_extract.add_argument("--arxiv-id", default=None, help=argparse.SUPPRESS)
+    corpus_extract.set_defaults(func=cmd_corpus)
+    corpus_query = corpus_sub.add_parser(
+        "query",
+        help="Hybrid retrieval debug: BM25(+vec) seeds, citation expansion, lane-labeled trace.",
+    )
+    corpus_query.add_argument("paper", help="arXiv id/URL or an ingested prj_ id.")
+    corpus_query.add_argument("question", help="The retrieval query.")
+    corpus_query.add_argument("--top-n", type=int, default=5, help="Contexts to return (5=accuracy, 15=precision).")
+    corpus_query.add_argument("--arxiv-id", default=None, help=argparse.SUPPRESS)
+    corpus_query.set_defaults(func=cmd_corpus)
+
     reproduce = sub.add_parser("reproduce", help="Full pipeline: ingest + agent pipeline.")
     reproduce.add_argument("source", help="PDF path, arXiv id/URL, or DOI/doi.org URL.")
     reproduce.add_argument(
@@ -3200,6 +3236,159 @@ def _module_main(argv: list[str] | None = None) -> None:
             terminate_children_then_exit(code)
         os._exit(code)
     raise SystemExit(code)
+
+
+def cmd_corpus(args: argparse.Namespace) -> int:
+    """Build or inspect the literature corpus for an ingested paper.
+
+    An explicit ``corpus build`` invocation IS the operator's authorization
+    for literature network I/O, so the two gating flags are enabled for the
+    duration of this command unless the operator has explicitly set them
+    (an explicit "0" in the environment is respected).
+    """
+    import os as _os
+
+    from backend.services.knowledge.corpus import (
+        CorpusStore,
+        build_corpus,
+        corpus_root,
+    )
+    from backend.services.knowledge.corpus.inputs import load_target
+
+    runs_root = Path(args.runs_root)
+    paper = args.paper.strip()
+    if paper.startswith("prj_"):
+        project_id, arxiv_id = paper, (args.arxiv_id or None)
+    else:
+        source = _source_from_cli(paper, "auto")
+        project_id = project_id_for(source)
+        arxiv_id = getattr(source, "arxiv_id", None) or (args.arxiv_id or None)
+
+    store_root = corpus_root(runs_root)
+
+    if args.corpus_cmd == "status":
+        corpus = CorpusStore(store_root)
+        corpus.initialize()
+        spec_path = runs_root / project_id / "rlm_state" / "literature_spec.json"
+        summary = {
+            "corpus_root": str(store_root),
+            "papers": corpus.paper_count(),
+            "relations": corpus.relation_count(),
+            "target_project_id": project_id,
+            "target_spec": str(spec_path) if spec_path.exists() else None,
+        }
+        print(json.dumps(summary, indent=2))
+        return 0
+
+    if args.corpus_cmd == "query":
+        from backend.services.knowledge.corpus.retrieval import retrieve
+        from backend.services.knowledge.corpus.store import normalize_paper_id
+
+        corpus = CorpusStore(store_root)
+        corpus.initialize()
+        target_norm = None
+        spec_path = runs_root / project_id / "rlm_state" / "literature_spec.json"
+        if spec_path.exists():
+            try:
+                target_norm = json.loads(spec_path.read_text(encoding="utf-8"))["target"]["id"]
+            except Exception:  # noqa: BLE001 — fall through to arxiv-derived id
+                target_norm = None
+        if target_norm is None:
+            target_norm = normalize_paper_id(arxiv_id=arxiv_id)
+        result = retrieve(
+            corpus,
+            args.question,
+            target_id=target_norm,
+            top_n=args.top_n,
+            trace_path=runs_root / project_id / "rlm_state" / "literature_query_trace.json",
+        )
+        print(json.dumps(result["hits"], indent=2))
+        print(
+            f"(trace: {runs_root / project_id / 'rlm_state' / 'literature_query_trace.json'})",
+            file=sys.stderr,
+        )
+        return 0
+
+    if args.corpus_cmd == "extract":
+        from backend.services.knowledge.corpus.extraction import (
+            run_deterministic_extraction,
+            run_llm_extraction,
+        )
+
+        corpus = CorpusStore(store_root)
+        corpus.initialize()
+        det = run_deterministic_extraction(corpus)
+        client = _corpus_extract_client()
+        if client is None:
+            print(json.dumps({"deterministic": det.to_dict(), "llm": None}, indent=2))
+            print(
+                "No LLM endpoint for result extraction — configure the accelerator "
+                "(OPENRESEARCH_ACCELERATOR=endpoint + OPENRESEARCH_ACCELERATOR_BASE_URL/"
+                "_MODEL/_API_KEY, or an OPENAI_API_KEY) and re-run. Deterministic "
+                "dictionary entities were still refreshed.",
+                file=sys.stderr,
+            )
+            return 1
+        llm = run_llm_extraction(
+            corpus, client, max_papers=args.max_papers, force=args.force
+        )
+        print(json.dumps({"deterministic": det.to_dict(), "llm": llm.to_dict()}, indent=2))
+        return 0 if llm.results_added or not llm.errors else 1
+
+    _os.environ.setdefault("OPENRESEARCH_LITERATURE_CORPUS", "1")
+    _os.environ.setdefault("OPENRESEARCH_LITERATURE_GROUNDING", "1")
+
+    event_store = SqliteEventStore(args.database_url)
+    target = load_target(
+        project_id,
+        store=event_store,
+        runs_root=runs_root,
+        arxiv_id=arxiv_id,
+        title=args.title or "",
+    )
+    if not target.references and not target.arxiv_id:
+        print(
+            f"No seed material for {project_id} — ingest the paper first "
+            "(python -m backend.cli ingest <paper>) or pass --arxiv-id.",
+            file=sys.stderr,
+        )
+        return 1
+
+    report = build_corpus(runs_root=runs_root, target=target)
+    if report is None:
+        print("Corpus build disabled (OPENRESEARCH_LITERATURE_CORPUS=0).", file=sys.stderr)
+        return 1
+    print(json.dumps(report.to_dict(), indent=2))
+    return 0 if not report.errors or report.papers_persisted else 1
+
+
+def _corpus_extract_client():
+    """Cheap OpenAI-compatible client for corpus extraction, or None.
+
+    Reuses the accelerator resolver: an explicit OPENRESEARCH_ACCELERATOR mode
+    wins; otherwise try `endpoint` mode, which falls back to OPENAI_API_KEY for
+    the api.openai.com host (ACC-2). Fail-soft: any resolution trouble -> None.
+    """
+    import os as _os
+
+    try:
+        from backend.agents.rlm.accelerator import (
+            build_accelerator_client,
+            resolve_accelerator,
+        )
+
+        for mode in (_os.environ.get("OPENRESEARCH_ACCELERATOR", "").strip(), "endpoint"):
+            if not mode:
+                continue
+            try:
+                ep = resolve_accelerator(mode)
+            except Exception:  # noqa: BLE001
+                ep = None
+            if ep is not None:
+                return build_accelerator_client(ep)
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 def _source_from_cli(raw: str, source_kind: str):

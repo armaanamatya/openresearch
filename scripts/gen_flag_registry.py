@@ -180,7 +180,7 @@ def main() -> int:
     content = "\n".join(lines).rstrip() + "\n"
 
     if args.check:
-        existing = OUT.read_text() if OUT.exists() else ""
+        existing = OUT.read_text(encoding="utf-8") if OUT.exists() else ""
         if existing.strip() != content.strip():
             print("flags.md is STALE — run: .venv/bin/python scripts/gen_flag_registry.py", file=sys.stderr)
             return 1
@@ -188,7 +188,7 @@ def main() -> int:
         return 0
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(content)
+    OUT.write_text(content, encoding="utf-8")
     print(f"Wrote {OUT.relative_to(REPO)}: {len(all_flags)} flags "
           f"({n_managed} cfg-managed, {n_adhoc} ad-hoc, {n_documented} documented).")
     return 0

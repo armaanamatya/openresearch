@@ -608,10 +608,30 @@ def _cost_dict(result: RLMChatCompletion, ctx: RunContext) -> dict:
         primitives_usd = ctx.cost_ledger.total_usd()
 
     total = round(rlm_usd + primitives_usd, 8)
-    return {
+    cost: dict = {
         "llm_usd": total,
         "primitives": round(primitives_usd, 8),
     }
+
+    # Cost-visibility (2026-08-03): ledger rows whose model has no per-token
+    # rate (estimated_usd is None — e.g. an arbitrary Foundry/grok deployment)
+    # sum into llm_usd as $0. Surface them so the report's total is never
+    # silently mistaken for complete. Fail-soft: an audit failure must never
+    # block report writing.
+    try:
+        if ctx.cost_ledger is not None:
+            from backend.agents.resilience.cost_visibility import audit_cost_ledger
+
+            audit = audit_cost_ledger(
+                [entry.to_json() for entry in ctx.cost_ledger.entries]
+            )
+            cost["unpriced_rows"] = int(audit.get("unpriced_rows") or 0)
+            cost["unpriced_tokens"] = int(audit.get("unpriced_tokens") or 0)
+            cost["unpriced_models"] = list(audit.get("unpriced_models") or [])
+            cost["cost_confidence"] = str(audit.get("confidence") or "complete")
+    except Exception:  # noqa: BLE001 — visibility is advisory, never fatal
+        logger.warning("_cost_dict: unpriced audit failed (non-fatal)", exc_info=True)
+    return cost
 
 
 # ---------------------------------------------------------------------------
@@ -2720,6 +2740,38 @@ def write_final_report_rlm(
     except Exception:  # noqa: BLE001 — stamp is best-effort
         logger.warning("report: experiment-arm stamp failed (non-fatal)", exc_info=True)
 
+    # --- Advisory field-plausibility band (Phase 4, 2026-08-03) -------------
+    # Corpus-derived advisory: warns when a provenanced reproduced metric is a
+    # strong outlier vs >=3 literature values for the same (dataset, metric).
+    # ADVISORY FOREVER — the band is network-sourced (and lit_results may be
+    # LLM-extracted, Lane B), so it may warn, never gate: verdict/score are
+    # untouched. Flag-gated inside the module; off => no disk access, stamp
+    # omitted => byte-for-byte today. Fail-soft — never blocks the write.
+    try:
+        from backend.agents.rlm.field_plausibility import run_field_plausibility
+
+        _fp_emit = None
+        try:
+            import json as _json_fp
+            from backend.agents.rlm.sse_bridge import build_run_warning_event as _bwe_fp
+
+            def _fp_emit(code: str, msg: str) -> None:
+                _ev = _bwe_fp(code=code, message=msg)
+                with open(project_dir / "dashboard_events.jsonl", "a", encoding="utf-8") as _ef:
+                    _ef.write(_json_fp.dumps(_ev) + "\n")
+        except Exception:  # noqa: BLE001
+            pass
+        _fp_findings = run_field_plausibility(project_dir, emit_warning=_fp_emit)
+        if _fp_findings:
+            _d = json.loads(json_content)
+            _d["field_plausibility"] = {
+                "advisory": True,
+                "findings": [f.to_dict() for f in _fp_findings],
+            }
+            json_content = json.dumps(_d, indent=2)
+    except Exception:  # noqa: BLE001 — advisory band is best-effort, never blocks
+        logger.warning("report: field_plausibility failed (non-fatal)", exc_info=True)
+
     # --- E3: degradations_taken ledger (loud-fail-soft sweep) --------------
     # Surface the run's coded degradation warnings so the report honestly lists
     # every lesser path the harness took (the cells_manifest_restored pattern made
@@ -3068,11 +3120,17 @@ def _aggregate_tokens_total(project_dir: Path) -> dict:
       - by_model: {model: {input_tokens, output_tokens}}
       - grand_total: {input_tokens, output_tokens, cache_read_input_tokens,
                       cache_creation_input_tokens, calls}
+      - unpriced: {rows, tokens, models, confidence} — cost-visibility audit
+        (2026-08-03): rows whose model has no per-token rate (Foundry/grok,
+        ``estimated_usd`` null) — their TOKENS are in the totals above but
+        their dollars are in no ledger sum, so this block is what makes
+        tokens_total.json the honest verify-real-cost artifact.
       - computed_at_utc: ISO timestamp
     """
     ledger_path = project_dir / "cost_ledger.jsonl"
     by_primitive: dict[str, dict] = {}
     by_model: dict[str, dict] = {}
+    raw_rows: list[dict] = []
     grand_total_input = 0
     grand_total_output = 0
     grand_total_cache_read = 0
@@ -3088,6 +3146,7 @@ def _aggregate_tokens_total(project_dir: Path) -> dict:
                 row = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            raw_rows.append(row)
 
             # Support both field names: the canonical field and the alias written by to_json()
             primitive = str(row.get("primitive") or row.get("agent_id") or "unknown")
@@ -3119,6 +3178,23 @@ def _aggregate_tokens_total(project_dir: Path) -> dict:
             grand_total_cache_creation += cache_creation
             grand_total_calls += 1
 
+    # Cost-visibility audit — fail-soft, never blocks the tokens_total write.
+    unpriced = {"rows": 0, "tokens": 0, "models": [], "confidence": "complete"}
+    try:
+        from backend.agents.resilience.cost_visibility import audit_cost_ledger
+
+        audit = audit_cost_ledger(raw_rows)
+        unpriced = {
+            "rows": int(audit.get("unpriced_rows") or 0),
+            "tokens": int(audit.get("unpriced_tokens") or 0),
+            "models": list(audit.get("unpriced_models") or []),
+            "confidence": str(audit.get("confidence") or "complete"),
+        }
+    except Exception:  # noqa: BLE001 — visibility is advisory, never fatal
+        logger.warning(
+            "_aggregate_tokens_total: unpriced audit failed (non-fatal)", exc_info=True
+        )
+
     return {
         "schema_version": 1,
         "by_primitive": by_primitive,
@@ -3130,6 +3206,7 @@ def _aggregate_tokens_total(project_dir: Path) -> dict:
             "cache_creation_input_tokens": grand_total_cache_creation,
             "calls": grand_total_calls,
         },
+        "unpriced": unpriced,
         "computed_at_utc": datetime.now(timezone.utc).isoformat(),
     }
 

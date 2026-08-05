@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 # Launch the SDAR (arXiv 2605.15155) reproduction on the GCP A100 VM.
 #
+# >>> SDAR-ONLY. For ANY OTHER PAPER use `scripts/vm_paper_run.sh` (the generic
+# >>> single-VM launcher, 2026-08-03) — it implements this same validated flow
+# >>> (env-file sourcing, outer-timeout backstop, self_stop + GCS upload, exit
+# >>> trap, plus the venv torch check) parameterized by paper/project-id/models/
+# >>> money caps. This script stays SDAR-pinned ON PURPOSE: it is the exact
+# >>> VM-side entry `VmComputeProvider.launch()` invokes (golden-argv tests in
+# >>> tests/services/runtime/test_vm_compute_provider.py assert the name), and
+# >>> its pinned behaviors — the CLAUDE_CODE_OAUTH_TOKEN .env lift, `env -u
+# >>> ANTHROPIC_API_KEY`, the `runs/sdar_gcp_run.out` upload name, the no-args
+# >>> `runs/.cache/run_spec.json` auto-discovery, and the SDAR guidance/scope/
+# >>> repo-url defaults below — are what "preserve current behavior" means, so
+# >>> it is NOT a thin wrapper over the generic script. SDAR-specific here:
+# >>> the hardcoded paper id 2605.15155, PROJECT_ID default, guidance heredoc,
+# >>> scope-spec default, repo URL, and OPENRESEARCH_SDAR_* knob names.
+#
 # Self-contained and idempotent-friendly: it sources the env file that
 # `gcp_sdar_preflight.sh prepare` wrote, pins the Azure Foundry deployment as
 # every role (OAuth-free), requests the paper's full 3-model scope (the 7B

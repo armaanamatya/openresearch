@@ -18,8 +18,12 @@ the first ``web_agent_site`` import.  **FIDELITY DEVIATION:** BM25Okapi (pure Py
 unigram) replaces Lucene BM25F; search ranking quality is slightly lower but the GRPO
 policy learns navigation regardless of exact ranking.  Running the WebShop cell under
 ``OPENRESEARCH_WEBSHOP_PYTHON`` (a py3.10 verl-webshop env with the real Lucene index)
-is the faithful upgrade.  TODO: wire ``OPENRESEARCH_WEBSHOP_PYTHON`` as a per-cell
-interpreter seam in ``gpu_cell_runner`` when faithful Lucene search is required.
+is the faithful upgrade — implemented (2026-08-03) as the per-cell interpreter seam
+``gpu_cell_runner._cell_interpreter``: when ``OPENRESEARCH_WEBSHOP_PYTHON`` is set, a
+WebShop cell's subprocess launches under that interpreter (and its ``bin/`` is what
+gets prepended to the child ``PATH``); unset ⇒ byte-identical default.  Asset
+staging for the Lucene path: ``scripts/webshop_stage_assets.sh`` +
+``docs/runbooks/2026-08-03-webshop-asset-restaging.md``.
 
 When neither ``WEBSHOP_URL`` nor ``WEBSHOP_DATA_DIR`` is set, behavior is
 byte-identical to the prior version (the unavailability path).

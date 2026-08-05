@@ -16,12 +16,19 @@ Selection logic:
 `score_text_quality` is a module-level helper used by both this resolver and
 tests; it scores clean prose (wordish token ratio) and returns 0.0 for very
 short text.
+
+Reference supplementation: only the PDF parser extracts the bibliography
+(HtmlPaperParser returns ``references=()``), and HTML wins the cascade for
+arXiv papers — so a winning result that carries NO references is supplemented
+with the reference rows from the best other strategy that found some. The
+winner's sections/full_text are never touched.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from dataclasses import replace
 from pathlib import Path
 
 from backend.services.ingestion.parser.html_parser import HtmlPaperParser
@@ -32,7 +39,7 @@ from backend.services.ingestion.parser.pymupdf_parser import PyMuPdfParser
 logger = logging.getLogger(__name__)
 
 _PARSER_NAME = "resolving"
-_PARSER_VERSION = "1.0"
+_PARSER_VERSION = "1.1"  # 1.1: reference supplementation from non-winning strategies
 _USABLE = 0.35
 
 # Below this quality score, a source is not considered good enough to skip OCR.
@@ -160,10 +167,43 @@ class ResolvingParser:
             ocr_error = ParseError("OCR skipped (HTML or PDF passed threshold)", cause_kind="ocr_skipped", retryable=False)
         candidates.append(("ocr", ocr_result, ocr_score, ocr_error))
 
-        # 4. Choose best result.
+        # 4. Choose best result, then supplement missing references.
         chosen_name, chosen_result = self._choose(candidates)
+        chosen_result = self._supplement_references(chosen_result, candidates)
         self._log_choice(chosen_name, candidates, ocr_skipped=ocr_skipped)
         return chosen_result
+
+    @staticmethod
+    def _supplement_references(
+        chosen: ParseResult,
+        candidates: list[tuple[str, ParseResult | None, float, BaseException | None]],
+    ) -> ParseResult:
+        """Merge reference rows into a winning result that carries none.
+
+        Only the PDF parser extracts references today; when HTML (or OCR) wins
+        the cascade the bibliography would otherwise be silently lost. The
+        donor is the highest-priority other strategy with a non-empty
+        reference list. A winner that already has references is returned
+        unchanged (same object — callers may rely on identity).
+        """
+        if chosen.references:
+            return chosen
+        donors = [
+            (name, result)
+            for name, result, _, _ in candidates
+            if result is not None and result is not chosen and result.references
+        ]
+        if not donors:
+            return chosen
+        donor_name, donor = min(
+            donors, key=lambda t: _STRATEGY_PRIORITY.get(t[0], 99)
+        )
+        logger.info(
+            "resolving parser: supplemented %d references from %s into winning result",
+            len(donor.references),
+            donor_name,
+        )
+        return replace(chosen, references=donor.references)
 
     @staticmethod
     def _choose(

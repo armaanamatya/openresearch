@@ -54,6 +54,50 @@ SEARCH_GPUS=4          # authors specify 4; exact match
 # unchanged. This is flagged in the final report as a hardware-fidelity deviation.
 ALFWORLD_GPUS=4
 
+# ── ALFWorld/WebShop OOM knobs (2026-08-03; docs/periods/2026-07.md §11) ──
+# ALFWorld-3B trained and LEARNED (episode/success_rate 0.383→0.508, peaks
+# 0.609) then OOMed mid-FSDP-actor-update at step 79: long episodes
+# (mean ~40 turns × rollout.n=8 → ~850K-token sequences) + Adam step with no
+# offload on top of vLLM holding 60% VRAM → fragmentation. The memory-safe
+# config is the one already proven on Search. Applied via sed to the ALFWorld
+# and WebShop launches ONLY — run_search_3b.sh is proven at 0.456 and stays
+# byte-identical (do NOT add these to the Search launches).
+# NOTE: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True is a DEAD END here —
+# vLLM's CuMemAllocator raises "AssertionError: Expandable segments are not
+# compatible with memory pool" at model load (see the command-cell exemption
+# in backend/agents/rlm/gpu_cell_runner.py). The last sed strips any such
+# export inside the authors' scripts (run_webshop_3b_patched.sh carries one);
+# nothing in THIS script sets it.
+OOM_MICRO_BSZ="${SDAR_OOM_MICRO_BSZ:-16}"          # ppo_micro_batch_size_per_gpu 32→16
+OOM_GPU_MEM_UTIL="${SDAR_OOM_GPU_MEM_UTIL:-0.5}"   # rollout.gpu_memory_utilization 0.6→0.5
+OOM_OPT_OFFLOAD="${SDAR_OOM_OPT_OFFLOAD:-True}"    # actor.fsdp_config.optimizer_offload (Adam state → CPU)
+OOM_SED_EXPRS=(
+    "s/ppo_micro_batch_size_per_gpu=32/ppo_micro_batch_size_per_gpu=${OOM_MICRO_BSZ}/g"
+    "s/gpu_memory_utilization=0\.6/gpu_memory_utilization=${OOM_GPU_MEM_UTIL}/g"
+    "s/actor\.fsdp_config\.optimizer_offload=False/actor.fsdp_config.optimizer_offload=${OOM_OPT_OFFLOAD}/g"
+    "/PYTORCH_CUDA_ALLOC_CONF=expandable_segments/d"
+)
+
+# ── Mid-training checkpoint/resume knobs (default OFF — empty = no seds) ──
+# The authors' scripts hard-code trainer.save_freq=-1 and carry NO
+# trainer.resume_mode arg (verified against the full hydra arg list in
+# gcp_logs/sdar_authors_run/run_search_3b.log line 15), so any
+# OOM/preemption/interruption restarts a 150-step run from step 0. When
+# SDAR_CKPT_STEPS is non-empty, patch save_freq to that cadence and inject
+# trainer.resume_mode=auto on the same anchor arg — verl then checkpoints to its
+# default local dir every N steps and a rerun of the SAME script resumes from
+# the latest checkpoint instead of step 0 (enables spot-GPU usage). Unlike
+# OOM_SED_EXPRS (always applied), this DEFAULTS OFF: unset/empty SDAR_CKPT_STEPS
+# yields an empty array = zero seds = every launch byte-identical, including the
+# proven Search runs.
+SDAR_CKPT_STEPS="${SDAR_CKPT_STEPS:-}"
+CKPT_SED_EXPRS=()
+if [[ -n "${SDAR_CKPT_STEPS}" ]]; then
+    CKPT_SED_EXPRS=(
+        "s/trainer\.save_freq=-1/trainer.save_freq=${SDAR_CKPT_STEPS} trainer.resume_mode=auto/g"
+    )
+fi
+
 # ── Training budget (must match authors' scripts) ──
 TRAIN_EPOCHS=150         # ALFWorld + WebShop: total_epochs
 SEARCH_STEPS=150         # Search: total_training_steps (DIFFERENT UNIT — see recon §3)
@@ -545,6 +589,8 @@ phase_smoke() {
     log "  test_freq=5→1, logger=['console','wandb']→['console'] (skip WandB for smoke)"
 
     run_script "run_webshop_qwen3.sh" "${ENV_WEBSHOP}" "$(seq -s, 0 $(( WEBSHOP_GPUS - 1 )))" \
+        "${OOM_SED_EXPRS[@]}" \
+        ${CKPT_SED_EXPRS[@]+"${CKPT_SED_EXPRS[@]}"} \
         "s/trainer\.total_epochs=${TRAIN_EPOCHS}/trainer.total_epochs=${SMOKE_EPOCHS}/" \
         "s/trainer\.test_freq=5/trainer.test_freq=1/" \
         "s/trainer\.logger=\['console','wandb'\]/trainer.logger=['console']/" \
@@ -579,6 +625,9 @@ phase_grid() {
     log "Confirmed GPU budget: ${ACTUAL_GPUS}×A100-80GB"
     log "ALFWorld fidelity caveat: n_gpus_per_node overridden 8→${ALFWORLD_GPUS}."
     log "  WebShop runs are exact-match (2 GPUs); Search runs are exact-match (4 GPUs)."
+    if [[ -n "${SDAR_CKPT_STEPS}" ]]; then
+        log "Checkpoint/resume ON (SDAR_CKPT_STEPS): trainer.save_freq=${SDAR_CKPT_STEPS} + trainer.resume_mode=auto"
+    fi
 
     [[ -d "${ENV_SDAR}" ]]      || die "sdar env missing — run 'base' phase"
     [[ -d "${ENV_WEBSHOP}" ]]   || die "verl-webshop env missing — run 'base'+'webshop' phases"
@@ -589,16 +638,20 @@ phase_grid() {
     # run qwen3 (GPUs 0,1) and 3b (GPUs 2,3) in parallel; then 7b alone.
     # All three use trainer.n_gpus_per_node=2 — exact match, no override needed.
     log "--- WEBSHOP: launching qwen3 (GPUs 0,1) + 3b (GPUs 2,3) in parallel"
+    log "    (OOM knobs applied: micro_bsz=${OOM_MICRO_BSZ}, gpu_mem_util=${OOM_GPU_MEM_UTIL}, opt_offload=${OOM_OPT_OFFLOAD}, expandable_segments stripped)"
     (
-        run_script "run_webshop_qwen3.sh" "${ENV_WEBSHOP}" "0,1" &
+        run_script "run_webshop_qwen3.sh" "${ENV_WEBSHOP}" "0,1" "${OOM_SED_EXPRS[@]}" \
+            ${CKPT_SED_EXPRS[@]+"${CKPT_SED_EXPRS[@]}"} &
         PID_WS_Q=$!
-        run_script "run_webshop_3b.sh"    "${ENV_WEBSHOP}" "2,3" &
+        run_script "run_webshop_3b.sh"    "${ENV_WEBSHOP}" "2,3" "${OOM_SED_EXPRS[@]}" \
+            ${CKPT_SED_EXPRS[@]+"${CKPT_SED_EXPRS[@]}"} &
         PID_WS_3=$!
         wait "${PID_WS_Q}" || die "run_webshop_qwen3.sh failed — check ${LOG_DIR}/run_webshop_qwen3.log"
         wait "${PID_WS_3}" || die "run_webshop_3b.sh failed — check ${LOG_DIR}/run_webshop_3b.log"
     )
     log "--- WEBSHOP: launching 7b (GPUs 0,1)"
-    run_script "run_webshop_7b.sh" "${ENV_WEBSHOP}" "0,1"
+    run_script "run_webshop_7b.sh" "${ENV_WEBSHOP}" "0,1" "${OOM_SED_EXPRS[@]}" \
+        ${CKPT_SED_EXPRS[@]+"${CKPT_SED_EXPRS[@]}"}
 
     # ── Search (4 GPUs per run; retriever co-locates on same GPUs) ───────────
     # The retrieval server uses ~5–7 GB/GPU; training scripts set
@@ -607,14 +660,19 @@ phase_grid() {
     log "--- SEARCH: starting retrieval server (uses ~5–7 GB/GPU)"
     retriever_start
 
+    # Search launches stay byte-identical unless SDAR_CKPT_STEPS is explicitly
+    # set (CKPT_SED_EXPRS is empty by default — the OOM knobs stay OFF here).
     log "--- SEARCH: running qwen3 (GPUs 0,1,2,3)"
-    run_script "run_search_qwen3.sh" "${ENV_SDAR}" "0,1,2,3"
+    run_script "run_search_qwen3.sh" "${ENV_SDAR}" "0,1,2,3" \
+        ${CKPT_SED_EXPRS[@]+"${CKPT_SED_EXPRS[@]}"}
 
     log "--- SEARCH: running 3b (GPUs 0,1,2,3)"
-    run_script "run_search_3b.sh"    "${ENV_SDAR}" "0,1,2,3"
+    run_script "run_search_3b.sh"    "${ENV_SDAR}" "0,1,2,3" \
+        ${CKPT_SED_EXPRS[@]+"${CKPT_SED_EXPRS[@]}"}
 
     log "--- SEARCH: running 7b (GPUs 0,1,2,3)"
-    run_script "run_search_7b.sh"    "${ENV_SDAR}" "0,1,2,3"
+    run_script "run_search_7b.sh"    "${ENV_SDAR}" "0,1,2,3" \
+        ${CKPT_SED_EXPRS[@]+"${CKPT_SED_EXPRS[@]}"}
 
     log "--- SEARCH: stopping retrieval server"
     retriever_stop
@@ -623,14 +681,18 @@ phase_grid() {
     # Patch trainer.n_gpus_per_node=8 → ${ALFWORLD_GPUS} via sed on the script.
     local ALF_GPU_SED="s/trainer\.n_gpus_per_node=8/trainer.n_gpus_per_node=${ALFWORLD_GPUS}/"
 
+    log "    (OOM knobs applied: micro_bsz=${OOM_MICRO_BSZ}, gpu_mem_util=${OOM_GPU_MEM_UTIL}, opt_offload=${OOM_OPT_OFFLOAD}, expandable_segments stripped)"
     log "--- ALFWORLD: running qwen3 (${ALFWORLD_GPUS} GPUs, overriding authors' 8)"
-    run_script "run_alfworld_qwen3.sh" "${ENV_SDAR}" "0,1,2,3" "${ALF_GPU_SED}"
+    run_script "run_alfworld_qwen3.sh" "${ENV_SDAR}" "0,1,2,3" "${ALF_GPU_SED}" "${OOM_SED_EXPRS[@]}" \
+        ${CKPT_SED_EXPRS[@]+"${CKPT_SED_EXPRS[@]}"}
 
     log "--- ALFWORLD: running 3b (${ALFWORLD_GPUS} GPUs)"
-    run_script "run_alfworld_3b.sh"    "${ENV_SDAR}" "0,1,2,3" "${ALF_GPU_SED}"
+    run_script "run_alfworld_3b.sh"    "${ENV_SDAR}" "0,1,2,3" "${ALF_GPU_SED}" "${OOM_SED_EXPRS[@]}" \
+        ${CKPT_SED_EXPRS[@]+"${CKPT_SED_EXPRS[@]}"}
 
     log "--- ALFWORLD: running 7b (${ALFWORLD_GPUS} GPUs)"
-    run_script "run_alfworld_7b.sh"    "${ENV_SDAR}" "0,1,2,3" "${ALF_GPU_SED}"
+    run_script "run_alfworld_7b.sh"    "${ENV_SDAR}" "0,1,2,3" "${ALF_GPU_SED}" "${OOM_SED_EXPRS[@]}" \
+        ${CKPT_SED_EXPRS[@]+"${CKPT_SED_EXPRS[@]}"}
 
     log "=== PHASE grid DONE ==="
 }

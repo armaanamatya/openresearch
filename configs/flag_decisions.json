@@ -214,6 +214,26 @@
       "triage_screen": "off", "verify_deep": "off",
       "class": "advisory-not-integrity", "cost": "stdlib", "false_block": "none", "default": "off",
       "rationale": "OFF everywhere. Force-includes the sandbox's infra skill (gcp/gke -> gcp-gke-reproduction) into the advisory active set (append-only, deterministic, requires SKILLS+SKILL_SELECT). Advisory only. Quality A/B, not a guard."
+    },
+    "OPENRESEARCH_EXECUTE_SYNTH": {
+      "triage_screen": "off", "verify_deep": "off",
+      "class": "execution-route-not-integrity", "cost": "stdlib", "false_block": "low", "default": "off",
+      "rationale": "Deterministic E4 execute floor: synthesizes cells.json + train_cell.py from a confidently-detected verl repo's OWN launch (no LLM implementer call). NOT an integrity guard (no verdict/evidence effect; recorded here for the profile-decision trail). ENABLED in the SDAR execute profile (configs/sdar_execute_run_spec.json, 2026-08-03) and the UCPO execute profile (configs/ucpo_execute_run_spec.json) -- profile-level enables only; the GLOBAL default stays off pending >=3 paired A/B runs + the grader-sigma gate, per the repo's default-flip rule. off/off here: neither reproduction tier profile is execute-mode-specific."
+    },
+    "OPENRESEARCH_TRAIN_CHECKPOINT_STEPS": {
+      "triage_screen": "off", "verify_deep": "off",
+      "class": "value-knob-not-integrity", "cost": "stdlib", "false_block": "none", "default": "off (unset/empty = no checkpoint injection)",
+      "rationale": "Integer mid-training checkpoint cadence for the synthesized verl execute cell (execute_cell_synth): when set, appends trainer.save_freq=<N> trainer.resume_mode=auto (hydra last-wins over the -1 downscale default) so OPENRESEARCH_CELL_RESUME_AUTO's cell rerun + verl resume_mode=auto + checkpoints under the shim-pinned trainer.default_local_dir = STEP-level resume (spot-GPU/preemption-safe; unblocks the Tree-B ablation checkpoint-emission row). Not an integrity guard (no verdict/evidence effect). off/off = no profile override: operators opt in per run; checkpoint I/O cadence is a per-run cost/robustness tradeoff, not a tier decision. Shell mirror for the authors' scripts: SDAR_CKPT_STEPS in scripts/sdar_authors_repro.sh."
+    },
+    "OPENRESEARCH_ALLOW_GROK_EXECUTOR": {
+      "triage_screen": "off", "verify_deep": "off",
+      "class": "guard-escape-hatch", "cost": "stdlib", "false_block": "none", "default": "off",
+      "rationale": "OFF everywhere -- an escape hatch, never a profile default. Escape hatch for the grok-execution-role fail-fast guard (role_models.check_grok_execution_roles, wired in run.py before any transport/runtime/sandbox is built): a grok token/deployment resolving into the executor/verifier/grader ROLE raises at launch because grok emits no commands.json cell/commands manifest, so the deterministic evidence gate structurally fails the run hours later (July 6 SDAR run; docs/open-issues.md 2026-07-22 -- decision: do NOT validate grok as an executor; sanctioned executor is sonnet-foundry). Grok stays valid as the ROOT model. When truthy this flag downgrades the launch-time error to a loud grok_executor_unvalidated run_warning; enabling it in a profile would deliberately relaunch the known-structurally-doomed configuration, so it stays absent from both tiers."
+    },
+    "OPENRESEARCH_WEBSHOP_PYTHON": {
+      "triage_screen": "off", "verify_deep": "off",
+      "class": "value-knob-not-integrity", "cost": "stdlib", "false_block": "none", "default": "off (unset/empty = sys.executable everywhere)",
+      "rationale": "Path to the dedicated py3.10 verl-webshop interpreter (web_agent_site's frozen 2022 torch/transformers stack conflicts with the run venv). Three consumers, all default-inert when unset: (1) the per-cell interpreter seam gpu_cell_runner._cell_interpreter (2026-08-03) -- a WebShop cell (env axis or id contains 'webshop') launches under this interpreter and its bin/ is what gets prepended to the child PATH, enabling faithful Lucene/pyserini search instead of the rank_bm25 in-process fallback; non-WebShop cells always get sys.executable; (2) the WebShop server launcher env_adapters/webshop.py::_default_webshop_launcher; (3) set automatically by asset_provisioning.install_webshop_dedicated. Not an integrity guard (no verdict/evidence effect; recorded for the profile-decision trail). off/off: an environment-provisioning knob set per-host by the operator/staging script (scripts/webshop_stage_assets.sh), never a tier decision. Asset restaging runbook: docs/runbooks/2026-08-03-webshop-asset-restaging.md."
     }
   }
 }

@@ -30,7 +30,7 @@ Pytest config lives in `pyproject.toml` under `[tool.pytest.ini_options]`: `test
 
 `tests/test_claude_md_fidelity.py` keeps the doc set honest against the code — it fails the suite the moment a documented claim goes stale:
 - `test_documented_env_var_is_read_in_code` — every var in its `_DOCUMENTED_ENV_VARS` list must appear in the doc text AND be `git grep`-able somewhere under `backend/`.
-- `test_custom_tools_count_matches_doc` — imports `PRIMITIVE_REGISTRY` from `backend.agents.rlm.primitives`, asserts `len(...) == 19`, and asserts the literal `"19"` appears in the doc.
+- `test_custom_tools_count_matches_doc` — imports `PRIMITIVE_REGISTRY` from `backend.agents.rlm.primitives`, asserts `len(...) == 21`, and asserts the literal `"21"` appears in the doc.
 - `test_all_doc_citations_resolve` — every `docs/`-rooted markdown path cited anywhere in the doc set must exist on disk.
 
 The guard reads the root file **plus every nested `CLAUDE.md`** (`_read_claude_docs()`
