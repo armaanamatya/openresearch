@@ -1,5 +1,14 @@
 # Tier-3 Sub-project A — Clean run on the GCP single-VM path Implementation Plan
 
+> **STATUS 2026-08-01 — EXECUTED (2026-07-22/23).** The checkboxes below are the as-authored
+> roadmap and were not ticked during execution. Ground truth for what actually landed:
+> `docs/progress/2026-07-22-tier3-adam-progress.md` and the status banner in
+> `docs/superpowers/specs/2026-07-22-tier3-scheduler-adam-ab-design.md`. Tasks 1–4 and 6
+> executed. Note two disclosed deviations: (1) the 5-field checkpoint/resume work
+> (spec A-item-2) moved to sub-project B; (2) Task 5 (autonomous-profile routing) was
+> explicitly deferred as an operator decision — not implemented (see the "BLOCKED on an
+> operator decision" marker at Task 5 below).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the GCP single-VM path land one clean paper reproduction — the in-VM child's `final_report.json` (`evidence_gate_passed: true` + a `success=True` experiment row) is collected back cleanly, on a graceful `FINALIZE` path, without billing idle GPU to the max-run-duration ceiling — and harden the "GKE is not used" posture in code + docs.

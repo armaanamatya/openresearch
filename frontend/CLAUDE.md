@@ -1,4 +1,4 @@
-<!-- doc-meta: status=current; last-verified=2026-07-05 -->
+<!-- doc-meta: status=current; last-verified=2026-08-01 -->
 # frontend/CLAUDE.md
 
 > Loaded when working in the Next.js UI. Root context: ../CLAUDE.md.

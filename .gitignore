@@ -198,3 +198,7 @@ frontend/next-env.d.ts
 # Bounded live RunPod scheduler-validation artifacts are retained locally and
 # summarized with hashes/cost in the dated runbook; never sweep them into code PRs.
 /runs/prj_runpod_scheduler_smoke_20260720*/
+
+# local run backups / overnight monitor scratch (never committed, never deleted)
+/.demo_backups/
+/runs_logs/

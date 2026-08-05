@@ -1,7 +1,7 @@
-<!-- doc-meta: status=current; last-verified=2026-07-25 -->
+<!-- doc-meta: status=current; last-verified=2026-08-01 -->
 # OpenResearch
 
-> **Doc status:** Current · last verified 2026-07-25 against `backend/` + `CLAUDE.md`.
+> **Doc status:** Current · last verified 2026-08-01 against `backend/` + `CLAUDE.md`.
 > This README is the public front door (source-of-truth tier 3): it must not claim
 > anything the code or [`CLAUDE.md`](CLAUDE.md) don't back. Freshness is
 > enforced by `make docs-check` — see [Documentation](#documentation).
@@ -111,8 +111,8 @@ flowchart TD
 | Backend | Python 3.12 (floor 3.11), FastAPI, SQLite (event store) |
 | Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS |
 | RLM Engine | [`rlms`](https://pypi.org/project/rlms/) library (Algorithm 1 reference implementation) |
-| Sub-agents | Claude Agent SDK (Sonnet) |
-| Root models | GPT-5, Claude (API or OAuth), Qwen3-Coder, Azure OpenAI |
+| Sub-agents | Claude Agent SDK (Sonnet by default; per-role override via `--models role=token,…`) |
+| Root models | GPT-5, Claude (API key), Claude on Azure Foundry, Qwen3-Coder, Azure OpenAI |
 | Sandbox | Local / Docker (CPU/dev), GCP single-VM GPU, Azure AKS, AWS EKS |
 | PDF Parsing | PyMuPDF, BeautifulSoup (arXiv HTML), Tesseract OCR |
 | Evaluation | PaperBench rubric framework |
@@ -123,7 +123,10 @@ flowchart TD
 
 - Python >= 3.11
 - Node.js >= 20.19 (< 21) or >= 22.12
-- At least one LLM API key (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`), or `claude login` for OAuth
+- At least one LLM API key: `OPENAI_API_KEY`, a **funded** `ANTHROPIC_API_KEY`, or Azure
+  Foundry (`AZURE_FOUNDRY_*`). ⛔ **Never use OAuth** (`claude login` / `CLAUDE_CODE_OAUTH_TOKEN`
+  / `--model claude-oauth`) — operator directive 2026-08-01; see
+  `docs/runbooks/2026-08-01-remote-run-llm-auth.md`.
 - A Docker daemon (Docker Desktop / OrbStack) — required only for the
   `docker`/`auto` sandboxes (`local` builds no local image; the cloud cell
   images are prebuilt). No Docker yet? `local` works without it —
@@ -198,7 +201,7 @@ python -m backend.cli reproduce 2605.15155 --sandbox local  # incl. a GCP GPU VM
 python -m backend.cli ingest 2512.24601  # ingest only
 ```
 
-**Flags:** `--mode {rlm,rdr,rlm-pure}`, `--provider {anthropic,openai}`, `--sandbox {auto,local,docker,azure,aws,gcp}`, `--model {gpt-5,claude,claude-oauth,qwen3-coder,azure}`, `--max-usd`, `--max-wall-clock`, `--vram-gb`
+**Flags:** `--mode {rlm,rdr,rlm-pure}`, `--provider {anthropic,openai}`, `--sandbox {auto,local,docker,azure,aws,gcp}`, `--model {gpt-5,claude,sonnet-foundry,opus-foundry,qwen3-coder,azure}`, `--max-usd`, `--max-wall-clock`, `--vram-gb` (`claude-oauth` exists in code but is ⛔ forbidden — never use it)
 
 ### Docker
 
@@ -212,7 +215,7 @@ docker compose up --build
 | Variable | Required | Description |
 |---|---|---|
 | `OPENAI_API_KEY` | One auth path | Root model when `--model gpt-5` (the default root). |
-| `ANTHROPIC_API_KEY` | Optional | Sub-agents (Sonnet) and `--model claude`. **Leave empty to use Claude CLI OAuth** (`claude login`). A no-credit key does *not* fall back to OAuth — it hard-fails; see `CLAUDE.md` → "RLM auth". |
+| `ANTHROPIC_API_KEY` | One auth path | Sub-agents (Sonnet) and `--model claude`. Must be a **funded** key — a no-credit key hard-fails with no fallback. ⛔ OAuth is forbidden (directive 2026-08-01); the sanctioned alternative surface is Azure Foundry (`sonnet-foundry`). See `CLAUDE.md` → "RLM auth". |
 | `OPENRESEARCH_DEFAULT_SANDBOX` | No | `auto` / `local` / `docker` / `azure` / `aws` / `gcp` (default `local`) |
 | `OPENRESEARCH_AZURE_*` | For Azure | AKS GPU sandbox (cluster, storage, base image) |
 | `OPENRESEARCH_AWS_*` | For AWS | EKS GPU sandbox (cluster, S3 bucket, pinned image, IRSA) |
@@ -311,15 +314,15 @@ When `OPENRESEARCH_DYNAMIC_GPU=true` (default), the root model estimates VRAM re
 
 Two independent auth surfaces:
 
-1. **Root model** (RLM library) -- raw HTTP. Pick one: `--model gpt-5` (OpenAI), `--model claude` (Anthropic API key), `--model claude-oauth` (Claude CLI subscription), `--model azure` (Azure OpenAI).
-2. **Sub-agents** (Claude Sonnet via `claude-agent-sdk`) -- uses `ANTHROPIC_API_KEY` if set and funded, otherwise falls back to Claude CLI OAuth (free on subscription).
+1. **Root model** (RLM library) -- raw HTTP. Pick one: `--model gpt-5` (OpenAI), `--model claude` (funded Anthropic API key), `--model sonnet-foundry` / `--model opus-foundry` (Anthropic on Azure Foundry), `--model azure` (Azure OpenAI).
+2. **Sub-agents** (Claude Sonnet via `claude-agent-sdk`) -- a funded `ANTHROPIC_API_KEY` or the Foundry surface. ⛔ **Never OAuth** (operator directive 2026-08-01): no `--model claude-oauth`, no `CLAUDE_CODE_OAUTH_TOKEN`, no `claude login` — root or sub-agents, local or remote.
 
-For local development: use OpenAI for the root (~$1/run), OAuth for sub-agents ($0).
+For local development: OpenAI root (~$1/run) + a funded/Foundry key for sub-agents. Full auth matrix: `docs/runbooks/2026-08-01-remote-run-llm-auth.md`.
 
 ## Current Limitations
 
 - Single-user local deployment (this repo's code surface). No multi-tenant auth or distributed state.
-- Cost ledger reports $0 for OAuth runs (SDK doesn't surface token counts).
+- Cost ledger is blind to Foundry-routed LLM spend and idle GPU-node time — a `$0` there is not proof of $0; verify via `tokens_total.json`.
 - GPU execution needs a cloud account: a GCP GPU VM (single-VM path), or AKS/EKS with its preflight green.
 - Frontend engines: Node >=20.19 <21 or >=22.12 (enforced via package.json `engines`).
 

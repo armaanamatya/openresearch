@@ -163,8 +163,8 @@ All Azure auth uses Workload Identity (projected OIDC token via
 
 Dynamic per-run durable Jobs need `orchestrator.enabled=true`, but do not require
 the fixed-paper Deployment or CronJob. They also require the `reprolab-cache`
-PVC, a pinned full orchestrator image, and explicit campaign budgets. See
-`docs/runbooks/2026-07-17-cross-cloud-durable-controller.md`.
+PVC, a pinned full orchestrator image, and explicit campaign budgets. See `docs/periods/2026-07.md`
+(consolidated dossier; the original cross-cloud durable-controller runbook was pruned 2026-07-22).
 Autonomous mode additionally requires `orchestrator.azureFoundry.enabled=true`,
 its non-secret endpoint, and `azure-foundry-api-key` in Key Vault.
 
@@ -189,7 +189,7 @@ its non-secret endpoint, and `azure-foundry-api-key` in Key Vault.
 
 ## Cross-references
 
-- Design doc: `docs/history/specs/2026-06-03-azure-aks-gpu-backend-design.md` (§3 layer split, §6 L2 list, §7 auth)
+- Design doc: `docs/periods/2026-06.md` (consolidated dossier; the original `docs/history/` spec — §3 layer split, §6 L2 list, §7 auth — was pruned 2026-07-22)
 - Terraform L1: `infra/azure/` (owners: W1-E)
 - Runtime Jobs (L3): `backend/agents/rlm/k8s_job_cell_runner.py` (owners: W1-B)
 - Runbook: `docs/runbooks/2026-06-03-azure-aks-gpu-backend-handoff.md`

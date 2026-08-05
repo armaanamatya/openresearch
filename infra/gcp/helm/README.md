@@ -1,5 +1,12 @@
 # ReproLab GKE Helm chart (L2 in-cluster scaffold)
 
+> # ⛔ GKE is NOT USED — operator directive (2026-07-22)
+> The GKE backend fail-closes (`_backend_for_sandbox_mode` raises on `gcp`/`gke`; the
+> `OPENRESEARCH_ALLOW_GKE=1` hatch is inert and not a supported path). These Terraform/Helm
+> layers are kept in-tree **for reference only — do not provision from them.** The supported
+> GCP path is the single-VM campaign route:
+> [`docs/runbooks/2026-07-22-gcp-vm-e2e-run-procedure.md`](../../../docs/runbooks/2026-07-22-gcp-vm-e2e-run-procedure.md).
+
 This chart installs the **static in-cluster scaffold** required by the ReproLab
 GCP GKE GPU execution backend.  It is Layer 2 in the layer split (L1 = Terraform,
 L2 = this chart, L3 = runtime Jobs emitted by `gke_job_backend`).
@@ -132,8 +139,8 @@ per-pod label on GKE (unlike Azure's `azure.workload.identity/use`).
 
 Dynamic per-run durable Jobs need `orchestrator.enabled=true`, but do not require
 the fixed-paper Deployment or CronJob. They also require the `reprolab-cache`
-PVC, a pinned full orchestrator image, and explicit campaign budgets. See
-`docs/runbooks/2026-07-17-cross-cloud-durable-controller.md`.
+PVC, a pinned full orchestrator image, and explicit campaign budgets. See `docs/periods/2026-07.md`
+(consolidated dossier; the original cross-cloud durable-controller runbook was pruned 2026-07-22).
 Autonomous mode additionally requires `orchestrator.azureFoundry.enabled=true`,
 its non-secret endpoint, and a populated `azure-foundry-api-key` Secret Manager
 version.

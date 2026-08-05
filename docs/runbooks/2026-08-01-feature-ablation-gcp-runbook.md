@@ -62,6 +62,15 @@ Use the `baseline` arm on ResNet (fastest). Follow the "Validated direct recipe"
 - pull `runs/smoke_baseline/final_report.json` + `rubric_evaluation.json`, confirm the score, DELETE the VM.
 
 ## STEP 2 — one arm launch (the unit the fan-out repeats)
+> ⚠️ **INSTALL TORCH ON EVERY VM.** After `uv pip install -r backend/requirements.txt` (orchestrator
+> deps only), you MUST also install the ML training deps or every training cell fails
+> `ModuleNotFoundError: No module named 'torch'` → `cell_execution_error` → **null score**
+> (hit 2026-08-01):
+> ```bash
+> uv pip install --python .venv/bin/python torch torchvision numpy --index-url https://download.pytorch.org/whl/cu121
+> ```
+> (The harness's `env_pin` local-torch-core did NOT auto-install it on the DLVM uv venv — install explicitly.)
+
 For each `(paper, arm, seed)`: provision an **auto-delete** L4 VM (`--max-run-duration=Ns
 --instance-termination-action=DELETE`), stage code + the merged run-spec, run:
 ```bash

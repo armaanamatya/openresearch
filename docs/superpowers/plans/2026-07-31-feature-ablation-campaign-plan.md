@@ -1,6 +1,6 @@
 # Parallel Feature-Ablation Campaign — Design & Execution Plan
 
-<!-- doc-meta: status=plan; authored=2026-07-31; owner=operator; state=ready-to-execute -->
+<!-- doc-meta: status=plan; authored=2026-07-31; last-verified=2026-08-01; owner=operator; state=ready-to-execute -->
 
 **Goal.** Measure the *isolated* and *combined* score contribution of each quality
 feature (Tree-A within-run + Tree-B scheduler authority), via paired A/B runs, so a
@@ -31,8 +31,8 @@ produces evidence for operator sign-off (mirrors `asha_authority_gate.py`).
 
 | # | Feature | Tree | Toggle (confirm in flag registry before run) | Prior evidence | Status |
 |---|---|---|---|---|---|
-| F1 | **BES** (best-of-N candidate pool) | A | `experiment_arm.bes.enabled=true`, `candidates_per_cluster=2`, `select_metric=cluster_score` | All-CNN **+0.085**, Adam **−0.183** (confounded) | proven, sign-ambiguous |
-| F2 | **Cross-run evidence / champion rails** (seeded best-ancestor + prior-attempt measured cells → implementer prompt + pinned rubric) | A | campaign anti-regression rail set — *confirm exact env* | All-CNN result-axis **0.000→0.470**, →0.739 | proven, big, 1 paper only |
+| F1 | **BES** (best-of-N candidate pool) | A | `OPENRESEARCH_BES_ENABLED=1`, `OPENRESEARCH_BES_CANDIDATES_PER_CLUSTER=2`, `OPENRESEARCH_BES_SELECT_METRIC=cluster_score` (see `configs/ablation/arms.json` → `bes`) | All-CNN **+0.085**, Adam **−0.183** (confounded) | proven, sign-ambiguous |
+| F2 | **Cross-run evidence / champion rails** (seeded best-ancestor + prior-attempt measured cells → implementer prompt + pinned rubric) | A | `OPENRESEARCH_CHAMPION_ARTIFACT=1`, `OPENRESEARCH_EVIDENCE_FINGERPRINT=1` (see `configs/ablation/arms.json` → `champion`) | All-CNN result-axis **0.000→0.470**, →0.739 | proven, big, 1 paper only |
 | F3 | **Positive recipes** (cross-run) | A | `OPENRESEARCH_POSITIVE_RECIPES=1` | none | wired, **unproven** |
 | F4 | **Experience memory** | A | `OPENRESEARCH_EXPERIENCE_MEMORY=1` | none | **dormant** (not wired into run/report) |
 | F5 | **Negative lessons** | A | `OPENRESEARCH_NEGATIVE_LESSONS=1` | none | **dormant** |
@@ -45,11 +45,6 @@ produces evidence for operator sign-off (mirrors `asha_authority_gate.py`).
 | G3 | **Promote** | B | (same gate) | never fired | **blocked** |
 | G4 | **Revive / backtracking** | B | (same gate) | never fired | **blocked** |
 | G5 | **True-kill** (only on `training_diverged`) | B | (same gate) | never fired | **blocked** |
-
-> **Action before launch:** grep the regenerated flag registry to pin the exact env var
-> for F2 and confirm F3-F7 names/defaults (`grep -rn OPENRESEARCH_ backend/agents/rlm/` +
-> the flag-registry file). Do **not** launch on a guessed flag — a silently-inert flag
-> reads as "feature had no effect."
 
 ---
 
@@ -79,6 +74,9 @@ Full factorial (2⁷ = 128 arms) is infeasible. Use **screen → confirm → int
   + **All-ON** = **9 arms**.
 - Papers: All-CNN + Adam (the two anchors). ResNet held for Phase 2.
 - Runs: 9 arms × 2 papers × **1 seed** = **18 runs**, launched **in parallel** (§6).
+  *(Execution deviation 2026-08-01: ResNet was promoted into the screen — 9 arms × 3 papers
+  = 27 runs; see `docs/runbooks/2026-08-01-feature-ablation-gcp-runbook.md` STEP 3 and
+  `docs/2026-08-01-feature-ablation-results.md`.)*
 - Output: a per-feature Δ vs Baseline on each paper. Keep only features with |Δ| ≥ 2·grader-σ
   (§5) as *candidates*. This cheaply kills the dormant no-effect features (likely F4/F5).
 
@@ -113,13 +111,13 @@ with a 2×2 on All-CNN, 3 seeds:
 arm_id            F1 BES  F2 evid  F3 recipe  F4 expmem  F5 lessons  F6 audit  F7 leafgate
 ------------------------------------------------------------------------------------------
 baseline           .       .        .          .          .           .          .
-a_bes              X       .        .          .          .           .          .
-a_evid             .       X        .          .          .           .          .
-a_recipe           .       .        X          .          .           .          .
-a_expmem           .       .        .          X          .           .          .
-a_lessons          .       .        .          .          X           .          .
-a_audit            .       .        .          .          .           X          .
-a_leafgate         .       .        .          .          .           .          X
+bes                X       .        .          .          .           .          .
+champion           .       X        .          .          .           .          .
+recipes            .       .        X          .          .           .          .
+expmem             .       .        .          X          .           .          .
+lessons            .       .        .          .          X           .          .
+audit              .       .        .          .          .           X          .
+leafgate           .       .        .          .          .           .          X
 all_on             X       X        X          X          X           X          X
 ```
 Each row runs on {All-CNN, Adam}. `experiment_arm={arm:<id>, ab_pair_id:"ablate-p1-<paper>-<seed>"}`.
