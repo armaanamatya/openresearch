@@ -136,11 +136,13 @@ if [[ ! -f "${SDAR_PAPER}" ]]; then
   SDAR_PAPER="2605.15155"
 fi
 
-# Canonical campaign command shape (2026-07-22 runbook): unified driver,
-# LOCAL run sandbox + GCP BILLING sandbox (routes provisioning through
-# VmComputeProvider; `--sandbox gcp` would hit the fail-loud GKE guard).
+# Canonical campaign command shape (2026-07-22 runbook): LIVE driver (the
+# unified driver does not forward enforcement env to child processes —
+# 2026-08-04 Tree-B root cause), LOCAL run sandbox + GCP BILLING sandbox
+# (routes provisioning through VmComputeProvider; `--sandbox gcp` would hit
+# the fail-loud GKE guard).
 exec "${PY}" -u -m backend.cli campaign "${SDAR_PAPER}" \
-  --campaign-driver unified \
+  --campaign-driver live \
   --sandbox local \
   --billing-sandbox gcp \
   --paper-hint 2605.15155 \

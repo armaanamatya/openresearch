@@ -80,13 +80,15 @@ Cost Management (`az`), not the ledger.
 
 ## Command shape
 
-The single-VM path is driven by the **`unified` campaign driver** with a **local** run
-sandbox and a **gcp billing sandbox** (the `--billing-sandbox gcp` is what routes provisioning
-through `VmComputeProvider`; `--sandbox gcp` would instead hit the fail-loud GKE path (NOT USED)):
+The single-VM path is driven by the **`live` campaign driver** (2026-08-04: the `unified`
+driver does NOT forward `enforcement["env"]` — e.g. `OPENRESEARCH_CELL_ITER_BUDGET` — to child
+processes, breaking rung capping; use `live`) with a **local** run sandbox and a **gcp billing
+sandbox** (the `--billing-sandbox gcp` is what routes provisioning through
+`VmComputeProvider`; `--sandbox gcp` would instead hit the fail-loud GKE path (NOT USED)):
 
 ```bash
 python -m backend.cli campaign <paper> \
-  --campaign-driver unified \
+  --campaign-driver live \
   --sandbox local \
   --billing-sandbox gcp \
   --max-llm-usd <X> --max-gpu-usd <Y> --max-gpu-hours <Z>
@@ -141,7 +143,7 @@ export OPENRESEARCH_GCP_SSH_USER=<your-oslogin-user>
 export OPENRESEARCH_REMOTE_DIR=/home/<your-oslogin-user>/openresearch
 
 python -m backend.cli campaign <small_paper> \
-  --campaign-driver unified \
+  --campaign-driver live \
   --sandbox local \
   --billing-sandbox gcp \
   --model grok \

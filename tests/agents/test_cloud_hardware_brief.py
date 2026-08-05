@@ -179,6 +179,26 @@ def test_block_omits_when_no_cloud_env_set():
     assert _hardware_specs_block(None) == ""
 
 
+def test_constraint_guidance_wires_hardware_brief_for_azure(monkeypatch):
+    """The brief must actually reach implement_baseline guidance — its only
+    production call site was dropped with the RunPod prompt branch, leaving
+    _resolve_cloud_hardware's Azure support unwired."""
+    from backend.agents.baseline_implementation import _compute_constraint_guidance
+
+    monkeypatch.setenv("OPENRESEARCH_AZURE_VM_SIZE", "Standard_NC40ads_H100_v5")
+    monkeypatch.setenv("OPENRESEARCH_AZURE_REGION", "westus2")
+    g = _compute_constraint_guidance(sandbox_mode="azure", gpu_mode=None)
+    assert "Cloud: Azure ML" in g
+    assert "H100 NVL" in g
+
+
+def test_constraint_guidance_no_hardware_brief_on_local(monkeypatch):
+    from backend.agents.baseline_implementation import _compute_constraint_guidance
+
+    g = _compute_constraint_guidance(sandbox_mode="local", gpu_mode=None)
+    assert "Cloud: Azure ML" not in g
+
+
 def test_block_includes_scope_reduction_guidance(monkeypatch):
     """Whichever cloud, the brief must point the agent at scope-adjusted
     rubric / scope.declared_reductions instead of mocks."""

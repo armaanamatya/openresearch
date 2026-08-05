@@ -3331,7 +3331,9 @@ def _backend_for_sandbox_mode(
             raise RuntimeError(
                 "sandbox=gcp/gke routes to GKE, which is not used. The supported "
                 "GCP GPU path is the campaign single-VM route: `campaign "
-                "--campaign-driver unified --sandbox local --billing-sandbox gcp`. "
+                "--campaign-driver live --sandbox local --billing-sandbox gcp` "
+                "(the `unified` driver does not forward enforcement env such as "
+                "OPENRESEARCH_CELL_ITER_BUDGET to child processes). "
                 "(OPENRESEARCH_ALLOW_GKE is an inert operator-only escape hatch, "
                 "not a supported path.)"
             )

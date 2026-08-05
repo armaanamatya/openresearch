@@ -31,6 +31,20 @@ def test_backend_for_sandbox_mode_gcp_not_used_raises_without_flag(monkeypatch):
         _backend_for_sandbox_mode(SandboxMode.gcp, run_budget=None)
 
 
+def test_gcp_fail_closed_message_recommends_live_driver(monkeypatch):
+    """The redirect guidance must name the `live` campaign driver — `unified`
+    does not forward enforcement["env"] (e.g. OPENRESEARCH_CELL_ITER_BUDGET)
+    to child processes, so recommending it would break rung capping
+    (2026-08-04 Tree-B root cause)."""
+    monkeypatch.delenv("OPENRESEARCH_ALLOW_GKE", raising=False)
+    from backend.agents.rlm.primitives import _backend_for_sandbox_mode
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _backend_for_sandbox_mode(SandboxMode.gcp, run_budget=None)
+    assert "--campaign-driver live" in str(excinfo.value)
+    assert "--campaign-driver unified" not in str(excinfo.value)
+
+
 def test_backend_for_sandbox_mode_gcp_returns_gke_backend(monkeypatch):
     """With OPENRESEARCH_ALLOW_GKE=1, sandbox_mode='gcp' constructs GkeJobBackend."""
     monkeypatch.setenv("OPENRESEARCH_ALLOW_GKE", "1")

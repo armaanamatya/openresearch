@@ -2494,6 +2494,17 @@ def _compute_constraint_guidance(
     #     and wants the agent to follow the paper's full epoch counts.
     _COST_BEARING_SANDBOXES = ("gcp", "azure", "aws")
     _is_cost_bearing = any(s in mode_str for s in _COST_BEARING_SANDBOXES)
+    if not _is_cost_bearing:
+        # The supported paid-GCP path runs `--sandbox local` on a billed VM
+        # (`--billing-sandbox gcp`); the sandbox string alone can't see that.
+        # The campaign driver marks billed GPU time by setting
+        # OPENRESEARCH_MAX_RUN_GPU_USD in the child env (campaign_policy).
+        try:
+            _is_cost_bearing = (
+                float(os.environ.get("OPENRESEARCH_MAX_RUN_GPU_USD", "") or "0") > 0
+            )
+        except ValueError:
+            _is_cost_bearing = False
     from backend.config import get_settings as _get_settings
     _budget_mode = (_get_settings().budget_awareness_mode or "auto").lower()
     if _budget_mode == "never":
@@ -2515,6 +2526,10 @@ def _compute_constraint_guidance(
         guidance += _CELL_CONTRACT_BLOCK
     if _inject_budget:
         guidance += _budget_awareness_block(remaining_s)
+    # Static cloud hardware brief (GPU model / VRAM / image / disk) — saves the
+    # agent probe round-trips and OOM-by-guessing. Returns "" when no
+    # cloud-provider env is set (local docker / local process).
+    guidance += _hardware_specs_block(sandbox_mode)
     # Min-train-steps floor (OPENRESEARCH_MIN_TRAIN_STEPS, default-OFF): overrides any
     # shorter-training suggestion from the budget block when set.  The matching
     # postflight guard (_undertrained_cell_violation) enforces this at execution time.
