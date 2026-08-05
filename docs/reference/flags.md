@@ -13,7 +13,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **si
 
 ## Config fields bypassed by ad-hoc reads
 
-10 flags are typed in `config.py` **and** still read directly via `os.environ`, so the typed default is dead at those call sites. Review before consolidating — some are call-time reads on purpose (test monkeypatch / per-run toggle).
+11 flags are typed in `config.py` **and** still read directly via `os.environ`, so the typed default is dead at those call sites. Review before consolidating — some are call-time reads on purpose (test monkeypatch / per-run toggle).
 
 | Flag | cfg default | ad-hoc reads |
 |---|---|:--:|
@@ -22,6 +22,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **si
 | `OPENRESEARCH_AZURE_STORAGE_ACCOUNT` | `Field(...)` | 1 |
 | `OPENRESEARCH_CODEX_CLI_PATH` | `""` | 1 |
 | `OPENRESEARCH_DYNAMIC_GPU_HEADROOM` | `Field(...)` | 1 |
+| `OPENRESEARCH_MAX_RUN_GPU_USD` | `Field(...)` | 1 |
 | `OPENRESEARCH_MINIMAL_VIABLE` | `False` | 1 |
 | `OPENRESEARCH_MIN_RUBRIC_ITERATIONS` | `Field(...)` | 1 |
 | `OPENRESEARCH_REPRODUCTION_MODE` | `"adapt"` | 2 |
@@ -832,7 +833,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **si
 | `OPENRESEARCH_MAX_GPU_USD_PER_HOUR` | ✅ | ✅ |  | `Field(...)` |
 | `OPENRESEARCH_MAX_POD_SECONDS` |  |  | 1 | |
 | `OPENRESEARCH_MAX_RLM_ITERATIONS` |  |  | 2 | `""` |
-| `OPENRESEARCH_MAX_RUN_GPU_USD` | ✅ | ✅ |  | `Field(...)` |
+| `OPENRESEARCH_MAX_RUN_GPU_USD` | ✅ | ✅ | 1 | `Field(...)` |
 | `OPENRESEARCH_MAX_SCOPE_FAILURE_REPEATS` |  |  | 1 | `"2"` |
 | `OPENRESEARCH_MAX_TERMINAL_VERDICT` |  | ✅ |  | |
 | `OPENRESEARCH_MAX_WALL_CLOCK_S` |  |  |  | |
