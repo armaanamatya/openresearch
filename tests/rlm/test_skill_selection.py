@@ -552,4 +552,4 @@ def test_detect_environment_no_infra_skill_when_infra_select_off(make_context, t
 # ---------------------------------------------------------------------------
 
 def test_primitive_count_unchanged():
-    assert len(PRIMITIVE_REGISTRY) == 19
+    assert len(PRIMITIVE_REGISTRY) == 21

@@ -180,9 +180,14 @@ means no stray billing.
 ## Validated direct recipe (proven green end-to-end 2026-07-22)
 
 > **This is the recipe that actually ran the full pipeline on a GCP GPU and returned a real
-> `final_report.json`.** The campaign/`VmComputeProvider` path above is currently **SDAR-specific**
-> and does NOT run an arbitrary paper as-is (`scripts/sdar_gcp_run.sh` hardcodes SDAR — see
-> Gotchas). Until a generic VM launcher lands, run any non-SDAR paper with these direct steps.
+> `final_report.json`.** A generic VM launcher now exists (2026-08-03): **`scripts/vm_paper_run.sh
+> <paper> <project-id>`** scripts steps 5–8 against a *prepared* VM (fail-loud
+> `OPENRESEARCH_GCP_*` identity checks, preflights-stay-ON guard, the venv torch check/install,
+> detached launch + self-stop/GCS upload; caps + models env-overridable — header comment has the
+> full knob list). It does NOT provision — provision/bootstrap via steps 1–4 first. Caveat: the
+> campaign/`VmComputeProvider.launch` leg itself still invokes the SDAR-pinned
+> `scripts/sdar_gcp_run.sh` (hardcodes 2605.15155 — see Gotchas), so an arbitrary-paper run goes
+> through `vm_paper_run.sh` or these direct steps, not the campaign auto-launch.
 
 **Result 2026-07-22:** Adam (arXiv 1412.6980) on a fresh 1×L4 VM — the GCP path was validated
 end-to-end (ingest → workspace → agent pipeline → experiment on the GPU → `final_report.json` +
@@ -250,7 +255,7 @@ gcloud compute instances list --project=deepinvent-ext-ut    # confirm no stray 
 | `timeout: command not found` | macOS has no GNU `timeout` | Don't wrap `gcloud` in `timeout`; rely on its own connection timeout |
 | Run dies instantly / LLM 401 | `.env` OpenAI + Anthropic keys are dead (rotated in the 2026-07-21 leak) | **Validate LLM auth BEFORE provisioning** (cheap ping). Foundry is the live surface |
 | `ModuleNotFoundError: backend.services.runs` | `tar --exclude=runs` also excludes `backend/services/runs/` | When tarring only `backend/`, drop the `runs` exclude entirely |
-| Reproduces SDAR instead of your paper | `scripts/sdar_gcp_run.sh` hardcodes `2605.15155`; `VmComputeProvider.launch` treats `paper_id` as a hint only | Run `reproduce <paper>` directly on the VM (recipe above), or build a generic VM launcher |
+| Reproduces SDAR instead of your paper | `scripts/sdar_gcp_run.sh` hardcodes `2605.15155`; `VmComputeProvider.launch` treats `paper_id` as a hint only | Use the generic launcher `scripts/vm_paper_run.sh <paper> <project-id>` against a prepared VM (or run `reproduce <paper>` directly, recipe above) — the campaign auto-launch leg stays SDAR-pinned |
 | Campaign VM path always 4×A100 | `attempt_driver` builds `VmSpec` with no machine type → default `a2-highgpu-4g` | Set `OPENRESEARCH_GCP_GPU_MACHINE_TYPE=g2-standard-8` (commit `aa205f94`) |
 | SSH hangs on a passphrase prompt | first `gcloud compute ssh` generates a key interactively | Always pass `--quiet` |
 | `--sandbox gcp/gke` raises the GKE guard | Initial fail-loud added in `86c00abe`; guard message reworded to NOT USED in `bf3a937e` | Use the VM path — GKE is NOT USED; the `OPENRESEARCH_ALLOW_GKE=1` hatch is not a supported path |

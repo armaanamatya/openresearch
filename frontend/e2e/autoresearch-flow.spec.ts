@@ -43,10 +43,12 @@ import { test, expect } from "@playwright/test";
  * GET /papers/{arxivId}/repo (T3b) is NOT mocked: `/abs/[arxivId]/page.tsx`
  * fetches it server-side (inside the Next.js Node process during SSR),
  * which is not reachable from a browser-context `page.route()` intercept.
- * That fetch fails soft to "" against this test's unconfigured backend URL,
- * so RepoField renders blank + editable — exactly the fallback the task
- * brief pre-approves ("assert the field is editable") — and we additionally
- * type into it to prove that and to strengthen the posted-body assertion.
+ * Its outcome therefore depends on the environment: with no backend it
+ * fails soft to "" (blank RepoField), while CI's e2e job runs a real
+ * backend that resolves this paper's official repo and pre-fills the
+ * field. The test is agnostic to which happened — it asserts the field is
+ * editable, then overwrites whatever is there (fill() replaces the whole
+ * value) to strengthen the posted-body assertion.
  */
 
 const ARXIV_ID = "2605.15155";
@@ -200,14 +202,15 @@ test("autonomous launch: landing -> repo-confirm -> cost-guard -> mocked run -> 
     await page.waitForURL(/confirm=1/);
     await expect(page.getByRole("heading", { level: 1 })).toContainText(/reproduce this paper/i);
 
-    // ── 3. RepoField renders + is editable (GET /papers/.../repo fails
-    // soft to "" server-side against this test's unreachable backend — see
-    // the file header note) ────────────────────────────────────────────────
+    // ── 3. RepoField renders + is editable. Whether it starts blank (no
+    // backend → server-side resolve fails soft to "") or pre-filled (CI's
+    // real backend resolves this paper's repo) is environment-dependent —
+    // see the file header note — so overwrite it either way. ───────────────
     const repoField = page.getByLabel("GitHub repository");
     await expect(repoField).toBeVisible();
     await expect(repoField).toBeEditable();
-    await expect(repoField).toHaveValue("");
     await repoField.fill(REPO_URL);
+    await expect(repoField).toHaveValue(REPO_URL);
 
     // ── 4. Cost-guard confirm dialog (D4) ─────────────────────────────────
     await page.getByRole("button", { name: /start autoresearch/i }).click();

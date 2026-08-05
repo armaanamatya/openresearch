@@ -58,7 +58,7 @@ catalog live in **`backend/agents/rlm/CLAUDE.md`**; sandbox/GPU knobs in
 
 - **RLM orchestrator** (`backend/agents/rlm/run.py`) builds `rlm.RLM(...)` and calls `.completion()`
   on a worker thread. The paper is offloaded as the REPL `context` variable — the root sees only
-  constant-size metadata, never the corpus. The root writes Python calling the **19 bound
+  constant-size metadata, never the corpus. The root writes Python calling the **21 bound
   primitives** (`primitives.py`) and terminates via `FINAL_VAR(<var>)`.
 - **File-backed run state** (`runs/<project_id>/`, not a service — each run is a long-lived
   subprocess): `demo_status.json`, `rlm_state/` (resume-safe checkpoints), `dashboard_events.jsonl`
@@ -100,8 +100,12 @@ Load-bearing invariants; the owning nested file/spec carries the full rule + inc
   **⛔ NEVER USE OAuth (operator directive 2026-08-01)** — no `claude-oauth`/`CLAUDE_CODE_OAUTH_TOKEN`/
   `claude login`, ever; API keys only (`sonnet-foundry` or funded `ANTHROPIC_API_KEY`).
   → `backend/agents/rlm/CLAUDE.md`, `docs/runbooks/2026-08-01-remote-run-llm-auth.md`
-- **Cost visibility.** `cost_ledger.jsonl`/`demo_status.json` are **blind** to Foundry-routed LLM
-  spend and idle GPU-node time — a `$0` there is not proof of $0. Verify real cost via
+- **Cost visibility.** Foundry-routed **LLM** spend is ledger-visible from 2026-08-03 forward:
+  Claude-on-Foundry prices at Anthropic rates (`pricing.py` aliases + the root usage drain), and
+  unknown-rate models (grok etc.) write explicit `"unpriced": true` rows surfaced by
+  `demo_status.cost_summary` / `final_report.cost` / `tokens_total.json` (`cost_confidence:
+  "partial"` ⇒ real spend exceeds the priced total). Still **blind**: idle GPU-node time, and
+  every run predating this change — there a `$0` is not proof of $0; verify via
   `tokens_total.json` + `kubectl get nodes` (stray A100s), never the ledger alone.
 - **GKE is not used** (fail-closed guard). **GKE runs go through the cell-matrix.** The monolithic `k8s_job_backend.exec` path never
   stages code into the pod; on gcp/gke, training routes via `cells.json`+`train_cell.py` (or the
@@ -143,5 +147,5 @@ blocked-vs-redirected table.
 Root stays lean — orientation + always-on rules + pointers. When you add a primitive, SSE event,
 sandbox, or flag, update the **nested** `CLAUDE.md` that owns it, not this file. Fidelity anchors
 kept current here + guarded by `tests/test_claude_md_fidelity.py` (which reads the root **and**
-nested set): the bound primitive count is **19**, and the default sandbox is `local`.
+nested set): the bound primitive count is **21**, and the default sandbox is `local`.
 `docs/architecture.md` = the system map; this = the day-to-day.

@@ -52,12 +52,20 @@ class CostLedgerEntry:
         data["cost_usd"] = self.estimated_usd or 0.0
         data["tokens_in"] = self.input_tokens
         data["tokens_out"] = self.output_tokens
+        if self.estimated_usd is None:
+            # Explicit unpriced marker (cost-visibility, 2026-08-03): the model
+            # had no resolvable per-token rate, so ``cost_usd: 0.0`` here means
+            # "unknown", NOT "$0 spent". Aggregators (cost_visibility.audit_cost_ledger,
+            # _compute_cost_summary, tokens_total) surface these rows instead of
+            # silently summing them into a misleading $0 total. Priced rows are
+            # byte-identical (the key is only present when unpriced).
+            data["unpriced"] = True
         return data
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> "CostLedgerEntry":
         payload = dict(data)
-        for alias in ("primitive", "cost_usd", "tokens_in", "tokens_out"):
+        for alias in ("primitive", "cost_usd", "tokens_in", "tokens_out", "unpriced"):
             payload.pop(alias, None)
         ts = payload.get("timestamp")
         if isinstance(ts, str):

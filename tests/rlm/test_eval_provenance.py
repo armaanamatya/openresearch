@@ -55,6 +55,19 @@ def _make_cell(
     return cell_dir
 
 
+def _write_repo_spec(project_dir, mode: str) -> None:
+    """Write ``rlm_state/repo_spec.json`` with the given RESOLVED mode.
+
+    The aggregate-provenance branch is execute-mode-only (fail-closed): the
+    guard reads the spec from ``code_dir.parent / "rlm_state"``, so aggregate
+    tests pass ``project_dir / "code"`` as the code_dir."""
+    state = project_dir / "rlm_state"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "repo_spec.json").write_text(
+        json.dumps({"mode": mode}), encoding="utf-8"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Feature flag
 # ---------------------------------------------------------------------------
@@ -787,13 +800,17 @@ class TestAggregateProvenance:
     ``metric_value`` and NO per-example ``records`` (verl exposes only an
     aggregate — synthesizing fake per-example records would violate the
     no-fabrication red line). This schema is verified by a value-preserving
-    cross-check against ``metrics.json`` instead of a records-recompute."""
+    cross-check against ``metrics.json`` instead of a records-recompute, and
+    is accepted ONLY when ``rlm_state/repo_spec.json`` mode == "execute"."""
 
     def test_aggregate_matching_value_passes(self, tmp_path, monkeypatch):
-        """provenance_kind=aggregate, metric_value matches metrics.json,
-        source exists on disk → veto False."""
+        """Execute mode: provenance_kind=aggregate, metric_value matches
+        metrics.json, source exists on disk → veto False."""
         monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
-        source_file = tmp_path / "val_log.log"
+        _write_repo_spec(tmp_path, "execute")
+        code = tmp_path / "code"
+        source_file = code / "val_log.log"
+        source_file.parent.mkdir(parents=True, exist_ok=True)
         source_file.write_text("val/success_rate: 0.456", encoding="utf-8")
         prov = {
             "schema_version": 1,
@@ -804,11 +821,11 @@ class TestAggregateProvenance:
             "source_line": "val/success_rate: 0.456",
         }
         _make_cell(
-            tmp_path,
+            code,
             {"status": "success", "success_rate": 0.456},
             provenance=prov,
         )
-        veto, detail = eval_provenance_should_veto(tmp_path)
+        veto, detail = eval_provenance_should_veto(code)
         assert veto is False
         assert detail is None
 
@@ -816,7 +833,10 @@ class TestAggregateProvenance:
         """metrics.json success_rate disagrees with the sidecar's aggregate
         metric_value (e.g. metrics.json tampered after the fact) → veto."""
         monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
-        source_file = tmp_path / "val_log.log"
+        _write_repo_spec(tmp_path, "execute")
+        code = tmp_path / "code"
+        source_file = code / "val_log.log"
+        source_file.parent.mkdir(parents=True, exist_ok=True)
         source_file.write_text("val/success_rate: 0.456", encoding="utf-8")
         prov = {
             "provenance_kind": "aggregate",
@@ -825,28 +845,31 @@ class TestAggregateProvenance:
             "source": str(source_file),
         }
         _make_cell(
-            tmp_path,
+            code,
             {"status": "success", "success_rate": 0.9},
             provenance=prov,
         )
-        veto, detail = eval_provenance_should_veto(tmp_path)
+        veto, detail = eval_provenance_should_veto(code)
         assert veto is True
         assert detail is not None
         assert "aggregate" in detail.lower()
 
     def test_aggregate_metric_value_out_of_range_vetoed(self, tmp_path, monkeypatch):
-        """metric_value=45.6 (×100-scaled) is out of [0,1] → veto."""
+        """metric_value=45.6 (×100-scaled) is out of [0,1] → veto (even in
+        execute mode — the value checks stay authoritative)."""
         monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        _write_repo_spec(tmp_path, "execute")
+        code = tmp_path / "code"
         prov = {
             "provenance_kind": "aggregate",
             "metric_value": 45.6,
         }
         _make_cell(
-            tmp_path,
+            code,
             {"status": "success", "success_rate": 45.6},
             provenance=prov,
         )
-        veto, detail = eval_provenance_should_veto(tmp_path)
+        veto, detail = eval_provenance_should_veto(code)
         assert veto is True
         assert detail is not None
         assert "[0,1]" in detail or "out of" in detail.lower()
@@ -861,47 +884,54 @@ class TestAggregateProvenance:
         the value cross-checks (metric_value finite, in [0,1], reported ==
         metric_value) are the real honesty guarantee, and they pass here."""
         monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        _write_repo_spec(tmp_path, "execute")
+        code = tmp_path / "code"
         prov = {
             "provenance_kind": "aggregate",
             "adapter": "verl_metrics_adapter",  # the real adapter always stamps this
             "metric_value": 0.456,
-            "source": str(tmp_path / "does_not_exist.log"),
+            "source": str(code / "does_not_exist.log"),
         }
         _make_cell(
-            tmp_path,
+            code,
             {"status": "success", "success_rate": 0.456},
             provenance=prov,
         )
-        veto, detail = eval_provenance_should_veto(tmp_path)
+        veto, detail = eval_provenance_should_veto(code)
         assert veto is False
         assert detail is None
 
     def test_aggregate_no_source_no_marker_is_unverifiable_vetoed(self, tmp_path, monkeypatch):
-        """A coherent aggregate (reported == metric_value, in [0,1]) that is
-        NEITHER stamped by the trusted verl_metrics_adapter NOR backed by a
-        resolvable source file is unverifiable self-attestation → veto. Internal
-        consistency alone is not a real held-out measurement (closes the
+        """EXECUTE mode, but the aggregate is NEITHER stamped by the trusted
+        verl_metrics_adapter NOR backed by a resolvable source file →
+        unverifiable self-attestation → veto. Internal consistency alone is not
+        a real held-out measurement, even in execute mode (closes the
         self-attestation loophole a pure-inline aggregate would otherwise open)."""
         monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        _write_repo_spec(tmp_path, "execute")
+        code = tmp_path / "code"
         prov = {
             "provenance_kind": "aggregate",
             "metric_value": 0.456,
         }
         _make_cell(
-            tmp_path,
+            code,
             {"status": "success", "success_rate": 0.456},
             provenance=prov,
         )
-        veto, detail = eval_provenance_should_veto(tmp_path)
+        veto, detail = eval_provenance_should_veto(code)
         assert veto is True
         assert detail is not None
         assert "unverifiable" in detail.lower()
 
     def test_aggregate_resolvable_source_no_marker_passes(self, tmp_path, monkeypatch):
         """The local/docker path: a source file that resolves on disk binds the
-        aggregate to a real artifact even without the producer marker → pass."""
+        aggregate to a real artifact even without the producer marker → pass
+        (execute mode)."""
         monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
-        src = tmp_path / "outputs" / "run_01" / "cell_0" / "train.log"
+        _write_repo_spec(tmp_path, "execute")
+        code = tmp_path / "code"
+        src = code / "outputs" / "run_01" / "cell_0" / "train.log"
         src.parent.mkdir(parents=True, exist_ok=True)
         src.write_text("val/success_rate: 0.456", encoding="utf-8")
         prov = {
@@ -910,34 +940,37 @@ class TestAggregateProvenance:
             "source": str(src),
         }
         _make_cell(
-            tmp_path,
+            code,
             {"status": "success", "success_rate": 0.456},
             provenance=prov,
         )
-        veto, detail = eval_provenance_should_veto(tmp_path)
+        veto, detail = eval_provenance_should_veto(code)
         assert veto is False
         assert detail is None
 
     def test_adapter_marker_alone_detected_as_aggregate(self, tmp_path, monkeypatch):
         """adapter == 'verl_metrics_adapter' alone (no explicit provenance_kind)
-        is also detected as an aggregate sidecar."""
+        is also detected as an aggregate sidecar (execute mode)."""
         monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        _write_repo_spec(tmp_path, "execute")
+        code = tmp_path / "code"
         prov = {
             "adapter": "verl_metrics_adapter",
             "metric_value": 0.456,
         }
         _make_cell(
-            tmp_path,
+            code,
             {"status": "success", "success_rate": 0.456},
             provenance=prov,
         )
-        veto, detail = eval_provenance_should_veto(tmp_path)
+        veto, detail = eval_provenance_should_veto(code)
         assert veto is False
         assert detail is None
 
     def test_regression_records_based_sidecar_unaffected(self, tmp_path, monkeypatch):
         """A normal records-based sidecar (no provenance_kind/adapter marker)
-        still goes through the pre-existing records-recompute path unchanged."""
+        still goes through the pre-existing records-recompute path unchanged —
+        no repo_spec.json needed (the mode gate applies only to aggregates)."""
         monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
         records = [{"id": str(i), "outcome": float(i % 2)} for i in range(10)]
         prov = {
@@ -956,6 +989,127 @@ class TestAggregateProvenance:
 
 
 # ---------------------------------------------------------------------------
+# Aggregate-provenance mode gate — execute-only, fail-closed
+# ---------------------------------------------------------------------------
+
+class TestAggregateModeGate:
+    """The aggregate schema is legal ONLY for execute-mode runs (resolved
+    ``rlm_state/repo_spec.json`` mode == "execute"). Adapt-mode / mode-unknown
+    runs must persist per-example records — an adapter-stamped aggregate there
+    is vetoed (fail-closed)."""
+
+    _AGG_PROV = {
+        "schema_version": 1,
+        "adapter": "verl_metrics_adapter",
+        "provenance_kind": "aggregate",
+        "metric_value": 0.456,
+        "source": "/pod/only/train.log",
+        "source_line": "val/success_rate: 0.456",
+    }
+
+    def test_execute_mode_aggregate_passes(self, tmp_path, monkeypatch):
+        """(a) execute-mode aggregate sidecar (trusted adapter stamp) → pass."""
+        monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        _write_repo_spec(tmp_path, "execute")
+        code = tmp_path / "code"
+        _make_cell(
+            code,
+            {"status": "success", "success_rate": 0.456},
+            provenance=dict(self._AGG_PROV),
+        )
+        veto, detail = eval_provenance_should_veto(code)
+        assert veto is False
+        assert detail is None
+
+    def test_adapt_mode_aggregate_vetoed(self, tmp_path, monkeypatch):
+        """(b) adapt-mode aggregate sidecar → veto, even with the trusted
+        adapter stamp: adapt-mode trainers must record per-example outcomes."""
+        monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        _write_repo_spec(tmp_path, "adapt")
+        code = tmp_path / "code"
+        _make_cell(
+            code,
+            {"status": "success", "success_rate": 0.456},
+            provenance=dict(self._AGG_PROV),
+        )
+        veto, detail = eval_provenance_should_veto(code)
+        assert veto is True
+        assert detail is not None
+        assert "execute" in detail.lower()
+        assert "record_eval" in detail
+
+    def test_missing_repo_spec_aggregate_vetoed(self, tmp_path, monkeypatch):
+        """Mode-unknown (no rlm_state/repo_spec.json at all) → fail-closed veto.
+        An unknown mode never widens acceptance."""
+        monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        code = tmp_path / "code"
+        _make_cell(
+            code,
+            {"status": "success", "success_rate": 0.456},
+            provenance=dict(self._AGG_PROV),
+        )
+        veto, detail = eval_provenance_should_veto(code)
+        assert veto is True
+        assert detail is not None
+        assert "unknown" in detail.lower()
+
+    @pytest.mark.parametrize("mode", ["reference", "scratch", "", None])
+    def test_other_modes_aggregate_vetoed(self, tmp_path, monkeypatch, mode):
+        """Any non-execute resolved mode (reference/scratch/blank/null) → veto."""
+        monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        state = tmp_path / "rlm_state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "repo_spec.json").write_text(
+            json.dumps({"mode": mode}), encoding="utf-8"
+        )
+        code = tmp_path / "code"
+        _make_cell(
+            code,
+            {"status": "success", "success_rate": 0.456},
+            provenance=dict(self._AGG_PROV),
+        )
+        veto, detail = eval_provenance_should_veto(code)
+        assert veto is True
+        assert detail is not None
+
+    def test_adapt_mode_records_sidecar_still_passes(self, tmp_path, monkeypatch):
+        """Adapt mode with a proper per-example records sidecar is unaffected
+        by the mode gate — the records path stays byte-identical."""
+        monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        _write_repo_spec(tmp_path, "adapt")
+        code = tmp_path / "code"
+        records = [{"id": str(i), "outcome": float(i % 2)} for i in range(10)]
+        prov = {
+            "schema_version": SCHEMA_VERSION,
+            "metric_value": 0.5,
+            "records": records,
+        }
+        _make_cell(
+            code,
+            {"status": "ok", "success_rate": 0.5},
+            provenance=prov,
+        )
+        veto, detail = eval_provenance_should_veto(code)
+        assert veto is False
+        assert detail is None
+
+    def test_unreadable_repo_spec_aggregate_vetoed(self, tmp_path, monkeypatch):
+        """A corrupt repo_spec.json resolves to mode-unknown → fail-closed veto."""
+        monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        state = tmp_path / "rlm_state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "repo_spec.json").write_text("{not json", encoding="utf-8")
+        code = tmp_path / "code"
+        _make_cell(
+            code,
+            {"status": "success", "success_rate": 0.456},
+            provenance=dict(self._AGG_PROV),
+        )
+        veto, detail = eval_provenance_should_veto(code)
+        assert veto is True
+
+
+# ---------------------------------------------------------------------------
 # Inline provenance (GKE round-trip) + honest reward_mean exemption
 # ---------------------------------------------------------------------------
 
@@ -967,6 +1121,8 @@ class TestInlineProvenanceRoundTrip:
 
     def test_inline_aggregate_provenance_credited(self, tmp_path, monkeypatch):
         monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        _write_repo_spec(tmp_path, "execute")
+        code = tmp_path / "code"
         metrics = {
             "status": "success",
             "success_rate": 0.42,
@@ -978,8 +1134,8 @@ class TestInlineProvenanceRoundTrip:
                 "source": "/pod/only/train.log",  # a pod path, absent on host
             },
         }
-        _make_cell(tmp_path, metrics, provenance=None)  # NO sidecar
-        veto, detail = eval_provenance_should_veto(tmp_path)
+        _make_cell(code, metrics, provenance=None)  # NO sidecar
+        veto, detail = eval_provenance_should_veto(code)
         assert veto is False
         assert detail is None
 
@@ -987,13 +1143,15 @@ class TestInlineProvenanceRoundTrip:
         """Inline provenance whose metric_value disagrees with the reported rate
         metric is still vetoed — the value cross-check stays authoritative."""
         monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        _write_repo_spec(tmp_path, "execute")
+        code = tmp_path / "code"
         metrics = {
             "status": "success",
             "success_rate": 0.90,
             "eval_provenance": {"provenance_kind": "aggregate", "metric_value": 0.42},
         }
-        _make_cell(tmp_path, metrics, provenance=None)
-        veto, detail = eval_provenance_should_veto(tmp_path)
+        _make_cell(code, metrics, provenance=None)
+        veto, detail = eval_provenance_should_veto(code)
         assert veto is True
         assert detail is not None
 
@@ -1002,14 +1160,16 @@ class TestInlineProvenanceRoundTrip:
         an inline block also exists — sidecar read is tried first. Both carry the
         trusted producer marker, so the honesty binding is satisfied."""
         monkeypatch.setenv("OPENRESEARCH_EVAL_PROVENANCE_GUARD", "1")
+        _write_repo_spec(tmp_path, "execute")
+        code = tmp_path / "code"
         prov = {
             "provenance_kind": "aggregate",
             "adapter": "verl_metrics_adapter",
             "metric_value": 0.42,
         }
         metrics = {"status": "success", "success_rate": 0.42, "eval_provenance": prov}
-        _make_cell(tmp_path, metrics, provenance=prov)
-        veto, detail = eval_provenance_should_veto(tmp_path)
+        _make_cell(code, metrics, provenance=prov)
+        veto, detail = eval_provenance_should_veto(code)
         assert veto is False
         assert detail is None
 

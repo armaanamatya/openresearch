@@ -19,12 +19,12 @@ def _read_claude_docs() -> str:
     guard validates the whole set, not just the root.
     """
     _SKIP = {"runs", "node_modules", ".venv", ".git", "openscience-ref", "site-packages"}
-    texts = [(_REPO / "CLAUDE.md").read_text()]
+    texts = [(_REPO / "CLAUDE.md").read_text(encoding="utf-8")]
     for path in sorted(_REPO.glob("**/CLAUDE.md")):
         rel = path.relative_to(_REPO)
         if str(rel) == "CLAUDE.md" or any(part in _SKIP for part in rel.parts):
             continue
-        texts.append(path.read_text())
+        texts.append(path.read_text(encoding="utf-8"))
     return "\n".join(texts)
 
 
@@ -60,8 +60,8 @@ def test_custom_tools_count_matches_doc():
     from backend.agents.rlm.primitives import PRIMITIVE_REGISTRY
 
     n = len(PRIMITIVE_REGISTRY)
-    assert n == 19, f"PRIMITIVE_REGISTRY has {n} entries; update the doc + this test together"
-    assert "19" in _CLAUDE, "CLAUDE.md should state the bound custom_tools count (19)"
+    assert n == 21, f"PRIMITIVE_REGISTRY has {n} entries; update the doc + this test together"
+    assert "21" in _CLAUDE, "CLAUDE.md should state the bound custom_tools count (21)"
 
 
 def test_all_doc_citations_resolve():

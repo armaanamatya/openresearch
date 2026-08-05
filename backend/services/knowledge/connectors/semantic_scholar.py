@@ -7,6 +7,12 @@ Adapted from OpenScience's ``science/connectors/literature/semantic-scholar.ts``
 ``SEMANTIC_SCHOLAR_API_KEY`` lifts the shared key-free rate limit (read at
 call time so a key set mid-session applies without a restart — same
 convention as OpenAlex's polite-pool params).
+
+``fetch()`` additionally carries the paper's citation-graph neighbours
+(``references``/``citations``, capped at ``_MAX_RELATED`` per direction, with
+arXiv/DOI external ids) — the seed material for literature-corpus expansion.
+``search()`` hits stay neighbour-free (the search endpoint is not asked for
+graph fields; volume × neighbours would be unbounded).
 """
 
 from __future__ import annotations
@@ -22,7 +28,14 @@ from backend.services.knowledge.connectors.base import (
 
 _BASE_URL = "https://api.semanticscholar.org/graph/v1/paper"
 _FIELDS = "title,abstract,url,year,venue,citationCount,externalIds,authors.name"
-_FETCH_FIELDS = f"{_FIELDS},references.title,citations.title"
+_FETCH_FIELDS = (
+    f"{_FIELDS},references.title,references.externalIds,citations.title,citations.externalIds"
+)
+
+# Citation-graph neighbours kept per direction. S2 returns the FULL reference/
+# citation lists (hundreds for well-cited papers); the record must stay a
+# bounded, constant-ish size like every other corpus-adjacent structure.
+_MAX_RELATED = 100
 
 
 def _api_headers() -> dict[str, str] | None:
@@ -33,6 +46,35 @@ def _api_headers() -> dict[str, str] | None:
 def _authors(entries: list) -> str | None:
     names = [a.get("name") for a in (entries or ()) if isinstance(a, dict) and a.get("name")]
     return join_authors(names)
+
+
+def _related(entries: list | None) -> tuple[dict, ...]:
+    """Normalize S2 ``references``/``citations`` entries to bounded neighbour dicts.
+
+    Each kept entry becomes ``{"id", "title", "arxiv_id", "doi"}`` (plain dicts —
+    lossless through the JSONL cache). Entries with neither an id nor a title
+    are dropped; output is capped at ``_MAX_RELATED``. Defensive: any odd shape
+    degrades to skipping the entry, never raising.
+    """
+    out: list[dict] = []
+    for entry in entries or ():
+        if not isinstance(entry, dict):
+            continue
+        ext = entry.get("externalIds")
+        if not isinstance(ext, dict):
+            ext = {}
+        ref = {
+            "id": entry.get("paperId") or "",
+            "title": snippet(entry.get("title"), 300),
+            "arxiv_id": ext.get("ArXiv"),
+            "doi": ext.get("DOI"),
+        }
+        if not (ref["id"] or ref["title"]):
+            continue
+        out.append(ref)
+        if len(out) >= _MAX_RELATED:
+            break
+    return tuple(out)
 
 
 def _to_record(paper: dict) -> LiteratureRecord:
@@ -51,6 +93,8 @@ def _to_record(paper: dict) -> LiteratureRecord:
         abstract_snippet=snippet(paper.get("abstract")) or (meta or None),
         url=paper.get("url") or (f"https://www.semanticscholar.org/paper/{paper_id}" if paper_id else None),
         venue=venue,
+        references=_related(paper.get("references")),
+        citations=_related(paper.get("citations")),
     )
 
 

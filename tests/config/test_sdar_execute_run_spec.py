@@ -7,6 +7,10 @@ def test_run_spec_selects_foundry_and_execute_and_primary():
     assert spec["OPENRESEARCH_REPRODUCTION_MODE"] == "execute"
     assert spec["OPENRESEARCH_USE_AUTHOR_REPO"] == "1"
     assert spec["OPENRESEARCH_LIFECYCLE_PRIMARY"] == "1"
+    # profile-level enable of the deterministic execute-synth floor (E4); the
+    # GLOBAL default stays off pending paired A/B evidence -- do not read this
+    # as a default flip.
+    assert spec["OPENRESEARCH_EXECUTE_SYNTH"] == "1"
     # foundry routing (root + roles); accept either dedicated keys or ROLE_MODELS json
     assert "opus-foundry" in json.dumps(spec)
     assert "sonnet-foundry" in json.dumps(spec)

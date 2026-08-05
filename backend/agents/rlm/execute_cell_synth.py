@@ -43,6 +43,62 @@ def _flag_enabled() -> bool:
     return env_truthy("OPENRESEARCH_EXECUTE_SYNTH")
 
 
+def _checkpoint_steps() -> int | None:
+    """``OPENRESEARCH_TRAIN_CHECKPOINT_STEPS`` — mid-training checkpoint cadence
+    (integer as string; unset/empty/invalid/non-positive = OFF, byte-identical).
+
+    The downscale defaults ship ``trainer.save_freq=-1`` (no checkpoints), so an
+    OOM/preemption/interruption restarts training from step 0 —
+    ``OPENRESEARCH_CELL_RESUME_AUTO`` only reruns the *cell* (same command, same
+    output dir), not the training *step*. When this flag is set, the synthesized
+    launch appends ``trainer.save_freq=<N> trainer.resume_mode=auto`` (hydra
+    last-wins over the ``-1`` default): checkpoints land under the shim-pinned
+    ``trainer.default_local_dir`` and verl's ``resume_mode=auto`` picks up the
+    latest one on the rerun — step-level resume, spot-GPU/preemption-safe.
+    """
+    raw = os.environ.get("OPENRESEARCH_TRAIN_CHECKPOINT_STEPS", "").strip()
+    if not raw:
+        return None
+    try:
+        steps = int(raw)
+    except ValueError:
+        logger.warning(
+            "bad OPENRESEARCH_TRAIN_CHECKPOINT_STEPS=%r; checkpoint injection stays off",
+            raw,
+        )
+        return None
+    if steps <= 0:
+        logger.warning(
+            "OPENRESEARCH_TRAIN_CHECKPOINT_STEPS=%d is not a positive step count; "
+            "checkpoint injection stays off",
+            steps,
+        )
+        return None
+    return steps
+
+
+def _apply_checkpoint_overrides(
+    spec: "execute_planner.ExecuteSpec",
+) -> "execute_planner.ExecuteSpec":
+    """Return ``spec`` with the checkpoint/resume overrides applied exactly once
+    (dict keys — the shim appends each override a single time), or ``spec``
+    unchanged (same object, byte-identical artifacts) when the flag is off.
+
+    Touches ONLY ``trainer.save_freq`` / ``trainer.resume_mode`` — never any
+    other key, and especially NOT ``data.max_response_length``
+    (execute_planner's documented invariant: the authors' value always survives
+    verbatim)."""
+    steps = _checkpoint_steps()
+    if steps is None:
+        return spec
+    overrides = dict(spec.launch.overrides)
+    overrides["trainer.save_freq"] = str(steps)
+    overrides["trainer.resume_mode"] = "auto"
+    return dataclasses.replace(
+        spec, launch=dataclasses.replace(spec.launch, overrides=overrides)
+    )
+
+
 def _synth_vram_gb(default: float) -> float:
     """``OPENRESEARCH_EXECUTE_SYNTH_VRAM_GB`` overrides the synthesized cell's
     ``est_vram_gb`` (mirror of ``gke_cell_synth``'s ``OPENRESEARCH_SYNTH_CELL_VRAM_GB``).
@@ -347,6 +403,7 @@ def maybe_synthesize_execute_cells(
     spec = execute_planner.plan(code_dir)
     if spec is None:
         return None
+    spec = _apply_checkpoint_overrides(spec)
 
     spec_dict = dataclasses.asdict(spec)
     (code_dir / "execute_spec.json").write_text(

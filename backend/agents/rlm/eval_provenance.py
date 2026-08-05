@@ -20,7 +20,10 @@ Design:
     Scans cell-level ``metrics.json`` files under the ``outputs/`` subtree,
     checks that each result-claiming rate metric is backed by a verifiable
     ``eval_provenance.json``, and vetoes if the recomputed mean disagrees with
-    the reported value (tolerance: 1e-3).
+    the reported value (tolerance: 1e-3).  The records-free AGGREGATE schema
+    (``verl_metrics_adapter``) is accepted only when the run's resolved
+    ``rlm_state/repo_spec.json`` mode is ``"execute"`` — fail-closed for
+    adapt-mode / mode-unknown runs, which must persist per-example records.
   - Flag default-OFF: ``OPENRESEARCH_EVAL_PROVENANCE_GUARD``.
   - Fail-soft everywhere: any exception → safe fallback.
 """
@@ -216,6 +219,26 @@ def record_eval(
 # Guard API  (harness-facing; disk-based)
 # ---------------------------------------------------------------------------
 
+def _resolved_repro_mode(code_dir: Path) -> str | None:
+    """Resolved reproduction mode from ``rlm_state/repo_spec.json`` (the
+    sibling of ``code_dir`` under ``runs/<project_id>/``), or None when the
+    file is absent/unreadable/mode-less.
+
+    Consumers treat None as NOT-execute (fail-closed): the aggregate
+    provenance schema below is only legal for execute-mode runs (the
+    verl_metrics_adapter only exists to bridge the authors' own pipeline),
+    and an unknown mode must never widen acceptance — an adapt-mode cell
+    must persist per-example records.
+    """
+    try:
+        spec_path = Path(code_dir).parent / "rlm_state" / "repo_spec.json"
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+        mode = spec.get("mode") if isinstance(spec, dict) else None
+        return mode if isinstance(mode, str) and mode.strip() else None
+    except Exception:  # noqa: BLE001 — fail-soft to "unknown" (treated as not-execute)
+        return None
+
+
 def _find_rate_metric(m: dict[str, Any]) -> tuple[str, float] | None:
     """Return (key, value) for the first top-level rate-metric key with a
     finite positive numeric value, or None if none found."""
@@ -260,6 +283,10 @@ def eval_provenance_should_veto(code_dir: str | Path) -> tuple[bool, str | None]
 
     _SUCCESS_STATUSES = frozenset({"ok", "success", "succeeded", "completed"})
     violations: list[str] = []
+
+    # Resolved once per call: the aggregate-provenance branch below is gated on
+    # the run's resolved reproduction mode (execute-only; None = fail-closed).
+    repro_mode = _resolved_repro_mode(code_dir)
 
     try:
         for metrics_path in code_dir.rglob("metrics.json"):
@@ -358,10 +385,31 @@ def eval_provenance_should_veto(code_dir: str | Path) -> tuple[bool, str | None]
                 # per-example records would violate the no-fabrication red
                 # line). Verified by a value-preserving cross-check against
                 # metrics.json instead of a records-recompute.
+                #
+                # EXECUTE-MODE-ONLY (fail-closed): the aggregate schema is
+                # accepted ONLY when the run's resolved
+                # ``rlm_state/repo_spec.json`` mode is "execute" — the one mode
+                # where the authors' own pipeline is the metric producer and
+                # per-example records genuinely do not exist. An adapt-mode (or
+                # mode-unknown) cell carrying an aggregate marker is vetoed:
+                # adapt-mode trainers are harness-guided and MUST persist
+                # per-example records via record_eval.
                 if (
                     sc.get("provenance_kind") == "aggregate"
                     or sc.get("adapter") == "verl_metrics_adapter"
                 ):
+                    if repro_mode != "execute":
+                        violations.append(
+                            f"{cell_label}: aggregate eval_provenance is only"
+                            f" accepted for execute-mode runs"
+                            f" (rlm_state/repo_spec.json mode="
+                            f"{repro_mode or 'unknown'}) — adapt-mode cells must"
+                            f" persist per-example records via record_eval"
+                        )
+                        if len(violations) >= 3:
+                            break
+                        continue
+
                     try:
                         mv = float(sc.get("metric_value"))
                         if not math.isfinite(mv):

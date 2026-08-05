@@ -4,10 +4,10 @@
 
 ## Summary
 
-- **Total distinct flags:** 507
+- **Total distinct flags:** 513
 - **Managed by `config.py` Settings (typed, default known):** 140
-- **Ad-hoc `os.environ` reads (no central default):** 367
-- **Mentioned in a `CLAUDE.md`:** 136 (26%)
+- **Ad-hoc `os.environ` reads (no central default):** 373
+- **Mentioned in a `CLAUDE.md`:** 146 (28%)
 
 Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **sites** = ad-hoc read count; **default** = literal default at first read site (best effort).
 
@@ -39,7 +39,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **si
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_ACCELERATOR` |  | ✅ | 2 | `""` |
+| `OPENRESEARCH_ACCELERATOR` |  | ✅ | 4 | `""` |
 | `OPENRESEARCH_ACCELERATOR_API_KEY` |  | ✅ | 2 | `"local"` |
 | `OPENRESEARCH_ACCELERATOR_BASE_URL` |  | ✅ | 2 | `_DEFAULT_LOCAL_BASE_URL` |
 | `OPENRESEARCH_ACCELERATOR_MODEL` |  | ✅ | 3 | `_DEFAULT_LOCAL_MODEL` |
@@ -72,6 +72,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **si
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_ALLOW_GKE` |  | ✅ | 1 | `""` |
+| `OPENRESEARCH_ALLOW_GROK_EXECUTOR` |  |  |  | |
 | `OPENRESEARCH_ALLOW_LOSSY_PAPER_TEXT` | ✅ |  |  | `Field(...)` |
 
 ### `OPENRESEARCH_ANTHROPIC_*`
@@ -558,7 +559,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **si
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_EXECUTOR` |  | ✅ | 1 | |
+| `OPENRESEARCH_EXECUTOR` |  | ✅ | 2 | |
 | `OPENRESEARCH_EXECUTOR_API_KEY` |  |  | 1 | |
 | `OPENRESEARCH_EXECUTOR_BASE_URL` |  |  | 1 | |
 | `OPENRESEARCH_EXECUTOR_MODEL` |  |  | 1 | |
@@ -596,6 +597,12 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **si
 | `OPENRESEARCH_FIDELITY_EVIDENCE` |  |  | 1 | `""` |
 | `OPENRESEARCH_FIDELITY_MUTATION_TIMEOUT_S` |  |  | 1 | `"60"` |
 | `OPENRESEARCH_FIDELITY_TEST_TIMEOUT_S` |  |  | 1 | `"120"` |
+
+### `OPENRESEARCH_FIELD_*`
+
+| Flag | cfg | doc | sites | default |
+|---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_FIELD_PLAUSIBILITY` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_FINALIZE_*`
 
@@ -640,7 +647,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **si
 | `OPENRESEARCH_GCP_BOOTSTRAP_PIP_TIMEOUT_S` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_BOOT_TIMEOUT_SECONDS` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_CACHE_MOUNT_PATH` | ✅ |  |  | `Field(...)` |
-| `OPENRESEARCH_GCP_CELL_ROUTE` |  |  | 1 | `"1"` |
+| `OPENRESEARCH_GCP_CELL_ROUTE` |  | ✅ | 1 | `"1"` |
 | `OPENRESEARCH_GCP_CONTROLLER_IMAGE` |  |  | 1 | `""` |
 | `OPENRESEARCH_GCP_CPU_INSTANCE` |  |  |  | |
 | `OPENRESEARCH_GCP_CPU_MACHINE_TYPE` |  |  |  | |
@@ -765,7 +772,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **si
 | `OPENRESEARCH_LEAF_ACTUATE` |  | ✅ |  | |
 | `OPENRESEARCH_LEAF_ACTUATE_MAX_COST` |  | ✅ |  | |
 | `OPENRESEARCH_LEAF_ACTUATE_SEEDS` |  | ✅ |  | |
-| `OPENRESEARCH_LEAF_EVIDENCE_GATE` |  |  | 2 | `""` |
+| `OPENRESEARCH_LEAF_EVIDENCE_GATE` |  | ✅ | 2 | `""` |
 | `OPENRESEARCH_LEAF_SEED_MAX` |  | ✅ |  | |
 | `OPENRESEARCH_LEAF_TRIAGE` |  | ✅ |  | |
 
@@ -783,7 +790,10 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **si
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_LITERATURE_CLAIM_GATE` |  |  | 1 | `""` |
-| `OPENRESEARCH_LITERATURE_GROUNDING` |  |  | 1 | `""` |
+| `OPENRESEARCH_LITERATURE_CORPUS` |  | ✅ | 1 | `""` |
+| `OPENRESEARCH_LITERATURE_GROUNDING` |  | ✅ | 1 | `""` |
+| `OPENRESEARCH_LITERATURE_SURVEY` |  | ✅ | 2 | `""` |
+| `OPENRESEARCH_LITERATURE_WEB` |  | ✅ | 2 | `""` |
 
 ### `OPENRESEARCH_LLM_*`
 
@@ -1268,6 +1278,12 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **si
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_TARGET_BEST_FLOOR` |  | ✅ |  | |
 
+### `OPENRESEARCH_TRAIN_*`
+
+| Flag | cfg | doc | sites | default |
+|---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_TRAIN_CHECKPOINT_STEPS` |  | ✅ | 1 | `""` |
+
 ### `OPENRESEARCH_TRAINER_*`
 
 | Flag | cfg | doc | sites | default |
@@ -1355,8 +1371,8 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **si
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_WEBSHOP_` |  |  |  | |
-| `OPENRESEARCH_WEBSHOP_PYTHON` |  |  | 2 | |
+| `OPENRESEARCH_WEBSHOP_` |  | ✅ |  | |
+| `OPENRESEARCH_WEBSHOP_PYTHON` |  | ✅ | 3 | `""` |
 | `OPENRESEARCH_WEBSHOP_REPO_URL` |  |  | 2 | `"https://github.com/princeton-nlp/WebSho` |
 
 ### `OPENRESEARCH_ZERO_*`

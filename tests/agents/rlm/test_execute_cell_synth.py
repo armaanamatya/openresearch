@@ -184,6 +184,99 @@ def test_shim_pins_checkpoint_dir_under_out_dir(tmp_path, monkeypatch):
     assert 'f"trainer.default_local_dir={ckpt_dir}"' in shim
 
 
+# --- OPENRESEARCH_TRAIN_CHECKPOINT_STEPS: mid-training checkpoint/resume injection ----
+
+def test_checkpoint_flag_off_artifacts_byte_identical(tmp_path, monkeypatch):
+    """Flag unset AND flag empty/whitespace -> byte-identical artifacts with the
+    pre-flag baseline: save_freq stays the -1 downscale default and no
+    resume_mode appears anywhere in the spec or the shim."""
+    monkeypatch.setenv("OPENRESEARCH_EXECUTE_SYNTH", "1")
+    monkeypatch.delenv("OPENRESEARCH_TRAIN_CHECKPOINT_STEPS", raising=False)
+    code_dir = tmp_path / "off"
+    _write_verl_fixture(code_dir)
+    assert execute_cell_synth.maybe_synthesize_execute_cells(code_dir) is not None
+
+    spec_off = (code_dir / "execute_spec.json").read_text(encoding="utf-8")
+    shim_off = (code_dir / "train_cell.py").read_text(encoding="utf-8")
+    cells_off = (code_dir / "cells.json").read_text(encoding="utf-8")
+
+    overrides = json.loads(spec_off)["launch"]["overrides"]
+    assert overrides["trainer.save_freq"] == "-1"
+    assert "trainer.resume_mode" not in overrides
+    assert "resume_mode" not in spec_off
+    assert "resume_mode" not in shim_off
+
+    # empty/whitespace value is OFF too -> byte-identical artifacts
+    monkeypatch.setenv("OPENRESEARCH_TRAIN_CHECKPOINT_STEPS", "   ")
+    code_dir2 = tmp_path / "empty"
+    _write_verl_fixture(code_dir2)
+    assert execute_cell_synth.maybe_synthesize_execute_cells(code_dir2) is not None
+    assert (code_dir2 / "execute_spec.json").read_text(encoding="utf-8") == spec_off
+    assert (code_dir2 / "train_cell.py").read_text(encoding="utf-8") == shim_off
+    assert (code_dir2 / "cells.json").read_text(encoding="utf-8") == cells_off
+
+
+def test_checkpoint_flag_on_appends_both_overrides_exactly_once(tmp_path, monkeypatch):
+    """Flag on -> trainer.save_freq=<N> replaces the -1 default and
+    trainer.resume_mode=auto is added, each EXACTLY once; every other override
+    (esp. data.max_response_length, which must never be touched) is unchanged."""
+    monkeypatch.setenv("OPENRESEARCH_EXECUTE_SYNTH", "1")
+    monkeypatch.setenv("OPENRESEARCH_TRAIN_CHECKPOINT_STEPS", "50")
+    code_dir = tmp_path / "code"
+    _write_verl_fixture(code_dir)
+    assert execute_cell_synth.maybe_synthesize_execute_cells(code_dir) is not None
+
+    spec_json = json.loads((code_dir / "execute_spec.json").read_text(encoding="utf-8"))
+    overrides = spec_json["launch"]["overrides"]
+    assert overrides["trainer.save_freq"] == "50"
+    assert overrides["trainer.resume_mode"] == "auto"
+
+    # exactly once each in the embedded shim spec (dict keys guarantee once in
+    # the overrides; the shim carries the spec JSON a single time).
+    shim_text = (code_dir / "train_cell.py").read_text(encoding="utf-8")
+    assert shim_text.count("trainer.resume_mode") == 1
+    assert shim_text.count("trainer.save_freq=-1") == 0
+
+    # execute_planner invariant: the authors' data.max_response_length survives
+    # verbatim in the command and is never an override.
+    assert "data.max_response_length=3072" in spec_json["launch"]["command"]
+    assert "data.max_response_length" not in overrides
+
+    # only the two checkpoint keys differ from the flag-off override set
+    monkeypatch.delenv("OPENRESEARCH_TRAIN_CHECKPOINT_STEPS")
+    baseline_dir = tmp_path / "baseline"
+    _write_verl_fixture(baseline_dir)
+    assert execute_cell_synth.maybe_synthesize_execute_cells(baseline_dir) is not None
+    baseline_overrides = json.loads(
+        (baseline_dir / "execute_spec.json").read_text(encoding="utf-8")
+    )["launch"]["overrides"]
+    assert {
+        k: v for k, v in overrides.items() if k not in ("trainer.save_freq", "trainer.resume_mode")
+    } == {k: v for k, v in baseline_overrides.items() if k != "trainer.save_freq"}
+
+    py_compile.compile(str(code_dir / "train_cell.py"), doraise=True)
+
+
+def test_checkpoint_flag_invalid_or_nonpositive_stays_off(tmp_path, monkeypatch):
+    """A non-integer or non-positive value is treated as OFF (fail-safe,
+    byte-identical) -- never a crash, never a partial injection."""
+    monkeypatch.setenv("OPENRESEARCH_EXECUTE_SYNTH", "1")
+    monkeypatch.delenv("OPENRESEARCH_TRAIN_CHECKPOINT_STEPS", raising=False)
+    baseline_dir = tmp_path / "baseline"
+    _write_verl_fixture(baseline_dir)
+    assert execute_cell_synth.maybe_synthesize_execute_cells(baseline_dir) is not None
+    spec_baseline = (baseline_dir / "execute_spec.json").read_text(encoding="utf-8")
+
+    for i, bad in enumerate(("abc", "0", "-5")):
+        monkeypatch.setenv("OPENRESEARCH_TRAIN_CHECKPOINT_STEPS", bad)
+        code_dir = tmp_path / f"bad{i}"
+        _write_verl_fixture(code_dir)
+        assert execute_cell_synth.maybe_synthesize_execute_cells(code_dir) is not None
+        assert (
+            code_dir / "execute_spec.json"
+        ).read_text(encoding="utf-8") == spec_baseline
+
+
 # --- Option A: held-out eval wiring surfaces in the synthesized cell -------------------
 
 def test_synth_shim_carries_dual_key_bridge_and_val_slice(tmp_path, monkeypatch):

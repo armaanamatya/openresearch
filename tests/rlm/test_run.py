@@ -210,7 +210,7 @@ class TestResolveCustomTools:
         monkeypatch.delenv("OPENRESEARCH_RLM_STUB_PRIMITIVES", raising=False)
         ctx = make_context(tmp_path)
         tools, label = _resolve_custom_tools(ctx)
-        assert len(tools) == 19  # RLM primitives + codex_repair + read_context_map + inspect_repository (#62) + consult_skill
+        assert len(tools) == 21  # RLM primitives + aux incl. inspect_repository, consult_skill, search_literature, survey_related_work
         assert label == "real (binding)"
         for entry in tools.values():
             assert callable(entry["tool"])

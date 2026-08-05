@@ -387,11 +387,43 @@ def _understand_impl(run_dir: Path, opts: CampaignOptions) -> dict[str, Any]:
     result = run_understanding(
         extract=_extract, lint=None, probe_assets=None, out_path=run_dir / "campaign" / "understanding.json"
     )
+    # Literature corpus (flag-gated, default OFF, CPU-only/$0 — fits the
+    # UNDERSTAND contract). Writes its own campaign/literature_corpus.json:
+    # deliberately a SEPARATE artifact so the corpus (network-sourced, hence
+    # non-deterministic between passes) never enters understanding.json's
+    # hashed payload or the double-extraction diff. Advisory-only; fail-soft.
+    _maybe_build_literature_corpus(run_dir)
     out: dict[str, Any] = {"sha256": result.sha256, "blocking": list(result.blocking)}
     observed = _rubric_sha256_if_exists(run_dir / "generated_rubric.json")
     if observed is not None:
         out["rubric_sha256"] = observed
     return out
+
+
+def _maybe_build_literature_corpus(run_dir: Path) -> None:
+    """Build the related-paper corpus during UNDERSTAND. Never raises."""
+    try:
+        from backend.services.knowledge.corpus import build_corpus, literature_corpus_enabled
+        from backend.services.knowledge.corpus.inputs import load_target
+
+        if not literature_corpus_enabled():
+            return
+        from backend.config import get_settings
+        from backend.eventstore.sqlite_store import SqliteEventStore
+
+        runs_root = run_dir.parent
+        store = SqliteEventStore(get_settings().database_url)
+        target = load_target(run_dir.name, store=store, runs_root=runs_root)
+        report = build_corpus(runs_root=runs_root, target=target)
+        if report is None:
+            return
+        out_path = run_dir / "campaign" / "literature_corpus.json"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
+        tmp.replace(out_path)
+    except Exception:  # noqa: BLE001 — an advisory input must never block UNDERSTAND
+        logger.debug("campaign: literature corpus build failed", exc_info=True)
 
 
 # --- plan_attempt ------------------------------------------------------------

@@ -345,3 +345,78 @@ def test_unmetered_warning_silent_when_no_usage(tmp_path):
     _warn_unmetered_root_backend(root_model=root_model, result_obj=result_obj, emit=emit)
 
     assert captured == []
+
+
+# ---------------------------------------------------------------------------
+# 8 — unpriced surfacing (2026-08-03): tokens_total.json + final_report.cost
+#     carry an explicit unpriced audit instead of a silent $0 sum.
+# ---------------------------------------------------------------------------
+
+
+def _drain_unpriced(tmp_path):
+    root_model = RootModel(
+        key="azure-foundry",
+        rlm_backend="openai",
+        backend_kwargs={"model_name": "some-unpriced-grok-deployment"},
+    )
+    ctx = _make_ctx(tmp_path / "run1")
+    result_obj = _usage_result({"some-unpriced-grok-deployment": (40_000, 8_000)})
+    emit, _ = _make_emit()
+    _drain_foundry_root_usage_to_ledger(
+        root_model=root_model, result_obj=result_obj, ctx=ctx,
+        project_dir=ctx.project_dir, emit=emit,
+    )
+    return ctx, result_obj
+
+
+def test_tokens_total_surfaces_unpriced_block(tmp_path):
+    ctx, _ = _drain_unpriced(tmp_path)
+
+    totals = _aggregate_tokens_total(ctx.project_dir)
+    assert totals["unpriced"]["rows"] == 1
+    assert totals["unpriced"]["tokens"] == 48_000
+    assert totals["unpriced"]["models"] == ["some-unpriced-grok-deployment"]
+    assert totals["unpriced"]["confidence"] == "partial"
+
+
+def test_tokens_total_unpriced_block_complete_when_all_priced(tmp_path):
+    root_model = ROOT_MODELS["opus-foundry"]
+    ctx = _make_ctx(tmp_path / "run1")
+    result_obj = _usage_result({"claude-opus-4-8": (100_000, 20_000)})
+    emit, _ = _make_emit()
+    _drain_foundry_root_usage_to_ledger(
+        root_model=root_model, result_obj=result_obj, ctx=ctx,
+        project_dir=ctx.project_dir, emit=emit,
+    )
+
+    totals = _aggregate_tokens_total(ctx.project_dir)
+    assert totals["unpriced"] == {
+        "rows": 0, "tokens": 0, "models": [], "confidence": "complete",
+    }
+
+
+def test_final_report_cost_surfaces_unpriced_rows(tmp_path):
+    ctx, result_obj = _drain_unpriced(tmp_path)
+
+    cost = _cost_dict(result_obj, ctx)
+    assert cost["llm_usd"] == 0.0  # still $0 priced spend...
+    assert cost["unpriced_rows"] == 1  # ...but explicitly NOT proof of $0
+    assert cost["unpriced_tokens"] == 48_000
+    assert cost["unpriced_models"] == ["some-unpriced-grok-deployment"]
+    assert cost["cost_confidence"] == "partial"
+
+
+def test_final_report_cost_confidence_complete_when_priced(tmp_path):
+    root_model = ROOT_MODELS["opus-foundry"]
+    ctx = _make_ctx(tmp_path / "run1")
+    result_obj = _usage_result({"claude-opus-4-8": (100_000, 20_000)})
+    emit, _ = _make_emit()
+    _drain_foundry_root_usage_to_ledger(
+        root_model=root_model, result_obj=result_obj, ctx=ctx,
+        project_dir=ctx.project_dir, emit=emit,
+    )
+
+    cost = _cost_dict(result_obj, ctx)
+    assert cost["llm_usd"] == 3.0
+    assert cost["unpriced_rows"] == 0
+    assert cost["cost_confidence"] == "complete"
