@@ -1,6 +1,6 @@
 """Happy-path + resilience tests for estimate_paper_budget.
 
-Spec: docs/superpowers/specs/2026-05-25-budget-estimation-design.md §estimator.py
+Spec: docs/history/specs/2026-05-25-budget-estimation-design.md §estimator.py
 Invariant 7: estimate_paper_budget never spawns a subprocess.
 """
 

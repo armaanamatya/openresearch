@@ -20,7 +20,7 @@ the `.preserved` marker is stamped.  It reads `dashboard_events.jsonl` and
 `load_preserved_timings` walks the runs root and returns a list of dicts for
 use by the k-NN estimator.
 
-Spec: docs/superpowers/specs/2026-05-25-three-source-budget-estimator-design.md §timing
+Spec: docs/history/specs/2026-05-25-three-source-budget-estimator-design.md §timing
 """
 
 from __future__ import annotations

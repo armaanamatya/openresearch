@@ -840,6 +840,13 @@ class GpuRequirements(BaseModel):
     paper_gpu_count: int | None = Field(default=None, ge=0, le=64)
     reasoning: str = Field(default="", description="One-line rationale, surfaced in SSE event")
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    vram_is_explicit: bool = Field(
+        default=False,
+        description=(
+            "True when estimated_vram_gb came from an operator --vram-gb override "
+            "(not the LLM). The resolver skips the headroom multiplier for it."
+        ),
+    )
 
 
 class GpuPlan(BaseModel):

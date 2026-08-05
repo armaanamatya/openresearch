@@ -11,7 +11,12 @@ from pathlib import Path
 import pytest
 
 from backend.services.ingestion.parser.interface import ParseError, ParseResult
-from backend.services.ingestion.parser.model import Section, section_id_for
+from backend.services.ingestion.parser.model import (
+    Reference,
+    Section,
+    reference_id_for,
+    section_id_for,
+)
 from backend.services.ingestion.parser.resolving_parser import (
     ResolvingParser,
     score_text_quality,
@@ -207,7 +212,88 @@ def test_resolving_name_and_version():
         ocr_parser=_StubParser("ocr-tesseract", raises=True),
     )
     assert p.name == "resolving"
-    assert p.version == "1.0"
+    assert p.version == "1.1"
+
+
+# ---------------------------------------------------------------------------
+# Reference supplementation — the bibliography must survive an HTML win.
+# Only PyMuPdfParser extracts references; HtmlPaperParser returns () and wins
+# the cascade for arXiv papers, so without the merge pass the reference list
+# was silently lost for exactly the papers that have clean HTML.
+# ---------------------------------------------------------------------------
+
+def _make_reference(project_id: str = "prj_stub") -> Reference:
+    raw = "[1] J. Doe et al. Some prior work. arXiv:2101.00001, 2021."
+    return Reference(
+        id=reference_id_for(project_id, raw),
+        project_id=project_id,
+        raw_text=raw,
+        arxiv_id="2101.00001",
+        doi=None,
+        title=None,
+    )
+
+
+def test_html_winner_gains_pdf_references(tmp_path: Path):
+    """HTML wins the cascade with no references → PDF's references are merged in."""
+    ref = _make_reference()
+    html_result = _make_result(_CLEAN_PROSE)
+    pdf_result = ParseResult(
+        sections=(), references=(ref,), figures=(), full_text=_CLEAN_PROSE
+    )
+    _make_pdf(tmp_path)
+    _make_html(tmp_path)
+
+    parser = ResolvingParser(
+        html_parser=_StubParser("arxiv-html", result=html_result),
+        pdf_parser=_StubParser("pymupdf", result=pdf_result),
+        ocr_parser=_StubParser("ocr-tesseract", raises=True),
+    )
+    result = parser.parse(project_id="prj_x", paper_path=tmp_path / "raw_paper.pdf")
+
+    # The winner is still the HTML parse (sections/full_text untouched) but
+    # now carries the PDF-extracted bibliography.
+    assert result.full_text == html_result.full_text
+    assert result.sections == html_result.sections
+    assert tuple(result.references) == (ref,)
+
+
+def test_winner_keeps_own_references_when_present(tmp_path: Path):
+    """A winner that already extracted references is returned unchanged (identity)."""
+    html_ref = _make_reference("prj_html")
+    pdf_ref = _make_reference("prj_pdf")
+    html_result = ParseResult(
+        sections=(), references=(html_ref,), figures=(), full_text=_CLEAN_PROSE
+    )
+    pdf_result = ParseResult(
+        sections=(), references=(pdf_ref,), figures=(), full_text=_CLEAN_PROSE
+    )
+    _make_pdf(tmp_path)
+    _make_html(tmp_path)
+
+    parser = ResolvingParser(
+        html_parser=_StubParser("arxiv-html", result=html_result),
+        pdf_parser=_StubParser("pymupdf", result=pdf_result),
+        ocr_parser=_StubParser("ocr-tesseract", raises=True),
+    )
+    result = parser.parse(project_id="prj_x", paper_path=tmp_path / "raw_paper.pdf")
+    assert result is html_result
+
+
+def test_no_supplement_when_no_strategy_found_references(tmp_path: Path):
+    """No donor has references → the winning result is returned unchanged (identity)."""
+    html_result = _make_result(_CLEAN_PROSE)
+    pdf_result = _make_result(_CLEAN_PROSE)
+    _make_pdf(tmp_path)
+    _make_html(tmp_path)
+
+    parser = ResolvingParser(
+        html_parser=_StubParser("arxiv-html", result=html_result),
+        pdf_parser=_StubParser("pymupdf", result=pdf_result),
+        ocr_parser=_StubParser("ocr-tesseract", raises=True),
+    )
+    result = parser.parse(project_id="prj_x", paper_path=tmp_path / "raw_paper.pdf")
+    assert result is html_result
 
 
 # ---------------------------------------------------------------------------

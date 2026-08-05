@@ -224,11 +224,15 @@ class VmComputeProvider(ComputeProvider):
 
     @property
     def _gpu_machine_type(self) -> str:
-        return self._vm.gpu_machine_type or _DEFAULT_GPU_MACHINE_TYPE
+        return self._vm.gpu_machine_type or _env(
+            "OPENRESEARCH_GCP_GPU_MACHINE_TYPE", _DEFAULT_GPU_MACHINE_TYPE
+        )
 
     @property
     def _cpu_machine_type(self) -> str:
-        return self._vm.cpu_machine_type or _DEFAULT_CPU_MACHINE_TYPE
+        return self._vm.cpu_machine_type or _env(
+            "OPENRESEARCH_GCP_CPU_MACHINE_TYPE", _DEFAULT_CPU_MACHINE_TYPE
+        )
 
     @property
     def _cpu_instance(self) -> str:
@@ -649,19 +653,30 @@ class VmComputeProvider(ComputeProvider):
     # ------------------------------------------------------------------
 
     def watch(self, handle: RunHandle) -> Iterator[RunStatus]:
-        """Poll ``describe`` status until the VM leaves RUNNING.
+        """Poll ``describe`` status until the VM leaves RUNNING -- OR the in-VM
+        child writes its terminal ``final_report.json`` sentinel.
+
+        A RUNNING VM is probed for the report sentinel each poll: once the
+        in-VM ``reproduce`` child has finished (``final_report.json`` present),
+        ``watch`` yields a single terminal ``completed`` status and returns.
+        The driving state machine breaks straight to the graceful COLLECT ->
+        RELEASE_GPU -> FINALIZE path (invariant 3) -- billing stops at
+        child-finish instead of idling the GPU to the max-run-duration ceiling
+        (which would STOP the VM and route through
+        ``stopped_uncollected -> recover() -> RECOVERED``, mis-classifying
+        every clean run as recovered).
 
         A non-RUNNING VM (stopped by the max-run-duration ceiling, a
         preemption, or an external actor) is classified
-        ``stopped_uncollected`` -- the state machine driving this provider
-        reacts by calling ``recover()`` rather than assuming a graceful
-        COLLECT already ran. ``synced`` always reports ``False`` here: this
-        method itself never pulls artifacts (that is ``collect``'s job), so
-        nothing is off-box "as of this poll." Sleeps ``poll_interval_s``
-        (constructor kwarg, default 30s; injectable ``sleep``) between polls
-        while the VM stays RUNNING, and returns after the first non-RUNNING
-        poll -- so a caller `for status in provider.watch(handle): ...`
-        loop terminates on its own once the VM leaves service.
+        ``stopped_uncollected`` -- the state machine reacts by calling
+        ``recover()`` rather than assuming a graceful COLLECT already ran.
+        ``synced`` always reports ``False`` here: this method itself never
+        pulls artifacts (that is ``collect``'s job), so nothing is off-box "as
+        of this poll." Sleeps ``poll_interval_s`` (constructor kwarg, default
+        30s; injectable ``sleep``) between polls while the VM stays RUNNING and
+        the sentinel is absent, and returns after the first terminal poll -- so
+        a caller `for status in provider.watch(handle): ...` loop terminates on
+        its own once the run finishes or the VM leaves service.
         """
         while True:
             argv = self._gcloud(
@@ -671,6 +686,9 @@ class VmComputeProvider(ComputeProvider):
             result = self._run(argv)
             status = (result.stdout or "").strip()
             if status == "RUNNING":
+                if self._run_completed_on_vm(handle):
+                    yield RunStatus(state="completed", detail="final_report.json present", synced=False)
+                    return
                 run_status = RunStatus(state="running", detail=status, synced=False)
             elif status:
                 run_status = RunStatus(state="stopped_uncollected", detail=status, synced=False)
@@ -680,6 +698,17 @@ class VmComputeProvider(ComputeProvider):
             if run_status.state != "running":
                 return
             self._sleep(self._poll_interval_s)
+
+    def _run_completed_on_vm(self, handle: RunHandle) -> bool:
+        """True once the in-VM ``reproduce`` child has written its terminal
+        ``final_report.json`` -- the DONE sentinel the bash watcher polls
+        (``scripts/sdar_gcp_watch.sh``). Any ssh error / non-DONE output is
+        treated as 'not done yet' (fail-OPEN to keep polling -- never a false
+        DONE that would abandon a still-running GPU job)."""
+        remote_run_dir = f"{self._remote_dir}/runs/{handle.id}"
+        probe = f"test -f {remote_run_dir}/final_report.json && echo DONE || echo WAIT"
+        result = self._run(self._ssh_argv(probe))
+        return result.returncode == 0 and "DONE" in (result.stdout or "")
 
     # ------------------------------------------------------------------
     # ComputeProvider: collect
@@ -695,7 +724,10 @@ class VmComputeProvider(ComputeProvider):
         tar_cmd = (
             f"cd {remote_run_dir} 2>/dev/null && tar czf {tgz_path} "
             f"final_report.json final_report.md demo_status.json cost_ledger.jsonl "
-            f"experiment_runs.jsonl dashboard_events.jsonl code/metrics.json 2>/dev/null; echo tarred"
+            f"experiment_runs.jsonl dashboard_events.jsonl code/metrics.json "
+            f"generated_rubric.json rubric_tree.json "
+            f"rlm_state/evidence_bundle.json rlm_state/validation_verdict.json "
+            f"2>/dev/null; echo tarred"
         )
         self._run(self._ssh_argv(tar_cmd))
 

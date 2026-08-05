@@ -449,3 +449,124 @@ class TestRunMatrixResultsCompleteness:
 
         assert (tmp_path / "log0.log").exists()
         assert (tmp_path / "log1.log").exists()
+
+
+# ---------------------------------------------------------------------------
+# WebShop per-cell interpreter seam (OPENRESEARCH_WEBSHOP_PYTHON, 2026-08-03)
+# ---------------------------------------------------------------------------
+
+def _fake_popen_capture():
+    """Return (popen_stub, captured): captured gets 'cmd' + 'env' from Popen."""
+    import io
+
+    captured: dict[str, Any] = {}
+
+    class _FakeProc:
+        pid = 99999
+        returncode = 0
+        stdout = io.StringIO("")  # empty — reader thread exits immediately
+
+        def wait(self, timeout=None):
+            return 0
+
+    def _popen(cmd, *args, **kwargs):
+        captured["cmd"] = list(cmd)
+        captured["env"] = dict(kwargs["env"])
+        return _FakeProc()
+
+    return _popen, captured
+
+
+class TestWebShopInterpreterSeam:
+    """OPENRESEARCH_WEBSHOP_PYTHON: default-OFF byte-identical; webshop-cell-only.
+
+    (a) unset  => interpreter selection identical to before (sys.executable);
+    (b) set + webshop cell => the seam interpreter runs the cell AND its bin/
+        is what gets prepended to the child PATH;
+    (c) set + non-webshop cell => default interpreter, default PATH prepend.
+    """
+
+    def _run(self, tmp_path, cell: dict):
+        popen_stub, captured = _fake_popen_capture()
+        with (
+            patch("backend.agents.rlm.gpu_cell_runner.subprocess.Popen", popen_stub),
+            patch("backend.agents.rlm.gpu_cell_runner._orphan_register"),
+            patch("backend.agents.rlm.gpu_cell_runner._orphan_deregister"),
+            patch("backend.agents.rlm.gpu_cell_runner._oom_enforce_enabled", return_value=False),
+        ):
+            gcr._run_cell_subprocess(
+                cell=cell,
+                cell_script="train_cell.py",
+                gpu_id="0",
+                output_dir=tmp_path / cell.get("id", "c"),
+                batch_scale=None,
+                grad_checkpoint=False,
+                timeout_s=None,
+                log_path=tmp_path / "cell.log",
+            )
+        return captured
+
+    def test_unset_uses_sys_executable(self, tmp_path, monkeypatch):
+        """(a) Seam unset: argv[0] == sys.executable, PATH prepend == its bin/."""
+        import os as _os
+        import sys as _sys
+
+        monkeypatch.delenv("OPENRESEARCH_WEBSHOP_PYTHON", raising=False)
+        captured = self._run(tmp_path, {"id": "qwen2_5_3b__sdar__webshop__s0", "env": "webshop"})
+        assert captured["cmd"][0] == _sys.executable
+        expected_bin = _os.path.dirname(_os.path.abspath(_sys.executable))
+        assert captured["env"]["PATH"].startswith(expected_bin + _os.pathsep)
+
+    def test_empty_var_is_same_as_unset(self, tmp_path, monkeypatch):
+        """(a) Empty/whitespace value is treated exactly like unset."""
+        import sys as _sys
+
+        monkeypatch.setenv("OPENRESEARCH_WEBSHOP_PYTHON", "   ")
+        captured = self._run(tmp_path, {"id": "c0", "env": "webshop"})
+        assert captured["cmd"][0] == _sys.executable
+
+    def test_set_webshop_cell_uses_seam_interpreter(self, tmp_path, monkeypatch):
+        """(b) Set + webshop cell (explicit env axis): seam interpreter + its bin/ on PATH."""
+        import os as _os
+
+        seam = str(tmp_path / "verl-webshop" / "bin" / "python3")
+        monkeypatch.setenv("OPENRESEARCH_WEBSHOP_PYTHON", seam)
+        captured = self._run(tmp_path, {"id": "c0", "env": "webshop"})
+        assert captured["cmd"][0] == seam
+        expected_bin = _os.path.dirname(_os.path.abspath(seam))
+        assert captured["env"]["PATH"].startswith(expected_bin + _os.pathsep)
+
+    def test_set_webshop_by_id_substring(self, tmp_path, monkeypatch):
+        """(b) No env axis: the cell id substring identifies a webshop cell."""
+        seam = str(tmp_path / "ws-py" / "bin" / "python3")
+        monkeypatch.setenv("OPENRESEARCH_WEBSHOP_PYTHON", seam)
+        captured = self._run(tmp_path, {"id": "qwen3_1_7b__sdar__webshop__s0"})
+        assert captured["cmd"][0] == seam
+
+    def test_set_non_webshop_cell_uses_default(self, tmp_path, monkeypatch):
+        """(c) Set + NON-webshop cell: default interpreter and default PATH prepend."""
+        import os as _os
+        import sys as _sys
+
+        seam = str(tmp_path / "verl-webshop" / "bin" / "python3")
+        monkeypatch.setenv("OPENRESEARCH_WEBSHOP_PYTHON", seam)
+        captured = self._run(tmp_path, {"id": "qwen2_5_3b__sdar__alfworld__s0", "env": "alfworld"})
+        assert captured["cmd"][0] == _sys.executable
+        expected_bin = _os.path.dirname(_os.path.abspath(_sys.executable))
+        assert captured["env"]["PATH"].startswith(expected_bin + _os.pathsep)
+        assert seam not in captured["env"]["PATH"].split(_os.pathsep)[0]
+
+    def test_set_webshop_command_cell_gets_seam_path_prepend(self, tmp_path, monkeypatch):
+        """(b, command branch) A webshop COMMAND cell keeps its bash argv but the
+        seam interpreter's bin/ is what gets prepended to the child PATH."""
+        import os as _os
+
+        seam = str(tmp_path / "verl-webshop" / "bin" / "python3")
+        monkeypatch.setenv("OPENRESEARCH_WEBSHOP_PYTHON", seam)
+        captured = self._run(
+            tmp_path,
+            {"id": "c0", "env": "webshop", "command": "bash run_webshop_3b.sh"},
+        )
+        assert captured["cmd"][0] == "bash"  # verbatim command branch unchanged
+        expected_bin = _os.path.dirname(_os.path.abspath(seam))
+        assert captured["env"]["PATH"].startswith(expected_bin + _os.pathsep)

@@ -1,7 +1,7 @@
 """resolve_adapter — name-routing across a list of EnvironmentAdapter instances.
 
 Part of the provisioning-seam refactor (see
-``docs/superpowers/plans/2026-07-01-phase-1a-1b-provisioning-seam-and-gates.md``):
+``docs/history/plans/2026-07-01-phase-1a-1b-provisioning-seam-and-gates.md``):
 replaces ``EnvCacheManager.setup``'s ``if``/``elif`` alias ladder with
 adapter-owned ``applies()`` matching, so adding a new paper-specific
 environment means adding a new adapter to the list — no ladder to extend.

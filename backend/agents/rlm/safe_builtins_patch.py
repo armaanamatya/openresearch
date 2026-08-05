@@ -17,7 +17,7 @@ This module patches the dict at import time. Import once from run.py BEFORE
 ``from rlm import RLM``.
 
 Root cause: BUG-LR-011 (2026-05-28 SDAR death-spiral).
-Design spec: docs/superpowers/specs/2026-05-28-rlm-stability-remediation-design.md
+Design spec: docs/history/specs/2026-05-28-rlm-stability-remediation-design.md
 """
 from __future__ import annotations
 import builtins as _builtins

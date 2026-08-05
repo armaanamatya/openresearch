@@ -20,8 +20,10 @@ constructed and every code path below is byte-identical to before.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
+import re
 import signal
 import socket
 import tempfile
@@ -30,9 +32,12 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from backend.agents.rlm import doomed_run_comparator as doomed
+
+if TYPE_CHECKING:
+    from backend.agents.rlm.scheduler_authority_controller import SchedulerAuthorityController
 
 
 class CampaignLedgerError(Exception):
@@ -400,6 +405,33 @@ def default_liveness_probe(in_flight: InFlight) -> bool:
     return False
 
 
+def _branch_iter_budget_enforcement(
+    base_enforcement: Mapping[str, Any], launch: Any
+) -> dict[str, Any]:
+    """Merge the branch launch's ladder step budget into a copy of *base_enforcement*.
+
+    The scheduler-authority rung-step -> trainer iteration-budget wire: a branch
+    launch carries ``from_step``/``to_step`` off the paper-step ladder, but the
+    driver forwards ONLY ``enforcement["env"]`` to the child ``reproduce``
+    subprocess. So we stamp the ladder boundary INTO that env
+    (``OPENRESEARCH_CELL_ITER_BUDGET`` = ``to_step``,
+    ``OPENRESEARCH_CELL_ITER_FROM`` = ``from_step``), where the child's harness-
+    owned ``_apply_cell_iter_budget`` pass reads it and caps every cell's
+    ``iters`` — so successive-halving-at-rungs actually bounds the real trainer.
+    Rides the existing ``build_attempt_env`` -> ``enforcement["env"]`` forward
+    path with NO driver change.
+
+    Returns a NEW enforcement dict (base is never mutated); existing ``env`` keys
+    and every non-``env`` enforcement key (e.g. ``cli_args``) are preserved.
+    """
+    merged: dict[str, Any] = dict(base_enforcement or {})
+    env: dict[str, Any] = dict(merged.get("env") or {})
+    env["OPENRESEARCH_CELL_ITER_BUDGET"] = str(launch.to_step)
+    env["OPENRESEARCH_CELL_ITER_FROM"] = str(launch.from_step)
+    merged["env"] = env
+    return merged
+
+
 class ReproductionCampaign:
     def __init__(
         self,
@@ -412,6 +444,8 @@ class ReproductionCampaign:
         driver: str,
         stages: CampaignStages,
         resume: bool = False,
+        branch_tree_event_store: Any | None = None,
+        scheduler_controller: "SchedulerAuthorityController | None" = None,
     ) -> None:
         self.run_dir = Path(run_dir)
         self.project_id = project_id
@@ -428,6 +462,15 @@ class ReproductionCampaign:
         # consumed by the AWAIT caller once ``await_result`` has returned.
         # Empty forever when OPENRESEARCH_DOOMED_KILL is off.
         self._doomed_kills: dict[int, dict] = {}
+        # Test/host injection point.  Production lazily opens the configured
+        # controller EventStore only when the tree flag is enabled; default-off
+        # campaigns neither construct nor touch it.
+        self._branch_tree_event_store = branch_tree_event_store
+        # Optional authoritative scheduler controller, constructed by the
+        # campaign composition root ONLY when both scheduler flags and an
+        # explicit authority spec are present (byte-identical-OFF otherwise).
+        # Mirrors the ``branch_tree_event_store`` optional-injection precedent.
+        self.scheduler_controller = scheduler_controller
 
     def _new_state(self, *, state: str) -> CampaignState:
         now = time.time()
@@ -447,6 +490,108 @@ class ReproductionCampaign:
             self.stages.emit_event(event, payload)
         except Exception as exc:  # noqa: BLE001 -- fail-soft emit (spec §12)
             state.warnings.append(f"emit_failed:{event}:{type(exc).__name__}")
+
+    @staticmethod
+    def _scheduler_tree_enabled() -> bool:
+        """Locked default-OFF truthiness gate for lineage observability."""
+        return os.environ.get("OPENRESEARCH_SCHEDULER_TREE", "").strip().lower() in (
+            "1", "true", "yes",
+        )
+
+    def _maybe_emit_root_branch_spawned(
+        self,
+        state: CampaignState,
+        launched_row: Mapping[str, Any],
+    ) -> None:
+        """Record the only branch-tree fact the serial campaign owns today.
+
+        The existing loop has one durable launch intent but no branch queue,
+        paper-pinned optimizer-step receipt, checkpoint transition, or ASHA
+        action owner.  Consequently tree mode records the root branch only;
+        it must *not* manufacture rung climbs, promotions, freezes, revivals,
+        or true deletes from a shadow advisory.  ``directives_sha256`` is the
+        F10 novelty fingerprint already durable in the write-ahead row.
+
+        Observability remains fail-soft while the scheduler is non-authoritative:
+        a controller EventStore outage is recorded as a warning after the
+        launch intent is durable and never changes money, verdict, or decision.
+        """
+        # Under authority the ``SchedulerAuthorityController`` owns
+        # ``branch-tree:<campaign_id>`` lineage as the SOLE writer; since
+        # ``campaign_id == project_id`` there, emitting here too would
+        # double-write the same aggregate and risk an ``expected_version``
+        # collision. ``scheduler_controller`` is None on every default path
+        # today, so this is byte-identical when authority is not live.
+        if self.scheduler_controller is not None:
+            return
+        if not self._scheduler_tree_enabled():
+            return
+        attempt_n = launched_row.get("attempt_n")
+        # Later serial attempts are iterations of the same root, not genuine
+        # branch forks.  Emitting them as children would misstate lineage.
+        if attempt_n != 1:
+            return
+        fingerprint = launched_row.get("directives_sha256")
+        if not isinstance(fingerprint, str) or not fingerprint:
+            state.warnings.append("branch_lineage_skipped:missing_f10_fingerprint")
+            return
+        branch_type = launched_row.get("branch_type", "faithful")
+        if branch_type not in {"faithful", "ambiguity", "discovery"}:
+            state.warnings.append("branch_lineage_skipped:invalid_branch_type")
+            return
+
+        created_store = False
+        store = self._branch_tree_event_store
+        try:
+            if store is None:
+                # Keep imports and SQLite construction inside the enabled
+                # branch so OFF runs remain side-effect-free and byte-identical.
+                from backend.config import get_settings
+                from backend.eventstore.sqlite_store import SqliteEventStore
+
+                store = SqliteEventStore(get_settings().database_url)
+                created_store = True
+
+            from backend.agents.rlm.branch_lineage import BranchSpawned, branch_tree_aggregate_id
+            from backend.messaging.envelope import AggregateId, CorrelationId, EventEnvelope, new_event_id
+
+            aggregate_id = AggregateId(branch_tree_aggregate_id(state.project_id))
+            branch_id = str(attempt_n)
+            # A recovery/manual repair may revisit the durable launch.  The
+            # existing F10 fingerprint is the only dedup identity: never hash
+            # a scheduler-specific replacement key.
+            for stored in store.load(aggregate_id):
+                if (
+                    stored.event_type == BranchSpawned.event_type
+                    and stored.payload.get("branch_id") == branch_id
+                    and stored.payload.get("hypothesis_fingerprint") == fingerprint
+                ):
+                    return
+            store.append(
+                aggregate_id=aggregate_id,
+                aggregate_type="branch_tree",
+                events=[BranchSpawned(
+                    branch_id=branch_id,
+                    branch_type=branch_type,
+                    parent_branch_id=None,
+                    rung=0,
+                    hypothesis_fingerprint=fingerprint,
+                )],
+                expected_version=store.get_aggregate_version(aggregate_id),
+                envelopes=[EventEnvelope(
+                    event_id=new_event_id(),
+                    correlation_id=CorrelationId(state.project_id),
+                    source="agents.rlm.reproduction_campaign",
+                )],
+            )
+        except Exception as exc:  # noqa: BLE001 -- scheduler is shadow/observability-only
+            state.warnings.append(f"branch_lineage_emit_failed:{type(exc).__name__}")
+        finally:
+            if created_store:
+                try:
+                    store.close()
+                except Exception:  # noqa: BLE001 -- cleanup never affects campaign semantics
+                    pass
 
     @staticmethod
     def _directives_sha256_for_attempt(rows: list, attempt_n: int) -> str | None:
@@ -725,7 +870,7 @@ class ReproductionCampaign:
         state.state = "attempt_loop"
         state.updated_at = time.time()
         self.ledger.write_state(state)
-        return self._loop(state)
+        return self._drive(state)
 
     def _finish_synthetic_terminal(self, state: CampaignState, *, kind: str, rule: str, stop_reason: str) -> dict:
         # No stages.decide() ran (INIT error / UNDERSTAND block / PLAN refusal);
@@ -762,7 +907,7 @@ class ReproductionCampaign:
             state.state = "attempt_loop"
             state.updated_at = time.time()
             self.ledger.write_state(state)
-            return self._loop(state)
+            return self._drive(state)
 
         if state.in_flight is not None:
             return self._resume_in_flight(state)
@@ -775,16 +920,16 @@ class ReproductionCampaign:
 
         if "assessed" in latest and "decided" not in latest:
             outcome = self._decide_and_continue(state, rows)
-            return outcome if outcome is not None else self._loop(state)
+            return outcome if outcome is not None else self._drive(state)
 
         if "decided" in latest:
             decision = latest["decided"].get("decision") or {}
             if decision.get("kind") == "CONTINUE":
                 self._apply_continue(state, decision)
-                return self._loop(state)
+                return self._drive(state)
             return self._finish_from_decision(state, decision)
 
-        return self._loop(state)
+        return self._drive(state)
 
     def _resume_in_flight(self, state: CampaignState) -> dict:
         in_flight = state.in_flight
@@ -806,7 +951,7 @@ class ReproductionCampaign:
                 in_flight.attempt_n, self.stages.assess(raw_result, planned)
             )
             outcome = self._record_assessment_and_continue(state, in_flight.attempt_n, assessment)
-            return outcome if outcome is not None else self._loop(state)
+            return outcome if outcome is not None else self._drive(state)
 
         # Dead. The attempt may have COMPLETED while the campaign process was
         # down (its own "assessed" row already landed before the crash) or it
@@ -827,11 +972,11 @@ class ReproductionCampaign:
             # judging a quarantined dir and double-counting spend.
             assessment = dict(latest["assessed"].get("assessment") or {})
             outcome = self._apply_assessment_tail(state, assessment)
-            return outcome if outcome is not None else self._loop(state)
+            return outcome if outcome is not None else self._drive(state)
 
         assessment = self.stages.assess_from_disk(in_flight)
         outcome = self._record_assessment_and_continue(state, in_flight.attempt_n, assessment)
-        return outcome if outcome is not None else self._loop(state)
+        return outcome if outcome is not None else self._drive(state)
 
     def _resume_orphaned_intent(self, state: CampaignState, launched_row: dict) -> dict:
         # Crash between write-ahead 2a (intent row) and 2b (in_flight write):
@@ -845,7 +990,295 @@ class ReproductionCampaign:
             launched_at=float(launched_row.get("launched_at", 0.0)),
         )
         self.stages.quarantine(synthetic)
-        return self._loop(state, allow_supersede=True)
+        return self._drive(state, allow_supersede=True)
+
+    def _drive(self, state: CampaignState, *, allow_supersede: bool = False) -> dict:
+        # Single dispatch seam between the serial attempt loop and the
+        # receipt-gated cohort loop. OFF (no controller) is byte-identical to
+        # the historical serial ``_loop`` -- this is the whole of the B3.2
+        # flag-guard: an authority controller is constructed by
+        # ``build_campaign`` ONLY when both scheduler flags AND an explicit
+        # authority spec are present, so ``scheduler_controller is None`` on
+        # every default path.
+        if self.scheduler_controller is not None:
+            return self._cohort_loop(state, allow_supersede=allow_supersede)
+        return self._loop(state, allow_supersede=allow_supersede)
+
+    def _cohort_loop(self, state: CampaignState, *, allow_supersede: bool = False) -> dict:
+        # Receipt-gated authority cohort loop (Phase B3.2). Drives the already
+        # bootstrapped ``SchedulerAuthorityController`` through
+        # ``claim -> run -> receipt -> decide_rung -> apply``, then lets the
+        # campaign's OWN deterministic ``stages.decide`` render a terminal
+        # verdict that ALWAYS wins over the authority reordering. The
+        # controller only reorders the CONTINUE cohort (promote/freeze/kill of
+        # same-rung branches); it never flips or suppresses a terminal.
+        #
+        # ``allow_supersede`` is accepted for dispatch-signature parity with
+        # ``_loop`` (the orphaned-intent relaunch seam); the cohort loop plans
+        # per-branch launches from the controller's queue rather than the
+        # serial write-ahead ledger, so there is no single-attempt double-launch
+        # to supersede here.
+        del allow_supersede
+
+        controller = self.scheduler_controller
+        assert controller is not None  # dispatch guard guarantees this
+        from backend.agents.rlm import cell_checkpoint
+        from backend.agents.rlm.scheduler_receipt_producer import build_raw_receipt
+        from backend.agents.rlm.scheduler_runtime import SchedulerRuntimeError
+
+        ladder = controller.spec.ladder
+        # Monotonic per-branch attempt counter: each branch launch gets its own
+        # ``attempt_n`` for its write-ahead + assessed ledger rows AND its
+        # receipt, so a 2-wide wave never collides two rows on one key.
+        attempt_counter = state.next_attempt_n
+        # Per-branch cell id counter (audit-stable, per launch).
+        cell_counter = 0
+        # Deterministic provider GPU-$ per branch, ACCUMULATED across waves:
+        # ``decide_rung`` requires a cost for EVERY branch at the rung, and an
+        # under-cap rung is filled by several claim waves (a100_cap<cohort), so
+        # a per-wave dict would drop the earlier waves' costs. Never sourced
+        # from cost_ledger.jsonl -- only each branch's own deterministic assess.
+        provider_gpu: dict[str, float] = {}
+
+        while True:
+            launches = controller.claim_launches(max_parallel=controller.spec.a100_cap)
+
+            # Termination: nothing left to claim AND no branch still in an
+            # active state ⇒ fall through to a normal terminal decision.
+            if not launches:
+                active = any(
+                    branch.state in {"queued", "launching", "awaiting_receipt"}
+                    for branch in controller.branches.values()
+                )
+                if not active:
+                    break
+
+            # The rung of the wave we are about to run (all claimed branches at
+            # one wave share a rung by the claim policy, but read it per-branch
+            # to be safe and decide the lowest claimed rung).
+            wave_rungs: set[int] = set()
+
+            for launch in launches:
+                cell_counter += 1
+                attempt_n = attempt_counter
+                attempt_counter += 1
+                wave_rungs.add(launch.rung)
+
+                # Build a production-shaped launch payload keyed to this branch.
+                # ``plan_attempt`` owns the campaign directives; we reuse it for
+                # the CONTINUE-cohort attempt, then annotate the branch identity
+                # so the runner writes into this branch's own run dir.
+                rows = self.ledger.read_rows()
+                planned = self.stages.plan_attempt(state, rows)
+                payload = self._cohort_launch_payload(planned, launch)
+
+                # The launch stage forwards to the REAL driver, which
+                # attribute-accesses an AttemptDirectives object (paper_ref,
+                # project_id, enforcement, ...) -- NOT the outer dict payload.
+                # ``_cohort_launch_payload`` builds a per-branch directives
+                # object under ``payload["launch_payload"]`` with a DISTINCT
+                # project_id so the driver keys the handle to this branch's own
+                # run dir. (The serial ``_loop`` does the same at ~1277.)
+                handle = self.stages.launch(payload["launch_payload"])
+                raw_result = self.stages.await_result(dict(handle))
+                assessment = self.stages.assess(dict(raw_result), payload)
+
+                # Provider GPU-$ comes ONLY from the deterministic assessment
+                # (never cost_ledger.jsonl). Missing/malformed ⇒ conservative 0.
+                cost = assessment.get("cost") or {}
+                gpu_usd = cost.get("gpu_usd", 0.0)
+                try:
+                    gpu_usd = float(gpu_usd)
+                    if gpu_usd < 0.0 or gpu_usd != gpu_usd:  # neg / NaN
+                        gpu_usd = 0.0
+                except (TypeError, ValueError):
+                    gpu_usd = 0.0
+                provider_gpu[launch.branch_id] = gpu_usd
+
+                # The cell output dir + its checkpoint_components/ are produced
+                # by the branch attempt's runner under its run dir. Ordinary
+                # serial cells do not yet emit a controller-attested paper-step
+                # checkpoint receipt (rlm CLAUDE.md), so the run_dir/cell layout
+                # is the production-shaped source; the receipt producer verifies
+                # the on-disk evidence and fails closed if it is absent.
+                cell_out = self._cohort_cell_output_dir(handle, payload)
+
+                # Resolve the REAL latest 5-component checkpoint the trainer
+                # wrote under ``<cell_out>/checkpoints/step_<N>/`` (the dir
+                # ``gpu_cell_runner`` points ``OPENRESEARCH_CELL_CHECKPOINT_DIR``
+                # at). If none exists, this branch produced no resumable
+                # checkpoint, so it CANNOT yield a verified receipt -- fail
+                # CLOSED rather than fabricate one from a stub layout. The
+                # message deliberately omits "incomplete" so the decide_rung
+                # handler below does not swallow it as an under-cap tail.
+                checkpoint_components_dir = cell_checkpoint.latest_checkpoint_dir(
+                    cell_out / "checkpoints"
+                )
+                if checkpoint_components_dir is None:
+                    raise SchedulerRuntimeError(
+                        "cohort branch produced no resumable checkpoint under "
+                        f"{cell_out / 'checkpoints'} -- refusing to fabricate a receipt"
+                    )
+
+                # termination_cause is 'training_diverged' ONLY when the
+                # deterministic failure classifier says so; every other cause
+                # (including a reversible underperformance freeze) is None.
+                termination_cause = (
+                    "training_diverged"
+                    if assessment.get("failure_class") == "training_diverged"
+                    else None
+                )
+
+                raw = build_raw_receipt(
+                    run_dir=self.run_dir,
+                    cell_output_dir=cell_out,
+                    checkpoint_components_dir=checkpoint_components_dir,
+                    ladder=ladder,
+                    campaign_id=self.project_id,
+                    branch_id=launch.branch_id,
+                    parent_branch_id=launch.parent_branch_id,
+                    attempt_n=attempt_n,
+                    cell_id=f"{launch.branch_id}-cell-{cell_counter}",
+                    from_step=launch.from_step,
+                    to_step=launch.to_step,
+                    seed=launch.seed,
+                    termination_cause=termination_cause,
+                    dataset_manifest_path=self._cohort_pinned_dataset_manifest(cell_out),
+                    run_spec_path=self._cohort_pinned_run_spec(cell_out),
+                )
+                # ``attest`` MUST be the campaign's real fail-closed ledger
+                # appender -- never a worker-authored write. Receipt rows carry
+                # no "status" key, so ``latest_by_status`` ignores them and the
+                # attempt-status ledger stays coherent.
+                controller.record_cell_receipt(raw, attest=self.ledger.append_row)
+
+            # When every branch at the current rung has a receipt, apply the
+            # two-meter authority policy. A branch still lacking a receipt (the
+            # under-cap tail of a wave) makes decide_rung raise "incomplete":
+            # that is FAIL-CLOSED and correct -- loop back to claim_launches to
+            # run the tail; never force a decision or synthesize a receipt.
+            for rung in sorted(wave_rungs):
+                try:
+                    controller.decide_rung(
+                        rung=rung, provider_gpu_usd_by_branch=provider_gpu,
+                    )
+                except SchedulerRuntimeError as exc:
+                    if "incomplete" in str(exc):
+                        continue
+                    raise
+
+            # Terminal deterministic decision ALWAYS wins. Run the campaign's
+            # own decide against the durable ledger; a terminal verdict returns
+            # immediately (authority can never flip or suppress it). On CONTINUE
+            # we simply proceed to the next claim_launches wave -- authority has
+            # already reordered the cohort (promotions re-queued at rung+1).
+            #
+            # We deliberately do NOT route CONTINUE through
+            # ``_decide_and_continue`` here: that bumps ``next_attempt_n``, may
+            # PAUSE in checkpoint mode, and returns a PAUSED dict -- all of which
+            # would break the cohort drive. The cohort's forward motion is the
+            # controller's re-queue, not a serial attempt increment.
+            rows = self.ledger.read_rows()
+            decision = self.stages.decide(state, rows)
+            if decision.get("kind") != "CONTINUE":
+                return self._finish_from_decision(state, decision)
+
+        # No active branches remain: render the terminal decision.
+        rows = self.ledger.read_rows()
+        decision = self.stages.decide(state, rows)
+        return self._finish_from_decision(state, decision)
+
+    @staticmethod
+    def _sanitize_branch_id(branch_id: Any) -> str:
+        # Branch ids carry hyphens/dots (e.g. ``faithful-cell-3``); a project
+        # id is used as a run-dir path component and threaded through the CLI,
+        # so collapse anything outside [A-Za-z0-9_] to '_'.
+        return re.sub(r"[^A-Za-z0-9_]", "_", str(branch_id))
+
+    def _cohort_launch_payload(self, planned: Mapping[str, Any], launch: Any) -> dict:
+        # Production-shaped per-branch launch payload. Starts from the campaign
+        # directives ``plan_attempt`` produced (carrying the CONTINUE-cohort
+        # envelope + run spec) and derives a DISTINCT per-branch directives
+        # object under ``launch_payload`` -- the object the REAL driver
+        # attribute-accesses (paper_ref/project_id/enforcement/...). A distinct
+        # ``project_id`` per branch keeps concurrent cohort launches from
+        # colliding: ``LiveCliDriver.launch`` computes ``run_dir =
+        # runs_root / directives.project_id``, so each branch lands in its own
+        # run dir automatically. The outer dict keeps the branch coordinates a
+        # stub launch + the receipt/cell logic read directly.
+        base_lp = planned["launch_payload"]
+        branch_project_id = f"{planned['project_id']}__{self._sanitize_branch_id(launch.branch_id)}"
+
+        if dataclasses.is_dataclass(base_lp) and not isinstance(base_lp, type):
+            # Production: base_lp is a frozen AttemptDirectives. Only carry the
+            # branch_type over when it is a valid BranchType; keep the safety
+            # marker only for a faithful branch so __post_init__ (which raises
+            # on is_safety_bracket && branch_type != "faithful") never trips.
+            bt = (
+                launch.branch_type
+                if launch.branch_type in {"faithful", "ambiguity", "discovery"}
+                else getattr(base_lp, "branch_type", "faithful")
+            )
+            # Thread the ladder step budget into THIS branch's enforcement env so
+            # the child trainer caps its cell ``iters`` to the rung (successive-
+            # halving); rides the existing build_attempt_env forward path with no
+            # driver change. Merged per-branch (base is never mutated).
+            branch_enforcement = _branch_iter_budget_enforcement(
+                getattr(base_lp, "enforcement", None) or {}, launch
+            )
+            branch_lp: Any = dataclasses.replace(
+                base_lp,
+                project_id=branch_project_id,
+                branch_type=bt,
+                is_safety_bracket=bool(getattr(base_lp, "is_safety_bracket", False)) and bt == "faithful",
+                enforcement=branch_enforcement,
+            )
+        else:
+            # Stub/mapping launch_payload (unit tests): stay a plain dict so the
+            # injected stub can read the branch coordinates directly.
+            branch_lp = {
+                **dict(base_lp),
+                "project_id": branch_project_id,
+                "branch_id": launch.branch_id,
+                "rung": launch.rung,
+                "seed": launch.seed,
+                "enforcement": _branch_iter_budget_enforcement(
+                    dict(base_lp).get("enforcement") or {}, launch
+                ),
+            }
+
+        payload = dict(planned)
+        payload["launch_payload"] = branch_lp
+        payload["project_id"] = branch_project_id
+        payload["run_dir"] = str(self.run_dir.parent / branch_project_id)
+        payload["branch_id"] = launch.branch_id
+        payload["branch_type"] = launch.branch_type
+        payload["seed"] = launch.seed
+        payload["rung"] = launch.rung
+        payload["from_step"] = launch.from_step
+        payload["to_step"] = launch.to_step
+        payload["parent_branch_id"] = launch.parent_branch_id
+        payload["resume_checkpoint_path"] = launch.resume_checkpoint_path
+        return payload
+
+    def _cohort_cell_output_dir(self, handle: Mapping[str, Any], payload: Mapping[str, Any]) -> Path:
+        # The branch attempt's cell output dir (where the runner wrote
+        # metrics.json + checkpoint_components/). Production shape mirrors the
+        # ordinary attempt layout: ``<branch_run_dir>/code``. An injected stub
+        # runner materializes the same layout under the handle's run dir.
+        run_dir = handle.get("run_dir") or payload.get("run_dir") or str(self.run_dir)
+        return Path(run_dir) / "code"
+
+    @staticmethod
+    def _cohort_pinned_dataset_manifest(cell_out: Path) -> Path:
+        # Pinned dataset manifest for the receipt fingerprints. Deterministic,
+        # per-cell path; the runner writes it beside the cell metrics.
+        return Path(cell_out) / "dataset_manifest.json"
+
+    @staticmethod
+    def _cohort_pinned_run_spec(cell_out: Path) -> Path:
+        # Pinned run spec for the receipt fingerprints (image/env pin).
+        return Path(cell_out) / "run_spec.json"
 
     def _loop(self, state: CampaignState, *, allow_supersede: bool = False) -> dict:
         # PLAN -> WRITE-AHEAD -> LAUNCH -> AWAIT -> ASSESS, repeated per attempt.
@@ -893,12 +1326,34 @@ class ReproductionCampaign:
             allow_supersede = False
 
             now = time.time()
-            self.ledger.append_row({
+            launched_row = {
                 "attempt_n": attempt_n, "status": "launched",
                 "directives_sha256": planned["directives_sha256"], "envelope": planned["envelope"],
                 "driver": self.driver, "project_id": planned["project_id"],
                 "run_dir": planned["run_dir"], "launched_at": now,
-            })
+            }
+            # Scheduler enrichments are durable only when explicitly enabled
+            # by PLAN. Leaving the faithful/False defaults absent preserves
+            # historical write-ahead rows byte-for-byte; ASSESS-on-resume
+            # consumes this ledger copy rather than mutable directives.
+            if "branch_type" in planned:
+                if planned["branch_type"] not in {"faithful", "ambiguity", "discovery"}:
+                    raise CampaignLedgerError(f"invalid planned branch_type: {planned['branch_type']!r}")
+                launched_row["branch_type"] = planned["branch_type"]
+            if "is_safety_bracket" in planned:
+                if type(planned["is_safety_bracket"]) is not bool:
+                    raise CampaignLedgerError("planned is_safety_bracket must be bool")
+                if planned["is_safety_bracket"] and planned.get("branch_type", "faithful") != "faithful":
+                    raise CampaignLedgerError("planned is_safety_bracket requires branch_type='faithful'")
+                if planned["is_safety_bracket"] and os.environ.get(
+                    "OPENRESEARCH_SCHEDULER_TREE", ""
+                ).strip().lower() not in ("1", "true", "yes"):
+                    raise CampaignLedgerError("planned is_safety_bracket requires OPENRESEARCH_SCHEDULER_TREE")
+                launched_row["is_safety_bracket"] = planned["is_safety_bracket"]
+            self.ledger.append_row(launched_row)
+            # Event only after the write-ahead row makes the F10 fingerprint
+            # durable.  No other scheduler transition is factual on this path.
+            self._maybe_emit_root_branch_spawned(state, launched_row)
             state.in_flight = InFlight(
                 attempt_n=attempt_n, driver=self.driver, run_dir=planned["run_dir"],
                 pid=None, lease_ref=None, launched_at=now,
@@ -1036,6 +1491,21 @@ class ReproductionCampaign:
         if state is None:
             state = self._new_state(state="terminal")
             self._state = state
+
+        # Persist the full traceback before it is degraded to a bare
+        # ``campaign_error:<ClassName>`` stop-reason. A campaign that dies this
+        # way otherwise leaves NO traceback anywhere on disk (the summary line
+        # names only the exception class), which makes an authority/dispatch
+        # seam failure effectively undiagnosable post-mortem. Best-effort only.
+        try:
+            import traceback as _tb
+
+            tb_text = _tb.format_exc()
+            if tb_text and "NoneType: None" not in tb_text:
+                (self.campaign_dir / "campaign_error_traceback.txt").write_text(tb_text)
+                print(f"[campaign] campaign_error traceback:\n{tb_text}", flush=True)
+        except Exception:  # noqa: BLE001 -- diagnostics must never mask the real error
+            pass
 
         decision = {
             "kind": "EXHAUSTED", "rule": "campaign_error",

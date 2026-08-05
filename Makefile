@@ -4,7 +4,7 @@
 # the venv at .venv/ and frontend/node_modules exist (see `make setup`).
 
 .PHONY: help setup docs-check test test-backend test-frontend lint typecheck \
-        check smoke docker-build dev-backend dev-frontend clean
+        check smoke docker-build dev dev-backend dev-frontend clean
 
 help:
 	@echo "make setup          Create .venv + install backend deps + npm ci (one-time)"
@@ -14,9 +14,10 @@ help:
 	@echo "make lint           Frontend eslint"
 	@echo "make typecheck      Frontend tsc --noEmit"
 	@echo "make smoke          Fast sanity: app factory boots, CLI parses, compose validates"
-	@echo "make docs-check     Documentation freshness & consistency (docs/policies/documentation.md)"
+	@echo "make docs-check     Documentation freshness & consistency"
 	@echo "make docker-build   Build the production image"
-	@echo "make dev-backend    Run the API with --reload on :8000 (preflight-aware)"
+	@echo "make dev            Run the supported local stack (API + frontend)"
+	@echo "make dev-backend    Run only the API with --reload on :8000"
 	@echo "make dev-frontend   Run the Next.js dev server on :3000"
 	@echo "make clean          Remove local caches (never touches runs/ or .env)"
 
@@ -55,8 +56,13 @@ smoke:
 docker-build:
 	docker build -t openresearch:dev .
 
-dev-backend:
+# Canonical local development entrypoint.  start.sh owns dependency checks,
+# sandbox preflight, process supervision, and Ctrl-C cleanup.
+dev:
 	./start.sh
+
+dev-backend:
+	START_BACKEND_ONLY=1 ./start.sh
 
 dev-frontend:
 	cd frontend && npm run dev

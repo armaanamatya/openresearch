@@ -5,7 +5,7 @@ sub-goal. The pool is scored STATICALLY — the leaf scorer reads each candidate
 scratch dir, no GPU; the expensive experiment runs ONCE on the winner-merged
 ``code/``. The best candidate is selected by ``cluster_score`` (tie-break: fewest
 failed leaves, then earliest). Evolve/splice is deferred to v2 (see
-``docs/superpowers/specs/2026-06-07-bes-integration/phase-3-bes-on-rdr.md`` §4).
+``docs/history/specs/2026-06-07-bes-integration/phase-3-bes-on-rdr.md`` §4).
 
 This module is pure (no I/O, no LLM) and is import-inert until ``bes_enabled``.
 

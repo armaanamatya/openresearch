@@ -53,15 +53,24 @@ section): accept conda ToS (miniconda ≥25); `apt-get install build-essential` 
 `g++`); `export MAX_JOBS=4` or the flash-attn nvcc build OOMs; `pip install tensordict` (+ verl deps)
 for Search-QA; `apt-get install default-jre-headless` for WebShop's Lucene index.
 
-## Datasets (all retrieval is IN-PROCESS — no HTTP servers)
+## Datasets (retrieval topology DEPENDS ON MODE — read this before flagging a `:8000` server)
+- **Adapt mode (harness-written envs `search_qa_env.py`/`webshop_env.py`/`alfworld_env.py`):
+  all retrieval is IN-PROCESS — no HTTP servers.** The bullets below describe this mode.
+- **Execute mode (authors' verl repo) DOES launch the authors' own retrieval server** — declared
+  as a Search-QA `services[]` entry in `configs/sdar_execute_cells_phase1.json`
+  (`retrieval_launch.sh`, readiness probe `http://127.0.0.1:8000/retrieve`). This is **correct,
+  not a violation**: the authors' trainer queries that server, and the successful 2026-07-03
+  Search-QA-3B run (0.456) used it. Do not "fix" an execute-mode cell by removing its server.
 - **ALFWorld:** `pip install alfworld`, set `ALFWORLD_DATA` **before** `alfworld-download`; GiGPO
   train split, 6 task categories (Pick/Look/Clean/Heat/Cool/Pick2).
 - **Search-QA:** NQ/HotpotQA/TriviaQA/PopQA/2Wiki/MuSiQue/Bamboogle via HF `datasets`; an **E5
   retriever over the wiki-18 corpus** (Search-R1). The wiki-18 E5 FAISS index is **~70 GB,
   unauthenticated → HF-rate-limited but resumable**; point `SEARCH_QA_INDEX_DIR` at the cached index.
-  Retrieval runs in-process — there is **no `:8000` retriever server**.
+  In adapt mode retrieval runs in-process (no `:8000` server); in execute mode the authors'
+  retrieval server on `:8000` is expected (see above).
 - **WebShop:** in-process gym `WebAgentTextEnv`/`SimServer` over the pickled product corpus + Lucene
-  index — **NO HTTP server**; 128 validation tasks; needs its own py3.10 (`OPENRESEARCH_WEBSHOP_PYTHON`).
+  index — no HTTP server in adapt mode; 128 validation tasks; needs its own py3.10
+  (`OPENRESEARCH_WEBSHOP_PYTHON`).
 
 ## Training procedure
 - Paper compute: 8× H800, **150 steps**, `env.rollout.n=8` (group size G=8), `lr=1e-6`,
@@ -101,8 +110,13 @@ Skill-SD, GRPO+OPSD, RLSD) **and** `sdar` must appear in `per_model` OR in `omit
   preflight then 401s at runtime (hollow success).
 - **ALFWorld turn horizon:** an ALFRED task is 15–50 primitives; `max_turns=6` guarantees `won=False`.
   Use `max_turns ≥ 30`.
-- **OOM:** fix via smaller `Search` batch / 8-bit Adam / gradient checkpointing — **never**
-  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments` (it masks the real footprint and corrupts long runs).
+- **OOM:** fix via smaller micro-batch / lower `rollout.gpu_memory_utilization` / optimizer
+  offload / gradient checkpointing — **never** `PYTORCH_CUDA_ALLOC_CONF=expandable_segments`:
+  vLLM's `CuMemAllocator` raises `AssertionError: Expandable segments are not compatible with
+  memory pool` at model load, so the run dies before training. This is why
+  `gpu_cell_runner.py` exempts command cells (execute mode) from its
+  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` default — the authors' launcher owns its
+  own CUDA memory config.
 - **WebShop fake-zero:** a dead env (0 episodes served) must become a verified `env_setup_failed`
   exclusion (`ENV_LIVENESS_GATE` → `env_health.jsonl`), never a real-looking 0.
 - **Preflight false-block ≠ fake impl:** SDAR's real code lives across `train_cell.py` /
@@ -113,11 +127,12 @@ Skill-SD, GRPO+OPSD, RLSD) **and** `sdar` must appear in `per_model` OR in `omit
 1. Seed/adapt the authors' verl trainer (execute mode); do not hand-roll GRPO.
 2. Loss = GRPO + λ·SDAR with the **stop-gradient gate**; pick λ/β and record which.
 3. Real Qwen weights (correct id: Qwen3 no `-Instruct`); `max_turns ≥ 30` for ALFWorld.
-4. In-process ALFWorld/WebShop/Search-QA; wiki-18 E5 index cached; vLLM weight-sync every step.
+4. Adapt mode: in-process ALFWorld/WebShop/Search-QA; execute mode: authors' retrieval server
+   on `:8000` for Search-QA. wiki-18 E5 index cached; vLLM weight-sync every step.
 5. Held-out disjoint eval via `record_eval(..., held_out=True)`; metrics as [0,1] fractions.
 6. Emit `per_model`/`baselines_vs_sdar`/`omitted`; each baseline + `sdar` present or omitted-with-reason.
 
 ## Sources (repo-native grounding — not vendored)
-`docs/papers/2605.15155.yaml`, `docs/runbooks/2026-05-23-sdar-baseline-handoff.md`,
+`configs/papers/2605.15155.yaml`, `docs/runbooks/2026-05-23-sdar-baseline-handoff.md`,
 `backend/agents/prompts/paper_hints.py`, `backend/requirements-sdar.txt`, the faithful impl under
 `runs/prj_23f04429cd3beaf7/code/`. For the GKE/GPU execution path see the `gcp-gke-reproduction` skill.

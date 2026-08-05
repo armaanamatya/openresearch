@@ -26,7 +26,6 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 BACKEND = REPO / "backend"
 CONFIG = BACKEND / "config.py"
-CLAUDE_MD = REPO / "CLAUDE.md"
 OUT = REPO / "docs" / "reference" / "flags.md"
 
 FLAG_RE = re.compile(r"OPENRESEARCH_[A-Z0-9_]+")
@@ -42,6 +41,23 @@ def iter_py() -> list[Path]:
     return sorted(
         p for p in BACKEND.rglob("*.py") if "__pycache__" not in p.parts
     )
+
+
+def claude_documentation_text() -> str:
+    """Read the root plus owned nested CLAUDE docs.
+
+    Flag ownership is deliberately split by subsystem, so a registry that only
+    reads the lean root document falsely marks documented sandbox/RLM flags as
+    undocumented.  Keep the same exclusions as the doc-fidelity guard.
+    """
+    skip = {"runs", "node_modules", ".venv", ".git", "openscience-ref", "site-packages"}
+    texts: list[str] = []
+    for path in sorted(REPO.glob("**/CLAUDE.md")):
+        rel = path.relative_to(REPO)
+        if any(part in skip for part in rel.parts):
+            continue
+        texts.append(path.read_text(errors="replace"))
+    return "\n".join(texts)
 
 
 def config_managed_flags() -> dict[str, str]:
@@ -69,7 +85,7 @@ def main() -> int:
     args = ap.parse_args()
 
     managed = config_managed_flags()
-    claude_txt = CLAUDE_MD.read_text() if CLAUDE_MD.exists() else ""
+    claude_txt = claude_documentation_text()
 
     all_flags: set[str] = set()
     read_sites: dict[str, int] = defaultdict(int)
@@ -114,9 +130,9 @@ def main() -> int:
     lines.append(f"- **Total distinct flags:** {len(all_flags)}")
     lines.append(f"- **Managed by `config.py` Settings (typed, default known):** {n_managed}")
     lines.append(f"- **Ad-hoc `os.environ` reads (no central default):** {n_adhoc}")
-    lines.append(f"- **Mentioned in `CLAUDE.md`:** {n_documented} ({100 * n_documented // max(len(all_flags), 1)}%)")
+    lines.append(f"- **Mentioned in a `CLAUDE.md`:** {n_documented} ({100 * n_documented // max(len(all_flags), 1)}%)")
     lines.append("")
-    lines.append("Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; "
+    lines.append("Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; "
                  "**sites** = ad-hoc read count; **default** = literal default at first read site (best effort).")
     lines.append("")
 
@@ -158,10 +174,13 @@ def main() -> int:
                          else f"| `{f}` | {cfg} | {doc} | {sites or ''} | |")
         lines.append("")
 
-    content = "\n".join(lines) + "\n"
+    # Each section deliberately appends a separator row.  Trim the final one so
+    # a regeneration is clean under ``git diff --check`` as well as semantically
+    # fresh under ``--check``.
+    content = "\n".join(lines).rstrip() + "\n"
 
     if args.check:
-        existing = OUT.read_text() if OUT.exists() else ""
+        existing = OUT.read_text(encoding="utf-8") if OUT.exists() else ""
         if existing.strip() != content.strip():
             print("flags.md is STALE — run: .venv/bin/python scripts/gen_flag_registry.py", file=sys.stderr)
             return 1
@@ -169,7 +188,7 @@ def main() -> int:
         return 0
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(content)
+    OUT.write_text(content, encoding="utf-8")
     print(f"Wrote {OUT.relative_to(REPO)}: {len(all_flags)} flags "
           f"({n_managed} cfg-managed, {n_adhoc} ad-hoc, {n_documented} documented).")
     return 0

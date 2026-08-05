@@ -1,6 +1,6 @@
 """Deterministic post-hoc reader: run directory -> trust-scored AttemptAssessment.
 
-Spec: docs/superpowers/specs/2026-07-01-reproduction-campaign-and-self-improving-harness-design.md
+Spec: docs/history/specs/2026-07-01-reproduction-campaign-and-self-improving-harness-design.md
 §8.1 (AttemptAssessment) + Codex resolution F4 (§20): validator absence quarantines.
 
 PURE READER. No LLM calls, no subprocess execution, no writes -- every field is a
@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.agents.rlm import evidence_audit, external_validator, failure_attribution
+from backend.agents.rlm.asha_scheduler import BranchType
 from backend.agents.rlm.campaign_types import CampaignSpend
 from backend.agents.rlm.rubric_gen import canary_tripped
 
@@ -44,6 +45,31 @@ __all__ = [
 
 _FABRICATION_CLASS = "fabrication_suspected"
 _ALL_MODELS_FAILED_CLASS = "all_models_failed"
+_BRANCH_TYPES: frozenset[str] = frozenset({"faithful", "ambiguity", "discovery"})
+
+
+def _validated_branch_type(value: Any) -> BranchType:
+    """Validate explicit durable branch metadata; legacy absence is handled by callers."""
+    if isinstance(value, str) and value in _BRANCH_TYPES:
+        return value  # type: ignore[return-value]
+    raise ValueError(f"branch_type must be one of {sorted(_BRANCH_TYPES)}, got {value!r}")
+
+
+def _validated_safety_bracket(value: Any) -> bool:
+    if type(value) is not bool:
+        raise ValueError(f"is_safety_bracket must be bool, got {value!r}")
+    return value
+
+
+def _metadata_from_dict(d: Mapping[str, Any]) -> tuple[BranchType, bool]:
+    """Strictly validate present fields while preserving legacy absent defaults."""
+    branch_type: BranchType = "faithful"
+    is_safety_bracket = False
+    if "branch_type" in d:
+        branch_type = _validated_branch_type(d["branch_type"])
+    if "is_safety_bracket" in d:
+        is_safety_bracket = _validated_safety_bracket(d["is_safety_bracket"])
+    return branch_type, is_safety_bracket
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +142,16 @@ class AttemptAssessment:
     hard_quarantined: bool  # fabrication guard tripped OR rubric hash mismatch
     soft_quarantined: bool  # validator not clean/fresh
     quarantine_reasons: tuple[str, ...]
+    # Trailing defaults make legacy ledger rows faithful/non-safety when
+    # reloaded; no score or grade is ever used to infer either field.
+    branch_type: BranchType = "faithful"
+    is_safety_bracket: bool = False
+
+    def __post_init__(self) -> None:
+        branch_type = _validated_branch_type(self.branch_type)
+        is_safety_bracket = _validated_safety_bracket(self.is_safety_bracket)
+        if is_safety_bracket and branch_type != "faithful":
+            raise ValueError("is_safety_bracket is allowed only for a faithful branch")
 
     @property
     def grade_usable_for_terminal(self) -> bool:
@@ -129,7 +165,16 @@ class AttemptAssessment:
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-safe dict -- the campaign ledger row payload."""
-        return asdict(self)
+        branch_type = _validated_branch_type(self.branch_type)
+        is_safety_bracket = _validated_safety_bracket(self.is_safety_bracket)
+        payload = asdict(self)
+        # Default scheduler metadata is deliberately absent from legacy/OFF
+        # ledger rows. ``from_dict`` restores the exact defaults on reload.
+        if branch_type == "faithful":
+            payload.pop("branch_type", None)
+        if is_safety_bracket is False:
+            payload.pop("is_safety_bracket", None)
+        return payload
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> AttemptAssessment:
@@ -137,6 +182,7 @@ class AttemptAssessment:
         raw_report = d.get("final_report")
         raw_validator = d.get("validator") or {}
         raw_cost = d.get("cost") or {}
+        branch_type, is_safety_bracket = _metadata_from_dict(d)
         return cls(
             attempt_n=d["attempt_n"],
             driver=d["driver"],
@@ -167,6 +213,8 @@ class AttemptAssessment:
             hard_quarantined=bool(d.get("hard_quarantined", False)),
             soft_quarantined=bool(d.get("soft_quarantined", False)),
             quarantine_reasons=tuple(d.get("quarantine_reasons") or ()),
+            branch_type=branch_type,
+            is_safety_bracket=is_safety_bracket,
         )
 
 
@@ -578,12 +626,16 @@ def assess_attempt(
     directives_sha256: str,
     pinned_rubric_sha256: str | None,
     arxiv_id: str | None = None,
+    branch_type: BranchType = "faithful",
+    is_safety_bracket: bool = False,
 ) -> AttemptAssessment:
     """Read every artifact under ``run_dir`` and derive one trust-scored row.
 
-    Never raises: every artifact read is individually fail-soft (missing/
-    unparseable -> an honest default), so a partially-written or crashed
-    attempt still yields a usable (quarantined) assessment.
+    Artifact reads are individually fail-soft (missing/unparseable -> an
+    honest default), so a partially-written or crashed attempt still yields a
+    usable (quarantined) assessment. Explicit scheduler metadata is validated
+    before the read: malformed durable policy is a contract error, never a
+    silently promoted safety marker.
     """
     run_dir = Path(run_dir)
     quarantine_reasons: list[str] = []
@@ -645,4 +697,6 @@ def assess_attempt(
         hard_quarantined=hard_quarantined,
         soft_quarantined=soft_quarantined,
         quarantine_reasons=tuple(quarantine_reasons),
+        branch_type=_validated_branch_type(branch_type),
+        is_safety_bracket=_validated_safety_bracket(is_safety_bracket),
     )

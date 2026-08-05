@@ -258,6 +258,80 @@ def test_semantic_scholar_blocked_transport_degrades_to_empty():
     assert connector.fetch("abc123") is None
 
 
+# --- citation graph (fetch() carries bounded references/citations) ----------
+
+_S2_PAPER_WITH_GRAPH = {
+    **_S2_PAPER,
+    "references": [
+        {
+            "paperId": "ref-1",
+            "title": "Attention Is All You Need",
+            "externalIds": {"ArXiv": "1706.03762", "DOI": "10.1000/ref1"},
+        },
+        {"paperId": "", "title": None, "externalIds": None},  # junk → dropped
+        {"paperId": "ref-2", "title": "Proximal Policy Optimization"},
+    ],
+    "citations": [
+        {"paperId": "cit-1", "title": "A Follow-up Work", "externalIds": {"DOI": "10.1000/cit1"}},
+    ],
+}
+
+
+def test_semantic_scholar_fetch_carries_citation_graph():
+    fake = _RecordingFakeJson(_S2_PAPER_WITH_GRAPH)
+    connector = SemanticScholarConnector(fetch_json_fn=fake)
+
+    record = connector.fetch("abc123def456")
+
+    assert record is not None
+    assert record.references == (
+        {
+            "id": "ref-1",
+            "title": "Attention Is All You Need",
+            "arxiv_id": "1706.03762",
+            "doi": "10.1000/ref1",
+        },
+        {"id": "ref-2", "title": "Proximal Policy Optimization", "arxiv_id": None, "doi": None},
+    )
+    assert record.citations == (
+        {"id": "cit-1", "title": "A Follow-up Work", "arxiv_id": None, "doi": "10.1000/cit1"},
+    )
+    # The fetch endpoint must ask for the neighbour external ids so graph
+    # entries are fetchable (corpus expansion) — not just titled.
+    fields = fake.calls[0]["params"]["fields"]
+    assert "references.externalIds" in fields
+    assert "citations.externalIds" in fields
+
+
+def test_semantic_scholar_search_hits_stay_neighbour_free():
+    """search() must not request or carry graph fields (volume × neighbours is unbounded)."""
+    fake = _RecordingFakeJson(_S2_SEARCH_RESPONSE)
+    connector = SemanticScholarConnector(fetch_json_fn=fake)
+
+    records = connector.search("SDAR", limit=5)
+
+    assert records[0].references == ()
+    assert records[0].citations == ()
+    assert "references" not in fake.calls[0]["params"]["fields"]
+
+
+def test_semantic_scholar_citation_graph_is_capped():
+    from backend.services.knowledge.connectors.semantic_scholar import _MAX_RELATED
+
+    many = {
+        **_S2_PAPER,
+        "references": [
+            {"paperId": f"ref-{i}", "title": f"Paper {i}"} for i in range(_MAX_RELATED + 50)
+        ],
+    }
+    connector = SemanticScholarConnector(fetch_json_fn=_RecordingFakeJson(many))
+
+    record = connector.fetch("abc123def456")
+
+    assert record is not None
+    assert len(record.references) == _MAX_RELATED
+
+
 # ---------------------------------------------------------------------------
 # default_connectors() + the REAL default transport under the hermetic suite
 # ---------------------------------------------------------------------------

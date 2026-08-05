@@ -1,6 +1,6 @@
 """Tests for ensemble.py — inverse-variance combiner.
 
-Spec: docs/superpowers/specs/2026-05-25-three-source-budget-estimator-design.md §ensemble
+Spec: docs/history/specs/2026-05-25-three-source-budget-estimator-design.md §ensemble
 """
 
 from __future__ import annotations

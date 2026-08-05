@@ -24,7 +24,24 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from backend.agents.rlm.asha_scheduler import BranchType
 from backend.agents.rlm.campaign_policy import AttemptEnvelope, NextAttemptPlan, directives_fingerprint
+
+_BRANCH_TYPES: frozenset[str] = frozenset({"faithful", "ambiguity", "discovery"})
+
+
+def _validated_branch_type(value: Any) -> BranchType:
+    """Reject malformed plan data rather than persisting free-text branches."""
+    if isinstance(value, str) and value in _BRANCH_TYPES:
+        return value  # type: ignore[return-value]
+    raise DirectiveContractError(f"plan.branch_type must be one of {sorted(_BRANCH_TYPES)}, got {value!r}")
+
+
+def _validated_safety_bracket(value: Any) -> bool:
+    """Only an actual harness boolean may receive the ASHA exemption."""
+    if type(value) is bool:
+        return value
+    raise DirectiveContractError(f"plan.is_safety_bracket must be bool, got {value!r}")
 
 # --- Clean-context contract vocabulary (§9) ---------------------------------
 
@@ -118,11 +135,23 @@ class AttemptDirectives:
     execution_mode: str | None = None
     gpu_mode: str | None = None
     minimize_compute: bool | None = None
+    # Trailing defaults keep legacy in-memory/directive construction on the
+    # faithful serial path. A future branch policy may opt in explicitly.
+    branch_type: BranchType = "faithful"
+    is_safety_bracket: bool = False
+
+    def __post_init__(self) -> None:
+        branch_type = _validated_branch_type(self.branch_type)
+        is_safety_bracket = _validated_safety_bracket(self.is_safety_bracket)
+        if is_safety_bracket and branch_type != "faithful":
+            raise DirectiveContractError("is_safety_bracket is allowed only for a faithful branch")
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-safe representation -- the persisted ``directives/<n>.json``
         payload. Tuples become lists so a reload via ``json.loads`` compares
         equal to this dict."""
+        branch_type = _validated_branch_type(self.branch_type)
+        is_safety_bracket = _validated_safety_bracket(self.is_safety_bracket)
         payload = {
             "attempt_n": self.attempt_n,
             "project_id": self.project_id,
@@ -158,6 +187,12 @@ class AttemptDirectives:
             payload["gpu_mode"] = self.gpu_mode
         if self.minimize_compute is not None:
             payload["minimize_compute"] = self.minimize_compute
+        # Preserve historical default-OFF directive bytes. These are emitted
+        # only for an explicit typed branch or the tree-gated advisory marker.
+        if branch_type != "faithful":
+            payload["branch_type"] = branch_type
+        if is_safety_bracket:
+            payload["is_safety_bracket"] = True
         return payload
 
     def persist(self, path: Path) -> None:
@@ -364,12 +399,15 @@ def synthesize_directives(
         target_floor=target_floor,
     )
 
+    branch_type = _validated_branch_type(plan.branch_type)
+    is_safety_bracket = _validated_safety_bracket(plan.is_safety_bracket)
     fingerprint = directives_fingerprint(
         seed_lineage=f"{plan.lineage}:{plan.seed_attempt_n or 0}",
         scope_rung=plan.scope_rung,
         repair_action_kinds=[entry["repair_class"] for entry in leaf_plan_entries],
         failure_classes=failure_classes,
         envelope=envelope.to_dict(),
+        branch_type=branch_type,
     )
 
     directives = AttemptDirectives(
@@ -398,6 +436,8 @@ def synthesize_directives(
         execution_mode=execution_mode,
         gpu_mode=gpu_mode,
         minimize_compute=minimize_compute,
+        branch_type=branch_type,
+        is_safety_bracket=is_safety_bracket,
     )
     directives.persist(Path(out_dir) / "directives" / f"{attempt_n}.json")
     return directives

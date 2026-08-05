@@ -14,8 +14,8 @@ Per-backend providers (``describe_capacity`` dispatches on ``ctx.sandbox_mode``)
 backend             capacity source                            can_escalate
 ==================  =========================================  ============
 local / docker      local_gpu_allocator.discover_gpus()        False
-runpod / brev       provisioned pod SKU (ctx.gpu_plan)          True
 azure               AKS settings + gpu_plan.json (plan-aware)  False (see _describe_azure)
+gcp / aws           GKE/EKS settings + gpu_plan.json           False
 ==================  =========================================  ============
 
 The descriptor reports **raw physical** capacity; the headroom multiplier
@@ -45,7 +45,7 @@ class GpuCapacity:
     """A backend-agnostic snapshot of usable GPU capacity for one run.
 
     Attributes:
-        backend_kind:    ``"local"`` | ``"docker"`` | ``"runpod"`` | ``"brev"`` | ``"azure"``.
+        backend_kind:    ``"local"`` | ``"docker"`` | ``"azure"`` | ``"gcp"`` | ``"aws"``.
         num_gpus:        Usable GPU count — the leased/free cards (local) or the
                          provisioned pod's GPU count (cloud).
         per_gpu_vram_gb: VRAM of the *smallest* usable card — the binding per-cell
@@ -94,19 +94,19 @@ def describe_capacity(ctx: Any) -> GpuCapacity:
     via ``getattr`` so a partial/duck-typed context (or a test namespace) works.
     """
     kind = _backend_kind(ctx)
-    if kind in ("runpod", "brev"):
-        return _describe_cloud(ctx, kind)
     if kind == "azure":
         return _describe_azure(ctx)
     if kind == "gcp":
         return _describe_gcp(ctx)
+    if kind == "aws":
+        return _describe_aws(ctx)
     return _describe_local(ctx, kind)
 
 
 def _backend_kind(ctx: Any) -> str:
     raw = getattr(ctx, "sandbox_mode", None)
     name = (getattr(raw, "value", None) or getattr(raw, "name", None) or str(raw or "")).lower()
-    for k in ("runpod", "brev", "azure", "gcp", "docker"):
+    for k in ("azure", "gcp", "aws", "docker"):
         if k in name:
             return k
     return "local"
@@ -155,26 +155,6 @@ def _describe_local(ctx: Any, kind: str) -> GpuCapacity:
                        total_vram_gb=total, detail={"leased": False})
 
 
-# ---------------------------------------------------------------------------
-# Cloud (runpod / brev) — provisioned pod
-# ---------------------------------------------------------------------------
-
-def _describe_cloud(ctx: Any, kind: str) -> GpuCapacity:
-    plan = getattr(ctx, "gpu_plan", None)
-    vram = _plan_attr(plan, "vram_gb") or _vram_override_gb(ctx)
-    try:
-        count = int(_plan_attr(plan, "gpu_count") or 1)
-    except (TypeError, ValueError):
-        count = 1
-    count = max(1, count)
-    # On the pod, gpu_cell_runner re-discovers via nvidia-smi; indices suffice.
-    ids = tuple(str(i) for i in range(count))
-    vram_f = float(vram or 0.0)
-    return GpuCapacity(kind, count, vram_f, ids, can_escalate=True,
-                       total_vram_gb=vram_f * count,
-                       detail={"sku": _plan_attr(plan, "short_name")})
-
-
 def _describe_azure(ctx: Any) -> GpuCapacity:
     """Plan-aware Azure AKS GPU capacity descriptor.
 
@@ -204,7 +184,7 @@ def _describe_azure(ctx: Any) -> GpuCapacity:
     The azure runner's own SKU escalation operates independently and is correct
     regardless of this flag.
 
-    Full design: docs/superpowers/specs/2026-06-03-azure-aks-gpu-backend-design.md.
+    Full design: docs/history/specs/2026-06-03-azure-aks-gpu-backend-design.md.
     """
     import json
     from pathlib import Path
@@ -307,6 +287,64 @@ def _describe_gcp(ctx: Any) -> GpuCapacity:
         can_escalate=False,
         total_vram_gb=per_gpu_vram_gb * num_gpus,
         detail={"node_pool": s.gcp_node_pool_name},
+    )
+
+
+def _describe_aws(ctx: Any) -> GpuCapacity:
+    """Return EKS capacity only from operator-declared pool metadata.
+
+    AWS instance labels and effective costs are account/region/commitment
+    specific, so this deliberately does not infer them from an instance family
+    or borrow a RunPod catalog value.  Missing, malformed, foreign-plan, or
+    zero-cost metadata yields an *empty* capacity descriptor: the cell route
+    cannot start a GPU Job with an unmetered or unlabelled pool.
+    """
+    from backend.config import get_settings
+
+    s = get_settings()
+    skus = tuple(str(v).strip() for v in (getattr(s, "aws_gpu_skus", ()) or ()) if str(v).strip())
+    try:
+        max_nodes = int(getattr(s, "aws_max_nodes", 0) or 0)
+        gpus_per_node = int(getattr(s, "aws_gpus_per_node", 0) or 0)
+        vram = float(getattr(s, "aws_per_gpu_vram_gb", 0.0) or 0.0)
+        rate = float(getattr(s, "aws_gpu_usd_per_hour", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        max_nodes, gpus_per_node, vram, rate = 0, 0, 0.0, 0.0
+
+    errors: list[str] = []
+    if not skus:
+        errors.append("aws_gpu_skus is empty")
+    if max_nodes <= 0:
+        errors.append("aws_max_nodes must be > 0")
+    if gpus_per_node != 1:
+        errors.append("aws_gpus_per_node must equal 1 (v1 EKS meters whole nodes)")
+    if vram <= 0:
+        errors.append("aws_per_gpu_vram_gb must be > 0")
+    if rate <= 0:
+        errors.append("aws_gpu_usd_per_hour must be > 0")
+
+    plan = getattr(ctx, "gpu_plan", None)
+    short_name = _plan_attr(plan, "short_name")
+    if short_name and short_name not in skus:
+        errors.append(f"gpu plan {short_name!r} is not an aws_gpu_skus label")
+    try:
+        requested = int(_plan_attr(plan, "gpu_count") or 1)
+    except (TypeError, ValueError):
+        requested = 0
+    if requested != 1:
+        errors.append("gpu plan must request exactly one GPU for v1 EKS")
+
+    if errors:
+        return GpuCapacity(
+            "aws", 0, 0.0, (), can_escalate=False,
+            detail={"configuration_error": "; ".join(errors), "gpu_skus": skus},
+        )
+
+    total = max_nodes * gpus_per_node
+    return GpuCapacity(
+        "aws", total, vram, tuple(str(i) for i in range(total)), can_escalate=False,
+        total_vram_gb=vram * total,
+        detail={"gpu_skus": skus, "per_gpu_usd_per_hour": rate, "node_pool": "configured"},
     )
 
 

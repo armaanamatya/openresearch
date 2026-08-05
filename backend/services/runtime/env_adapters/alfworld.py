@@ -1,7 +1,7 @@
 """AlfworldAdapter — ALFWorld game-data provisioning (Phase 1a).
 
 Part of the provisioning-seam refactor (see
-``docs/superpowers/plans/2026-07-01-phase-1a-1b-provisioning-seam-and-gates.md``):
+``docs/history/plans/2026-07-01-phase-1a-1b-provisioning-seam-and-gates.md``):
 lifts ``EnvCacheManager.ensure_alfworld`` and its helper functions
 (``_alfworld_has_games`` / ``_resolve_console_script`` /
 ``_default_alfworld_downloader``) out of ``env_cache.py`` verbatim, behind the

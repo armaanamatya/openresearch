@@ -15,7 +15,7 @@ between iterations), per-primitive deadlines carried on :class:`RunContext`
 (the real bound on a hung primitive), and a process-level wall-clock watchdog
 here (the hard backstop — a thread cannot be killed, only the process).
 
-Design contract: ``docs/superpowers/specs/2026-05-21-rlm-phase3-orchestrator-design.md`` §8.
+Design contract: ``docs/history/specs/2026-05-21-rlm-phase3-orchestrator-design.md`` §8.
 """
 
 from __future__ import annotations
@@ -57,6 +57,7 @@ from backend.agents.rlm.report import (
     build_final_report,
     run_experiment_call_count,
     run_experiment_partial_timeout_count,
+    run_experiment_partial_cell_error_count,
     run_experiment_success_count,
     write_final_report_rlm,
 )
@@ -89,6 +90,13 @@ from backend.agents.rlm._oauth_backend_patch import (
 # sonnet-foundry root models). Mirror of apply_oauth_backend_patch above.
 from backend.agents.rlm._anthropic_foundry_patch import (
     apply_anthropic_foundry_backend_patch,
+)
+# Make rlm's AnthropicClient tolerate extended-THINKING responses: Foundry
+# claude-sonnet-5/opus return a ThinkingBlock as content[0], and the stock
+# client's content[0].text crashed the root at iteration 0 (GCP smoke 2026-08-01).
+from backend.agents.rlm._anthropic_thinking_patch import (
+    apply_anthropic_thinking_safe_patch,
+    apply_anthropic_sdk_thinking_patch,
 )
 from backend.agents.rlm.forced_iteration import (
     _TERMINAL_FAILURE_CLASSES,
@@ -134,6 +142,8 @@ _sys_for_recursion.setrecursionlimit(10000)
 apply_oauth_backend_patch()
 apply_anthropic_caching_patch()
 apply_anthropic_foundry_backend_patch()
+apply_anthropic_thinking_safe_patch()
+apply_anthropic_sdk_thinking_patch()
 # Lane H — install the FINAL_VAR interceptor once. Per-run policies are
 # pushed via the forced_iteration_policy context manager around rlm.completion.
 apply_forced_iteration_patch()
@@ -606,7 +616,7 @@ def _extract_arxiv_id_from_project_dir(project_dir: Path) -> str | None:
     that encodes no ID-shaped string, so the ``_extract_arxiv_id`` regex in
     ``baseline_implementation.py`` always returns ``None`` for them.  This
     helper reads the on-disk files produced during ingest to recover the
-    real ID so ``docs/papers/<id>.yaml`` overrides can fire.
+    real ID so ``configs/papers/<id>.yaml`` overrides can fire.
 
     Resolution order (most-authoritative first):
     1. ``artifact_index.json`` → ``paper.arxiv_id``
@@ -962,6 +972,22 @@ def _build_context(
                 {"mode": _repo_spec.mode} if _repo_spec is not None else None,
             )
 
+    # Literature corpus (flag-gated, default OFF): mount the bounded per-run
+    # manifest into the reserved prior_work_refs slot. Off-state / any error
+    # keeps the reserved [] — byte-identical to today.
+    _prior_work: "list[dict]" = []
+    if project_dir is not None:
+        try:
+            from backend.services.knowledge.corpus import (
+                build_prior_work_refs,
+                literature_corpus_enabled,
+            )
+
+            if literature_corpus_enabled():
+                _prior_work = build_prior_work_refs(project_dir)
+        except Exception:  # noqa: BLE001 — corpus is an optional input
+            _prior_work = []
+
     return {
         "paper_text": "\n\n".join(sections),
         "paper_metadata": {
@@ -972,7 +998,7 @@ def _build_context(
         },
         "supplementary_text": None,
         "repo_files": _repo_files,
-        "prior_work_refs": [],
+        "prior_work_refs": _prior_work,
         "rubric_spec": workspace_claim_map.get("rubric_spec") or {},
     }
 
@@ -999,11 +1025,26 @@ def _corpus_sentinels(context_dict: dict[str, Any]) -> list[str]:
     Returns the first 200 chars of each string corpus value — enough to detect
     verbatim leakage at egress (stdout/stderr prefixes, final report summary)
     without storing the full corpus in memory twice.
+
+    ``prior_work_refs`` is the one non-string corpus value that carries
+    third-party text (literature titles/abstracts), so its nested string
+    values are ALSO sentinel-registered — but only strings long enough
+    (>= 40 chars) to be leak-evidence rather than common short phrases a
+    legitimate response could contain (a year or the word "citer" must not
+    trigger redaction). Scoped to prior_work_refs deliberately: recursing
+    into repo_files would newly redact repo README/config excerpts the
+    implementer legitimately quotes.
     """
     sentinels: list[str] = []
     for value in context_dict.values():
         if isinstance(value, str) and value:
             sentinels.append(value[:200])
+    for entry in context_dict.get("prior_work_refs") or []:
+        if not isinstance(entry, dict):
+            continue
+        for nested in entry.values():
+            if isinstance(nested, str) and len(nested) >= 40:
+                sentinels.append(nested[:200])
     return sentinels
 
 
@@ -1316,6 +1357,22 @@ def _primary_inputs_ready(
     if missing:
         return False, f"lifecycle-primary inputs not ready: missing/empty {', '.join(missing)}"
     return True, None
+
+
+def _resolve_run_iterations(
+    *, primary_active: bool, summary: dict | None, logger_iterations: int
+) -> int:
+    """Pick the iteration count for the final report.
+
+    Lifecycle-primary drives its own loop, so ``rlm_logger.iteration_count`` is 0
+    there — use the driver summary's ``iterations`` instead. Fall back to the
+    logger count when not primary, or when the summary lacks the key (defensive).
+    """
+    if primary_active and summary:
+        val = summary.get("iterations")
+        if isinstance(val, int) and val > 0:
+            return val
+    return int(logger_iterations or 0)
 
 
 def _synth_result_from_summary(summary: dict, ctx: Any) -> Any:
@@ -2303,7 +2360,8 @@ def _finalize_fatal_primitive_abort(
     json_path, _md_path = write_final_report_rlm(
         report, project_dir, run_experiment_calls=run_experiment_call_count(ctx),
         run_experiment_ok_calls=run_experiment_success_count(ctx),
-        run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx)
+        run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx),
+        run_experiment_partial_cell_error_calls=run_experiment_partial_cell_error_count(ctx),
     )
     _apply_minimal_viable_reproduction(project_dir, ctx)
     _notify_run_terminal(project_dir)
@@ -2480,8 +2538,9 @@ def _hard_stop_with_report(
             report,
             project_dir,
             run_experiment_calls=run_experiment_call_count(ctx) if ctx is not None else None,
-            run_experiment_ok_calls=run_experiment_success_count(ctx),
+            run_experiment_ok_calls=run_experiment_success_count(ctx) if ctx is not None else None,
         run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx) if ctx is not None else None,
+        run_experiment_partial_cell_error_calls=run_experiment_partial_cell_error_count(ctx) if ctx is not None else None,
         )
     except Exception:  # noqa: BLE001
         logger.exception("run_pipeline_rlm: hard-stop could not write final report")
@@ -2690,32 +2749,39 @@ def _compute_cost_summary(project_dir: Path, iteration_count: int) -> dict:
     - usd_this_iter: sum of entries for the current iteration
     - iter_count: current iteration number
     - usd_per_iter_p50: median USD spend per iteration (over completed iterations)
+    - unpriced_rows / unpriced_tokens / unpriced_models / cost_confidence:
+      cost-visibility audit (2026-08-03) — rows whose model has no per-token
+      rate carry ``estimated_usd: null`` + ``unpriced: true`` and sum into
+      ``usd_total`` as $0; these fields surface that gap so a Foundry/grok
+      ``$0`` is never silently mistaken for proof of $0
+      (``cost_confidence: "partial"`` means real spend exceeds ``usd_total``).
 
     Fail-soft: returns a minimal dict on any I/O / parse error.
     """
     import json as _json
     import statistics as _stats
 
-    ledger_path = project_dir / "cost_ledger.jsonl"
-    if not ledger_path.exists():
+    def _empty_summary() -> dict:
         return {
             "usd_total": 0.0,
             "usd_this_iter": 0.0,
             "iter_count": iteration_count,
             "usd_per_iter_p50": 0.0,
+            "unpriced_rows": 0,
+            "unpriced_tokens": 0,
+            "unpriced_models": [],
+            "cost_confidence": "complete",
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
+
+    ledger_path = project_dir / "cost_ledger.jsonl"
+    if not ledger_path.exists():
+        return _empty_summary()
 
     try:
         lines = ledger_path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
-        return {
-            "usd_total": 0.0,
-            "usd_this_iter": 0.0,
-            "iter_count": iteration_count,
-            "usd_per_iter_p50": 0.0,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
+        return _empty_summary()
 
     entries: list[dict] = []
     for line in lines:
@@ -2728,13 +2794,22 @@ def _compute_cost_summary(project_dir: Path, iteration_count: int) -> dict:
             continue
 
     if not entries:
-        return {
-            "usd_total": 0.0,
-            "usd_this_iter": 0.0,
-            "iter_count": iteration_count,
-            "usd_per_iter_p50": 0.0,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
+        return _empty_summary()
+
+    # Cost-visibility audit — fail-soft (an audit failure must never take the
+    # cost-summary daemon down with it).
+    _audit = {
+        "unpriced_rows": 0,
+        "unpriced_tokens": 0,
+        "unpriced_models": [],
+        "confidence": "complete",
+    }
+    try:
+        from backend.agents.resilience.cost_visibility import audit_cost_ledger
+
+        _audit = audit_cost_ledger(entries)
+    except Exception:  # noqa: BLE001 — audit is advisory, never fatal
+        logger.debug("cost_summary: unpriced audit failed (non-fatal)", exc_info=True)
 
     usd_total = sum(float(e.get("cost_usd") or e.get("estimated_usd") or 0.0) for e in entries)
 
@@ -2762,6 +2837,10 @@ def _compute_cost_summary(project_dir: Path, iteration_count: int) -> dict:
         "usd_this_iter": round(usd_this_iter, 6),
         "iter_count": iteration_count,
         "usd_per_iter_p50": round(p50, 6),
+        "unpriced_rows": int(_audit.get("unpriced_rows") or 0),
+        "unpriced_tokens": int(_audit.get("unpriced_tokens") or 0),
+        "unpriced_models": list(_audit.get("unpriced_models") or []),
+        "cost_confidence": str(_audit.get("confidence") or "complete"),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -3402,6 +3481,71 @@ def assert_no_foundry_oauth_coresidency(root_key: str, role_selection: Any) -> N
         )
 
 
+def _enforce_grok_executor_guard(role_selection: Any, emit: Callable[[dict], None]) -> None:
+    """Fail-fast: grok must never drive the executor/verifier/grader role.
+
+    Decision 2026-08-03 (docs/open-issues.md, 2026-07-22 row): grok emits no
+    commands.json cell/commands manifest, so the deterministic evidence gate
+    structurally fails any run it executes — the July 6 SDAR run (grok root +
+    ``OPENRESEARCH_EXECUTOR=azure-foundry`` serving a grok deployment) burned
+    hours before failing on evidence. This guard runs at resolution time,
+    BEFORE any transport client, runtime, or sandbox is built, so the same
+    misconfiguration now fails at $0 spend. Grok stays valid as the ROOT model.
+
+    Reads env HERE (the pure checker in ``role_models.py`` takes explicit
+    inputs): the legacy ``OPENRESEARCH_EXECUTOR`` mode is only passed through
+    when the Foundry executor would actually ACTIVATE (Foundry alias mode AND a
+    complete ``AZURE_FOUNDRY_*`` cred triple) — incomplete creds keep that
+    path's documented graceful fallback to the default Sonnet executor, so no
+    grok runs and the guard stays silent. Escape hatch:
+    ``OPENRESEARCH_ALLOW_GROK_EXECUTOR`` (default-OFF) downgrades the raise to
+    a loud ``grok_executor_unvalidated`` run_warning per offending role.
+    """
+    from backend.agents.rlm.role_models import (
+        GROK_EXECUTOR_ALLOW_FLAG,
+        check_grok_execution_roles,
+    )
+
+    deployment = ""
+    creds_complete = False
+    try:
+        from backend.agents.runtime.foundry_endpoint import (
+            FOUNDRY_MODE_ALIASES,
+            resolve_foundry_credentials,
+        )
+
+        _base, _dep, _key = resolve_foundry_credentials()
+        deployment = (_dep or "").strip()
+        creds_complete = bool(_base and _key and deployment)
+        _foundry_modes = FOUNDRY_MODE_ALIASES
+    except Exception:  # noqa: BLE001 — cred resolution must never crash the guard
+        _foundry_modes = frozenset({"azure-foundry", "foundry", "grok", "grok-4.3"})
+
+    legacy_mode: str | None = None
+    _mode = (os.environ.get("OPENRESEARCH_EXECUTOR") or "").strip().lower()
+    if _mode in _foundry_modes and creds_complete:
+        legacy_mode = _mode
+
+    allow = (
+        os.environ.get(GROK_EXECUTOR_ALLOW_FLAG, "").strip().lower()
+        in ("1", "true", "yes")
+    )
+    for _msg in check_grok_execution_roles(
+        role_selection,
+        legacy_executor_mode=legacy_mode,
+        foundry_deployment=deployment,
+        allow=allow,
+    ):
+        # allow=True path only: check_grok_execution_roles raises when the
+        # escape hatch is off, so reaching here means "warn loudly and run".
+        logger.warning(
+            "%s=1 override active — %s", GROK_EXECUTOR_ALLOW_FLAG, _msg
+        )
+        emit(build_run_warning_event(
+            level="warn", code="grok_executor_unvalidated", message=_msg,
+        ))
+
+
 def _drain_foundry_root_usage_to_ledger(
     *,
     root_model: RootModel,
@@ -3632,9 +3776,11 @@ async def run_pipeline_rlm(
     if _disk_warn_reason:
         logger.warning("%s", _disk_warn_reason)
 
-    # Archive prior-attempt artifacts before touching anything else.
-    # Fires only when final_report.json exists (a completed prior run);
-    # first-ever runs and incomplete-but-failed runs are handled gracefully.
+    # Archive prior-attempt artifacts before touching anything else. Fires
+    # when final_report.json exists (a completed prior run, full archive) OR
+    # on a warm retry (code/ present, no final_report.json — archives
+    # events/logs but preserves code/ for the implement_baseline cache);
+    # first-ever runs are handled gracefully (no-op).
     from backend.services.runs.attempt_isolation import maybe_archive_prior_attempt
     _archived = maybe_archive_prior_attempt(project_id, runs_root)
     if _archived:
@@ -3832,6 +3978,16 @@ async def run_pipeline_rlm(
     except RoleModelError as _exc:
         raise RuntimeError(f"invalid per-role model selection: {_exc}") from _exc
 
+    # Grok execution-role fail-fast (2026-08-03): grok is valid as the ROOT
+    # model but NOT as executor/verifier/grader — no commands.json manifest ⇒
+    # the evidence gate structurally fails the run hours after launch (July 6
+    # SDAR run). Checked HERE, before any transport/runtime/sandbox is built,
+    # so the misconfiguration fails at $0 spend. Covers both the unified
+    # surface (--models executor=grok) and the legacy OPENRESEARCH_EXECUTOR
+    # Foundry route serving a grok deployment.
+    # OPENRESEARCH_ALLOW_GROK_EXECUTOR=1 downgrades to a loud run_warning.
+    _enforce_grok_executor_guard(role_selection, emit)
+
     # A run must never mix anthropic-foundry with claude-oauth (a global
     # ANTHROPIC_BASE_URL override would hijack the OAuth path) — check before
     # any transport client is built.
@@ -3957,7 +4113,7 @@ async def run_pipeline_rlm(
     else:
         _scope_spec = None
 
-    # Recover the arXiv ID from on-disk artifacts so docs/papers/<id>.yaml
+    # Recover the arXiv ID from on-disk artifacts so configs/papers/<id>.yaml
     # overrides fire even when project_id is a hashed `prj_<digest>` string.
     # Falls back to the regex over project_id for legacy non-hashed IDs.
     # See _extract_arxiv_id_from_project_dir for resolution order.
@@ -4035,7 +4191,7 @@ async def run_pipeline_rlm(
         vram_override=_vram_override,
         scope_spec=_scope_spec,
         arxiv_id=_arxiv_id,  # P0: thread arXiv ID so implement_baseline can load
-                             # docs/papers/<id>.yaml even on hashed project IDs.
+                             # configs/papers/<id>.yaml even on hashed project IDs.
         # Lane Q — --minimize-compute / lab UI checkbox. Threaded onto ctx so the
         # implement_baseline primitive can pass it into run_with_sdk.
         minimize_compute=(
@@ -4318,6 +4474,15 @@ async def run_pipeline_rlm(
         )
         if _blocked_rubric is not None:
             context_dict["rubric_spec"] = _blocked_rubric
+
+    # W1-M1 grading-input integrity: pin the harness-finalized rubric (after the
+    # optional spec-validator may have dropped leaves) so a later agent-side
+    # rewrite of the rubric used at grade time is caught by verify_against_rubric.
+    # Flag-gated (OPENRESEARCH_GRADER_INTEGRITY, default-OFF → no pin file written,
+    # byte-identical to the prior baseline). Fail-soft — never breaks a run.
+    if context_dict.get("rubric_spec"):
+        from backend.evals.paperbench.grading_input_integrity import maybe_write_rubric_pin
+        maybe_write_rubric_pin(project_dir, context_dict["rubric_spec"])
 
     # Hybrid Phase 2: seed context with Phase 1 code path + weak cluster list
     # so the root model repairs rather than reproduces from scratch.
@@ -4878,6 +5043,7 @@ async def run_pipeline_rlm(
                 return rlm.completion(context_dict, active_prompt)
 
         _primary_active = False
+        _primary_summary = None
         if _lifecycle_primary_enabled():
             _primary_paper_text = context_dict.get("paper_text", "")
             _primary_rubric_spec = context_dict.get("rubric_spec", {})
@@ -4921,6 +5087,7 @@ async def run_pipeline_rlm(
                     result=_fatal,
                 )
             result_obj = _synth_result_from_summary(summary, ctx)
+            _primary_summary = summary
             # F6/T9: after T8, an evidenced-but-unscored run projects a real
             # (partial/failed) report rather than None, so "did this run fail"
             # is now "did we get an honest report at all" — result_obj is None
@@ -5040,7 +5207,11 @@ async def run_pipeline_rlm(
             return _finalize_fatal_primitive_abort(
                 abort=fatal_abort,
                 ctx=ctx,
-                iterations=rlm_logger.iteration_count,
+                iterations=_resolve_run_iterations(
+                    primary_active=_primary_active,
+                    summary=_primary_summary,
+                    logger_iterations=rlm_logger.iteration_count,
+                ),
                 project_dir=project_dir,
                 emit=emit,
                 tools_label=tools_label,
@@ -5049,7 +5220,11 @@ async def run_pipeline_rlm(
             result_obj=result_obj,
             run_failed=run_failed,
             ctx=ctx,
-            iterations=rlm_logger.iteration_count,
+            iterations=_resolve_run_iterations(
+                primary_active=_primary_active,
+                summary=_primary_summary,
+                logger_iterations=rlm_logger.iteration_count,
+            ),
             project_dir=project_dir,
             emit=emit,
             corpus_sentinels=corpus_sentinels,
@@ -5293,6 +5468,7 @@ def _finalize(
         report, project_dir, run_experiment_calls=run_experiment_call_count(ctx),
         run_experiment_ok_calls=run_experiment_success_count(ctx),
         run_experiment_partial_timeout_calls=run_experiment_partial_timeout_count(ctx),
+        run_experiment_partial_cell_error_calls=run_experiment_partial_cell_error_count(ctx),
         no_learning_signal=_no_learning_signal,
     )
     _apply_minimal_viable_reproduction(project_dir, ctx)

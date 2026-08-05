@@ -132,7 +132,7 @@ _PROVENANCE_HPARAM_FIELDS: frozenset[str] = frozenset({
 #                  be told to emit the wrong symbol. This is the coefficient
 #                  analogue of the artifact gate's "the file must be named in the
 #                  leaf."
-#   6. CONTESTED — if the operator's per-paper registry (``docs/papers/<id>.yaml``
+#   6. CONTESTED — if the operator's per-paper registry (``configs/papers/<id>.yaml``
 #                  → ``paper_invariants.declared_coefficients``) records a value
 #                  that DISAGREES with the paper text, the symbol is contested and
 #                  no machine check on it is sound. Drop it → LLM. SDAR is exactly
@@ -334,7 +334,14 @@ BEFORE writing any leaf, mentally extract from the paper text:
     "learning rate 1e-4", "batch size 64", "hidden size 256").
   • Every exact model name (e.g. "Qwen2.5-7B-Instruct", "Qwen3-1.7B") and
     dataset name (e.g. "ALFWorld", "WebShop", "Search-QA").
-  • Every reported numeric result (e.g. "+9.4% on ALFWorld", "Score/Acc 72.3").
+  • Every reported numeric result, BOUND TO THE EXACT CONFIGURATION THAT
+    PRODUCED IT — the (model/architecture, dataset, augmentation/setting) triple
+    (e.g. "WRN-28-10 + Cutout on CIFAR-10 = 3.08%", not a bare "3.08%"). Results
+    tables have ONE ROW PER ARCHITECTURE; the headline/best number in a paper's
+    title or abstract usually belongs to a DIFFERENT (often larger/stronger) model
+    than the one being reproduced. A "Result match" leaf MUST name the exact model
+    + dataset it targets and use THAT row's value — NEVER carry a number from one
+    architecture's row into a result-match leaf for a different architecture.
 Use only specifics found in the paper text; do NOT invent values.
 
 Organize the rubric under these six categories. The weight of each category
@@ -371,6 +378,9 @@ GOOD leaf examples (these show the required level of specificity):
    train.py, matching Section 4.1 Table 2 hyper-parameters."
   "train.py implements the two-layer bidirectional GRU encoder with
    hidden size 256 described in Section 3.1."
+  "WRN-28-10 with Cutout (length 16) reaches 3.08% test error on CIFAR-10
+   (Table 1, WRN-28-10 row) — NOT the 2.56% Shake-Shake row, which is a
+   different architecture."
 
 WEAK leaf examples (NEVER produce these):
   "The model is implemented correctly."
@@ -713,7 +723,7 @@ def _contested_coefficients(project_dir: Path | None) -> dict[str, float]:
     """Operator-declared coefficient values for this run's paper (``{}`` if none).
 
     Feeds the CONTESTED gate. Fail-soft in every direction: no project_dir, no
-    arXiv id, no ``docs/papers/<id>.yaml``, or an import error all yield ``{}``,
+    arXiv id, no ``configs/papers/<id>.yaml``, or an import error all yield ``{}``,
     which means "no veto" — the paper-text-grounded annotation stands unchanged.
     """
     try:
@@ -1035,7 +1045,7 @@ def _annotate_coefficient(
             if not _numbers_close(float(value), float(declared)):
                 logger.warning(
                     "rubric_gen: dropping CONTESTED coefficient annotation %s — paper "
-                    "text says %r but docs/papers/<id>.yaml declares %r (e.g. the "
+                    "text says %r but configs/papers/<id>.yaml declares %r (e.g. the "
                     "authors' released scripts). A deterministic check would fail a run "
                     "that faithfully reproduced either one; leaf → LLM.",
                     name, value, declared,

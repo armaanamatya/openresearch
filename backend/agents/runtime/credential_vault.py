@@ -147,9 +147,6 @@ CREDENTIAL_ENV_VARS: tuple[str, ...] = (
     "AZURE_FOUNDRY_API_KEY",
     # --- Navigation accelerator endpoint credential ---
     "OPENRESEARCH_ACCELERATOR_API_KEY",
-    # --- Cloud compute (a stolen key here spins up GPUs on the victim's account) ---
-    "OPENRESEARCH_RUNPOD_API_KEY",
-    "RUNPOD_API_KEY",
     # --- Model hub ---
     "HUGGING_FACE_HUB_TOKEN",
     "HF_TOKEN",
@@ -165,7 +162,6 @@ CREDENTIAL_ENV_VARS: tuple[str, ...] = (
     "REPROLAB_ANTHROPIC_API_KEY",
     "REPROLAB_OPENAI_API_KEY",
     "REPROLAB_OPENAI_ADMIN_KEY",
-    "REPROLAB_RUNPOD_API_KEY",
 )
 
 # GOOGLE_APPLICATION_CREDENTIALS is DELIBERATELY NOT managed here. It is a

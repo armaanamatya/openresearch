@@ -13,11 +13,13 @@ listed artifacts that do exist are moved) without crashing.
 **Warm retry (Lane A)**: when ``final_report.json`` is absent BUT ``code/``
 already holds an agent-written artifact (e.g. ``code/commands.json`` or
 ``code/train.py``), this is a kill-and-relaunch of a still-in-progress run.
-The function logs a "warm retry detected" message and returns ``None`` — the
-prior ``code/`` is left in place so the cached ``implement_baseline`` result
-can short-circuit the ~5-min sub-agent call on the next iteration.  The agent
-still operates in fix-existing-code mode via ``repair_context`` if the cache
-hit is invalidated.
+The function logs a "warm retry detected" message and archives every
+per-attempt artifact EXCEPT ``code/`` — the prior ``code/`` is left in place
+so the cached ``implement_baseline`` result can short-circuit the ~5-min
+sub-agent call on the next iteration, while the interrupted attempt's
+``dashboard_events.jsonl``/``rlm_state/`` files don't commingle with the new
+attempt's.  The agent still operates in fix-existing-code mode via
+``repair_context`` if the cache hit is invalidated.
 
 Paper-level artifacts that are stable across attempts — ``paperMeta.json``,
 ``raw_paper.pdf``, ``raw_paper.html`` (or ``paper_html.html``),
@@ -269,6 +271,7 @@ def _archive_now(
     *,
     dir_suffix: str = "",
     reason: str | None = None,
+    preserve_code: bool = False,
 ) -> dict | None:
     """Move every per-attempt artifact into a fresh ``attempts/<ts><dir_suffix>/``.
 
@@ -279,6 +282,13 @@ def _archive_now(
     (Codex finding B2). When *reason* is given, an ``archive_reason.json``
     audit-trail file is written inside the archive dir and ``"reason"`` is
     added to the returned dict.
+
+    ``preserve_code=True`` (the warm-retry case) skips moving ``code/`` —
+    every other per-attempt artifact (event/log files, per-attempt
+    ``rlm_state/`` files, the REPL pickle) is still isolated into the new
+    attempt dir so a resumed run's fresh events never commingle with the
+    interrupted attempt's, while ``code/`` stays in place so
+    ``implement_baseline``'s cache-hit path keeps working.
     """
     # --- per-project lock (POSIX only) ---
     lock_path = project_dir / ".archive.lock"
@@ -333,8 +343,11 @@ def _archive_now(
         # bind-mounted writes land as root on the host; without the chown the
         # subsequent shutil.move trips PermissionError on every root-owned file.
         # (Fail-soft — see _chown_root_owned_code for the failure narrative.)
+        # Skipped entirely when preserve_code=True (warm retry): code/ stays
+        # in place so implement_baseline's cache-hit path keeps working, while
+        # every other per-attempt artifact above is still isolated.
         code_src = project_dir / _CODE_DIR
-        if code_src.exists() and code_src.is_dir():
+        if not preserve_code and code_src.exists() and code_src.is_dir():
             _chown_root_owned_code(code_src)
             shutil.move(str(code_src), str(attempt_dir / _CODE_DIR))
             moved.append(_CODE_DIR + "/")
@@ -375,9 +388,13 @@ def maybe_archive_prior_attempt(project_id: str, runs_root: Path) -> dict | None
 
     **Warm retry (Lane A)**: when ``final_report.json`` is absent BUT
     ``code/commands.json`` or ``code/train.py`` exists (kill-and-relaunch of
-    a still-in-progress run), the function logs a warm-retry notice and
-    returns ``None`` — the prior ``code/`` is preserved so the
-    ``implement_baseline`` cache can short-circuit the ~5-min sub-agent call.
+    a still-in-progress run), every OTHER per-attempt artifact (event/log
+    files, per-attempt ``rlm_state/`` files, the REPL pickle) is still
+    isolated into a fresh ``attempts/<ts>/`` dir — only ``code/`` is left in
+    place, so the ``implement_baseline`` cache can still short-circuit the
+    ~5-min sub-agent call on the next iteration, WITHOUT the resumed
+    attempt's new events commingling with the interrupted attempt's old ones
+    in ``dashboard_events.jsonl``/``rlm_state/iterations.jsonl``/etc.
 
     Idempotent: a missing file in the archive list is silently skipped —
     a failed prior run that did not produce every listed file is handled
@@ -396,16 +413,19 @@ def maybe_archive_prior_attempt(project_id: str, runs_root: Path) -> dict | None
 
     # Warm-retry detection (Lane A): kill-and-relaunch of a still-in-progress
     # run.  No final_report.json, but code/ already holds an agent-written
-    # artifact — leave everything in place so the implement_baseline cache can
-    # short-circuit the ~5-min sub-agent call on the next iteration.
+    # artifact — archive everything EXCEPT code/, so the implement_baseline
+    # cache can still short-circuit the ~5-min sub-agent call on the next
+    # iteration while the interrupted attempt's events/logs don't commingle
+    # with the resumed attempt's fresh ones.
     if _is_warm_retry(project_dir):
         msg = (
             f"attempt_isolation: warm retry detected for {project_id} "
-            f"(prior code/ present, no final_report.json) — skipping archive"
+            f"(prior code/ present, no final_report.json) — archiving "
+            f"events/logs, preserving code/ for cache reuse"
         )
         logger.info(msg)
         print(msg, file=sys.stderr)
-        return None
+        return _archive_now(project_dir, project_id, preserve_code=True, reason="warm_retry")
 
     # Guard: only archive when a completed run is present.
     if not (project_dir / _TRIGGER_FILE).exists():

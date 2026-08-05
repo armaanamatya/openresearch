@@ -682,6 +682,47 @@ def _passthrough_env_names() -> list[str]:
     return [name.strip() for name in raw.split(",") if name.strip()]
 
 
+def _cell_is_webshop(cell: dict[str, Any]) -> bool:
+    """Return True when this cell's environment AXIS is WebShop.
+
+    Mirrors ``_floor_cell_max_turns``'s env resolution exactly: prefer the
+    explicit ``cell["env"]`` axis key (the environment/dataset axis in
+    ``cells.json`` — NOT ``cell["cell_env"]``, the per-cell env-var overrides),
+    else scan the cell ``"id"`` string (ids look like
+    ``qwen2_5_3b__sdar__webshop__s0``) for the ``"webshop"`` substring,
+    case-insensitively.
+    """
+    env_raw: str = cell.get("env", "") or ""
+    if not env_raw:
+        env_raw = cell.get("id", "") or ""
+    return "webshop" in env_raw.strip().lower()
+
+
+def _cell_interpreter(cell: dict[str, Any]) -> str:
+    """Resolve the Python interpreter for this cell's subprocess.
+
+    Default: ``sys.executable`` — byte-identical to before this seam existed.
+
+    **WebShop per-cell interpreter seam (2026-08-03):** when
+    ``OPENRESEARCH_WEBSHOP_PYTHON`` is set (non-empty; the dedicated py3.10
+    verl-webshop interpreter — ``web_agent_site``'s frozen 2022 stack conflicts
+    with the run venv) AND the cell is a WebShop cell (see
+    :func:`_cell_is_webshop`), that interpreter is returned instead.  It runs
+    the cell's script AND its ``bin/`` is what gets prepended to the child
+    ``PATH`` in ``_run_cell_subprocess`` — so console scripts and a bare
+    ``python`` resolve inside the WebShop env, giving the faithful
+    Lucene/pyserini search path instead of the ``rank_bm25`` in-process
+    fallback (see ``backend/agents/rlm/webshop_env.py``).  Non-WebShop cells
+    always get ``sys.executable``.  The same env var also drives the WebShop
+    server launcher (``env_adapters/webshop.py::_default_webshop_launcher``)
+    and is set by ``asset_provisioning.install_webshop_dedicated``.
+    """
+    seam = os.environ.get("OPENRESEARCH_WEBSHOP_PYTHON", "").strip()
+    if seam and _cell_is_webshop(cell):
+        return seam
+    return sys.executable
+
+
 def _run_cell_subprocess(
     *,
     cell: dict[str, Any],
@@ -770,14 +811,28 @@ def _run_cell_subprocess(
     ``OUTPUT_DIR`` and ``OPENRESEARCH_CELL_ID``. A blank/absent ``command``
     is byte-identical to before this change (no cwd override, no extra env
     keys, same default argv).
+
+    WebShop interpreter seam (2026-08-03): the "default" interpreter above is
+    really :func:`_cell_interpreter` — ``sys.executable`` unless
+    ``OPENRESEARCH_WEBSHOP_PYTHON`` is set AND the cell's env axis is WebShop,
+    in which case the seam interpreter runs the script cell and its ``bin/``
+    is what gets prepended to the child ``PATH`` (command cells keep their
+    verbatim ``bash -lc`` argv but still get the seam ``PATH`` prepend).
+    Unset ⇒ byte-identical to before the seam existed.
     """
     child_env = {**os.environ}
-    # Put the running interpreter's bin/ on PATH so console scripts a cell may shell
+    # Per-cell interpreter: sys.executable by default; the OPENRESEARCH_WEBSHOP_PYTHON
+    # seam interpreter for a WebShop cell when that var is set (see _cell_interpreter).
+    _cell_python = _cell_interpreter(cell)
+    # Put THIS cell's interpreter's bin/ on PATH so console scripts a cell may shell
     # out to (e.g. ``alfworld-download``) resolve. A venv invoked by path (not
     # "activated") does NOT place its bin/ on PATH, so a bare-name ``subprocess``
     # call FileNotFounds — exactly how the 2026-06-01 SDAR ALFWorld cells died
-    # (``alfworld-download failed: [Errno 2] No such file or directory``).
-    _interp_bin = os.path.dirname(os.path.abspath(sys.executable))
+    # (``alfworld-download failed: [Errno 2] No such file or directory``). When the
+    # WebShop seam selects a dedicated interpreter, its bin/ is what gets prepended
+    # for that cell — so a command cell's bare ``python`` resolves inside the
+    # WebShop env too. Unset seam ⇒ sys.executable's bin/, byte-identical to before.
+    _interp_bin = os.path.dirname(os.path.abspath(_cell_python))
     if _interp_bin:
         child_env["PATH"] = _interp_bin + os.pathsep + child_env.get("PATH", "")
     child_env["CUDA_VISIBLE_DEVICES"] = gpu_id
@@ -872,7 +927,7 @@ def _run_cell_subprocess(
         child_env["OUTPUT_DIR"] = str(output_dir)
         child_env["OPENRESEARCH_CELL_ID"] = str(cell.get("id", ""))
     else:
-        cmd = [sys.executable, str(cell_script)] + [
+        cmd = [_cell_python, str(cell_script)] + [
             f"--cell-id={cell.get('id', '')}",
             f"--output-dir={output_dir}",
         ]

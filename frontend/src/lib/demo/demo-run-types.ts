@@ -4,13 +4,13 @@ export type DemoProvider = "anthropic" | "openai";
 
 export type DemoExecutionMode = "efficient" | "max";
 
-export type DemoSandboxMode = "auto" | "docker" | "local" | "runpod" | "azure" | "gcp";
+export type DemoSandboxMode = "auto" | "docker" | "local" | "azure" | "aws" | "gcp";
 
 export type DemoGpuMode = "off" | "auto" | "prefer" | "max";
 
 export type DemoGpuParallelism = "auto" | "single" | "multi";
 
-export type DemoAccelerator = "off" | "auto" | "local" | "runpod" | "azure" | "endpoint";
+export type DemoAccelerator = "off" | "auto" | "local" | "azure" | "endpoint";
 
 export type DemoModelChoice = string;
 
@@ -320,35 +320,6 @@ export interface AuthStatus {
     root_model: string;
     subagent_auth: SubagentAuth;
   };
-}
-
-// ── Runpod status chip (U1) ────────────────────────────────────────────────
-
-export type DemoRunpodStatusKind =
-  | "not_runpod"
-  | "not_yet"
-  | "provisioning"
-  | "ready"
-  | "executing"
-  | "stopping"
-  | "destroyed"
-  | "error";
-
-export interface DemoRunpodStatusResponse {
-  project_id: string;
-  sandbox_mode?: DemoSandboxMode | null;
-  status: DemoRunpodStatusKind;
-  label: string;
-  detail: string;
-  source: "events" | "runpod_api";
-  pod?: {
-    id?: string | null;
-    name?: string | null;
-    desiredStatus?: string | null;
-    currentStatus?: string | null;
-  } | null;
-  updated_at?: string | null;
-  api_error?: string;
 }
 
 export const RUN_MODE_OPTIONS: ReadonlyArray<{

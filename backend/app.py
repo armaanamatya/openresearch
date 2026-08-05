@@ -6,7 +6,6 @@ import asyncio
 import hmac
 import json
 import logging
-import os
 import re
 import threading
 
@@ -208,11 +207,6 @@ def _read_rdr_leaf_scores(project_id: str) -> dict[str, Any] | None:
     }
 
 
-def _safe_runpod_name_part(value: str) -> str:
-    safe = "".join(ch.lower() if ch.isalnum() else "-" for ch in value).strip("-")
-    return safe[:48] or "run"
-
-
 def _read_dashboard_events(project_id: str) -> list[dict[str, Any]]:
     path = _runs_root() / project_id / "dashboard_events.jsonl"
     if not path.exists():
@@ -232,151 +226,6 @@ def _read_dashboard_events(project_id: str) -> list[dict[str, Any]]:
     return events
 
 
-def _coerce_runpod_pods(payload: Any) -> list[dict[str, Any]]:
-    if isinstance(payload, list):
-        return [p for p in payload if isinstance(p, dict)]
-    if not isinstance(payload, dict):
-        return []
-    for key in ("pods", "data", "results", "items"):
-        value = payload.get(key)
-        if isinstance(value, list):
-            return [p for p in value if isinstance(p, dict)]
-    return []
-
-
-def _runpod_event_status(project_id: str, sandbox_mode: str | None) -> dict[str, Any]:
-    events = _read_dashboard_events(project_id)
-    run_experiment_events = [
-        event
-        for event in events
-        if event.get("event") == "primitive_call"
-        and event.get("primitive") == "run_experiment"
-    ]
-    last = run_experiment_events[-1] if run_experiment_events else None
-    built_environment = any(
-        event.get("event") == "primitive_call"
-        and event.get("primitive") == "build_environment"
-        and event.get("status") == "ok"
-        for event in events
-    )
-
-    if sandbox_mode and sandbox_mode != "runpod":
-        status = "not_runpod"
-        label = f"sandbox: {sandbox_mode}"
-        detail = f"This run uses the {sandbox_mode} sandbox; no RunPod pod will be created."
-    elif last and last.get("status") == "start":
-        status = "executing"
-        label = "runpod: executing"
-        detail = "run_experiment has started. The RunPod pod should be provisioning or executing commands."
-    elif last and last.get("status") == "ok":
-        status = "destroyed"
-        label = "runpod: experiment complete"
-        detail = "run_experiment completed; the runtime cleanup path should have destroyed the pod."
-    elif last and last.get("status") == "error":
-        status = "error"
-        label = "runpod: last experiment failed"
-        detail = "run_experiment failed; the root REPL can still repair and retry."
-    elif built_environment:
-        status = "not_yet"
-        label = "runpod: ready at experiment"
-        detail = "Environment is built. Pods are created lazily when run_experiment starts."
-    else:
-        status = "not_yet"
-        label = "runpod: not yet"
-        detail = "Pods are created lazily at run_experiment, after paper understanding, planning, and baseline implementation."
-
-    return {
-        "project_id": project_id,
-        "sandbox_mode": sandbox_mode,
-        "status": status,
-        "label": label,
-        "detail": detail,
-        "source": "events",
-        "pod": None,
-        "updated_at": last.get("timestamp") if last else None,
-    }
-
-
-async def _query_runpod_status(project_id: str, sandbox_mode: str | None, settings: Any) -> dict[str, Any]:
-    derived = _runpod_event_status(project_id, sandbox_mode)
-    if sandbox_mode and sandbox_mode != "runpod":
-        return derived
-    if derived.get("status") == "not_yet" and not str(getattr(settings, "runpod_pod_id", "") or "").strip():
-        return derived
-    api_key = str(getattr(settings, "runpod_api_key", "") or "").strip()
-    if not api_key:
-        return derived
-
-    headers = {"Authorization": f"Bearer {api_key}"}
-    base_url = str(getattr(settings, "runpod_api_base_url", "https://rest.runpod.io/v1")).rstrip("/")
-    persistent_pod_id = str(getattr(settings, "runpod_pod_id", "") or "").strip()
-    try:
-        async with httpx.AsyncClient(base_url=base_url, headers=headers, timeout=8) as client:
-            if persistent_pod_id:
-                response = await client.get(f"/pods/{persistent_pod_id}")
-                response.raise_for_status()
-                pods = [response.json()]
-            else:
-                response = await client.get("/pods")
-                response.raise_for_status()
-                pods = _coerce_runpod_pods(response.json())
-    except Exception as exc:
-        return {
-            **derived,
-            "source": "events",
-            "api_error": str(exc),
-        }
-
-    prefix = f"reprolab-{_safe_runpod_name_part(project_id)}-"
-    matching = [
-        pod
-        for pod in pods
-        if persistent_pod_id
-        or str(pod.get("name") or "").startswith(prefix)
-    ]
-    if not matching:
-        return derived
-
-    pod = matching[0]
-    pod_id = str(pod.get("id") or pod.get("podId") or "")
-    desired = str(pod.get("desiredStatus") or "").upper()
-    current = str(pod.get("currentStatus") or "").upper()
-    raw_status = current or desired or "UNKNOWN"
-    if desired in {"EXITED", "FAILED", "DEAD"} or current in {"EXITED", "FAILED", "DEAD"}:
-        status = "destroyed" if current == "EXITED" else "error"
-        label = "runpod: destroyed" if status == "destroyed" else "runpod: pod error"
-    elif desired in {"STOPPED", "TERMINATED"}:
-        status = "destroyed"
-        label = "runpod: destroyed"
-    elif desired in {"STOPPING", "TERMINATING"} or current in {"STOPPING", "TERMINATING"}:
-        status = "stopping"
-        label = "runpod: stopping"
-    elif current == "RUNNING":
-        if derived.get("status") == "executing":
-            status = "executing"
-            label = f"runpod: executing {pod_id}" if pod_id else "runpod: executing"
-        else:
-            status = "ready"
-            label = f"runpod: ready {pod_id}" if pod_id else "runpod: ready"
-    else:
-        status = "provisioning"
-        label = "runpod: provisioning"
-
-    return {
-        **derived,
-        "status": status,
-        "label": label,
-        "detail": f"RunPod API reports pod status {raw_status}.",
-        "source": "runpod_api",
-        "pod": {
-            "id": pod_id or None,
-            "name": pod.get("name"),
-            "desiredStatus": desired or None,
-            "currentStatus": current or None,
-        },
-    }
-
-
 def _enforce_demo_gate(provided_secret: str | None, configured_secret: str) -> None:
     """Require a matching X-Demo-Secret header on the run-start endpoints.
 
@@ -391,39 +240,16 @@ def _enforce_demo_gate(provided_secret: str | None, configured_secret: str) -> N
 
 
 def _make_lifespan():
-    """Build the FastAPI lifespan context manager with pod-sweep startup + periodic sweep.
+    """Build the FastAPI lifespan context manager with the periodic liveness +
+    retention sweeps.
 
-    Fail-soft: startup sweep and scheduler errors are logged but never block
-    the backend from starting — the typical local-dev case has no RUNPOD key.
+    Fail-soft: sweep start errors are logged but never block the backend from
+    starting.
     """
-    from backend.services.runtime.pod_sweep_scheduler import PodSweepScheduler
-    from backend.services.runtime.pod_sweeper import sweep_stale_pods
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Startup
-        _pod_sweep_enabled = (
-            bool(os.environ.get("OPENRESEARCH_RUNPOD_API_KEY"))
-            and os.environ.get("OPENRESEARCH_POD_SWEEP_ENABLED", "true").lower()
-            not in {"false", "0", "no", "off"}
-        )
-        scheduler = PodSweepScheduler()
-        if _pod_sweep_enabled:
-            try:
-                max_age = int(os.environ.get("OPENRESEARCH_POD_SWEEP_MAX_AGE_S", "7200"))
-                summary = await asyncio.to_thread(
-                    sweep_stale_pods,
-                    max_age_seconds=max_age,
-                    dry_run=False,
-                )
-                logger.info("startup pod sweep: %s", summary)
-            except Exception as exc:
-                logger.warning("startup pod sweep failed (non-fatal): %s", exc)
-        try:
-            await scheduler.start()
-        except Exception as exc:
-            logger.warning("pod_sweep_scheduler start failed (non-fatal): %s", exc)
-
         # Orphaned-run detection cadence: without this, a long-lived API
         # server only flips dead runs at request time (_load_run's per-request
         # pid check) — runs nobody requests stay status=running forever. The
@@ -451,10 +277,6 @@ def _make_lifespan():
 
         # Shutdown
         _liveness_stop.set()
-        try:
-            await scheduler.stop()
-        except Exception:
-            pass
 
     return lifespan
 
@@ -566,8 +388,13 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
     ):
         """Re-spawn the orchestrator subprocess for an existing project.
 
-        The orchestrator's resume-from-checkpoint logic picks up at the
-        last completed stage. ``request_overrides`` (optional body) lets
+        Real checkpoint resume (picks up at the last completed stage) only
+        applies to RDR-mode runs. The default RLM mode has no such
+        checkpoint — it restarts the RLM reasoning loop from iteration 0
+        under the same project id, warm-started only via preserved
+        ``code/`` (implement_baseline cache), cell-level resume, and
+        prior-attempt lesson injection; see ``LiveRunService.resume_run``
+        for the full explanation. ``request_overrides`` (optional body) lets
         callers bump e.g. executionMode=max to push past a wall-clock
         failure without losing the work already done.
         """
@@ -876,13 +703,6 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
             },
         )
 
-    @app.get("/runs/{project_id}/runpod-status")
-    async def get_runpod_status(project_id: str):
-        state = await service.get_run(project_id)
-        if state is None:
-            raise HTTPException(status_code=404, detail="Run not found")
-        return await _query_runpod_status(project_id, state.sandboxMode, settings)
-
     # ------------------------------------------------------------------ #
     # rdr-specific introspection endpoints
     # ------------------------------------------------------------------ #
@@ -1088,7 +908,7 @@ def create_app(*, run_service: Any | None = None) -> FastAPI:
     # Leaderboard route — read-only ranking of completed runs across models.
     # Mounted via include_router because it lives in its own module
     # (backend/routes/leaderboard.py); spec
-    # docs/superpowers/specs/2026-05-23-rubric-climb-leaderboard.md §4.4.
+    # docs/history/specs/2026-05-23-rubric-climb-leaderboard.md §4.4.
     # No demo-gate; reads are public.
     from backend.routes.leaderboard import router as leaderboard_router
     app.include_router(leaderboard_router)

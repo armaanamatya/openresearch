@@ -216,16 +216,20 @@ def emit(code_dir: Path) -> Path:
     return target
 
 
-def smoke_command(code_dir: Path) -> str:
+def smoke_command(code_dir: Path, *, uses_sandbox_workdir: bool = False) -> str:
     """Return the sandbox command that runs the smoke (carrying :data:`MARKER`).
 
     Resolves a working interpreter at run time (``python3`` then ``python``) so the
     step is robust across the runpod image (``python``/``python3`` present) and the
     local per-run venv. GPU is hidden for the probe.
     """
-    code = str(code_dir)
+    # Runtime backends normally execute commands in their work directory.  Local
+    # callers retain the explicit cd for compatibility, while RunPod must not
+    # embed the orchestrator's relative/absolute host path inside the remote
+    # shell command.
+    change_dir = "" if uses_sandbox_workdir else f'cd "{code_dir}" && '
     return (
-        f'sh -c \'cd "{code}" && P=$(command -v python3 || command -v python) && '
+        f"sh -c '{change_dir}P=$(command -v python3 || command -v python) && "
         f'CUDA_VISIBLE_DEVICES="" "$P" {_EMITTED_NAME}\'  {MARKER}'
     )
 

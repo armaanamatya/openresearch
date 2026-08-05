@@ -19,7 +19,7 @@ primary"), so a real run measures nothing (the T9 acceptance failure). See
 ``normalize_repro_spec_claims`` for the idempotency contract.
 
 Design (locked — see
-``docs/superpowers/specs/2026-07-09-eval-integrity-track-a-design.md`` §4.2):
+``docs/history/specs/2026-07-09-eval-integrity-track-a-design.md`` §4.2):
 
 * **numeric** — ``abs(measured - target) <= equivalence_margin`` where
   ``target`` is the claim's ``claimed_effect`` taken as a direct absolute value

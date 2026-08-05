@@ -23,6 +23,7 @@ Every credential value here is a fabricated sentinel. Never a real key.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 
@@ -34,7 +35,7 @@ from backend.services.events.live_runs import _credential_handoff_preamble
 _SENTINELS = {
     "ANTHROPIC_API_KEY": "sentinel-anthropic-e2e-not-real",
     "OPENAI_API_KEY": "sentinel-openai-e2e-not-real",
-    "OPENRESEARCH_RUNPOD_API_KEY": "sentinel-runpod-e2e-not-real",
+    "AZURE_FOUNDRY_API_KEY": "sentinel-foundry-e2e-not-real",
 }
 _VALUES = sorted(_SENTINELS.values())
 
@@ -81,6 +82,10 @@ def _run_child(script: str, env: dict, *, blob: dict | None) -> dict:
     return json.loads(line[len("RESULT "):])
 
 
+@pytest.mark.skipif(
+    not os.path.exists("/proc/self/environ"),
+    reason="/proc/self/environ is Linux-only; the /proc leak this asserts cannot occur on macOS/Windows",
+)
 def test_before_the_fix_proc_environ_leaks_every_credential(monkeypatch):
     """Precondition / the vector we are closing: keys in env= are readable via /proc."""
     import os
@@ -136,6 +141,10 @@ def test_hardened_spawn_env_dict_carries_no_credential_names(monkeypatch):
     assert clean_env["OPENRESEARCH_GPU_MODE"] == "auto", "non-secret run knobs must survive"
 
 
+@pytest.mark.skipif(
+    not os.path.exists("/proc/self/environ"),
+    reason="/proc/self/environ is Linux-only; the raw /proc read this asserts returns nothing on macOS/Windows",
+)
 def test_disabled_vault_falls_back_to_the_plain_env_spawn(monkeypatch):
     """Escape hatch OPENRESEARCH_CREDENTIAL_VAULT=0: byte-identical to the pre-vault spawn.
 

@@ -1,6 +1,6 @@
 """Tests for calibration.py — reading preserved runs and computing priors.
 
-Spec: docs/superpowers/specs/2026-05-25-budget-estimation-design.md §calibration.py
+Spec: docs/history/specs/2026-05-25-budget-estimation-design.md §calibration.py
 """
 
 from __future__ import annotations

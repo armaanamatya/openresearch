@@ -6,7 +6,7 @@ telling it to scale train.py to fit. Without this the agent picks epoch
 counts that overrun the sandbox kill, producing zero-metric timeouts.
 
 The injection gate is OPENRESEARCH_BUDGET_AWARENESS_MODE (auto / always / never):
-- auto  → inject on cost-bearing sandboxes (runpod) only
+- auto  → inject on cost-bearing sandboxes (gcp / azure / aws) only
 - always → inject regardless of sandbox
 - never  → skip regardless
 """
@@ -50,22 +50,36 @@ def test_auto_mode_skips_budget_on_local_docker(monkeypatch) -> None:
     assert "EXECUTION-BUDGET AWARENESS" not in g
 
 
-def test_auto_mode_injects_budget_on_runpod(monkeypatch) -> None:
-    monkeypatch.setenv("OPENRESEARCH_BUDGET_AWARENESS_MODE", "auto")
-    g = _compute_constraint_guidance(sandbox_mode="runpod", gpu_mode=None, remaining_s=900.0)
-    assert "EXECUTION-BUDGET AWARENESS" in g
-    assert "900" in g
-
-
 def test_always_mode_injects_budget_even_on_local_docker(monkeypatch) -> None:
     monkeypatch.setenv("OPENRESEARCH_BUDGET_AWARENESS_MODE", "always")
     g = _compute_constraint_guidance(sandbox_mode="docker", gpu_mode=None, remaining_s=900.0)
     assert "EXECUTION-BUDGET AWARENESS" in g
 
 
-def test_never_mode_skips_budget_even_on_runpod(monkeypatch) -> None:
+def test_auto_mode_injects_budget_on_billed_local_vm(monkeypatch) -> None:
+    """The supported paid-GCP path is `--sandbox local --billing-sandbox gcp`
+    on a VM — the sandbox string alone looks free. The campaign driver marks
+    billed GPU time by setting OPENRESEARCH_MAX_RUN_GPU_USD in the child env
+    (campaign_policy), and auto mode must treat that as cost-bearing."""
+    monkeypatch.setenv("OPENRESEARCH_BUDGET_AWARENESS_MODE", "auto")
+    monkeypatch.setenv("OPENRESEARCH_MAX_RUN_GPU_USD", "5.0")
+    g = _compute_constraint_guidance(sandbox_mode="local", gpu_mode=None, remaining_s=900.0)
+    assert "EXECUTION-BUDGET AWARENESS" in g
+
+
+def test_auto_mode_ignores_zero_or_junk_gpu_usd_marker(monkeypatch) -> None:
+    monkeypatch.setenv("OPENRESEARCH_BUDGET_AWARENESS_MODE", "auto")
+    monkeypatch.setenv("OPENRESEARCH_MAX_RUN_GPU_USD", "0")
+    g = _compute_constraint_guidance(sandbox_mode="local", gpu_mode=None, remaining_s=900.0)
+    assert "EXECUTION-BUDGET AWARENESS" not in g
+    monkeypatch.setenv("OPENRESEARCH_MAX_RUN_GPU_USD", "not-a-number")
+    g = _compute_constraint_guidance(sandbox_mode="local", gpu_mode=None, remaining_s=900.0)
+    assert "EXECUTION-BUDGET AWARENESS" not in g
+
+
+def test_never_mode_skips_budget_even_on_gcp(monkeypatch) -> None:
     monkeypatch.setenv("OPENRESEARCH_BUDGET_AWARENESS_MODE", "never")
-    g = _compute_constraint_guidance(sandbox_mode="runpod", gpu_mode=None, remaining_s=900.0)
+    g = _compute_constraint_guidance(sandbox_mode="gcp", gpu_mode=None, remaining_s=900.0)
     assert "EXECUTION-BUDGET AWARENESS" not in g
 
 

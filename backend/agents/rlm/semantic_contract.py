@@ -3,7 +3,7 @@
 Additive + INERT: these models DEFINE the contract shape the foundation will populate
 and consume behind ``OPENRESEARCH_REPRO_CONTRACT`` (default OFF). Nothing here mutates a
 score, verdict, or run — they are pure data models. Per the design
-(``docs/superpowers/specs/2026-06-21-semantic-evidence-foundation-design.md``):
+(``docs/history/specs/2026-06-21-semantic-evidence-foundation-design.md``):
 
 * Every asserted fact carries ``Provenance`` (source spans + a 0..1 confidence).
 * When extraction can't ground a field it stays empty/None and its name is added to

@@ -19,7 +19,6 @@ from backend.services.runtime import (
     ExecResult,
     LocalDockerBackend,
     LocalProcessBackend,
-    RunpodBackend,
     RuntimeAppService,
     RuntimeBackend,
     RuntimeCauseKind,
@@ -39,7 +38,6 @@ def test_runtime_contract_exports_expected_types(tmp_path: Path) -> None:
         project_root=tmp_path,
     )
     assert isinstance(LocalDockerBackend(client=FakeDockerClient()), RuntimeBackend)
-    assert isinstance(RunpodBackend(api_key="key", ssh_key_path=tmp_path / "id_ed25519"), RuntimeBackend)
     assert config.resolved_artifact_root() == tmp_path / "artifacts"
 
 

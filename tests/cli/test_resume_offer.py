@@ -131,3 +131,39 @@ def test_read_last_rubric_no_files(tmp_path: Path) -> None:
     run_dir = tmp_path / "prj_no_rubric"
     run_dir.mkdir()
     assert _read_last_rubric(run_dir) == 0.0
+
+
+def test_read_last_rubric_flat_schema_fallback(tmp_path: Path) -> None:
+    """A flat-schema final_report.json (rubric_overall_score, not the nested
+    rubric.overall_score shape) must still be read — regression for the
+    copy-paste bug that read the same nested-only path twice and silently
+    reported 0.00 for a real flat-schema report."""
+    run_dir = tmp_path / "prj_flat_rubric"
+    run_dir.mkdir()
+    (run_dir / "final_report.json").write_text(
+        json.dumps({"rubric_overall_score": 0.6}), encoding="utf-8"
+    )
+    assert abs(_read_last_rubric(run_dir) - 0.6) < 1e-6
+
+
+def test_read_last_rubric_flat_overall_score_fallback(tmp_path: Path) -> None:
+    """A bare top-level 'overall_score' key (another legacy/projection shape)
+    is also honored, mirroring scripts/batch_reproduce.py::_extract_score."""
+    run_dir = tmp_path / "prj_flat_rubric2"
+    run_dir.mkdir()
+    (run_dir / "final_report.json").write_text(
+        json.dumps({"overall_score": 0.72}), encoding="utf-8"
+    )
+    assert abs(_read_last_rubric(run_dir) - 0.72) < 1e-6
+
+
+def test_read_last_rubric_prefers_nested_over_flat(tmp_path: Path) -> None:
+    """When both shapes are present (shouldn't happen in practice), the
+    canonical nested report['rubric']['overall_score'] wins."""
+    run_dir = tmp_path / "prj_both_shapes"
+    run_dir.mkdir()
+    (run_dir / "final_report.json").write_text(
+        json.dumps({"rubric": {"overall_score": 0.9}, "rubric_overall_score": 0.1}),
+        encoding="utf-8",
+    )
+    assert abs(_read_last_rubric(run_dir) - 0.9) < 1e-6

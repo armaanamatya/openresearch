@@ -2,7 +2,7 @@
 
 Deterministic, LLM-free rendering of the ReproductionCampaign's ledger state
 into the two deliverables required by the design spec (spec §12
-"Observability + the deliverable", `docs/superpowers/specs/
+"Observability + the deliverable", `docs/history/specs/
 2026-07-01-reproduction-campaign-and-self-improving-harness-design.md`):
 
 - ``write_campaign_report`` writes ``campaign_report.md`` (attempt table,

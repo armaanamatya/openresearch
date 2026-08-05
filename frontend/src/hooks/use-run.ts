@@ -483,7 +483,7 @@ export function useRun(
       const params = new URLSearchParams({
         mode: runMode,
         executionMode: prefs.executionMode ?? "efficient",
-        sandbox: prefs.sandbox ?? "runpod",
+        sandbox: prefs.sandbox ?? "local",
         gpuMode: "auto",
         model
       });
@@ -526,7 +526,7 @@ export function useRun(
       const formData = new FormData();
       formData.set("mode", runMode);
       formData.set("executionMode", prefs.executionMode ?? "efficient");
-      formData.set("sandbox", prefs.sandbox ?? "runpod");
+      formData.set("sandbox", prefs.sandbox ?? "local");
       formData.set("gpuMode", "auto");
       formData.set("model", model);
       if (opts.rootProvider) formData.set("rootProvider", opts.rootProvider);
@@ -591,7 +591,7 @@ export function useRun(
           url: normalisedUrl,
           mode: runMode,
           executionMode: prefs.executionMode ?? "efficient",
-          sandbox: prefs.sandbox ?? "runpod",
+          sandbox: prefs.sandbox ?? "local",
           gpuMode: "auto",
           model,
           ...(opts.rootProvider ? { root_provider: opts.rootProvider } : {}),
@@ -641,10 +641,12 @@ export function useRun(
 
   const resumeRun = useCallback(
     async (projectId: string, overrides: Record<string, string> = {}) => {
-      // Resume an existing run from its on-disk checkpoint — the orchestrator
-      // skips already-completed stages and only re-runs from the failure
-      // point. Overrides (e.g. {executionMode: "max"}) let the operator push
-      // past a wall-clock cap without losing the earlier agents' work.
+      // Re-spawn an existing run under the same project id. RDR-mode runs
+      // resume from an on-disk checkpoint and skip completed stages; the
+      // default RLM mode restarts the reasoning loop from scratch, warm
+      // -started only via a preserved implementation cache, cell-level
+      // resume, and prior-attempt lessons. Overrides (e.g.
+      // {executionMode: "max"}) let the operator push past a wall-clock cap.
       setBusy(true);
       setError(null);
       try {

@@ -113,20 +113,6 @@ def test_fastapi_can_start_and_fetch_runs_through_backend_api() -> None:
     assert fetched.json()["status"] == "queued"
 
 
-def test_runpod_status_route_explains_lazy_pod_creation() -> None:
-    service = FakeRunService()
-    service.state.sandboxMode = "runpod"
-    client = TestClient(create_app(run_service=service))
-
-    response = client.get("/runs/prj_api/runpod-status")
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "not_yet"
-    assert body["label"] == "runpod: not yet"
-    assert "run_experiment" in body["detail"]
-
-
 def test_fastapi_upload_route_starts_uploaded_pdf_run() -> None:
     service = FakeRunService()
     client = TestClient(create_app(run_service=service))
@@ -255,13 +241,14 @@ def test_python_script_preserves_registry_model_key() -> None:
     assert '\\"model\\": \\"claude-sonnet-4-6\\"' not in script
 
 
-def test_start_run_request_accepts_azure_and_gcp_sandbox() -> None:
+def test_start_run_request_accepts_cloud_sandboxes() -> None:
     # The API-layer SandboxMode Literal must include the cloud backends the
     # canonical execution enum + CLI already accept, else a POST /runs with
     # sandbox "gcp"/"azure" 422s before the run starts.
     from backend.services.events.live_runs import StartRunRequest
 
     assert StartRunRequest(sandbox="azure").sandbox == "azure"
+    assert StartRunRequest(sandbox="aws").sandbox == "aws"
     assert StartRunRequest(sandbox="gcp").sandbox == "gcp"
 
 

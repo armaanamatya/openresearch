@@ -53,6 +53,7 @@ SSE events — only EXISTING types are emitted (``run_warning``, ``gpu_escalated
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -60,6 +61,7 @@ import os
 import re
 import threading
 import time
+from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -138,6 +140,33 @@ _CELL_POD_SECRET_NAMES: tuple[str, ...] = (
 # Default fallback values used when a settings attribute is absent (defensive,
 # so the module imports + tests run against a partial/older config).
 _SETTINGS_DEFAULTS: dict[str, Any] = {
+    # --- AWS / EKS ---
+    # All GPU metadata is deliberately inert.  EKS pool labels, VRAM, and
+    # effective prices are deployment facts and must be declared before the
+    # runner may submit a cell Job.
+    "aws_namespace": "reprolab",
+    "aws_service_account": "reprolab-sa",
+    "aws_base_image": "",
+    "aws_s3_bucket": "",
+    "aws_region": "",
+    "aws_max_nodes": 0,
+    "aws_gpus_per_node": 0,
+    "aws_per_gpu_vram_gb": 0.0,
+    "aws_gpu_usd_per_hour": 0.0,
+    "aws_pending_timeout_seconds": 1500,
+    "aws_gpu_skus": [],
+    "aws_ttl_seconds_after_finished": 3600,
+    "aws_job_backoff_limit": 0,
+    "aws_use_spot": False,
+    "aws_spot_backoff_limit": 3,
+    "aws_cell_preempt_grace_s": 20,
+    "aws_cache_mount_path": "/mnt/reprolab-cache",
+    "aws_files_cache_enabled": False,
+    "aws_files_share": "",
+    "aws_watch_poll_interval_s": 5.0,
+    "aws_cell_oom_batch_scale_step1": 0.5,
+    "aws_cell_oom_batch_scale_floor": 0.25,
+    "aws_bootstrap_pip_timeout_s": 600,
     # --- Azure / AKS ---
     "azure_namespace": "reprolab",
     "azure_service_account": "reprolab-sa",
@@ -214,6 +243,46 @@ _SETTINGS_PREFIX_CTX: ContextVar[str] = ContextVar(
     "k8s_job_cell_runner_settings_prefix", default="azure"
 )
 
+# Kept separate from bind_run_context so older tests/callers that monkeypatch
+# its historical three-argument shape remain compatible.
+_PROJECT_ID_CTX: ContextVar[str] = ContextVar(
+    "k8s_job_cell_runner_project_id", default=""
+)
+
+
+class _BudgetReservationLedger:
+    """One controller-owned reservation pool shared by a logical matrix.
+
+    A staged search invokes the runner once for candidates and again for full
+    cells.  Its caps apply to the logical matrix, not each invocation, so the
+    same lock and accumulated reservations must span both phases.
+    """
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.gpu_seconds = 0.0
+        self.gpu_usd = 0.0
+
+
+_BUDGET_RESERVATION_LEDGER_CTX: ContextVar[_BudgetReservationLedger | None] = ContextVar(
+    "k8s_job_cell_runner_budget_reservation_ledger", default=None
+)
+
+
+@contextmanager
+def _bind_budget_reservation_ledger(ledger: _BudgetReservationLedger) -> Iterator[None]:
+    """Bind a shared reservation pool across multiple runner invocations."""
+    token = _BUDGET_RESERVATION_LEDGER_CTX.set(ledger)
+    try:
+        yield
+    finally:
+        _BUDGET_RESERVATION_LEDGER_CTX.reset(token)
+
+
+def _new_budget_reservation_ledger() -> _BudgetReservationLedger:
+    """Create an unshared reservation pool for one logical cloud matrix."""
+    return _BudgetReservationLedger()
+
 
 @contextmanager
 def _bind_settings_prefix(prefix: str) -> Iterator[None]:
@@ -233,6 +302,16 @@ def _bind_settings_prefix(prefix: str) -> Iterator[None]:
         yield
     finally:
         _SETTINGS_PREFIX_CTX.reset(token)
+
+
+@contextmanager
+def _bind_project_id(project_id: str) -> Iterator[None]:
+    """Bind a controller project id for collision-safe S3 object prefixes."""
+    token = _PROJECT_ID_CTX.set(str(project_id).strip())
+    try:
+        yield
+    finally:
+        _PROJECT_ID_CTX.reset(token)
 
 
 @contextmanager
@@ -351,6 +430,11 @@ def _get_fence_generation() -> int | None:
         return None
 
 
+def _get_project_id() -> str:
+    """Return the controller-supplied project id for collision-safe S3 prefixes."""
+    return _PROJECT_ID_CTX.get("")
+
+
 def _get_settings_prefix() -> str:
     """Return the active cloud-provider settings prefix (default ``"azure"``).
 
@@ -465,10 +549,9 @@ def _blob_download_artifact(
 def _object_store() -> Any:
     """Return the active ObjectStore for the current cloud prefix.
 
-    Resolved lazily from the bound ``settings_prefix`` (``"azure"`` → AzureBlobStore
-    via ``_AZURE_CLOUD``; ``"gcp"`` → GcsStore via ``_GCP_CLOUD``).  Lazy imports
-    prevent circular-import issues; ``_AZURE_CLOUD``/``_GCP_CLOUD`` live in their
-    respective thin-adapter modules which already import ``k8s_job_backend``.
+    Resolved lazily from the bound ``settings_prefix`` (``"azure"`` → AzureBlobStore,
+    ``"gcp"`` → GcsStore, ``"aws"`` → S3Store). Lazy imports prevent circular-import
+    issues; provider CloudSpecs live in their thin adapter modules.
 
     Monkeypatch this symbol in tests via::
 
@@ -478,6 +561,9 @@ def _object_store() -> Any:
     if prefix == "gcp":
         from backend.services.runtime.gke_job_backend import _GCP_CLOUD  # type: ignore[import]
         return _GCP_CLOUD.make_object_store(_get_settings(), None)
+    if prefix == "aws":
+        from backend.services.runtime.eks_job_backend import _AWS_CLOUD  # type: ignore[import]
+        return _AWS_CLOUD.make_object_store(_get_settings(), None)
     if prefix == "azure":
         account = _setting("azure_storage_account", "") or ""
         container = _setting("azure_blob_container", "reprolab-artifacts") or "reprolab-artifacts"
@@ -488,7 +574,7 @@ def _object_store() -> Any:
     # "azure" and both real backends bind explicitly via _bind_settings_prefix, so this
     # only fires on a genuine typo or a missing binding — where a loud error is correct.
     raise ValueError(
-        f"k8s_job_cell_runner: unknown settings prefix {prefix!r}; expected 'gcp' or 'azure'"
+        f"k8s_job_cell_runner: unknown settings prefix {prefix!r}; expected 'gcp', 'aws', or 'azure'"
     )
 
 
@@ -518,8 +604,9 @@ def _make_blob_client(
     but those helpers already catch all exceptions, so the worst case is a
     logged debug warning.
     """
-    # GCP uses its own client internally via GcsStore; no shared ContainerClient.
-    if _get_settings_prefix() == "gcp":
+    # GCP and AWS use their own object-store clients internally; no shared Azure
+    # ContainerClient.  AWS auth is exclusively the pod's IRSA identity.
+    if _get_settings_prefix() in ("gcp", "aws"):
         return None
     if not account_name:
         return None
@@ -580,6 +667,14 @@ def _credential_env_vars() -> list[dict[str, str]]:
     except Exception as exc:  # noqa: BLE001 — a credential lookup must never abort the manifest
         logger.debug("k8s_job_cell_runner: credential resolution failed: %s", exc)
         return []
+    if _get_settings_prefix() == "aws":
+        # EKS cell pods authenticate only through IRSA.  A developer shell's
+        # static key is neither needed nor allowed to cross this boundary.
+        pairs = [
+            (name, value)
+            for name, value in pairs
+            if name not in _AWS_STATIC_CREDENTIAL_ENV_NAMES
+        ]
     if pairs:
         # Log only the NAMES that were injected -- never the resolved values.
         logger.info(
@@ -597,27 +692,145 @@ _DNS_SAFE_RE = re.compile(r"[^a-z0-9-]")
 
 _JOB_NAME_PREFIX = "reprolab-cell-"
 _JOB_NAME_MAX = 63
+_CODE_BUNDLE_EXCLUDED_PARTS = frozenset({"outputs", ".git", "__pycache__", ".venv", "repo"})
+
+
+def _k8s_identity_digest(value: str) -> str:
+    """A DNS/label-safe stable identity for a full run or cell identifier."""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:10]
+
+
+def _job_config_digest(intent: Mapping[str, Any]) -> str:
+    """Return an immutable identity for the exact Job configuration to submit."""
+    encoded = json.dumps(intent, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _collision_guard_enabled() -> bool:
+    """Whether non-fenced Jobs carry identity hashes and may adopt on a 409.
+
+    EKS has no legacy production workload, so it always uses the stronger
+    ownership protocol.  GKE/AKS opt in with the explicit default-OFF flag;
+    their existing default manifests and 409 behaviour remain byte-identical.
+    """
+    return _get_settings_prefix() == "aws" or (
+        os.environ.get("OPENRESEARCH_K8S_COLLISION_GUARD", "").strip().lower()
+        in ("1", "true", "yes")
+    )
+
+
+def _code_bundle_digest(code_dir: Path) -> str:
+    """Hash the exact eligible code bundle sent to the cell artifact store.
+
+    The filter intentionally mirrors the three cloud object-store uploaders:
+    generated output/VCS/venv state and bytecode are excluded, while an in-root
+    symlink is represented by the bytes that the uploader dereferences.  This
+    binds 409 adoption to trainer source, not only to its mutable remote prefix.
+    """
+    root = code_dir.resolve()
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        if not (path.is_file() or path.is_symlink()) or not path.exists():
+            continue
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(root)
+            relative = path.relative_to(root)
+        except (OSError, ValueError):
+            continue
+        if not resolved.is_file():
+            continue
+        if relative.suffix == ".pyc" or _CODE_BUNDLE_EXCLUDED_PARTS.intersection(relative.parts):
+            continue
+        digest.update(relative.as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(resolved.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def _job_name(cell_id: str, run_id: str = "", gen: int | None = None) -> str:
-    """Return a deterministic DNS-safe K8s Job name for ``cell_id``.
+    """Return a deterministic, collision-resistant K8s Job name.
 
-    WS3 fencing: when the durable controller is enabled
-    (``run_controller.durable_controller_enabled()``) AND a fence ``gen`` is
-    supplied, delegates to ``job_fence.fenced_job_name`` so a superseded
-    controller generation's Job name can never collide with the current
-    one's. OFF, or no ``gen`` bound (the default), preserves the legacy name
-    exactly — byte-identical to before ``gen`` existed.
+    A durable controller generation gets its own job identity. Legacy short
+    IDs retain their historic spelling; only a truncation-prone long run ID
+    gains the full-ID digest needed to avoid a collision.
     """
     if durable_controller_enabled() and gen is not None:
         return fenced_job_name(run_id, cell_id, gen)
-    safe_run = _DNS_SAFE_RE.sub("-", run_id.lower())[:16] if run_id else ""
     safe_cell = _DNS_SAFE_RE.sub("-", cell_id.lower())
-    suffix = f"{safe_run}-{safe_cell}" if safe_run else safe_cell
-    # Trim to fit the 63-char limit, keeping the prefix.
-    max_suffix = _JOB_NAME_MAX - len(_JOB_NAME_PREFIX)
-    suffix = suffix[:max_suffix].strip("-")
-    return f"{_JOB_NAME_PREFIX}{suffix}"
+    if not run_id:
+        return f"{_JOB_NAME_PREFIX}{safe_cell[:_JOB_NAME_MAX - len(_JOB_NAME_PREFIX)].strip('-')}"
+    safe_run = _DNS_SAFE_RE.sub("-", run_id.lower())
+    legacy_suffix = f"{safe_run[:16]}-{safe_cell}"
+    legacy = (
+        f"{_JOB_NAME_PREFIX}"
+        f"{legacy_suffix[:_JOB_NAME_MAX - len(_JOB_NAME_PREFIX)].strip('-')}"
+    )
+    if len(safe_run) <= 16 or not _collision_guard_enabled():
+        return legacy
+    safe_cell = safe_cell.strip("-") or "cell"
+    safe_run = safe_run.strip("-") or "run"
+    # 14-byte prefix + (12 + '-' + 10) run token + '-' + (14 + '-' + 10)
+    # cell token = 63-byte Kubernetes DNS-label maximum.
+    run_token = f"{safe_run[:12]}-{_k8s_identity_digest(run_id)}"
+    cell_token = f"{safe_cell[:14]}-{_k8s_identity_digest(cell_id)}"
+    return f"{_JOB_NAME_PREFIX}{run_token}-{cell_token}"
+
+
+def _api_status(exc: Exception) -> int | None:
+    """Best-effort Kubernetes-client status extraction without importing it."""
+    for name in ("status", "status_code"):
+        value = getattr(exc, name, None)
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def _job_is_terminal(job: Any) -> tuple[bool, bool]:
+    """Return ``(terminal, succeeded)`` from a Kubernetes Job object.
+
+    We reclaim only a Job whose Job-level condition is authoritative.  A
+    transient `failed` counter with retryable Pods must be adopted and watched,
+    never treated as permission to launch duplicate GPU work.
+    """
+    status = getattr(job, "status", None)
+    for condition in getattr(status, "conditions", None) or ():
+        if str(getattr(condition, "status", "")) != "True":
+            continue
+        kind = str(getattr(condition, "type", ""))
+        if kind == "Complete":
+            return True, True
+        if kind == "Failed":
+            return True, False
+    return False, False
+
+
+def _owned_conflict_job(
+    job: Any, *, run_id: str, cell_id: str, config_sha256: str,
+) -> bool:
+    """Return whether a 409 Job is exactly this controller's cell attempt.
+
+    The short digests make K8s labels and names readable but are *not* an
+    authority boundary. Exact controller-generated run/cell IDs and a digest of
+    the complete Job intent live in annotations and must agree too; otherwise a
+    same-name, spoofed, stale-configuration, or digest-collision Job is treated
+    as foreign and never adopted, replaced, or deleted. Namespace RBAC must
+    separately restrict Job creation/patching to the campaign controller.
+    """
+    metadata = getattr(job, "metadata", None)
+    labels = getattr(metadata, "labels", None)
+    annotations = getattr(metadata, "annotations", None)
+    if not isinstance(labels, Mapping) or not isinstance(annotations, Mapping):
+        return False
+    return (
+        labels.get("app") == "reprolab-cell"
+        and labels.get("reprolab/run-sha256") == _k8s_identity_digest(run_id)
+        and labels.get("reprolab/cell-sha256") == _k8s_identity_digest(cell_id)
+        and annotations.get("reprolab.openresearch/run-id") == run_id
+        and annotations.get("reprolab.openresearch/cell-id") == cell_id
+        and annotations.get("reprolab.openresearch/config-sha256") == config_sha256
+    )
 
 
 def _sanitize_label_token(value: str) -> str:
@@ -683,6 +896,18 @@ def _check_budget(
     return None
 
 
+def _accrued_gpu_usd(*, elapsed_s: float, usd_per_hr_per_gpu: float, gpu_count: int) -> float:
+    """USD accrued so far for one running cell = hours x per-GPU rate x GPUs."""
+    return (elapsed_s / 3600.0) * float(usd_per_hr_per_gpu) * max(1, int(gpu_count))
+
+
+def _over_gpu_budget(*, accrued: float, cap: float | None) -> bool:
+    """True when a positive cap exists and accrued spend meets/exceeds it."""
+    if not cap or cap <= 0:
+        return False
+    return accrued >= cap
+
+
 # ---------------------------------------------------------------------------
 # K8s Job manifest builder
 # ---------------------------------------------------------------------------
@@ -726,6 +951,73 @@ def _cache_pvc_exists(k8s: _K8sClients, namespace: str, pvc_name: str = _CACHE_P
     return True
 
 
+_AWS_STATIC_CREDENTIAL_ENV_NAMES: frozenset[str] = frozenset({
+    "AWS_ACCESS_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN", "AWS_SECURITY_TOKEN", "AWS_PROFILE",
+    "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE",
+})
+
+
+def _assert_no_static_aws_credentials(env_vars: list[dict[str, str]]) -> None:
+    """Reject accidental static AWS credential injection into an EKS cell pod.
+
+    IRSA populates short-lived web-identity plumbing through the Kubernetes
+    ServiceAccount.  The controller must never serialize a developer's static
+    key, profile, or credential-file path into the Job manifest.
+    """
+    leaked = sorted({entry.get("name", "") for entry in env_vars} & _AWS_STATIC_CREDENTIAL_ENV_NAMES)
+    if leaked:
+        raise ValueError(
+            "k8s_job_cell_runner: refusing static AWS credential env vars in EKS pod: "
+            + ", ".join(leaked)
+        )
+
+
+def _aws_cell_configuration_error(gpu_plan: Any | None) -> str | None:
+    """Validate the EKS-only metadata required to meter and target a GPU cell."""
+    skus = tuple(str(v).strip() for v in (_cloud_setting("gpu_skus", []) or []) if str(v).strip())
+    try:
+        max_nodes = int(_cloud_setting("max_nodes", 0) or 0)
+        gpus_per_node = int(_cloud_setting("gpus_per_node", 0) or 0)
+        vram = float(_cloud_setting("per_gpu_vram_gb", 0.0) or 0.0)
+        rate = float(_cloud_setting("gpu_usd_per_hour", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return "AWS GPU metadata is malformed"
+    errors: list[str] = []
+    if not skus:
+        errors.append("aws_gpu_skus is empty")
+    if max_nodes <= 0:
+        errors.append("aws_max_nodes must be > 0")
+    if gpus_per_node != 1:
+        errors.append("aws_gpus_per_node must equal 1 (v1 EKS meters whole nodes)")
+    if vram <= 0:
+        errors.append("aws_per_gpu_vram_gb must be > 0")
+    if rate <= 0:
+        errors.append("aws_gpu_usd_per_hour must be > 0")
+    if gpu_plan is not None:
+        short_name = getattr(gpu_plan, "short_name", None)
+        if isinstance(gpu_plan, dict):
+            short_name = gpu_plan.get("short_name")
+        if short_name not in skus:
+            errors.append("resolved gpu_plan is not an aws_gpu_skus label")
+        try:
+            count = int(
+                gpu_plan.get("gpu_count", 1) if isinstance(gpu_plan, dict)
+                else getattr(gpu_plan, "gpu_count", 1)
+            )
+        except (TypeError, ValueError):
+            count = 0
+        if count != 1:
+            errors.append("resolved gpu_plan must request exactly one GPU for v1 EKS")
+    return "; ".join(errors) if errors else None
+
+
+def _safe_prefix_component(value: str) -> str:
+    """Return a path-safe nonempty S3 key component without importing runtime SDKs."""
+    safe = _DNS_SAFE_RE.sub("-", value.lower()).strip("-")[:63]
+    return safe or "unknown"
+
+
 def _build_job_manifest(
     *,
     job_name: str,
@@ -743,7 +1035,8 @@ def _build_job_manifest(
     active_deadline_seconds: int,
     max_oom_retries: int,
     fingerprint: str | None,
-    now_iso: str | None,
+    now_iso: str | None = None,
+    code_bundle_sha256: str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     gpu_plan: Any | None = None,
     # WS3 durable-controller fencing: the run token + lease generation stamped
     # onto the Job's metadata.labels (only when durable_controller_enabled()
@@ -814,7 +1107,14 @@ def _build_job_manifest(
     # is used even when _build_job_manifest is called directly without default_sku.
     if default_sku is None:
         _gpu_skus_for_default: list = _cloud_setting("gpu_skus", []) or []
-        default_sku = str(_gpu_skus_for_default[0]) if _gpu_skus_for_default else "azure_a100_80"
+        if _gpu_skus_for_default:
+            default_sku = str(_gpu_skus_for_default[0])
+        elif _get_settings_prefix() == "aws":
+            raise ValueError(
+                "k8s_job_cell_runner: aws_gpu_skus is empty; refusing unlabelled EKS GPU Job"
+            )
+        else:
+            default_sku = "azure_a100_80"
 
     # P0-fix-1: env-var NAMES must exactly match what aks_cell_entrypoint.py reads.
     # Canonical contract (runner injects → entrypoint reads):
@@ -860,6 +1160,17 @@ def _build_job_manifest(
         env_vars.append(
             {"name": "OPENRESEARCH_GCP_GCS_BUCKET", "value": _cloud_setting("gcs_bucket", "")}
         )
+    elif _prefix == "aws":
+        # EKS pods obtain S3 access exclusively through their IRSA-bound Service
+        # Account.  Only the bucket and non-secret region cross this boundary.
+        env_vars.extend([
+            {"name": "OPENRESEARCH_AWS_S3_BUCKET", "value": _cloud_setting("s3_bucket", "")},
+            {"name": "AWS_REGION", "value": _cloud_setting("region", "")},
+            {"name": "AWS_DEFAULT_REGION", "value": _cloud_setting("region", "")},
+            # Refuse the node instance-profile fallback.  EKS worker Pods must
+            # receive IRSA's projected web-identity variables or fail in boto3.
+            {"name": "AWS_EC2_METADATA_DISABLED", "value": "true"},
+        ])
     else:
         # Default / azure: P0-fix-1 standardised on OPENRESEARCH_AZURE_* names.
         env_vars.extend([
@@ -890,6 +1201,8 @@ def _build_job_manifest(
     # the canonical secret resolver. Only injects what is actually configured;
     # byte-identical env when nothing resolves (the common case today).
     env_vars.extend(_credential_env_vars())
+    if _prefix == "aws":
+        _assert_no_static_aws_credentials(env_vars)
 
     if accelerator == "cpu":
         # Phase D (OPENRESEARCH_CPU_CLOUD_CELLS): target the CPU pool label
@@ -912,11 +1225,19 @@ def _build_job_manifest(
         # P0-fix-3: node selector uses the infra pool label reprolab/sku in ALL paths.
         # With gpu_plan → target that SKU's pool; without → fall back to the default SKU.
         if gpu_plan is not None:
-            node_selector = {
+            node_selector: dict[str, str] = {
                 "reprolab/sku": str(getattr(gpu_plan, "short_name", default_sku))
             }
         else:
             node_selector = {"reprolab/sku": default_sku}
+
+        if _prefix == "aws":
+            allowed = {str(v) for v in (_cloud_setting("gpu_skus", []) or [])}
+            selected = node_selector["reprolab/sku"]
+            if selected not in allowed:
+                raise ValueError(
+                    f"k8s_job_cell_runner: EKS selector {selected!r} is not in aws_gpu_skus"
+                )
 
         # Toleration for the nvidia.com/gpu taint (always present; required by AKS GPU nodes).
         gpu_toleration = {
@@ -931,12 +1252,12 @@ def _build_job_manifest(
         # exactly [gpu_toleration], byte-identical to the on-demand path.
         _tolerations = [gpu_toleration]
         if _cloud_setting("use_spot", False):
-            if _get_settings_prefix() == "gcp":
+            if _prefix == "gcp":
                 _tolerations.append({
                     "key": "cloud.google.com/gke-spot",
                     "operator": "Equal", "value": "true", "effect": "NoSchedule",
                 })
-            else:
+            elif _prefix == "azure":
                 _tolerations.append({
                     "key": "kubernetes.azure.com/scalesetpriority",
                     "operator": "Equal", "value": "spot", "effect": "NoSchedule",
@@ -947,8 +1268,8 @@ def _build_job_manifest(
     # not explicitly provided, preserving byte-for-byte backward compatibility.
     _pod_extra: dict[str, str] = (
         {"azure.workload.identity/use": "true"}
-        if pod_template_extra_labels is None
-        else pod_template_extra_labels
+        if pod_template_extra_labels is None and _prefix == "azure"
+        else (pod_template_extra_labels or {})
     )
     _pod_labels: dict[str, str] = {
         "app": "reprolab-cell",
@@ -1024,6 +1345,49 @@ def _build_job_manifest(
     if durable_controller_enabled() and fence_generation is not None:
         _job_labels["reprolab-run-id"] = _sanitize_label_token(run_id)
         _job_labels["reprolab-generation"] = str(fence_generation)
+    job_annotations: dict[str, str] = {}
+    if run_id and _collision_guard_enabled():
+        if len(code_bundle_sha256) != 64 or any(ch not in "0123456789abcdef" for ch in code_bundle_sha256):
+            raise ValueError("k8s_job_cell_runner: code_bundle_sha256 must be a SHA-256 digest")
+        # Kubernetes label values are length bounded, so keep abbreviated
+        # digests there for listing/filtering and the full controller-owned
+        # identities in annotations for 409 ownership verification.
+        _job_labels.update({
+            "reprolab/run-sha256": _k8s_identity_digest(run_id),
+            "reprolab/cell-sha256": _k8s_identity_digest(cell_id),
+        })
+        job_annotations.update({
+            "reprolab.openresearch/run-id": run_id,
+            "reprolab.openresearch/cell-id": cell_id,
+            # Bind 409 adoption to the generated training configuration too.
+            # A stable run/cell ID alone must not reuse a stale Job after the
+            # trainer parameters, fingerprint, image, placement, or artifacts
+            # changed.
+            "reprolab.openresearch/config-sha256": _job_config_digest({
+                "cell_params_json": cell_params_json,
+                "fingerprint": fingerprint or "",
+                "code_bundle_sha256": code_bundle_sha256,
+                "active_deadline_seconds": active_deadline_seconds,
+                "ttl_seconds_after_finished": ttl_seconds_after_finished,
+                "backoff_limit": backoff_limit,
+                "pod_failure_policy": pod_failure_rules,
+                # `now_iso` is excluded intentionally: it is provenance text,
+                # not trainer behavior, and changes on a controller restart.
+                "pod_template": {
+                    "metadata": pod_template["metadata"],
+                    "spec": {
+                        **pod_template["spec"],
+                        "containers": [{
+                            **pod_template["spec"]["containers"][0],
+                            "env": [
+                                entry for entry in env_vars
+                                if entry["name"] != "OPENRESEARCH_CELL_NOW_ISO"
+                            ],
+                        }],
+                    },
+                },
+            }),
+        })
 
     manifest: dict[str, Any] = {
         "apiVersion": "batch/v1",
@@ -1032,6 +1396,7 @@ def _build_job_manifest(
             "name": job_name,
             "namespace": namespace,
             "labels": _job_labels,
+            "annotations": job_annotations,
         },
         "spec": {
             # P1-fix-8: configurable knobs from settings.
@@ -1058,6 +1423,9 @@ def _watch_job(
     active_deadline_seconds: int,
     pending_timeout_s: float,
     backoff_limit: int = 0,
+    gpu_budget_cap: float | None = None,
+    gpu_usd_per_hr_per_gpu: float = 0.0,
+    gpu_count: int = 1,
 ) -> dict[str, Any]:
     """Watch a K8s Job until terminal or timeout.
 
@@ -1079,13 +1447,25 @@ def _watch_job(
     Returns a dict with keys:
         ``status``  — ``"succeeded"`` | ``"failed"`` | ``"deadline"``
                       | ``"overall_timeout"`` | ``"pending_timeout"``
+                      | ``"gpu_budget_exceeded"``
         ``exit_code``  — int from container state (best-effort, may be None)
         ``node_name``  — str (best-effort, may be None)
         ``log``        — str (captured from K8s pod log, best-effort)
         ``outcome``    — str from Blob status.json, or None
         ``retries``    — int from Blob status.json, or 0
+
+    **Mid-cell GPU-$ heartbeat.** ``run_experiment``'s ``RunBudget.check_run_gpu_usd``
+    only fires when a cell RETURNS, so a cell wedged on a slow download holds its
+    GPU(s) for the full ``active_deadline`` and can silently breach the run's GPU-$
+    cap. Each poll re-estimates the cell's accrued GPU spend (elapsed x per-GPU rate
+    x gpus) and returns ``"gpu_budget_exceeded"`` the moment it meets/exceeds
+    ``gpu_budget_cap``. NO-OP (byte-identical to the prior loop) when ``gpu_budget_cap``
+    is falsy or ``gpu_usd_per_hr_per_gpu`` <= 0. The three billing values are threaded
+    EXPLICITLY from ``_process_cell`` — ContextVars (``_get_run_budget``/``_get_gpu_plan``)
+    do NOT propagate into the ``run_matrix`` worker threads this loop runs in.
     """
     job_deadline = time.monotonic() + active_deadline_seconds
+    job_started = time.monotonic()
     pending_since: float | None = None
 
     while True:
@@ -1098,6 +1478,29 @@ def _watch_job(
         # Per-cell deadline.
         if now >= job_deadline:
             return _watch_result("deadline")
+
+        # Mid-cell GPU-$ heartbeat: kill a cell that would breach the run's GPU-$ cap
+        # before its deadline. NO-OP when there is no cap or no positive rate, so a
+        # run without a GPU-$ cap is byte-for-byte the prior loop.
+        if gpu_usd_per_hr_per_gpu > 0:
+            _accrued = _accrued_gpu_usd(
+                elapsed_s=now - job_started,
+                usd_per_hr_per_gpu=gpu_usd_per_hr_per_gpu,
+                gpu_count=gpu_count,
+            )
+            if _over_gpu_budget(accrued=_accrued, cap=gpu_budget_cap):
+                logger.warning(
+                    "k8s_job_cell_runner: cell job=%s exceeded GPU-$ cap "
+                    "$%.4f >= $%.4f — terminating",
+                    job_name, _accrued, gpu_budget_cap,
+                )
+                node, exit_code, log = _collect_pod_info(k8s, job_name, namespace)
+                return _watch_result(
+                    "gpu_budget_exceeded",
+                    exit_code=exit_code,
+                    node_name=node,
+                    log=log,
+                )
 
         # --- Single API call: read Job status ---
         _poll_interval: float = _cloud_setting("watch_poll_interval_s", 5.0)
@@ -1477,6 +1880,18 @@ def _map_status(
     if w_status in ("overall_timeout", "deadline"):
         return STATUS_ERROR, f"timeout: watch_status={w_status}", retries
 
+    # Mid-cell GPU-$ heartbeat kill. Terminal + NON-retryable (STATUS_ERROR is not
+    # STATUS_OOM_FAILED, so the escalation loop in _process_cell never re-submits it):
+    # a cell that already breached the run's GPU-$ cap must not be retried onto a
+    # bigger/pricier SKU. Mirrors the "deadline" hard-failure path.
+    if w_status == "gpu_budget_exceeded":
+        return (
+            STATUS_ERROR,
+            f"budget_exhausted: cell exceeded run GPU-$ cap ({log[-1500:]})"
+            if log else "budget_exhausted: cell exceeded run GPU-$ cap",
+            retries,
+        )
+
     if w_status == "failed":
         # Check for terminal OOM sentinel.
         if outcome == _SENTINEL_OOM_OUTCOME or exit_code == _EXIT_OOM_EXHAUSTED:
@@ -1518,6 +1933,7 @@ def _run_cell_job(
     pending_timeout_s: float,
     max_oom_retries: int,
     fingerprint: str | None,
+    code_bundle_sha256: str,
     now_iso: str | None,
     run_id: str,
     gpu_plan: Any | None = None,
@@ -1529,6 +1945,9 @@ def _run_cell_job(
     # to before this param existed; "cpu" threads through to
     # _build_job_manifest's accelerator="cpu" branch.
     accelerator: str = "gpu",
+    gpu_budget_cap: float | None = None,
+    gpu_usd_per_hr_per_gpu: float = 0.0,
+    gpu_count: int = 1,
 ) -> CellResult:
     """Submit a K8s Job for ``cell`` and block until terminal, then return a CellResult.
 
@@ -1582,9 +2001,10 @@ def _run_cell_job(
             max_oom_retries=max_oom_retries,
             fingerprint=fingerprint,
             now_iso=now_iso,
+            run_id=run_id,
+            code_bundle_sha256=code_bundle_sha256,
             gpu_plan=gpu_plan,
             # WS3 fencing: threaded through to the manifest's metadata.labels.
-            run_id=run_id,
             fence_generation=fence_generation,
             # P1-fix-8: configurable knobs from settings.
             ttl_seconds_after_finished=int(_cloud_setting("ttl_seconds_after_finished", 3600)),
@@ -1619,7 +2039,9 @@ def _run_cell_job(
         logger.error(
             "k8s_job_cell_runner: manifest build failed cell=%s: %s", cell_id, _safe_exc
         )
-        _cs = "gke" if _get_settings_prefix() == "gcp" else "aks"
+        _cs = {"gcp": "gke", "aws": "eks", "azure": "aks"}.get(
+            _get_settings_prefix(), _get_settings_prefix()
+        )
         return CellResult(
             cell_id=cell_id,
             status=STATUS_ERROR,
@@ -1629,8 +2051,14 @@ def _run_cell_job(
             error=f"manifest build failed: {_safe_exc}",
         )
 
-    # Submit the Job.
-    _cs = "gke" if _get_settings_prefix() == "gcp" else "aks"
+    # Submit the Job.  A retry of the same campaign/cell may encounter a
+    # terminal Job left behind by Kubernetes TTL lag. Never blindly delete or
+    # replace it: first prove full controller ownership, then only adopt an
+    # active/succeeded Job. A terminal failure is fail-closed: a second
+    # controller must not launch unreserved duplicate GPU work.
+    _cs = {"gcp": "gke", "aws": "eks", "azure": "aks"}.get(
+        _get_settings_prefix(), _get_settings_prefix()
+    )
     # WS3: resolved ONCE per submit attempt — gates both the persisted-deadline
     # write (success path, just below) and the adopt-on-409 branch (except,
     # just below). Uses the `fence_generation` PARAMETER (threaded explicitly
@@ -1638,6 +2066,7 @@ def _run_cell_job(
     # `_run_cell_job` runs on a worker thread, where that ContextVar accessor
     # would silently read back None (see `_get_fence_generation`'s docstring).
     _durable_fenced = durable_controller_enabled() and fence_generation is not None
+    submitted_job_name = job_name
     try:
         k8s.batch.create_namespaced_job(namespace, manifest)
         logger.info(
@@ -1663,7 +2092,7 @@ def _run_cell_job(
         from backend.services.runtime.credential_broker import CredentialBroker  # type: ignore[import]
 
         _safe_exc = CredentialBroker.redact_text(str(exc)) or "error (redacted)"
-        if not _durable_fenced or getattr(exc, "status", None) != 409:
+        if _api_status(exc) != 409:
             logger.error(
                 "k8s_job_cell_runner: create_namespaced_job failed cell=%s: %s",
                 cell_id,
@@ -1677,159 +2106,180 @@ def _run_cell_job(
                 retries=0,
                 error=f"job submission failed: {_safe_exc}",
             )
-
-        # WS3 Edit 1 — adopt-on-409: the fenced Job name already exists, most
-        # likely a controller restart resubmitting the SAME (run_id, cell_id,
-        # gen) triple. Duck-typed 409 (no eager `import kubernetes`).
-        logger.warning(
-            "k8s_job_cell_runner: create_namespaced_job 409 for fenced Job=%s "
-            "cell=%s — probing adopt vs skip vs submit", job_name, cell_id,
-        )
-        try:
-            existing_job = k8s.batch.read_namespaced_job_status(
-                name=job_name, namespace=namespace
-            )
-        except Exception as read_exc:
-            _safe_read_exc = CredentialBroker.redact_text(str(read_exc)) or "error (redacted)"
-            logger.error(
-                "k8s_job_cell_runner: adopt-on-409 read_namespaced_job_status "
-                "failed cell=%s: %s — falling back to error",
-                cell_id,
-                _safe_read_exc,
-            )
-            return CellResult(
-                cell_id=cell_id,
-                status=STATUS_ERROR,
-                metrics=None,
-                gpu=f"{_cs}:unassigned",
-                retries=0,
-                error=f"job submission failed: {_safe_exc}",
-            )
-
-        existing_status = getattr(existing_job, "status", None)
-        if getattr(existing_status, "succeeded", 0):
-            existing_phase = "done"
-        elif getattr(existing_status, "active", 0):
-            existing_phase = "Running"
-        else:
-            existing_phase = None
-
-        # Cheap probe of the persisted per-cell status (same Blob status.json
-        # `_try_reconcile_status` already reconciles elsewhere in this file);
-        # mirrors the exact "prior success" check `_process_cell`'s Blob-resume
-        # path already uses (`exit_code==0 or outcome=="ok"` — the real
-        # in-Job entrypoint sentinel has no top-level "status" key, only
-        # "outcome"/"exit_code", so this is the check that actually matches
-        # production data, not a literal `result["status"]`).
-        #
-        # DEVIATION FROM BRIEF — flagged for explicit lead sign-off, not
-        # silent: `.superpowers/sdd/phase3-owner1b-cell_runner-adopt-deadline.md`
-        # Edit 1 step 3 literally specifies
-        # `result and result.get("status") == STATUS_OK`. Real per-cell
-        # status.json sentinels never carry a top-level "status" key (only
-        # outcome/exit_code — see `_process_cell`'s own Blob-resume check a
-        # few hundred lines below, `_blob_status.get("exit_code") == 0 or
-        # _blob_status.get("outcome") == "ok"`), so the literal brief check
-        # would make `already_succeeded` permanently False and the "skip"
-        # branch of `adopt_or_submit` permanently dead code. This is a
-        # unilateral, load-bearing reinterpretation of explicit brief text —
-        # per `phase3-contract.md`'s STOP-and-flag principle for brief/
-        # implementation mismatches, the lead should explicitly confirm this
-        # reading (rather than have it land silently) before treating Edit 1
-        # as fully to-spec.
-        reconciled = _try_reconcile_status(
-            cell_id=cell_id,
-            output_blob_prefix=output_blob_prefix,
-            account_name=storage_account,
-            container_name=blob_container,
-            client=blob_client,
-        )
-        already_succeeded = bool(
-            reconciled
-            and (reconciled.get("outcome") == STATUS_OK or reconciled.get("exit_code") == 0)
-        )
-
-        decision = adopt_or_submit(existing_phase, already_succeeded=already_succeeded)
-
-        if decision == "skip":
-            # The work is already done — reconcile like the existing
-            # post-watch path does for an already-ok cell (download metrics,
-            # write the resume manifest, return STATUS_OK).
-            metrics = _try_download_metrics(
+        if _durable_fenced:
+            # The generation-fenced path is separately gated and preserves its
+            # legacy adopt/skip semantics.  A generation in the name is the
+            # ownership boundary; the generic hash annotations are deliberately
+            # absent so OFF and no-generation artifacts stay stable.
+            try:
+                existing = k8s.batch.read_namespaced_job_status(job_name, namespace)
+            except Exception as read_exc:
+                safe_read = CredentialBroker.redact_text(str(read_exc)) or "error (redacted)"
+                logger.error(
+                    "k8s_job_cell_runner: fenced 409 inspection failed cell=%s: %s",
+                    cell_id, safe_read,
+                )
+                return CellResult(
+                    cell_id=cell_id, status=STATUS_ERROR, metrics=None,
+                    gpu=f"{_cs}:unassigned", retries=0,
+                    error=f"job submission failed: {safe_read}",
+                )
+            existing_status = getattr(existing, "status", None)
+            if getattr(existing_status, "succeeded", 0):
+                existing_phase = "done"
+            elif getattr(existing_status, "active", 0):
+                existing_phase = "Running"
+            else:
+                existing_phase = None
+            reconciled = _try_reconcile_status(
                 cell_id=cell_id,
                 output_blob_prefix=output_blob_prefix,
                 account_name=storage_account,
                 container_name=blob_container,
-                output_dir=output_dir,
                 client=blob_client,
             )
-            retries = (reconciled or {}).get("retries") or 0
-            write_cell_manifest(
-                output_dir,
-                caller="k8s_job_cell_runner",
-                cell_id=cell_id,
-                status=STATUS_OK,
-                fingerprint=fingerprint,
-                metrics=metrics,
-                retries=retries,
-                now_iso=now_iso,
+            already_succeeded = bool(
+                reconciled
+                and (reconciled.get("outcome") == STATUS_OK or reconciled.get("exit_code") == 0)
             )
-            logger.info(
-                "k8s_job_cell_runner: cell=%s adopt-on-409: already succeeded — skip",
-                cell_id,
+            decision = adopt_or_submit(existing_phase, already_succeeded=already_succeeded)
+            if decision == "skip":
+                metrics = _try_download_metrics(
+                    cell_id=cell_id,
+                    output_blob_prefix=output_blob_prefix,
+                    account_name=storage_account,
+                    container_name=blob_container,
+                    output_dir=output_dir,
+                    client=blob_client,
+                )
+                retries = (reconciled or {}).get("retries") or 0
+                write_cell_manifest(
+                    output_dir, caller="k8s_job_cell_runner", cell_id=cell_id,
+                    status=STATUS_OK, fingerprint=fingerprint, metrics=metrics,
+                    retries=retries, now_iso=now_iso,
+                )
+                return CellResult(
+                    cell_id=cell_id, status=STATUS_OK, metrics=metrics,
+                    gpu=f"{_cs}:unassigned", retries=retries, error=None,
+                )
+            if decision != "adopt":
+                return CellResult(
+                    cell_id=cell_id, status=STATUS_ERROR, metrics=None,
+                    gpu=f"{_cs}:unassigned", retries=0,
+                    error=f"job submission failed: {_safe_exc}",
+                )
+            active_deadline_seconds = _adopted_active_deadline_seconds(
+                run_id=run_id, gen=fence_generation, cell_id=cell_id,
+                storage_account=storage_account, blob_container=blob_container,
+                blob_client=blob_client,
+                fallback_active_deadline_seconds=active_deadline_seconds,
             )
+        elif durable_controller_enabled() or fence_generation is not None:
+            # Durable controller is off or unbound: preserve the old fail-closed
+            # error rather than probing a potentially unrelated legacy Job.
             return CellResult(
-                cell_id=cell_id,
-                status=STATUS_OK,
-                metrics=metrics,
-                gpu=f"{_cs}:unassigned",
-                retries=retries,
-                error=None,
-            )
-
-        if decision == "submit":
-            # Conservative: a 409 with neither a live nor a succeeded Job is an
-            # odd state (e.g. racing deletion) — do not blindly recreate.
-            logger.error(
-                "k8s_job_cell_runner: adopt-on-409 cell=%s: existing Job neither "
-                "live nor succeeded — treating as submission failure", cell_id,
-            )
-            return CellResult(
-                cell_id=cell_id,
-                status=STATUS_ERROR,
-                metrics=None,
-                gpu=f"{_cs}:unassigned",
-                retries=0,
+                cell_id=cell_id, status=STATUS_ERROR, metrics=None,
+                gpu=f"{_cs}:unassigned", retries=0,
                 error=f"job submission failed: {_safe_exc}",
             )
-
-        # decision == "adopt": do NOT create — attach to the existing Job and
-        # inherit the REMAINING budget (Edit 2) instead of a fresh full one,
-        # then fall through to the SAME _watch_job call below (its internal
-        # monotonic loop is untouched — only the VALUE it receives changes).
-        logger.info(
-            "k8s_job_cell_runner: cell=%s adopt-on-409: attaching to live Job=%s",
-            cell_id, job_name,
-        )
-        active_deadline_seconds = _adopted_active_deadline_seconds(
-            run_id=run_id,
-            gen=fence_generation,
-            cell_id=cell_id,
-            storage_account=storage_account,
-            blob_container=blob_container,
-            blob_client=blob_client,
-            fallback_active_deadline_seconds=active_deadline_seconds,
-        )
+        elif not _collision_guard_enabled():
+            return CellResult(
+                cell_id=cell_id, status=STATUS_ERROR, metrics=None,
+                gpu=f"{_cs}:unassigned", retries=0,
+                error=f"job submission failed: {_safe_exc}",
+            )
+        else:
+            try:
+                existing = k8s.batch.read_namespaced_job_status(job_name, namespace)
+            except Exception as read_exc:
+                logger.error(
+                    "k8s_job_cell_runner: 409 but cannot inspect existing Job cell=%s: %s",
+                    cell_id, read_exc,
+                )
+                return CellResult(
+                    cell_id=cell_id, status=STATUS_ERROR, metrics=None,
+                    gpu=f"{_cs}:unassigned", retries=0,
+                    error=f"job submission conflict could not be inspected: {read_exc}",
+                )
+            expected_config = str(
+                (manifest.get("metadata", {}).get("annotations", {}) or {}).get(
+                    "reprolab.openresearch/config-sha256", ""
+                )
+            )
+            if not expected_config or not _owned_conflict_job(
+                existing, run_id=run_id, cell_id=cell_id, config_sha256=expected_config,
+            ):
+                logger.error(
+                    "k8s_job_cell_runner: refusing foreign 409 Job reuse cell=%s job=%s",
+                    cell_id, job_name,
+                )
+                return CellResult(
+                    cell_id=cell_id, status=STATUS_ERROR, metrics=None,
+                    gpu=f"{_cs}:unassigned", retries=0,
+                    error="job submission conflict belongs to a different run/cell; refusing adoption",
+                )
+            terminal, succeeded = _job_is_terminal(existing)
+            if not terminal or succeeded:
+                logger.info(
+                    "k8s_job_cell_runner: adopting owned %s Job=%s for cell=%s after 409",
+                    "succeeded" if succeeded else "active", job_name, cell_id,
+                )
+            elif is_resume_armed():
+                # Resume/retry is explicitly armed (OPENRESEARCH_RESUME_CELLS):
+                # the operator has already signalled "retry incomplete/failed
+                # cells". A Job the Job-level condition confirms Failed (not a
+                # transient retryable-pod count — _job_is_terminal only
+                # returns True on an authoritative Complete/Failed condition)
+                # is definitively not running any GPU work, so deleting it and
+                # resubmitting fresh is NOT "unreserved duplicate GPU work" —
+                # there is nothing duplicate to race against. Default (resume
+                # NOT armed) behavior below is unchanged: fail closed and let
+                # an operator inspect/delete manually.
+                try:
+                    k8s.batch.delete_namespaced_job(
+                        job_name, namespace,
+                        propagation_policy="Foreground",
+                    )
+                    k8s.batch.create_namespaced_job(namespace, manifest)
+                    logger.info(
+                        "k8s_job_cell_runner: deleted+resubmitted owned terminal-failed "
+                        "Job=%s for cell=%s (resume armed)", job_name, cell_id,
+                    )
+                except Exception as retry_exc:
+                    safe_retry_exc = CredentialBroker.redact_text(str(retry_exc)) or "error (redacted)"
+                    logger.error(
+                        "k8s_job_cell_runner: delete+resubmit failed for owned terminal-failed "
+                        "Job=%s cell=%s: %s", job_name, cell_id, safe_retry_exc,
+                    )
+                    return CellResult(
+                        cell_id=cell_id, status=STATUS_ERROR, metrics=None,
+                        gpu=f"{_cs}:unassigned", retries=0,
+                        error=f"job resubmit after owned terminal failure failed: {safe_retry_exc}",
+                    )
+            else:
+                logger.error(
+                    "k8s_job_cell_runner: owned terminal failed Job=%s blocks resubmit cell=%s",
+                    job_name, cell_id,
+                )
+                return CellResult(
+                    cell_id=cell_id, status=STATUS_ERROR, metrics=None,
+                    gpu=f"{_cs}:unassigned", retries=0,
+                    error=("job submission conflict is an owned terminal failure; "
+                           "refusing unreserved duplicate GPU retry"),
+                )
 
     # Watch Job until terminal.
     watch = _watch_job(
         k8s=k8s,
-        job_name=job_name,
+        job_name=submitted_job_name,
         namespace=namespace,
         overall_deadline=overall_deadline,
         active_deadline_seconds=active_deadline_seconds,
         pending_timeout_s=pending_timeout_s,
         backoff_limit=_backoff_limit,
+        gpu_budget_cap=gpu_budget_cap,
+        gpu_usd_per_hr_per_gpu=gpu_usd_per_hr_per_gpu,
+        gpu_count=gpu_count,
     )
 
     node_name = watch.get("node_name")
@@ -2044,8 +2494,16 @@ def run_matrix(
     # default off). A verl cell auto-targets gke-cell-verl instead of the single
     # gcp_base_image; off/unmapped => base_image unchanged.
     base_image = _maybe_framework_image(cells, base_image)
-    storage_account: str = _cloud_setting("storage_account", "") or ""
-    blob_container: str = _cloud_setting("blob_container", "reprolab-artifacts") or "reprolab-artifacts"
+    _prefix = _get_settings_prefix()
+    # ``storage_account`` / ``blob_container`` are legacy Azure-shaped helper
+    # parameters.  For AWS they carry the S3 bucket only for call-site parity;
+    # actual routing goes through S3Store and does not serialize credentials.
+    if _prefix == "aws":
+        storage_account = str(_cloud_setting("s3_bucket", "") or "")
+        blob_container = ""
+    else:
+        storage_account = _cloud_setting("storage_account", "") or ""
+        blob_container = _cloud_setting("blob_container", "reprolab-artifacts") or "reprolab-artifacts"
     # P1-fix-5: align with config.py default of 4 (was incorrectly 8 here).
     cloud_max_nodes: int = int(_cloud_setting("max_nodes", 4))
     cloud_gpus_per_node: int = int(_cloud_setting("gpus_per_node", 1))
@@ -2053,12 +2511,11 @@ def run_matrix(
     pending_timeout_s: float = float(_cloud_setting("pending_timeout_seconds", 900))
     provisioned_skus: list[str] = list(_cloud_setting("gpu_skus", []) or [])
     max_escalations: int = int(_setting("dynamic_gpu_max_escalations", 2))
-    # Derive cloud prefix short label for gpu result fields ("aks" for azure, "gke" for gcp).
-    _prefix = _get_settings_prefix()
-    _cloud_short = "gke" if _prefix == "gcp" else "aks"
-    # Pod template extra labels: AKS needs WI label, GKE does not.
+    # Derive cloud prefix short label for gpu result fields.
+    _cloud_short = {"gcp": "gke", "aws": "eks", "azure": "aks"}.get(_prefix, _prefix)
+    # Pod template extra labels: only AKS needs this workload-identity label.
     _pod_extra_labels: dict = (
-        {} if _prefix == "gcp" else {"azure.workload.identity/use": "true"}
+        {"azure.workload.identity/use": "true"} if _prefix == "azure" else {}
     )
 
     _fingerprints: dict[str, str] = fingerprints or {}
@@ -2081,6 +2538,24 @@ def run_matrix(
     # below), so every downstream consumer receives this resolved value as an
     # explicit parameter/closure capture, never by re-calling the accessor.
     fence_generation = _get_fence_generation()
+
+    if _prefix == "aws":
+        aws_error = _aws_cell_configuration_error(gpu_plan)
+        if aws_error:
+            msg = f"k8s_job_cell_runner: AWS EKS cell route blocked: {aws_error}"
+            logger.error(msg)
+            event_sink("run_warning", {"code": "aws_gpu_configuration", "message": msg})
+            return {
+                cell.get("id", f"cell_{i}"): CellResult(
+                    cell_id=cell.get("id", f"cell_{i}"),
+                    status=STATUS_ERROR,
+                    metrics=None,
+                    gpu="eks:unassigned",
+                    retries=0,
+                    error=msg,
+                ).to_dict()
+                for i, cell in enumerate(cells)
+            }
 
     # Derive a run_id from the output_root path (last two segments).
     output_root = Path(output_root)
@@ -2175,22 +2650,38 @@ def run_matrix(
     # Upload code once (parent of cell_script).
     cell_script = Path(cell_script)
     code_dir = cell_script.parent
-    code_blob_prefix = f"runs/{run_id}/{_BLOB_CODE_PREFIX}"
-    # WS3 fencing: scope this generation's cell evidence under its own
-    # gen-<gen>/ prefix so a superseded generation's writer can never clobber
-    # the current one's metrics.json. Computed ONCE here (run-level, exactly
-    # like code_blob_prefix above) — NOT re-derived per cell or per escalation
-    # attempt, and independent of the escalation "-eN" run_id suffix used only
-    # for Job naming. OFF/no-gen ⇒ legacy prefix, byte-identical.
-    if durable_controller_enabled() and fence_generation is not None:
+    if _prefix == "aws":
+        project_id = _get_project_id()
+        if not project_id:
+            msg = "k8s_job_cell_runner: AWS EKS requires controller project_id for collision-safe S3 prefixes"
+            logger.error(msg)
+            return {
+                cell.get("id", f"cell_{i}"): CellResult(
+                    cell_id=cell.get("id", f"cell_{i}"), status=STATUS_ERROR,
+                    metrics=None, gpu="eks:unassigned", retries=0, error=msg,
+                ).to_dict()
+                for i, cell in enumerate(cells)
+            }
+        object_root = (
+            f"projects/{_safe_prefix_component(project_id)}/"
+            f"runs/{_safe_prefix_component(run_id)}"
+        )
+    else:
+        object_root = f"runs/{run_id}"
+    code_blob_prefix = f"{object_root}/{_BLOB_CODE_PREFIX}"
+    # WS3 fencing scopes a GCP/Azure controller generation under a distinct
+    # output prefix. EKS uses the project-scoped S3 root above for collision
+    # safety and has no GCS fence record.
+    if _prefix != "aws" and durable_controller_enabled() and fence_generation is not None:
         output_blob_prefix = (
             fenced_blob_prefix(run_id, fence_generation).rstrip("/")
             + "/" + _BLOB_CELLS_PREFIX
         )
     else:
-        output_blob_prefix = f"runs/{run_id}/{_BLOB_CELLS_PREFIX}"
+        output_blob_prefix = f"{object_root}/{_BLOB_CELLS_PREFIX}"
 
     try:
+        code_bundle_sha256 = _code_bundle_digest(code_dir)
         uploaded = _blob_upload_prefix(
             code_dir,
             blob_prefix=code_blob_prefix,
@@ -2201,7 +2692,7 @@ def run_matrix(
             "k8s_job_cell_runner: uploaded %d code files to %s", len(uploaded), code_blob_prefix
         )
     except Exception as exc:
-        err = f"k8s_job_cell_runner: code upload failed: {exc}"
+        err = f"k8s_job_cell_runner: code bundle/upload failed: {exc}"
         logger.error(err)
         return {
             cell.get("id", f"cell_{i}"): CellResult(
@@ -2261,9 +2752,12 @@ def run_matrix(
     _use_persistent_cache: bool = _configured_cache_enabled and _cache_confirmed
 
     # Budget tracking: sum of reserved GPU-seconds for active + completed cells.
-    reserved_gpu_seconds = 0.0    # Σ wall-clock seconds → the max_pod_seconds cap
-    reserved_gpu_usd = 0.0        # Σ wall_clock_s × gpu_count × $/GPU-hr → the max_run_gpu_usd cap
-    budget_lock = threading.Lock()
+    # A caller may bind one ledger across staged candidate/full invocations;
+    # ordinary runs receive a fresh matrix-local ledger.
+    reservation_ledger = _BUDGET_RESERVATION_LEDGER_CTX.get()
+    if reservation_ledger is None:
+        reservation_ledger = _new_budget_reservation_ledger()
+    budget_lock = reservation_ledger.lock
 
     results: dict[str, CellResult] = {}
     results_lock = threading.Lock()
@@ -2278,7 +2772,6 @@ def run_matrix(
     _active_prefix = _get_settings_prefix()
 
     def _process_cell(cell: dict[str, Any]) -> None:
-        nonlocal reserved_gpu_seconds, reserved_gpu_usd
         _SETTINGS_PREFIX_CTX.set(_active_prefix)
 
         # P0-fix-4: per-cell copy so escalation can update the rate for THIS cell
@@ -2417,8 +2910,8 @@ def run_matrix(
 
         with budget_lock:
             _cell_usd = eff_cell_s * _cell_gpu_count * cell_gpu_usd_per_hour / 3600.0
-            new_reserved_s = reserved_gpu_seconds + eff_cell_s
-            new_reserved_usd = reserved_gpu_usd + _cell_usd
+            new_reserved_s = reservation_ledger.gpu_seconds + eff_cell_s
+            new_reserved_usd = reservation_ledger.gpu_usd + _cell_usd
             budget_err = _check_budget(
                 run_budget=run_budget,
                 projected_gpu_usd=new_reserved_usd,
@@ -2438,8 +2931,8 @@ def run_matrix(
                         error=budget_err,
                     )
                 return
-            reserved_gpu_seconds = new_reserved_s
-            reserved_gpu_usd = new_reserved_usd
+            reservation_ledger.gpu_seconds = new_reserved_s
+            reservation_ledger.gpu_usd = new_reserved_usd
 
         # --- Submit and watch (with optional SKU escalation on oom_failed) ---
         current_plan = gpu_plan  # may become a lighter stub on escalation
@@ -2466,6 +2959,7 @@ def run_matrix(
                 pending_timeout_s=pending_timeout_s,
                 max_oom_retries=max_oom_retries,
                 fingerprint=_fingerprints.get(cell_id),
+                code_bundle_sha256=code_bundle_sha256,
                 now_iso=now_iso,
                 # P0-fix-2: use the (possibly suffixed) run_id for Job naming.
                 run_id=current_run_id,
@@ -2482,6 +2976,17 @@ def run_matrix(
                 # Phase D: closure-captured per-cell routing decision (see
                 # _cell_accelerator above) — never re-derived here.
                 accelerator=_cell_accelerator,
+                # Mid-cell GPU-$ heartbeat: thread the run's GPU-$ cap + this cell's
+                # (possibly escalated) billing rate + gpu_count EXPLICITLY — the watch
+                # loop runs in this worker thread where ContextVars don't propagate, so
+                # _get_run_budget()/_get_gpu_plan() would read None there. No-op when
+                # no cap or no rate.
+                gpu_budget_cap=(
+                    getattr(run_budget, "max_run_gpu_usd", None)
+                    if run_budget is not None else None
+                ),
+                gpu_usd_per_hr_per_gpu=cell_gpu_usd_per_hour,
+                gpu_count=_cell_gpu_count,
             )
 
             # Escalation check: only if oom_failed + plan available + cap not hit.
@@ -2545,8 +3050,8 @@ def run_matrix(
             )
             with budget_lock:
                 _esc_usd = _esc_eff_s * _esc_gpu_count * escalated_usd_per_hour / 3600.0
-                _esc_new_s = reserved_gpu_seconds + _esc_eff_s
-                _esc_new_usd = reserved_gpu_usd + _esc_usd
+                _esc_new_s = reservation_ledger.gpu_seconds + _esc_eff_s
+                _esc_new_usd = reservation_ledger.gpu_usd + _esc_usd
                 escalated_budget_err = _check_budget(
                     run_budget=run_budget,
                     projected_gpu_usd=_esc_new_usd,
@@ -2555,8 +3060,8 @@ def run_matrix(
                 )
                 if not escalated_budget_err:
                     # Commit the reservation only when we're actually going to resubmit.
-                    reserved_gpu_seconds = _esc_new_s
-                    reserved_gpu_usd = _esc_new_usd
+                    reservation_ledger.gpu_seconds = _esc_new_s
+                    reservation_ledger.gpu_usd = _esc_new_usd
             if escalated_budget_err:
                 logger.warning(
                     "k8s_job_cell_runner: escalation budget exceeded, stopping: %s",

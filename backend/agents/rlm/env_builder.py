@@ -1,5 +1,5 @@
 """Deterministic env-image assembly for build-on-miss (design
-spec docs/superpowers/specs/2026-07-08-root-driven-adaptive-environment-build-design.md
+spec docs/history/specs/2026-07-08-root-driven-adaptive-environment-build-design.md
 §4). Pure — no cloud/subprocess/network; the Cloud Build submit lives in
 env_builder's sibling cloud_build.py, wired by build_environment (later increment).
 """

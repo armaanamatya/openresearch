@@ -10,7 +10,7 @@ a takeover) it stops, so two controller generations never write concurrently.
 The heavy cluster/campaign wiring here executes only inside a real Pod and is
 exercised at drill time; :func:`heartbeat_loop` is the pure, unit-tested core.
 
-Design: ``docs/superpowers/specs/2026-07-12-cloud-native-durable-and-cpu-lane-design.md`` §3.6, §7.
+Design: ``docs/history/specs/2026-07-12-cloud-native-durable-and-cpu-lane-design.md`` §3.6, §7.
 """
 
 from __future__ import annotations

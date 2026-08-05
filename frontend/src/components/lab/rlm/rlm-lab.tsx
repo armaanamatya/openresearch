@@ -76,7 +76,7 @@ function findInFlightPrimitive(calls: PrimitiveCallView[]): { name: string; star
  * Selection state is lifted here so both the canvas (highlight) and the
  * sidebar (detail content) subscribe to the same source of truth.
  *
- * Spec: docs/superpowers/specs/2026-05-21-rlm-phase4-frontend-design.md §7 / §9 / §14
+ * Spec: docs/history/specs/2026-05-21-rlm-phase4-frontend-design.md §7 / §9 / §14
  */
 export function RlmLab({
   events,

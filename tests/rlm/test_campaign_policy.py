@@ -410,28 +410,6 @@ def test_enforcement_plan_cli_args_deterministic_order():
     assert plan_a.env == {"OPENRESEARCH_MAX_RUN_GPU_USD": "20"}
 
 
-def test_runpod_sandbox_appends_max_pod_seconds_after_gpu_usd():
-    # The runpod control-plane ceiling analog (RunBudget.max_pod_seconds)
-    # must be made explicit, deterministically ordered after --max-run-gpu-usd.
-    envelope = _envelope(gpu_usd=10.0, gpu_hours=5.0)
-    runpod_ctx = _ctx(sandbox="runpod", tiering_strategy=None, max_gpu_count=1, gpu_usd_per_hr=2.0)
-    plan = check_enforceability(envelope, runpod_ctx)
-
-    names = [name for name, _ in plan.cli_args]
-    assert names == ["--max-usd", "--max-wall-clock", "--max-run-gpu-usd", "--max-pod-seconds"]
-    assert dict(plan.cli_args)["--max-pod-seconds"] == "19800"
-    assert plan.vm_ceiling_s == pytest.approx(19800.0)
-
-    # --max-pod-seconds is a runpod-only knob -- absent on local and gcp.
-    local_plan = check_enforceability(envelope, _ctx(sandbox="local", tiering_strategy=None, max_gpu_count=1))
-    assert all(name != "--max-pod-seconds" for name, _ in local_plan.cli_args)
-
-    gcp_plan = check_enforceability(
-        envelope, _ctx(sandbox="gcp", tiering_strategy=None, max_gpu_count=1, gpu_usd_per_hr=2.0)
-    )
-    assert all(name != "--max-pod-seconds" for name, _ in gcp_plan.cli_args)
-
-
 # ---------------------------------------------------------------------------
 # attempt_estimate
 # ---------------------------------------------------------------------------
@@ -1316,6 +1294,41 @@ def test_decision_to_dict_roundtrips_next_plan():
     terminal_payload = terminal.to_dict()
     assert terminal_payload["next_plan"] is None
     assert terminal_payload["champion_attempt_n"] == 2
+
+
+def test_scheduler_plan_defaults_preserve_legacy_decision_payload_and_reject_invalid_metadata():
+    legacy_plan = NextAttemptPlan(
+        lineage="fresh", seed_attempt_n=None, seed_pointer=None, scope_rung=0, width=1
+    )
+    legacy_payload = Decision(
+        kind="CONTINUE", rule="continue", stop_reason=None, next_plan=legacy_plan
+    ).to_dict()
+    assert legacy_payload["next_plan"] == {
+        "lineage": "fresh",
+        "seed_attempt_n": None,
+        "seed_pointer": None,
+        "scope_rung": 0,
+        "width": 1,
+    }
+
+    typed_plan = NextAttemptPlan(
+        lineage="fresh", seed_attempt_n=None, seed_pointer=None, scope_rung=0, width=1,
+        branch_type="ambiguity",
+    )
+    assert Decision(
+        kind="CONTINUE", rule="continue", stop_reason=None, next_plan=typed_plan
+    ).to_dict()["next_plan"]["branch_type"] == "ambiguity"
+
+    with pytest.raises(ValueError):
+        NextAttemptPlan(
+            lineage="fresh", seed_attempt_n=None, seed_pointer=None, scope_rung=0, width=1,
+            branch_type="free-text",  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError):
+        NextAttemptPlan(
+            lineage="fresh", seed_attempt_n=None, seed_pointer=None, scope_rung=0, width=1,
+            branch_type="ambiguity", is_safety_bracket=True,
+        )
 
 
 def test_no_clean_champion_still_seeds_from_best_seedable():

@@ -156,7 +156,6 @@ def _warn_on_shell_env_override() -> None:
         "FEATHERLESS_API_KEY", "OPENROUTER_API_KEY",
         "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_DEPLOYMENT",
         "AZURE_FOUNDRY_API_KEY", "AZURE_FOUNDRY_ENDPOINT", "AZURE_FOUNDRY_DEPLOYMENT",
-        "OPENRESEARCH_RUNPOD_API_KEY",
     )
     def _prefix(s: str) -> str:
         return f"{s[:10]}…{s[-4:]}" if len(s) > 14 else "<set>"
@@ -403,6 +402,11 @@ def _mark_demo_status_stopped(
         merged = {
             **existing,
             "status": "stopped",
+            # ``status`` and ``process_status`` are distinct UI contracts, but
+            # a terminal CLI exit must close both.  Leaving process_status as
+            # "running" makes a stopped run appear live to consumers that use
+            # the subprocess lifecycle rather than the verdict lifecycle.
+            "process_status": "completed",
             "updatedAt": now_iso,
             "completedAt": now_iso,
             "error": reason,
@@ -456,6 +460,7 @@ def _mark_demo_status_failed(
         merged = {
             **existing,
             "status": "failed",
+            "process_status": "completed",
             "updatedAt": now_iso,
             "completedAt": now_iso,
             "error": reason,
@@ -532,6 +537,7 @@ def _mark_demo_status_killed(
         merged = {
             **existing,
             "status": "killed",
+            "process_status": "completed",
             "killReason": kill_reason,
             "updatedAt": now_iso,
             "completedAt": now_iso,
@@ -751,6 +757,29 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     json.dump(out, sys.stdout, indent=2)
     sys.stdout.write("\n")
     store.close()
+    return 0
+
+
+def cmd_aws_preflight(args: argparse.Namespace) -> int:
+    """Run the explicit controller + in-pod EKS/IRSA/S3 readiness checks."""
+    from backend.services.runtime.eks_job_backend import (
+        ensure_aws_available,
+        verify_aws_pod_readiness,
+        verify_aws_remote_readiness,
+    )
+
+    # Sandbox selection remains inert.  This explicit command intentionally
+    # creates one no-GPU Job and a transient S3 object in the caller-provided
+    # project/run prefix, then foreground-deletes the Job and deletes the key.
+    ensure_aws_available()
+    controller = verify_aws_remote_readiness()
+    pod = verify_aws_pod_readiness(
+        project_id=args.project_id,
+        run_id=args.run_id,
+        timeout_seconds=args.timeout_seconds,
+    )
+    json.dump({"controller": controller, "pod": pod}, sys.stdout, indent=2, sort_keys=True)
+    sys.stdout.write("\n")
     return 0
 
 
@@ -1256,20 +1285,36 @@ def _cmd_reproduce_sanity(args: argparse.Namespace, runs_root: Path) -> int:
     )
     project_dir = runs_root / project_id
     code_dir = project_dir / "code"
+    sandbox_mode = resolve_sandbox_mode(
+        getattr(args, "sandbox", "auto"), pipeline_mode="rlm"
+    )
+    requested_gpu_mode = str(getattr(args, "gpu_mode", "auto") or "auto").lower()
+    require_gpu = sandbox_mode.value in ("azure", "aws", "gcp") and requested_gpu_mode != "off"
     code_dir.mkdir(parents=True, exist_ok=True)
     (project_dir / "cost_ledger.jsonl").touch(exist_ok=True)
     (code_dir / "sanity.py").write_text(
-        "import json, os\n"
+        "import json, os, shutil, subprocess\n"
+        "REQUIRE_GPU = " + repr(require_gpu) + "\n"
         "out = os.environ.get('OUTPUT_DIR') or '.'\n"
         "os.makedirs(out, exist_ok=True)\n"
+        "gpu_name = ''\n"
+        "if shutil.which('nvidia-smi'):\n"
+        "    try:\n"
+        "        gpu_name = subprocess.check_output(\n"
+        "            ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],\n"
+        "            text=True, timeout=10,\n"
+        "        ).strip()\n"
+        "    except (OSError, subprocess.SubprocessError):\n"
+        "        pass\n"
+        "if REQUIRE_GPU and not gpu_name:\n"
+        "    raise RuntimeError('GPU sanity requested a GPU but nvidia-smi found none')\n"
         "with open(os.path.join(out, 'metrics.json'), 'w', encoding='utf-8') as fh:\n"
-        "    json.dump({'sanity_ok': 1.0}, fh)\n"
-        "print('reprolab sanity ok')\n",
+        "    json.dump({'sanity_ok': 1.0, 'gpu_visible': float(bool(gpu_name))}, fh)\n"
+        "print('reprolab sanity ok' + (': ' + gpu_name if gpu_name else ''))\n",
         encoding="utf-8",
     )
     (code_dir / "commands.json").write_text(json.dumps(["python sanity.py"]), encoding="utf-8")
 
-    sandbox_mode = resolve_sandbox_mode(getattr(args, "sandbox", "auto"), pipeline_mode="rlm")
     try:
         ensure_sandbox_mode_available(sandbox_mode)
     except SandboxRuntimeError as exc:
@@ -1305,6 +1350,7 @@ def _cmd_reproduce_sanity(args: argparse.Namespace, runs_root: Path) -> int:
         provider="none",
         model="sanity-template",
         sandbox_mode=sandbox_mode,
+        gpu_mode=requested_gpu_mode,
         run_budget=run_budget,
         arxiv_id=source,
     )
@@ -1315,7 +1361,7 @@ def _cmd_reproduce_sanity(args: argparse.Namespace, runs_root: Path) -> int:
         process_status="running",
         verdict="unknown",
     )
-    env_id = get_settings().runpod_image if sandbox_mode.value == "runpod" else "python:3.11-slim"
+    env_id = "python:3.11-slim"
     result = run_experiment(
         {"ok": True, "code_path": str(code_dir), "files": ["commands.json", "sanity.py"]},
         env_id,
@@ -1573,7 +1619,7 @@ def _cmd_reproduce_resume_cells(args: argparse.Namespace, runs_root: Path) -> in
 def cmd_reproduce(args: argparse.Namespace) -> int:
     """Full pipeline: ingest a paper, build workspace, run agent pipeline."""
     # BUG-LR-014: warn early if shell API-key vars shadow .env — see
-    # docs/superpowers/specs/2026-05-28-rlm-stability-remediation-design.md
+    # docs/history/specs/2026-05-28-rlm-stability-remediation-design.md
     _warn_on_shell_env_override()
     args = _with_reproduce_defaults(args)
     # Cross-platform path normalization — converts Windows paths to WSL mount
@@ -2258,7 +2304,7 @@ def _campaign_driver_type(value: str) -> str:
 def cmd_campaign(args: argparse.Namespace) -> int:
     """Repeat-until-reproduced campaign: launch, assess, decide, repeat until
     a terminal verdict or an operator checkpoint (spec
-    docs/superpowers/specs/2026-07-01-reproduction-campaign-and-self-
+    docs/history/specs/2026-07-01-reproduction-campaign-and-self-
     improving-harness-design.md). Thin route: mirrors cmd_reproduce's ingest
     chain, then hands off to campaign_composition.build_campaign.
     """
@@ -2277,21 +2323,6 @@ def cmd_campaign(args: argparse.Namespace) -> int:
         RegisterProject(source=source),
         project_id_override=(getattr(args, "project_id", None) or None),
     )
-    if getattr(args, "project_id", None):
-        # Mirrors cmd_reproduce's mismatch guard: the override may only
-        # mirror the source-derived id (register_project already ingests it
-        # verbatim), so an arbitrary value is rejected here with an
-        # actionable message rather than failing opaquely at fetch_paper.
-        if args.project_id != project_id:
-            print(
-                f"                       ERROR: --project-id={args.project_id!r} does not match "
-                f"the source-derived project id {project_id!r}. The override may only mirror the "
-                f"source-derived id; an arbitrary value breaks ingest (fetch_paper -> "
-                f"UnknownProject). Omit --project-id to use the source-derived id.",
-                file=sys.stderr,
-            )
-            return 1
-        project_id = args.project_id
     print(f"                       project_id={project_id}", file=sys.stderr)
 
     project_dir = runs_root / project_id
@@ -2360,6 +2391,7 @@ def cmd_campaign(args: argparse.Namespace) -> int:
         execution_mode=args.execution_mode,
         gpu_mode=args.gpu_mode,
         minimize_compute=bool(args.minimize_compute),
+        authority_spec_path=getattr(args, "authority_spec_path", None),
     )
 
     campaign = build_campaign(project_id, opts)
@@ -2424,12 +2456,66 @@ def _build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("--variable", default=None, help="Print one variable's full payload.")
     inspect.set_defaults(func=cmd_inspect)
 
+    aws_preflight = sub.add_parser(
+        "aws-preflight",
+        help="Verify controller and pod IRSA/S3 access with one bounded no-GPU EKS Job.",
+    )
+    aws_preflight.add_argument(
+        "--project-id", required=True,
+        help="Project id whose exact S3 prefix the IRSA probe must read/write/list/delete.",
+    )
+    aws_preflight.add_argument(
+        "--run-id", required=True,
+        help="Run id whose exact S3 prefix the IRSA probe must read/write/list/delete.",
+    )
+    aws_preflight.add_argument(
+        "--timeout-seconds", type=int, default=120,
+        help="No-GPU probe deadline (30–300 seconds; default 120).",
+    )
+    aws_preflight.set_defaults(func=cmd_aws_preflight)
+
     regen = sub.add_parser(
         "regenerate-report",
         help="Regenerate final_report.md from existing final_report.json + sidecars.",
     )
     regen.add_argument("project_id", help="Run project id (e.g., prj_03271ba130d423fe).")
     regen.set_defaults(func=cmd_regenerate_report)
+
+    corpus = sub.add_parser(
+        "corpus",
+        help="Build/inspect the field-specific literature corpus (runs/_corpus/).",
+    )
+    corpus_sub = corpus.add_subparsers(dest="corpus_cmd", required=True)
+    corpus_build = corpus_sub.add_parser(
+        "build",
+        help="Seed from the paper's references + citation graph, rank, fetch top-K.",
+    )
+    corpus_build.add_argument("paper", help="arXiv id/URL or an ingested prj_ id.")
+    corpus_build.add_argument("--arxiv-id", default=None, help="arXiv id when PAPER is a prj_ id.")
+    corpus_build.add_argument("--title", default=None, help="Target title override (improves ranking/search).")
+    corpus_build.set_defaults(func=cmd_corpus)
+    corpus_status = corpus_sub.add_parser("status", help="Corpus store counts + target spec path.")
+    corpus_status.add_argument("paper", help="arXiv id/URL or an ingested prj_ id.")
+    corpus_status.add_argument("--arxiv-id", default=None, help=argparse.SUPPRESS)
+    corpus_status.set_defaults(func=cmd_corpus)
+    corpus_extract = corpus_sub.add_parser(
+        "extract",
+        help="Populate lit_entities/lit_results: free dictionary pass + grounded LLM pass.",
+    )
+    corpus_extract.add_argument("paper", help="arXiv id/URL or an ingested prj_ id.")
+    corpus_extract.add_argument("--max-papers", type=int, default=8, help="LLM calls cap per invocation.")
+    corpus_extract.add_argument("--force", action="store_true", help="Re-extract papers that already have rows.")
+    corpus_extract.add_argument("--arxiv-id", default=None, help=argparse.SUPPRESS)
+    corpus_extract.set_defaults(func=cmd_corpus)
+    corpus_query = corpus_sub.add_parser(
+        "query",
+        help="Hybrid retrieval debug: BM25(+vec) seeds, citation expansion, lane-labeled trace.",
+    )
+    corpus_query.add_argument("paper", help="arXiv id/URL or an ingested prj_ id.")
+    corpus_query.add_argument("question", help="The retrieval query.")
+    corpus_query.add_argument("--top-n", type=int, default=5, help="Contexts to return (5=accuracy, 15=precision).")
+    corpus_query.add_argument("--arxiv-id", default=None, help=argparse.SUPPRESS)
+    corpus_query.set_defaults(func=cmd_corpus)
 
     reproduce = sub.add_parser("reproduce", help="Full pipeline: ingest + agent pipeline.")
     reproduce.add_argument("source", help="PDF path, arXiv id/URL, or DOI/doi.org URL.")
@@ -2486,15 +2572,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     reproduce.add_argument(
         "--sandbox",
-        choices=("auto", "local", "docker", "runpod", "azure", "gcp", "gke"),
+        choices=("auto", "local", "docker", "azure", "aws", "gcp", "gke"),
         default=DEFAULT_SANDBOX_MODE.value,
         help=(
             f"Experiment backend (default: {DEFAULT_SANDBOX_MODE.value}). "
             "azure dispatches training cells as AKS Jobs on Azure GPU nodes; "
-            "gcp dispatches training cells as GKE Jobs on Google Cloud GPU nodes "
-            "(gke is an alias for gcp); runpod uses a remote GPU Pod; docker is "
-            "isolated local Docker; local runs commands on the host; auto resolves "
-            "to the configured default."
+            "aws dispatches short-lived Jobs to a pre-existing EKS cluster; "
+            "gcp/gke routes to GKE, which is PARKED (raises unless "
+            "OPENRESEARCH_ALLOW_GKE=1 — use --sandbox local --billing-sandbox gcp); "
+            "docker is isolated local Docker; local runs commands on the host; "
+            "auto resolves to the configured default."
         ),
     )
     reproduce.add_argument(
@@ -2526,11 +2613,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     reproduce.add_argument(
         "--accelerator",
-        choices=("off", "auto", "local", "runpod", "azure", "endpoint"),
+        choices=("off", "auto", "local", "azure", "endpoint"),
         default=None,
         help=(
             "Route cheap RLM calls to a fast accelerator endpoint: "
-            "off|auto|local(vLLM on local GPUs)|runpod|azure|endpoint. Default off."
+            "off|auto|local(vLLM on local GPUs)|azure|endpoint. Default off."
         ),
     )
     reproduce.add_argument(
@@ -2577,11 +2664,8 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help=(
-            "Maximum elapsed seconds a RunPod pod may run AFTER SSH connect "
-            "(not from POST /pods — boot time is not budgeted) before the next "
-            "exec() raises BudgetExhausted and the pod is force-destroyed. "
-            "Persistent pods (OPENRESEARCH_RUNPOD_POD_ID) are NOT auto-deleted; "
-            "an ERROR log is emitted and manual cleanup is required. "
+            "Maximum elapsed seconds of remote GPU compute (the run-budget "
+            "pod/VM-time ceiling) before the next exec() raises BudgetExhausted. "
             "Also read from OPENRESEARCH_MAX_POD_SECONDS env var."
         ),
     )
@@ -2611,7 +2695,7 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="max_run_gpu_usd",
         type=float,
         default=None,
-        help="Total RunPod USD cap per run (default: from OPENRESEARCH_MAX_RUN_GPU_USD=10.0).",
+        help="Total GPU USD cap per run (default: from OPENRESEARCH_MAX_RUN_GPU_USD=10.0).",
     )
     reproduce.add_argument(
         "--dynamic-gpu-headroom",
@@ -2884,6 +2968,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     campaign.add_argument("source", help="PDF path, arXiv id/URL, or DOI/doi.org URL.")
     campaign.add_argument(
+        "--project-id", dest="project_id", default=None,
+        help=(
+            "Explicit project id for an independent campaign lineage. Required "
+            "when the same paper is run as multiple A/B arms."
+        ),
+    )
+    campaign.add_argument(
         "--max-llm-usd", dest="max_llm_usd", type=float, required=True,
         help="Campaign-wide cap on LLM/SDK spend (never GPU dollars; spec §10.1).",
     )
@@ -2943,7 +3034,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     campaign.add_argument(
         "--sandbox", dest="sandbox",
-        choices=("auto", "local", "docker", "runpod", "azure", "gcp", "gke"),
+        choices=("auto", "local", "docker", "azure", "aws", "gcp", "gke"),
         default="local", help="Experiment backend for attempts (default local).",
     )
     campaign.add_argument(
@@ -2981,6 +3072,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Paper class label recorded on admitted positive recipes (default generic).",
     )
     campaign.add_argument(
+        "--authority-spec", dest="authority_spec_path", default=None,
+        help=(
+            "Path to a paper-owned authoritative scheduler spec JSON. Constructs "
+            "the SchedulerAuthorityController only when BOTH "
+            "OPENRESEARCH_SCHEDULER_TREE and OPENRESEARCH_SCHEDULER_AUTHORITATIVE "
+            "are on (default None; unset ⇒ no controller)."
+        ),
+    )
+    campaign.add_argument(
         "--require-cpu-tier", dest="require_cpu_tier", action="store_true",
         default=_campaign_bool_env("OPENRESEARCH_CAMPAIGN_REQUIRE_CPU_TIER"),
         help="Unattended attempts require a validated real-CPU-tier strategy (default off).",
@@ -2993,17 +3093,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--resume", action="store_true", default=False,
         help="Resume an existing campaign for this paper's project id.",
     )
-    campaign.add_argument(
-        "--project-id",
-        dest="project_id",
-        default=None,
-        help=(
-            "Override the project id (writes to runs/<project-id>/). When unset, "
-            "an id is derived from the paper source. Lets a durable controller "
-            "(or the REST API) resume the SAME campaign lineage across a Pod "
-            "restart/reschedule via --resume (mirrors reproduce's --project-id)."
-        ),
-    )
     campaign.set_defaults(func=cmd_campaign)
 
     from backend.cli_paperbench import add_paperbench_subparser
@@ -3013,6 +3102,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Opt-in structured logging: only reconfigure when the operator sets a log
+    # env var, so default behavior is byte-identical (no new handler / level).
+    if os.environ.get("OPENRESEARCH_LOG_FORMAT") or os.environ.get("OPENRESEARCH_LOG_LEVEL"):
+        from backend.logging_config import configure_logging
+        configure_logging()
     parser = _build_parser()
     args = parser.parse_args(argv)
     # --no-cache: disable primitive_cache as early as possible so no module
@@ -3044,16 +3138,23 @@ def _count_iterations(project_dir: Path) -> int:
 
 def _read_last_rubric(project_dir: Path) -> float:
     """Read the last rubric overall_score from rlm_state/ or final_report.json."""
-    # Try final_report.json first (may exist from a prior partial run).
-    for p in (project_dir / "final_report.json", project_dir / "final_report.json"):
-        if p.exists():
-            try:
-                data = json.loads(p.read_text(encoding="utf-8"))
-                score = (data.get("rubric") or {}).get("overall_score")
-                if score is not None:
-                    return float(score)
-            except (OSError, json.JSONDecodeError, TypeError, ValueError):
-                pass
+    # Try final_report.json first (may exist from a prior partial run). Tries
+    # the canonical nested report["rubric"]["overall_score"] shape, then the
+    # flat projection/legacy shapes — mirrors scripts/batch_reproduce.py's
+    # _extract_score, which a prior copy-paste bug here left this function
+    # blind to (it read the same nested-only path twice).
+    report_path = project_dir / "final_report.json"
+    if report_path.exists():
+        try:
+            data = json.loads(report_path.read_text(encoding="utf-8"))
+            rubric = data.get("rubric")
+            if isinstance(rubric, dict) and rubric.get("overall_score") is not None:
+                return float(rubric["overall_score"])
+            for key in ("rubric_overall_score", "overall_score", "rubric_score"):
+                if data.get(key) is not None:
+                    return float(data[key])
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
     # Try dashboard_events.jsonl for the last rubric_score event.
     events_path = project_dir / "dashboard_events.jsonl"
     if events_path.exists():
@@ -3135,6 +3236,159 @@ def _module_main(argv: list[str] | None = None) -> None:
             terminate_children_then_exit(code)
         os._exit(code)
     raise SystemExit(code)
+
+
+def cmd_corpus(args: argparse.Namespace) -> int:
+    """Build or inspect the literature corpus for an ingested paper.
+
+    An explicit ``corpus build`` invocation IS the operator's authorization
+    for literature network I/O, so the two gating flags are enabled for the
+    duration of this command unless the operator has explicitly set them
+    (an explicit "0" in the environment is respected).
+    """
+    import os as _os
+
+    from backend.services.knowledge.corpus import (
+        CorpusStore,
+        build_corpus,
+        corpus_root,
+    )
+    from backend.services.knowledge.corpus.inputs import load_target
+
+    runs_root = Path(args.runs_root)
+    paper = args.paper.strip()
+    if paper.startswith("prj_"):
+        project_id, arxiv_id = paper, (args.arxiv_id or None)
+    else:
+        source = _source_from_cli(paper, "auto")
+        project_id = project_id_for(source)
+        arxiv_id = getattr(source, "arxiv_id", None) or (args.arxiv_id or None)
+
+    store_root = corpus_root(runs_root)
+
+    if args.corpus_cmd == "status":
+        corpus = CorpusStore(store_root)
+        corpus.initialize()
+        spec_path = runs_root / project_id / "rlm_state" / "literature_spec.json"
+        summary = {
+            "corpus_root": str(store_root),
+            "papers": corpus.paper_count(),
+            "relations": corpus.relation_count(),
+            "target_project_id": project_id,
+            "target_spec": str(spec_path) if spec_path.exists() else None,
+        }
+        print(json.dumps(summary, indent=2))
+        return 0
+
+    if args.corpus_cmd == "query":
+        from backend.services.knowledge.corpus.retrieval import retrieve
+        from backend.services.knowledge.corpus.store import normalize_paper_id
+
+        corpus = CorpusStore(store_root)
+        corpus.initialize()
+        target_norm = None
+        spec_path = runs_root / project_id / "rlm_state" / "literature_spec.json"
+        if spec_path.exists():
+            try:
+                target_norm = json.loads(spec_path.read_text(encoding="utf-8"))["target"]["id"]
+            except Exception:  # noqa: BLE001 — fall through to arxiv-derived id
+                target_norm = None
+        if target_norm is None:
+            target_norm = normalize_paper_id(arxiv_id=arxiv_id)
+        result = retrieve(
+            corpus,
+            args.question,
+            target_id=target_norm,
+            top_n=args.top_n,
+            trace_path=runs_root / project_id / "rlm_state" / "literature_query_trace.json",
+        )
+        print(json.dumps(result["hits"], indent=2))
+        print(
+            f"(trace: {runs_root / project_id / 'rlm_state' / 'literature_query_trace.json'})",
+            file=sys.stderr,
+        )
+        return 0
+
+    if args.corpus_cmd == "extract":
+        from backend.services.knowledge.corpus.extraction import (
+            run_deterministic_extraction,
+            run_llm_extraction,
+        )
+
+        corpus = CorpusStore(store_root)
+        corpus.initialize()
+        det = run_deterministic_extraction(corpus)
+        client = _corpus_extract_client()
+        if client is None:
+            print(json.dumps({"deterministic": det.to_dict(), "llm": None}, indent=2))
+            print(
+                "No LLM endpoint for result extraction — configure the accelerator "
+                "(OPENRESEARCH_ACCELERATOR=endpoint + OPENRESEARCH_ACCELERATOR_BASE_URL/"
+                "_MODEL/_API_KEY, or an OPENAI_API_KEY) and re-run. Deterministic "
+                "dictionary entities were still refreshed.",
+                file=sys.stderr,
+            )
+            return 1
+        llm = run_llm_extraction(
+            corpus, client, max_papers=args.max_papers, force=args.force
+        )
+        print(json.dumps({"deterministic": det.to_dict(), "llm": llm.to_dict()}, indent=2))
+        return 0 if llm.results_added or not llm.errors else 1
+
+    _os.environ.setdefault("OPENRESEARCH_LITERATURE_CORPUS", "1")
+    _os.environ.setdefault("OPENRESEARCH_LITERATURE_GROUNDING", "1")
+
+    event_store = SqliteEventStore(args.database_url)
+    target = load_target(
+        project_id,
+        store=event_store,
+        runs_root=runs_root,
+        arxiv_id=arxiv_id,
+        title=args.title or "",
+    )
+    if not target.references and not target.arxiv_id:
+        print(
+            f"No seed material for {project_id} — ingest the paper first "
+            "(python -m backend.cli ingest <paper>) or pass --arxiv-id.",
+            file=sys.stderr,
+        )
+        return 1
+
+    report = build_corpus(runs_root=runs_root, target=target)
+    if report is None:
+        print("Corpus build disabled (OPENRESEARCH_LITERATURE_CORPUS=0).", file=sys.stderr)
+        return 1
+    print(json.dumps(report.to_dict(), indent=2))
+    return 0 if not report.errors or report.papers_persisted else 1
+
+
+def _corpus_extract_client():
+    """Cheap OpenAI-compatible client for corpus extraction, or None.
+
+    Reuses the accelerator resolver: an explicit OPENRESEARCH_ACCELERATOR mode
+    wins; otherwise try `endpoint` mode, which falls back to OPENAI_API_KEY for
+    the api.openai.com host (ACC-2). Fail-soft: any resolution trouble -> None.
+    """
+    import os as _os
+
+    try:
+        from backend.agents.rlm.accelerator import (
+            build_accelerator_client,
+            resolve_accelerator,
+        )
+
+        for mode in (_os.environ.get("OPENRESEARCH_ACCELERATOR", "").strip(), "endpoint"):
+            if not mode:
+                continue
+            try:
+                ep = resolve_accelerator(mode)
+            except Exception:  # noqa: BLE001
+                ep = None
+            if ep is not None:
+                return build_accelerator_client(ep)
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 def _source_from_cli(raw: str, source_kind: str):

@@ -4,15 +4,15 @@ Given `GpuRequirements` + settings + budget, returns a `GpuPlan` with the cheape
 SKU that meets the VRAM target (after headroom multiplier + tier-up), respecting
 the per-GPU $/hr cap and the force_single_gpu invariant.
 
-For RunPod (provider="runpod", default): selects by per-GPU vram_gb; all catalog rows
-have gpu_count=1 so effective_vram_gb == vram_gb.
+For the default path (provider="gcp"): selects by per-GPU vram_gb from the GCP
+ONDEMAND rows; produces an informational/fallback plan for local runs.
 
-For Azure (provider="azure"): selects by effective capacity (vram_gb * gpu_count) so
-that multi-GPU VM sizes (NC48/NC96) are eligible when a paper needs >80 GB aggregated.
-The returned GpuPlan.runpod_id carries the Azure VM size string (the opaque provider
-identifier reused in that field) rather than a RunPod gpu_type string.
+For Azure/GCP provisioned pools (provider="azure"/"gcp"): selects by effective
+capacity (vram_gb * gpu_count) so that multi-GPU VM sizes (NC48/NC96, a2-highgpu-8g)
+are eligible when a paper needs >80 GB aggregated. The returned GpuPlan.runpod_id
+carries the opaque provider machine id (Azure VM size / GCE machine type).
 
-See `docs/superpowers/specs/2026-05-23-dynamic-gpu-selection-design.md` §Resolver.
+See `docs/history/specs/2026-05-23-dynamic-gpu-selection-design.md` §Resolver.
 """
 
 from __future__ import annotations
@@ -31,8 +31,8 @@ from backend.services.runtime.gpu_catalog import (
 # Confidence threshold below which we treat the LLM estimate as unusable.
 _CONFIDENCE_FLOOR: float = 0.4
 
-# When estimate is unusable, we use this SKU regardless of paper.
-_FALLBACK_SHORT_NAME: str = "rtx4090"
+# When estimate is unusable, we use this SKU regardless of paper (cheapest GCP row).
+_FALLBACK_SHORT_NAME: str = "gcp_l4_24"
 
 # Azure cloud_types passed into find_ladder for azure provider.
 _AZURE_CLOUD_TYPES: tuple[str, ...] = ("ONDEMAND",)
@@ -47,6 +47,112 @@ _GCP_FALLBACK_SHORT_NAME: str = "gcp_a100_40"
 
 class GpuResolutionError(RuntimeError):
     """Raised when no SKU can satisfy (VRAM + $/hr cap + cloud_type) constraints."""
+
+
+def resolve_configured_aws(
+    requirements: GpuRequirements,
+    *,
+    gpu_skus: tuple[str, ...],
+    per_gpu_vram_gb: float,
+    per_gpu_usd_per_hour: float,
+    gpus_per_node: int,
+    dynamic_gpu_enabled: bool,
+    force_single_gpu: bool,
+    max_gpu_usd_per_hour: float | None,
+    headroom_multiplier: float,
+    gpu_count_override: int | None = None,
+) -> GpuPlan:
+    """Resolve against declared EKS metadata without inventing an AWS catalog.
+
+    ``gpu_skus`` are Kubernetes ``reprolab/sku`` labels, not public instance
+    types.  EKS deployments often have private pricing and heterogeneous
+    capacity, so selection is intentionally a single declared pool and there
+    is no speculative ladder.  Invalid/missing metadata fails before a Job can
+    be submitted; a zero effective rate is never treated as a free GPU.
+    """
+    labels = tuple(str(v).strip() for v in gpu_skus if str(v).strip())
+    if not labels:
+        raise GpuResolutionError("AWS EKS requires at least one configured aws_gpu_skus label")
+    if per_gpu_vram_gb <= 0 or per_gpu_usd_per_hour <= 0 or gpus_per_node != 1:
+        raise GpuResolutionError(
+            "AWS EKS requires positive aws_per_gpu_vram_gb, aws_gpu_usd_per_hour, "
+            "and aws_gpus_per_node=1 metadata before GPU scheduling; v1 EKS "
+            "reserves whole GPU nodes so multi-GPU nodes would undercount cost"
+        )
+    if max_gpu_usd_per_hour and max_gpu_usd_per_hour > 0 and per_gpu_usd_per_hour > max_gpu_usd_per_hour:
+        raise GpuResolutionError(
+            f"AWS configured GPU rate ${per_gpu_usd_per_hour:.2f}/hr exceeds "
+            f"max_gpu_usd_per_hour ${max_gpu_usd_per_hour:.2f}"
+        )
+
+    estimate = requirements.estimated_vram_gb
+    if dynamic_gpu_enabled and estimate is not None and requirements.confidence >= _CONFIDENCE_FLOOR:
+        needed = math.ceil(estimate * max(headroom_multiplier, 1.0))
+        if needed > per_gpu_vram_gb:
+            raise GpuResolutionError(
+                f"AWS configured EKS pool has {per_gpu_vram_gb:g} GB/GPU but the paper requires "
+                f">= {needed} GB after headroom; provision a matching pool or lower the scope"
+            )
+        source = "paper"
+    elif dynamic_gpu_enabled:
+        source = "fallback"
+    else:
+        source = "informational"
+
+    if gpu_count_override is not None:
+        requested = max(1, int(gpu_count_override))
+        source = "manual"
+    elif force_single_gpu:
+        requested = 1
+    else:
+        requested = max(1, int(requirements.paper_gpu_count or 1))
+    if requested != 1:
+        raise GpuResolutionError(
+            f"AWS EKS v1 requires exactly one GPU per plan/node, got {requested}; "
+            "use a one-GPU pool or choose a single-GPU scope"
+        )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    return GpuPlan(
+        runpod_id=labels[0],
+        short_name=labels[0],
+        vram_gb=max(1, int(per_gpu_vram_gb)),
+        gpu_count=requested,
+        cloud_type="ONDEMAND",
+        sku_usd_per_hr=float(per_gpu_usd_per_hour),
+        total_usd_per_hr=round(float(per_gpu_usd_per_hour) * requested, 4),
+        container_disk_gb=50,
+        volume_gb=20,
+        source=source,
+        requirements=requirements,
+        ladder_remaining=(),
+        resolved_at=now_iso,
+    )
+
+
+class GpuSkuConfigError(RuntimeError):
+    """Configured GPU SKUs cannot match any provisioned cluster node pool."""
+
+
+def validate_configured_skus(
+    *, configured: list[str], available: list[str]
+) -> None:
+    """Raise GpuSkuConfigError when no configured SKU is provisioned.
+
+    `configured` is settings.gcp_gpu_skus; `available` is the set of
+    reprolab/sku labels actually present on cluster nodes. The resolver can only
+    place a cell on a label that exists, so a zero-overlap config guarantees
+    every GPU request Pends forever - surface it loudly at preflight instead.
+    """
+    if set(configured) & set(available):
+        return
+    raise GpuSkuConfigError(
+        "No configured GPU SKU is provisioned on the cluster.\n"
+        f"  configured (OPENRESEARCH_GCP_GPU_SKUS): {configured}\n"
+        f"  available (reprolab/sku node labels):   {available}\n"
+        "Fix: set OPENRESEARCH_GCP_GPU_SKUS to a JSON array of SKUs your cluster "
+        "actually provisions, e.g. OPENRESEARCH_GCP_GPU_SKUS='[\"gcp_a100_80\"]'."
+    )
 
 
 def _provisioned_default_sku(
@@ -97,27 +203,26 @@ def resolve(
     max_gpu_usd_per_hour: float | None,
     headroom_multiplier: float,
     fallback_vram_gb: int,
-    cloud_types: tuple[str, ...] = ("COMMUNITY",),
-    provider: str = "runpod",
+    cloud_types: tuple[str, ...] = ("ONDEMAND",),
+    provider: str = "gcp",
     provisioned_skus: tuple[str, ...] | None = None,
     gpu_count_override: int | None = None,
 ) -> GpuPlan:
     """Resolve requirements to a GpuPlan. Pure function — no I/O.
 
     Args:
-        provider: Cloud provider to resolve against.  "runpod" (default) uses the
-            existing RunPod COMMUNITY/SECURE catalog rows and is byte-for-byte
-            identical to the pre-azure behaviour.  "azure" uses Azure ONDEMAND rows
-            and selects by *effective* capacity (vram_gb * gpu_count) so that
-            multi-GPU VM sizes (NC48/NC96) are considered when needed.
+        provider: Cloud provider to resolve against.  The default path resolves
+            against the GCP ONDEMAND rows (informational/fallback plan for local
+            runs).  "azure"/"gcp" provisioned pools select by *effective* capacity
+            (vram_gb * gpu_count) so that multi-GPU VM sizes (NC48/NC96,
+            a2-highgpu-8g) are considered when needed.
         provisioned_skus: Optional allowlist of ``short_name`` values that are
             actually provisioned in the deployment (e.g. from
             ``settings.azure_gpu_skus``).  When supplied, *both* the primary SKU
             selection and ``ladder_remaining`` are restricted to SKUs whose
             ``short_name`` appears in this tuple.  ``None`` (the default) means no
-            extra filter — the RunPod path and all existing callers are completely
-            unaffected.  Only meaningful for ``provider="azure"``; the RunPod path
-            ignores this parameter.
+            extra filter.  Only meaningful for ``provider="azure"``/``"gcp"``; the
+            default path ignores this parameter.
 
             Caller note: ``resolve_gpu_requirements`` (``primitives.py``) should
             pass ``settings.azure_gpu_skus`` here when ``provider="azure"`` to
@@ -161,7 +266,7 @@ def resolve(
             provisioned_skus=provisioned_skus,
         )
     else:
-        plan = _resolve_runpod(
+        plan = _resolve_default(
             requirements=requirements,
             dynamic_gpu_enabled=dynamic_gpu_enabled,
             force_single_gpu=force_single_gpu,
@@ -181,7 +286,7 @@ def resolve(
     return plan
 
 
-def _resolve_runpod(
+def _resolve_default(
     requirements: GpuRequirements,
     *,
     dynamic_gpu_enabled: bool,
@@ -191,12 +296,15 @@ def _resolve_runpod(
     fallback_vram_gb: int,
     cloud_types: tuple[str, ...],
 ) -> GpuPlan:
-    """RunPod resolution path — identical to the pre-azure resolve() implementation."""
+    """Default per-GPU-vram resolution path (GCP ONDEMAND rows).
+
+    Used for local/docker runs where no provisioned node-pool allowlist applies;
+    the resulting plan is informational/fallback and selects the cheapest GCP SKU
+    meeting the VRAM estimate.
+    """
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    # Dynamic disabled → return informational plan from the fallback SKU. RunpodBackend
-    # ignores `gpu_plan` and uses legacy Settings.runpod_gpu_type when source is
-    # "informational" (see primitive caller).
+    # Dynamic disabled → return informational plan from the fallback SKU.
     if not dynamic_gpu_enabled:
         sku = _by_short_name(_FALLBACK_SHORT_NAME)
         return _build_plan(sku, gpu_count=1, source="informational",
@@ -209,9 +317,9 @@ def _resolve_runpod(
     if estimate is None or confidence < _CONFIDENCE_FLOOR:
         sku = _by_short_name(_FALLBACK_SHORT_NAME)
         # Populate the full escalation ladder even on the fallback path.
-        # When the default SKU (RTX 4090) is unavailable due to capacity issues
-        # or RunPod API errors, the escalation loop in run_experiment can advance
-        # to the next cheapest GPU rather than failing immediately.
+        # When the default SKU is unavailable due to capacity issues, the
+        # escalation loop in run_experiment can advance to the next cheapest GPU
+        # rather than failing immediately.
         full_ladder = find_ladder(
             min_vram_gb=sku.vram_gb,
             max_per_gpu_usd_per_hr=None,
@@ -222,7 +330,8 @@ def _resolve_runpod(
                            requirements=requirements, ladder=remaining, now_iso=now_iso)
 
     # Apply headroom multiplier; round up.
-    needed_vram = math.ceil(estimate * max(headroom_multiplier, 1.0))
+    _headroom = 1.0 if getattr(requirements, "vram_is_explicit", False) else headroom_multiplier
+    needed_vram = math.ceil(estimate * max(_headroom, 1.0))
 
     # Find ladder under cap.
     ladder = find_ladder(
@@ -344,7 +453,8 @@ def _resolve_provisioned_cloud(
                            requirements=requirements, ladder=remaining, now_iso=now_iso)
 
     # Apply headroom multiplier (against per-GPU estimate; same logic as RunPod).
-    needed_vram = math.ceil(estimate * max(headroom_multiplier, 1.0))
+    _headroom = 1.0 if getattr(requirements, "vram_is_explicit", False) else headroom_multiplier
+    needed_vram = math.ceil(estimate * max(_headroom, 1.0))
 
     # Build the ladder filtered by effective capacity and optionally single-GPU.
     ladder = _provisioned_ladder(provider=provider,
@@ -389,7 +499,7 @@ def _resolve_provisioned_cloud(
                        requirements=requirements, ladder=remaining, now_iso=now_iso)
 
 
-def _by_short_name(short_name: str, *, provider: str = "runpod") -> GpuSku:
+def _by_short_name(short_name: str, *, provider: str = "gcp") -> GpuSku:
     from backend.services.runtime.gpu_catalog import CATALOG
     for sku in CATALOG:
         if sku.short_name == short_name and sku.provider == provider:
@@ -472,9 +582,8 @@ def _build_plan(
     # spuriously trips the run-USD budget cap. Divide once, here, at the single
     # place a GpuPlan is minted.
     #
-    # Byte-identical for every gpu_count == 1 catalog row (ALL RunPod rows and
-    # the single-GPU azure/gcp rows), so the RunPod path is untouched. On the
-    # RunPod path gpu_count may exceed sku.gpu_count (N separate 1-GPU pods),
+    # Byte-identical for every gpu_count == 1 catalog row (the single-GPU
+    # azure/gcp rows). On the default path gpu_count may exceed sku.gpu_count,
     # and per-GPU × N remains exactly right.
     per_gpu_usd = usd_per_gpu_hr(sku)
     return GpuPlan(

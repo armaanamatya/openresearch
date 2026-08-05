@@ -1,6 +1,6 @@
 """Tests for BES Phase 4A — ALFWorld env-reuse (A1) + reward shaping (A2).
 
-Spec: ``docs/superpowers/specs/2026-06-07-bes-integration/phase-4-frontier-and-honesty-guard.md`` §2.
+Spec: ``docs/history/specs/2026-06-07-bes-integration/phase-4-frontier-and-honesty-guard.md`` §2.
 
 Two GATED, default-OFF behaviours are added to ``alfworld_env.ALFWorldEnv``:
 

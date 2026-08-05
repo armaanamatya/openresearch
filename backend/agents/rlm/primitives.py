@@ -78,16 +78,11 @@ _RUN_EXPERIMENT_RETRYABLE_FAILURES = {
     "pod_unavailable",
     # Existing classifier labels for backend/network transients.
     "network_flake",
-    "runpod_capacity",
-    "runpod_transient_500",
-    "runpod_ssh_timeout",
 }
 _RUN_EXPERIMENT_FATAL_FAILURES = {
     "balance_too_low",
     "auth_failed",
     "quota_exceeded",
-    # Existing classifier label for the same fatal funding state.
-    "runpod_balance_too_low",
 }
 
 
@@ -1428,13 +1423,15 @@ def resolve_gpu_requirements(
     # ---- vram_override: per-run CLI override bypasses LLM estimate.
     vram_override = getattr(ctx, "vram_override", None)
     if vram_override is not None:
-        req = req.model_copy(update={"estimated_vram_gb": int(vram_override)})
+        req = req.model_copy(
+            update={"estimated_vram_gb": int(vram_override), "vram_is_explicit": True}
+        )
 
     settings = get_settings()
 
     # Select the cloud provider from the run's sandbox_mode: azure → azure SKUs
-    # (ONDEMAND tier, multi-GPU VM-size aware); everything else → runpod (default,
-    # byte-for-byte identical to the pre-azure behaviour).
+    # (ONDEMAND tier, multi-GPU VM-size aware); gcp → gcp SKUs; aws → EKS
+    # metadata; everything else (local/docker) → an informational gcp plan.
     from backend.agents.execution import SandboxMode as _SandboxMode
     _sb_mode = getattr(ctx, "sandbox_mode", None)
     try:
@@ -1443,6 +1440,7 @@ def resolve_gpu_requirements(
         _sb_enum = None
     _is_azure = _sb_enum is _SandboxMode.azure
     _is_gcp = _sb_enum is _SandboxMode.gcp
+    _is_aws = _sb_enum is _SandboxMode.aws
 
     # ``provisioned_skus`` restricts the azure/gcp resolver to the GPU pools that are
     # actually provisioned (Terraform ``var.gpu_skus`` ⇒ ``settings.azure_gpu_skus`` /
@@ -1462,28 +1460,47 @@ def resolve_gpu_requirements(
         _provisioned_skus = tuple(
             getattr(settings, "gcp_gpu_skus", None) or ()
         ) or None
-    else:
-        _provider = "runpod"
-        cloud_types = (
-            ("COMMUNITY", "SECURE")
-            if getattr(settings, "runpod_cloud_type", "COMMUNITY") == "SECURE"
-            else ("COMMUNITY",)
+    elif _is_aws:
+        # EKS labels and prices are deployment-specific.  Do not route through
+        # the RunPod catalog (which could select an impossible label and bill
+        # at the wrong rate); resolve solely from the operator's EKS metadata.
+        plan = gpu_resolver.resolve_configured_aws(
+            req,
+            gpu_skus=tuple(getattr(settings, "aws_gpu_skus", None) or ()),
+            per_gpu_vram_gb=float(getattr(settings, "aws_per_gpu_vram_gb", 0.0) or 0.0),
+            per_gpu_usd_per_hour=float(getattr(settings, "aws_gpu_usd_per_hour", 0.0) or 0.0),
+            gpus_per_node=int(getattr(settings, "aws_gpus_per_node", 0) or 0),
+            dynamic_gpu_enabled=settings.dynamic_gpu_enabled,
+            force_single_gpu=settings.force_single_gpu,
+            max_gpu_usd_per_hour=settings.max_gpu_usd_per_hour or None,
+            headroom_multiplier=settings.dynamic_gpu_headroom,
+            gpu_count_override=settings.gpu_count,
         )
+        _provider = "aws"
+        cloud_types = ("ONDEMAND",)
+        _provisioned_skus = None
+    else:
+        # Default path (local/docker): resolve an informational plan against the
+        # GCP ONDEMAND rows. Local runs don't provision a node pool, so no SKU
+        # allowlist applies.
+        _provider = "gcp"
+        cloud_types = ("ONDEMAND",)
         _provisioned_skus = None
 
-    from backend.agents.schemas import GpuPlan as _GpuPlan
-    plan: "_GpuPlan" = gpu_resolver.resolve(
-        req,
-        dynamic_gpu_enabled=settings.dynamic_gpu_enabled,
-        force_single_gpu=settings.force_single_gpu,
-        max_gpu_usd_per_hour=settings.max_gpu_usd_per_hour or None,
-        headroom_multiplier=settings.dynamic_gpu_headroom,
-        fallback_vram_gb=settings.dynamic_gpu_fallback_vram_gb,
-        cloud_types=cloud_types,
-        provider=_provider,
-        provisioned_skus=_provisioned_skus,
-        gpu_count_override=settings.gpu_count,
-    )
+    if not _is_aws:
+        from backend.agents.schemas import GpuPlan as _GpuPlan
+        plan: "_GpuPlan" = gpu_resolver.resolve(
+            req,
+            dynamic_gpu_enabled=settings.dynamic_gpu_enabled,
+            force_single_gpu=settings.force_single_gpu,
+            max_gpu_usd_per_hour=settings.max_gpu_usd_per_hour or None,
+            headroom_multiplier=settings.dynamic_gpu_headroom,
+            fallback_vram_gb=settings.dynamic_gpu_fallback_vram_gb,
+            cloud_types=cloud_types,
+            provider=_provider,
+            provisioned_skus=_provisioned_skus,
+            gpu_count_override=settings.gpu_count,
+        )
 
     # ---- Persist atomically.
     payload = _with_outcome(plan.model_dump(mode="json"), PrimitiveOutcome.ok)
@@ -1540,18 +1557,15 @@ _ENV_REPAIR_SYSTEM = (
 
 
 def _normalize_runpod_from_line(dockerfile: str) -> str:
-    """Replace a hallucinated runpod/ base image tag with the configured one.
+    """Replace a hallucinated ``runpod/`` base image tag with a sane default.
 
-    The root model sometimes constructs env_spec dicts with non-existent runpod
-    image tags (e.g. ``runpod/pytorch:1.12.1``).  When the FROM line references
-    any ``runpod/`` image that doesn't match the settings-configured
-    ``OPENRESEARCH_RUNPOD_IMAGE`` (``config.runpod_image``), swap it in.
-    Non-runpod FROM lines (e.g.
-    ``python:3.11-slim``) are left untouched — they're valid CPU images.
+    The root model sometimes constructs env_spec dicts with non-existent
+    ``runpod/`` image tags (e.g. ``runpod/pytorch:1.12.1``). Since the RunPod
+    backend has been removed, any ``runpod/`` FROM line is invalid — swap it for
+    a valid CUDA base image. Non-runpod FROM lines (e.g. ``python:3.11-slim``)
+    are left untouched — they're valid CPU images.
     """
-    from backend.config import get_settings
-
-    configured = get_settings().runpod_image
+    configured = "pytorch/pytorch:2.1.0-cuda11.8-cudnn8-devel"
     lines = dockerfile.split("\n")
     for i, line in enumerate(lines):
         stripped = line.strip()
@@ -1620,42 +1634,14 @@ def build_environment(env_spec: dict, *, ctx: "RunContext") -> dict:
             "skipped": True,
             "note": "gcp sandbox: image is pre-baked in Artifact Registry (gcp_base_image); build_environment is a no-op",
         }, PrimitiveOutcome.ok)
-    # C6 (2026-06-16): under runpod the locally-built image is NEVER used — the
-    # pod boots OPENRESEARCH_RUNPOD_IMAGE and runs over SSH in a per-run venv
-    # (runpod_backend.py). The local `docker build` below is therefore wasted
-    # work that STILL hard-requires a local daemon, so a runpod run on a
-    # daemon-less host dies in SandboxRuntimeError(backend_unavailable) for an
-    # image it will never touch. Short-circuit to a no-op (mirroring local/azure)
-    # BEFORE any docker client is reached. Flag-gated so the prior
-    # daemon-requiring behaviour is restorable byte-for-byte:
-    # OPENRESEARCH_RUNPOD_SKIP_BUILD=0 keeps the local build.
-    # RunPod sandbox: the pod boots OPENRESEARCH_RUNPOD_IMAGE over SSH and pulls
-    # its base image from Docker Hub directly — a locally-built image is never
-    # pushed to a registry, so a local `docker build` is wasted work that STILL
-    # hard-requires a local daemon (a daemon-less host would die in
-    # SandboxRuntimeError for an image it never touches). Short-circuit with the
-    # configured RunPod image (so run_experiment can hand it to the RunPod
-    # backend, which uses self.image_name with higher priority anyway); deps from
-    # requirements.txt install on the pod via SSH bootstrap. Flag-gated so the
-    # prior daemon-requiring behaviour is restorable byte-for-byte:
-    # OPENRESEARCH_RUNPOD_SKIP_BUILD=0 falls through to the local build.
-    if _sb_key == "runpod" and os.environ.get(
-        "OPENRESEARCH_RUNPOD_SKIP_BUILD", "1"
-    ).strip().lower() in ("1", "true", "yes", "on"):
-        from backend.config import get_settings as _get_settings
-        _runpod_image = _get_settings().runpod_image
+    if _sb_key == "aws":
         return _with_outcome({
             "ok": True,
-            "image_tag": _runpod_image,
+            "image_tag": "",
             "attempts": 0,
             "skipped": True,
-            "note": (
-                f"runpod sandbox: pod boots {_runpod_image} over SSH; the local "
-                "image is never used, so build_environment is a no-op "
-                "(set OPENRESEARCH_RUNPOD_SKIP_BUILD=0 to force the local build)"
-            ),
+            "note": "aws sandbox: EKS cells use the pinned ECR aws_base_image; build_environment is a no-op",
         }, PrimitiveOutcome.ok)
-
     import asyncio
     import concurrent.futures
     import hashlib
@@ -3284,18 +3270,22 @@ def _backend_for_sandbox_mode(
     """Return a RuntimeBackend instance for the given sandbox mode.
 
     ``SandboxMode.docker`` (and ``None`` / the default) map to
-    ``LocalDockerBackend``.  ``SandboxMode.runpod`` is now fully wired: this
-    function calls ``ensure_runpod_available()`` (fast fail on missing creds)
-    and constructs a real ``RunpodBackend``, forwarding ``run_budget`` so the
-    ``max_pod_seconds`` cap is enforced at each ``exec()`` call.
+    ``LocalDockerBackend``; ``SandboxMode.local`` to ``LocalProcessBackend``.
+    ``azure``/``aws`` construct the AKS/EKS Job backends after their availability
+    checks.
 
-    Any other unsupported mode (local, auto, brev, simulate) falls back to
+    ``SandboxMode.gcp`` (and its ``gke`` alias) is NOT USED (fail-closed): it
+    raises a clear ``RuntimeError`` unless the inert operator-only
+    ``OPENRESEARCH_ALLOW_GKE`` escape hatch is set, in which case the
+    ``GkeJobBackend`` is constructed as before. The supported GCP path is the
+    campaign VM route (``--sandbox local --billing-sandbox gcp``).
+
+    Any other unsupported mode (auto, simulate) falls back to
     ``LocalDockerBackend`` with a WARNING rather than crashing, so the run still
     produces a result while making the misconfiguration visible.
 
     ``run_budget=None`` is safe for all modes — no cap is enforced.
-    ``gpu_plan=None`` is safe for all modes — RunpodBackend falls back to
-    legacy Settings defaults when None.  Non-runpod backends ignore it.
+    ``gpu_plan=None`` is safe for all modes.
     """
     from backend.agents.execution import SandboxMode
     from backend.services.runtime.local_docker import LocalDockerBackend
@@ -3318,13 +3308,6 @@ def _backend_for_sandbox_mode(
         from backend.services.runtime.local_process import LocalProcessBackend
         return LocalProcessBackend()
 
-    if mode is SandboxMode.runpod:
-        import backend.services.runtime as _runtime
-        from backend.services.runtime.runpod_backend import RunpodBackend
-
-        _runtime.ensure_runpod_available()
-        return RunpodBackend(run_budget=run_budget, gpu_plan=gpu_plan)
-
     if mode is SandboxMode.azure:
         import backend.services.runtime as _runtime
         from backend.services.runtime.aks_job_backend import AksJobBackend
@@ -3332,19 +3315,40 @@ def _backend_for_sandbox_mode(
         _runtime.ensure_azure_available()
         return AksJobBackend(run_budget=run_budget, gpu_plan=gpu_plan)
 
+    if mode is SandboxMode.aws:
+        import backend.services.runtime as _runtime
+        from backend.services.runtime.eks_job_backend import EksJobBackend
+
+        _runtime.ensure_aws_available()
+        return EksJobBackend(run_budget=run_budget, gpu_plan=gpu_plan)
+
     if mode is SandboxMode.gcp:
+        if os.environ.get("OPENRESEARCH_ALLOW_GKE", "").strip().lower() not in (
+            "1",
+            "true",
+            "yes",
+        ):
+            raise RuntimeError(
+                "sandbox=gcp/gke routes to GKE, which is not used. The supported "
+                "GCP GPU path is the campaign single-VM route: `campaign "
+                "--campaign-driver live --sandbox local --billing-sandbox gcp` "
+                "(the `unified` driver does not forward enforcement env such as "
+                "OPENRESEARCH_CELL_ITER_BUDGET to child processes). "
+                "(OPENRESEARCH_ALLOW_GKE is an inert operator-only escape hatch, "
+                "not a supported path.)"
+            )
         import backend.services.runtime as _runtime
         from backend.services.runtime.gke_job_backend import GkeJobBackend
 
         _runtime.ensure_gcp_available()
         return GkeJobBackend(run_budget=run_budget, gpu_plan=gpu_plan)
 
-    # All other modes (auto, brev, simulate) are not yet wired
-    # for the RLM path.  Fall back with a loud WARNING so the operator knows.
+    # All other modes (auto, simulate) are not yet wired for the RLM path.
+    # Fall back with a loud WARNING so the operator knows.
     logger.warning(
         "_execute_in_sandbox: sandbox_mode=%r is not supported in the RLM "
         "path — falling back to LocalDockerBackend.  "
-        "Set --sandbox docker, --sandbox runpod, or --sandbox azure for a supported backend.",
+        "Set --sandbox docker, --sandbox local, --sandbox azure, or --sandbox aws for a supported backend.",
         mode.value,
     )
     return LocalDockerBackend()
@@ -3663,7 +3667,7 @@ def _metrics_completeness_violation(result: dict) -> tuple[str, str] | None:
     the loop must re-run to REAL measured numbers before it can score or finalize.
     Opt out with ``OPENRESEARCH_METRICS_COMPLETENESS_CHECK=0``. Returns
     ``(failure_class, message)`` or ``None``. See
-    docs/superpowers/specs/2026-05-30-rubric-scoring-fidelity-design.md.
+    docs/history/specs/2026-05-30-rubric-scoring-fidelity-design.md.
     """
     import os as _os
 
@@ -3705,6 +3709,22 @@ def _metrics_completeness_violation(result: dict) -> tuple[str, str] | None:
     return None
 
 
+def _iter_leaf_statuses(node: Any):
+    """Yield lowercased ``status`` strings from every leaf under ``node``.
+
+    A dict carrying a ``status`` key is a leaf (its status is yielded and its
+    children are NOT descended). This handles both the flat monolithic
+    ``per_model[model] = {status}`` and the nested cells
+    ``per_model[model][env][baseline] = {status}`` shapes with one walk.
+    """
+    if isinstance(node, dict):
+        if "status" in node:
+            yield str(node.get("status", "")).lower()
+            return
+        for v in node.values():
+            yield from _iter_leaf_statuses(v)
+
+
 def _all_models_failed_violation(result: dict) -> tuple[str, str] | None:
     """Detect a ``success=True`` run whose per_model is non-empty but NO entry
     reached an ok status — every model errored/failed at load/train, yet the
@@ -3734,11 +3754,15 @@ def _all_models_failed_violation(result: dict) -> tuple[str, str] | None:
     per_model = metrics.get("per_model")
     if not isinstance(per_model, dict) or not per_model:
         return None
-    ok = [
-        m for m, mv in per_model.items()
-        if isinstance(mv, dict) and str(mv.get("status", "")).lower() in _OK_STATUSES
-    ]
-    if ok:
+    # Descend to the LEAF status. The monolithic route is flat
+    # (``per_model[model] = {status, ...}``) but the cells route nests it —
+    # ``per_model[model][env][baseline] = {status, ...}`` (cell_matrix
+    # aggregate_cell_metrics) — so a model-level ``.get("status")`` misses the
+    # real status two levels down and FALSE-POSITIVES on every completed cells
+    # run (base_rn ResNet, 2026-08-02). A dict carrying a ``status`` key IS a
+    # leaf; otherwise recurse. Mirrors the cells-route ``any_ok`` rule so the
+    # guard still fires on a genuine all-failed grid but not on ok leaves.
+    if any(s in _OK_STATUSES for s in _iter_leaf_statuses(per_model)):
         return None
     names = ", ".join(map(str, list(per_model.keys())[:4]))
     return (
@@ -4421,17 +4445,19 @@ async def _execute_in_sandbox(
     # modules — so a missing dep (the matplotlib ModuleNotFoundError class) fails in
     # seconds; the command loop then short-circuits the GPU training and the import
     # error becomes the next iteration's repair_context.
-    # Gated off remote k8s sandboxes (gcp/azure): smoke_command() bakes a
-    # host-absolute `cd "<code_dir>"` into the shell string, which is never valid
-    # inside a remote GKE/AKS pod (the orchestrator host's path doesn't exist
-    # there) — a straight bug fix, not flag-gated. local/docker/runpod keep the
-    # smoke bootstrap exactly as before.
+    # Gated off remote k8s sandboxes (gcp/azure): their cell routes do not use
+    # this monolithic sandbox command. RunPod does; it receives a command with
+    # no host-path cd because RunpodBackend already enters its uploaded workdir.
     if "gcp" not in _mode_str and "azure" not in _mode_str:
         try:
             from backend.agents.rlm import preflight_smoke as _preflight_smoke
             if _preflight_smoke.is_enabled():
                 _preflight_smoke.emit(code_dir)
-                bootstrap_commands.append(_preflight_smoke.smoke_command(code_dir))
+                bootstrap_commands.append(
+                    _preflight_smoke.smoke_command(
+                        code_dir, uses_sandbox_workdir="runpod" in _mode_str
+                    )
+                )
         except Exception:  # noqa: BLE001 — preflight smoke wiring must never block the run
             logger.exception("_execute_in_sandbox: preflight smoke wiring failed")
 
@@ -4442,8 +4468,8 @@ async def _execute_in_sandbox(
     # line in seconds, short-circuits the GPU training, and becomes repair_context — the
     # exact class that cost a 25-min run 0.12 of its score. A script that ignores the
     # smoke env is killed by `timeout` (exit 124) and treated as a soft pass (no block).
-    # Same remote-k8s gate as the preflight smoke above — smoke_command() also
-    # bakes a host-absolute `cd "<code_dir>"`, invalid inside a remote gcp/azure pod.
+    # Same remote-k8s gate as the preflight smoke above. The RunPod form relies
+    # on its guaranteed uploaded workdir rather than a host-path cd.
     if "gcp" not in _mode_str and "azure" not in _mode_str:
         try:
             from backend.agents.rlm import execution_smoke as _execution_smoke
@@ -4455,7 +4481,11 @@ async def _execute_in_sandbox(
                 )
                 if _entry is not None:
                     bootstrap_commands.append(
-                        _execution_smoke.smoke_command(code_dir, entry_script=_entry)
+                        _execution_smoke.smoke_command(
+                            code_dir,
+                            entry_script=_entry,
+                            uses_sandbox_workdir="runpod" in _mode_str,
+                        )
                     )
                 else:
                     logger.info("_execute_in_sandbox: execution smoke skipped — no known entry script")
@@ -4767,15 +4797,6 @@ async def _execute_in_sandbox(
             break
         # Transient retry: sleep then loop.
         await asyncio.sleep(_backoff)
-
-    # PR-ζ: sandbox fallback — when RunPod retries are exhausted and the host
-    # supports local docker + GPU, optionally swap ctx.sandbox_mode to local
-    # for the remainder of the run. Opt-in via OPENRESEARCH_RUNPOD_AUTO_FALLBACK=true
-    # (default off). The ctx object is not available inside _execute_in_sandbox
-    # (it does not receive ctx); fallback is handled in run_experiment which
-    # calls this function. See _apply_sandbox_fallback_if_eligible in run_experiment.
-    # TODO(PR-ζ-followup): thread ctx into _execute_in_sandbox so fallback can
-    # be applied here with the correct emit surface.
 
     # Contract: paper's code writes $OUTPUT_DIR/metrics.json (host: artifact_root/metrics.json).
     metrics: dict = {}
@@ -6233,6 +6254,58 @@ def _read_prior_weak_leaves(project_dir) -> list[dict]:
         return []
 
 
+def _cell_iter_budget() -> int | None:
+    """OPENRESEARCH_CELL_ITER_BUDGET — the scheduler-authority rung-step cap (default OFF).
+
+    In an authority campaign a branch launch carries a ``from_step``/``to_step``
+    off the paper-step ladder; the campaign threads ``to_step`` into the child's
+    ``enforcement["env"]`` as ``OPENRESEARCH_CELL_ITER_BUDGET`` so successive-
+    halving-at-rungs actually caps the training the child does (the trainer keys
+    its ``iters`` off the cell dict, so without this cap it ignores the ladder and
+    runs the full ``cells.json`` ``iters``). Returns the positive-int budget or
+    ``None``. FAIL-SAFE: an unset/empty/non-int/``<=0`` value reads as ``None`` so
+    the pre-dispatch rewrite is a no-op and behaviour is byte-identical to today.
+    """
+    raw = os.environ.get("OPENRESEARCH_CELL_ITER_BUDGET", "").strip()
+    if not raw:
+        return None
+    try:
+        budget = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return budget if budget > 0 else None
+
+
+def _apply_cell_iter_budget(cells: list, budget: int | None) -> list:
+    """Harness-owned pre-dispatch cap of every cell's ``iters`` to *budget*.
+
+    Deterministic, cell-dict-only rewrite (the field the trainer already reads —
+    NEVER a trainer-cooperative convention): with a positive-int *budget* every
+    cell's ``iters`` is set to *budget*, and any ``lr_milestones`` /
+    ``warmup_max_iters`` beyond *budget* are clamped ``<= budget`` so the LR
+    decay schedule + final-eval boundary (which the ResNet trainer keys off
+    ``iters``) stay coherent under the shorter rung. Mutates in place and returns
+    the same list. FAIL-SAFE: a falsy/non-positive/non-int *budget* is a no-op and
+    the cells are returned byte-identical (the OFF flag invariant).
+    """
+    if not isinstance(budget, int) or isinstance(budget, bool) or budget <= 0:
+        return cells
+    for cell in cells:
+        if not isinstance(cell, dict):
+            continue
+        cell["iters"] = budget
+        milestones = cell.get("lr_milestones")
+        if isinstance(milestones, list):
+            cell["lr_milestones"] = [
+                min(m, budget) if isinstance(m, int) and not isinstance(m, bool) else m
+                for m in milestones
+            ]
+        warmup_max = cell.get("warmup_max_iters")
+        if isinstance(warmup_max, int) and not isinstance(warmup_max, bool) and warmup_max > budget:
+            cell["warmup_max_iters"] = budget
+    return cells
+
+
 def _maybe_replicate_seeds(ctx, cells: list, manifest, emit) -> list:
     """Replicate the headline model across the demanded seeds — deterministic L5.
 
@@ -6295,7 +6368,7 @@ def _maybe_replicate_seeds(ctx, cells: list, manifest, emit) -> list:
 
 
 def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: float | None, run_id: str) -> dict:
-    """Run the training matrix one-GPU-per-cell via ``gpu_cell_runner`` (comp 4).
+    """Run the training matrix one-GPU-per-cell via the selected cell runner.
 
     PREVENT → drop over-budget cells + dead datasets to honest ``scope.gaps``.
     PLACEMENT → ``run_matrix`` pins one cell per GPU, ``min(free, cells)`` parallel,
@@ -6360,6 +6433,15 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         return {"success": False, "metrics": {}, "logs": "",
                 "error": "cells.json present but enumerated no valid cells",
                 "failure_class": "contract_guard"}
+
+    # Scheduler-authority rung cap (OPENRESEARCH_CELL_ITER_BUDGET, default OFF):
+    # in an authority campaign the branch launch's ladder ``to_step`` is threaded
+    # into this child's env, and the harness deterministically caps every cell's
+    # ``iters`` (clamping any LR milestones/warmup boundary keyed off it) BEFORE
+    # any GPU is spent — so successive-halving-at-rungs actually bounds the real
+    # trainer instead of it running its own ``cells.json`` iters. Fail-SAFE:
+    # unset/malformed budget ⇒ no rewrite, byte-identical to today.
+    all_cells = _apply_cell_iter_budget(all_cells, _cell_iter_budget())
 
     # Contract normalization (2026-06-09): every cell must carry the three
     # per_model tree axes (model_key/env/baseline) or the aggregate loses it —
@@ -6528,6 +6610,26 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     except Exception:  # noqa: BLE001 — gpu_plan load must never block the cell-matrix route
         logger.debug("_execute_cell_matrix: gpu_plan.json unreadable; proceeding without it")
 
+    # Both phases of a staged search must use exactly the same runner as an
+    # ordinary cell matrix. In particular, a cloud search cannot fall back to
+    # the local subprocess runner, where it would evade K8s identity, IRSA/WI,
+    # namespace isolation, and the controller's GPU budget accounting.
+    _matrix_runner = gpu_cell_runner.run_matrix
+    if _sb_key_ecm in ("azure", "gcp", "aws"):
+        _matrix_budget_ledger = k8s_job_cell_runner._new_budget_reservation_ledger()
+
+        def _run_cloud_matrix(_cells, _script, **_kwargs):
+            with k8s_job_cell_runner._bind_settings_prefix(_sb_key_ecm), \
+                 k8s_job_cell_runner._bind_project_id(str(getattr(ctx, "project_id", "") or "")), \
+                 k8s_job_cell_runner._bind_budget_reservation_ledger(_matrix_budget_ledger), \
+                 k8s_job_cell_runner.bind_run_context(
+                     run_budget=_run_budget_ecm, event_sink=_event_sink_ecm,
+                     gpu_plan=_ecm_gpu_plan,
+                 ):
+                return k8s_job_cell_runner.run_matrix(_cells, _script, **_kwargs)
+
+        _matrix_runner = _run_cloud_matrix
+
     # U2/U3 — cell-aware pre-grid execution smoke (OPENRESEARCH_EXECUTION_SMOKE, local/docker
     # only; azure uses the K8s runner).  Run the smallest cell briefly BEFORE the grid so a
     # non-OOM train_cell.py bug (the All-CNN cell_execution_error) is caught on cell 1 and
@@ -6536,7 +6638,7 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
         from backend.agents.rlm import execution_smoke as _execution_smoke_cm
         if (
             _execution_smoke_cm.is_enabled()
-            and _sb_key_ecm not in ("azure", "gcp")
+            and _sb_key_ecm not in ("azure", "gcp", "aws")
             and gpus
             and len(kept) > 1
         ):
@@ -6554,97 +6656,137 @@ def _execute_cell_matrix(ctx: "RunContext", code_path: str, caps, *, timeout_s: 
     # group's winner by the declared metric, budget-preflights against the remaining
     # wall-clock, and runs ONE full cell per group at the tuned params — so the LLM
     # can never blow the grid into a wall-clock-killing cross-product (the exact Adam
-    # failure). Shape-gated + local/docker only; no `search` key → the legacy
-    # single-phase dispatch below runs byte-for-byte unchanged.
+    # failure). Shape-gated; no `search` key → the legacy single-phase dispatch
+    # below runs byte-for-byte unchanged.  The selected runner is injected so
+    # cloud candidate and full phases remain in the cloud execution boundary.
     matrix_result = None
     _staged_out = None
-    if _sb_key_ecm not in ("azure", "gcp"):
-        _staged_groups = []
-        try:
-            from backend.agents.rlm import staged_search as _ss
-            _cells_doc = json.loads((code / "cells.json").read_text(encoding="utf-8"))
-            # Issue #1 (2026-06-15): harness auto-synthesis. If the agent emitted no
-            # `search` block BUT the active paper hint declares an lr_search grid,
-            # synthesize the staged search from the emitted cells × the grid — so a
-            # per-model LR search fires even when the agent ships one fixed lr (the
-            # observed All-CNN failure: every model at lr=0.05, base-A 15.61% vs 12.5%).
-            if isinstance(_cells_doc, dict) and not _cells_doc.get("search"):
-                _hint_ls = _resolve_hint_lr_search(getattr(ctx, "arxiv_id", None))
-                if _hint_ls:
-                    _synth = _ss.synthesize_search_from_hint(_cells_doc.get("cells") or [], _hint_ls)
-                    if _synth:
-                        _cells_doc["search"] = _synth
+    _staged_groups = []
+    _staged_requested = False
+    try:
+        from backend.agents.rlm import staged_search as _ss
+        _cells_doc = json.loads((code / "cells.json").read_text(encoding="utf-8"))
+        # Issue #1 (2026-06-15): harness auto-synthesis. If the agent emitted no
+        # `search` block BUT the active paper hint declares an lr_search grid,
+        # synthesize the staged search from the emitted cells × the grid — so a
+        # per-model LR search fires even when the agent ships one fixed lr (the
+        # observed All-CNN failure: every model at lr=0.05, base-A 15.61% vs 12.5%).
+        if isinstance(_cells_doc, dict) and not _cells_doc.get("search"):
+            _hint_ls = _resolve_hint_lr_search(getattr(ctx, "arxiv_id", None))
+            if _hint_ls:
+                _synth = _ss.synthesize_search_from_hint(_cells_doc.get("cells") or [], _hint_ls)
+                if _synth:
+                    _cells_doc["search"] = _synth
+                    try:
+                        _emit_dashboard_event(
+                            ctx, event_type="run_warning",
+                            payload={"code": "search_synthesized",
+                                     "message": (f"harness synthesized {len(_synth)} lr-search "
+                                                 "group(s) from the paper hint (agent emitted no "
+                                                 "search block)")})
+                    except Exception:  # noqa: BLE001 — emit is best-effort
+                        pass
+            # L4 (2026-06-16): second fallback — a per-condition search synthesized
+            # from the LAST verify's result_quality leaf (leaf_actuator), used only
+            # when neither the agent nor a paper hint supplied a search block. Reader
+            # self-guards on OPENRESEARCH_LEAF_ACTUATE (default-OFF == today byte-for-byte).
+            if not _cells_doc.get("search"):
+                try:
+                    from backend.agents.rlm import leaf_actuator as _la
+                    _leaf_search = _la.staged_search_override(ctx.project_dir)
+                    if _leaf_search:
+                        _cells_doc["search"] = _leaf_search
                         try:
                             _emit_dashboard_event(
                                 ctx, event_type="run_warning",
-                                payload={"code": "search_synthesized",
-                                         "message": (f"harness synthesized {len(_synth)} lr-search "
-                                                     "group(s) from the paper hint (agent emitted no "
-                                                     "search block)")})
+                                payload={"code": "search_synthesized_from_leaf",
+                                         "message": (f"harness synthesized {len(_leaf_search)} "
+                                                     "lr-search group(s) from the last verify's "
+                                                     "result_quality leaf (no agent/hint search)")})
                         except Exception:  # noqa: BLE001 — emit is best-effort
                             pass
-                # L4 (2026-06-16): second fallback — a per-condition search synthesized
-                # from the LAST verify's result_quality leaf (leaf_actuator), used only
-                # when neither the agent nor a paper hint supplied a search block. Reader
-                # self-guards on OPENRESEARCH_LEAF_ACTUATE (default-OFF == today byte-for-byte).
-                if not _cells_doc.get("search"):
-                    try:
-                        from backend.agents.rlm import leaf_actuator as _la
-                        _leaf_search = _la.staged_search_override(ctx.project_dir)
-                        if _leaf_search:
-                            _cells_doc["search"] = _leaf_search
-                            try:
-                                _emit_dashboard_event(
-                                    ctx, event_type="run_warning",
-                                    payload={"code": "search_synthesized_from_leaf",
-                                             "message": (f"harness synthesized {len(_leaf_search)} "
-                                                         "lr-search group(s) from the last verify's "
-                                                         "result_quality leaf (no agent/hint search)")})
-                            except Exception:  # noqa: BLE001 — emit is best-effort
-                                pass
-                    except Exception:  # noqa: BLE001 — override is advisory
-                        pass
-            _staged_groups = _ss.parse_search_spec(_cells_doc)
-        except Exception:  # noqa: BLE001 — a malformed/absent manifest → legacy path
-            _staged_groups = []
-        if _staged_groups:
-            def _ss_emit(_c: str, _m: str, **_x) -> None:
-                try:
-                    _emit_dashboard_event(
-                        ctx, event_type="run_warning",
-                        payload={"code": _c, "message": _m, **_x})
-                except Exception:  # noqa: BLE001 — emit is best-effort
+                except Exception:  # noqa: BLE001 — override is advisory
                     pass
-            _reserve_ss = float(
-                os.environ.get("OPENRESEARCH_MATRIX_FINALIZE_RESERVE_S", "2700") or 2700)
-            _staged_out = _ss.run_staged_search(
-                _staged_groups, str(code / "train_cell.py"),
-                output_root=str(artifact_root), gpus=gpus or None,
-                remaining_s=_matrix_overall_s, reserve_s=_reserve_ss,
-                per_cell_timeout_s=timeout_s, gpus_per_cell=_gpus_per_cell,
-                now_iso=datetime.now(timezone.utc).isoformat(), emit=_ss_emit,
+        _staged_groups = _ss.parse_search_spec(_cells_doc)
+        if _staged_groups:
+            _staged_requested = True
+            # Search cells are separate from the top-level `cells` list, so
+            # they must independently pass the same capacity and dataset gates
+            # before either cloud phase can submit a Job. Otherwise a raw
+            # candidate/promote entry could bypass honest scope accounting.
+            # Only promoted cells become aggregate leaves. Normalize that set
+            # before preflight so two groups with equal explicit axes cannot
+            # silently overwrite a measured promoted result. Candidates retain
+            # their raw axes because they are selection-only observations.
+            _staged_promotes, _stage_axis_notes = cell_matrix.normalize_cell_axes(
+                [group.promote for group in _staged_groups]
             )
-            matrix_result = _staged_out.get("results") or {}
-            kept = _staged_out.get("kept_cells") or []
+            if _stage_axis_notes:
+                try:
+                    _emit_dashboard_event(ctx, event_type="run_warning", payload={
+                        "code": "cell_axes_derived",
+                        "message": " ".join(_stage_axis_notes)[:500],
+                    })
+                except Exception:  # noqa: BLE001 — diagnostics must never break the run
+                    logger.debug("run_experiment: staged cell-axis normalization warning failed")
+            _staged_cells = [
+                *[candidate for group in _staged_groups for candidate in group.candidates],
+                *_staged_promotes,
+            ]
+            _stage_kept, _stage_cap_gaps, _stage_models_skipped = cell_matrix.capacity_gate(
+                _staged_cells, caps.per_gpu_vram_gb, headroom=headroom,
+                default_gpus_per_cell=_gpus_per_cell,
+            )
+            _stage_kept, _stage_ds_gaps, _stage_envs_skipped = cell_matrix.dataset_url_preflight(
+                _stage_kept
+            )
+            cap_gaps = list(cap_gaps or []) + list(_stage_cap_gaps or [])
+            ds_gaps = list(ds_gaps or []) + list(_stage_ds_gaps or [])
+            for _skipped, _target in (
+                (_stage_models_skipped or [], models_skipped),
+                (_stage_envs_skipped or [], envs_skipped),
+            ):
+                for _item in _skipped:
+                    if _item not in _target:
+                        _target.append(_item)
+            _stage_kept_by_id = {
+                str(cell.get("id")): cell for cell in _stage_kept if cell.get("id")
+            }
+            _staged_groups = _ss.restrict_groups_to_cell_ids(
+                _staged_groups, set(_stage_kept_by_id),
+                normalized_cells_by_id=_stage_kept_by_id,
+            )
+    except Exception:  # noqa: BLE001 — a malformed/absent manifest → legacy path
+        _staged_groups = []
+    if _staged_requested and not _staged_groups:
+        # A valid staged request whose cells all fail harness preflight is an
+        # honest no-launch outcome, not permission to fall back to unrelated
+        # top-level cells. Their capacity/dataset gaps remain in aggregation.
+        matrix_result = {}
+        kept = []
+    if _staged_groups:
+        def _ss_emit(_c: str, _m: str, **_x) -> None:
+            try:
+                _emit_dashboard_event(
+                    ctx, event_type="run_warning",
+                    payload={"code": _c, "message": _m, **_x})
+            except Exception:  # noqa: BLE001 — emit is best-effort
+                pass
+        _reserve_ss = float(
+            os.environ.get("OPENRESEARCH_MATRIX_FINALIZE_RESERVE_S", "2700") or 2700)
+        _staged_out = _ss.run_staged_search(
+            _staged_groups, str(code / "train_cell.py"),
+            output_root=str(artifact_root), gpus=gpus or None,
+            remaining_s=_matrix_overall_s, reserve_s=_reserve_ss,
+            per_cell_timeout_s=timeout_s, gpus_per_cell=_gpus_per_cell,
+            now_iso=datetime.now(timezone.utc).isoformat(), emit=_ss_emit,
+            run_matrix_fn=_matrix_runner,
+        )
+        matrix_result = _staged_out.get("results") or {}
+        kept = _staged_out.get("kept_cells") or []
 
-    if matrix_result is None and _sb_key_ecm in ("azure", "gcp"):
-        with k8s_job_cell_runner._bind_settings_prefix(_sb_key_ecm), \
-             k8s_job_cell_runner.bind_run_context(
-                 run_budget=_run_budget_ecm, event_sink=_event_sink_ecm, gpu_plan=_ecm_gpu_plan,
-             ):
-            matrix_result = k8s_job_cell_runner.run_matrix(
-                kept, str(code / "train_cell.py"),
-                output_root=str(artifact_root),
-                gpus=gpus or None,
-                per_cell_timeout_s=timeout_s,
-                overall_timeout_s=_matrix_overall_s,
-                gpus_per_cell=_gpus_per_cell,
-                fingerprints=_fingerprints,
-                force_cells=_force_cells or None,
-                now_iso=datetime.now(timezone.utc).isoformat(),
-            )
-    elif matrix_result is None:
-        matrix_result = gpu_cell_runner.run_matrix(
+    if matrix_result is None:
+        matrix_result = _matrix_runner(
             kept, str(code / "train_cell.py"),
             output_root=str(artifact_root),
             gpus=gpus or None,
@@ -7253,14 +7395,28 @@ def run_experiment(
         # route gate runs, so the existing gate picks up the cell route with no change
         # to the gate itself. No-op for every other backend/flag-off.
         from backend.agents.rlm import gke_cell_synth
-        _synth_cell = gke_cell_synth.maybe_synthesize_gke_cell(code_path, _caps.backend_kind)
+        _synth_cell = gke_cell_synth.maybe_synthesize_k8s_cell(code_path, _caps.backend_kind)
         if _synth_cell is not None:
             _emit_dashboard_event(ctx, event_type="cell_synth", payload={
                 "detail": (
                     "synthesized single-cell manifest for monolithic commands.json "
-                    "(OPENRESEARCH_GKE_SYNTH_CELL)"
+                    "(cloud cell synthesis flag)"
                 ),
             })
+        # EKS has no safe monolithic reproduction path: the generic RuntimeBackend
+        # command does not materialize the S3 code bundle into a training cell.
+        # Missing metadata is also terminal before any GPU Job is submitted.
+        if _caps.backend_kind == "aws" and _caps.is_empty:
+            detail = getattr(_caps, "detail", {}).get(
+                "configuration_error", "AWS GPU capacity is not configured"
+            )
+            return {
+                "success": False,
+                "metrics": {},
+                "logs": "",
+                "error": f"aws EKS cell route blocked: {detail}",
+                "failure_class": "capacity_exhausted",
+            }
         # C6 (2026-06-16): the cell-matrix route gate historically allowed only
         # ("local","docker") — which made the azure K8s branch in
         # _execute_cell_matrix (the `_sb_key_ecm == "azure"` arm that dispatches
@@ -7280,6 +7436,27 @@ def run_experiment(
             "1", "true", "yes", "on"
         ):
             _cell_route_kinds.append("gcp")
+        # AWS is explicit at the sandbox selector, so this does not alter the
+        # default behavior of any existing sandbox.  The route is deliberately
+        # cell-matrix only; commands.json is accepted only through the opt-in
+        # EKS synth shim above.
+        if _caps.backend_kind == "aws":
+            _cell_route_kinds.append("aws")
+        if _caps.backend_kind == "aws" and not (
+            (Path(code_path) / "cells.json").is_file()
+            and ((Path(code_path) / "train_cell.py").is_file() or _cells_all_have_command(code_path))
+        ):
+            return {
+                "success": False,
+                "metrics": {},
+                "logs": "",
+                "error": (
+                    "aws EKS requires cells.json plus train_cell.py; generic monolithic EKS "
+                    "execution is not a reproduction path. Set OPENRESEARCH_EKS_SYNTH_CELL=1 "
+                    "only to synthesize a commands.json shim."
+                ),
+                "failure_class": "contract_guard",
+            }
         if (
             _caps.backend_kind in _cell_route_kinds
             and not _caps.is_empty
@@ -7412,76 +7589,13 @@ def run_experiment(
                     ),
                 }
             except Exception as exc:  # noqa: BLE001
-                # RunPod infrastructure failures bubble up as SandboxRuntimeError
-                # tagged with a sentinel prefix from runpod_backend. Treat them
-                # like an OOM — advance the ladder, retry. Any other unexpected
-                # exception still produces a fail-soft error dict (consistent
-                # with the rest of this function never raising).
+                # Any unexpected exception produces a fail-soft error dict
+                # (consistent with the rest of this function never raising).
                 exc_msg = str(exc)
-                if "RUNPOD_CAPACITY_EXHAUSTED" in exc_msg:
-                    infra_error_kind = "runpod_capacity"
-                    result = {
-                        "success": False, "metrics": {},
-                        "error": f"runpod capacity exhausted on {gpu_plan.short_name if gpu_plan else 'unknown'}",
-                    }
-                elif "RUNPOD_SSH_TIMEOUT" in exc_msg:
-                    infra_error_kind = "runpod_ssh_timeout"
-                    result = {
-                        "success": False, "metrics": {},
-                        "error": f"runpod SSH timeout on {gpu_plan.short_name if gpu_plan else 'unknown'}",
-                    }
-                elif "RUNPOD_TRANSIENT_500" in exc_msg:
-                    # Lane 3: unlabelled 500s from RunPod are typically transient
-                    # infra hiccups — advance the ladder so the run doesn't dead-end.
-                    # This is intentionally the same path as CAPACITY_EXHAUSTED
-                    # because: (a) the 500 may itself be capacity under a different
-                    # marker, and (b) _execute_in_sandbox already exhausted 3 retries
-                    # with exponential backoff before bubbling up here, so a genuine
-                    # transient would have recovered. BUG-NEW-049: consider adding
-                    # a same-tier retry before escalating if TRANSIENT_500 is the
-                    # sole failure mode (CAPACITY_EXHAUSTED still escalates
-                    # immediately). Bounded by dynamic_gpu_max_escalations so a
-                    # request-shape bug cannot burn the whole catalog.
-                    infra_error_kind = "runpod_transient_500"
-                    result = {
-                        "success": False, "metrics": {},
-                        "error": f"run_experiment: {type(exc).__name__}: {exc_msg[:300]}",
-                    }
-                else:
-                    result = {
-                        "success": False, "metrics": {},
-                        "error": f"run_experiment: {type(exc).__name__}: {exc_msg[:300]}",
-                    }
-                # PR-ζ: opt-in sandbox fallback after transient retry exhaustion.
-                # When OPENRESEARCH_RUNPOD_AUTO_FALLBACK=true and the exception carries
-                # _retry_attempts (set by _execute_in_sandbox after exhausting
-                # transient retries), check whether local docker + GPU is viable
-                # and if so mutate ctx.sandbox_mode for the rest of this run.
-                import os as _os_fallback
-                if _os_fallback.environ.get("OPENRESEARCH_RUNPOD_AUTO_FALLBACK", "").lower() == "true":
-                    _retry_attempts_on_exc = getattr(exc, "_retry_attempts", None)
-                    _mode_str_fb = str(getattr(ctx, "sandbox_mode", "") or "").lower()
-                    if (
-                        _retry_attempts_on_exc
-                        and "runpod" in _mode_str_fb
-                    ):
-                        try:
-                            from backend.agents.execution import SandboxMode as _SandboxMode, _docker_reachable
-                            from backend.services.runtime.gpu_resolution import host_supports_nvidia_gpu
-                            if host_supports_nvidia_gpu() and _docker_reachable():
-                                ctx.sandbox_mode = _SandboxMode.docker
-                                _emit_dashboard_event(ctx, event_type="sandbox_fallback", payload={
-                                    "from": "runpod",
-                                    "to": "local",
-                                    "reason": "max_retries_exhausted_after_transient_failures",
-                                    "attempts": _retry_attempts_on_exc,
-                                })
-                                logger.warning(
-                                    "run_experiment: RunPod transient retries exhausted — "
-                                    "auto-fallback to local docker for the rest of this run."
-                                )
-                        except Exception:  # noqa: BLE001 — fallback must never crash the run
-                            logger.exception("run_experiment: sandbox fallback check failed")
+                result = {
+                    "success": False, "metrics": {},
+                    "error": f"run_experiment: {type(exc).__name__}: {exc_msg[:300]}",
+                }
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
 
@@ -7490,7 +7604,7 @@ def run_experiment(
         # means legacy mode — no ladder to advance), or cap reached.
         if result.get("success") or gpu_plan is None or escalations >= max_escalations:
             break
-        # Detect escalation trigger: CUDA OOM in logs OR RunPod capacity/SSH-timeout.
+        # Detect escalation trigger: CUDA OOM in logs.
         stderr_tail = (result.get("logs") or "")[-4096:]
         exit_code = int(result.get("exit_code", 1))  # _execute_in_sandbox may not surface exit_code; default 1
         # F-04: also catch a watchdog-killed OOM whose marker is buried earlier
@@ -7984,7 +8098,7 @@ def run_experiment(
                            getattr(ctx, "run_id", "?"), _disk_post[1][:120])
 
     # Rubric-contract validation: post-run diff of metrics + artifacts against
-    # the paper's declared docs/papers/<arxiv_id>.yaml paper_targets section.
+    # the paper's declared configs/papers/<arxiv_id>.yaml paper_targets section.
     # Surfaces concrete, actionable violations the agent can fix on its next
     # implement_baseline iteration.  Covers 4 of 6 rubric areas
     # (Data fidelity, Experiment execution, Eval protocol, Result match,
@@ -8427,6 +8541,45 @@ def verify_against_rubric(results: dict, rubric: dict, *, ctx: "RunContext") -> 
         return _with_outcome({
             "success": False,
             "error": "verify_against_rubric: rubric must be a non-empty dict",
+        }, PrimitiveOutcome.repairable)
+
+    # W1-M1 grading-input integrity (OPENRESEARCH_GRADER_INTEGRITY, default-OFF):
+    # if the rubric about to be graded differs from the harness-generated rubric
+    # pinned at run start, an agent weakened it — fail closed to repairable BEFORE
+    # spending an LLM grade. Off → check returns None → byte-identical. Fail-soft.
+    try:
+        from backend.evals.paperbench.grading_input_integrity import (
+            check_grading_input_integrity,
+        )
+        _integrity = check_grading_input_integrity(ctx.project_dir, rubric=rubric)
+    except Exception:  # noqa: BLE001 — an integrity bug must never break verify
+        _integrity = None
+    if _integrity is not None:
+        # Auditable evidence-decision log (OPENRESEARCH_EVIDENCE_DECISION_LOG,
+        # default-OFF → no-op). Records the decision whether it passed or fired.
+        try:
+            from backend.agents.rlm.evidence_log import record_evidence_decision
+            record_evidence_decision(
+                ctx.project_dir,
+                gate="grader_integrity",
+                outcome="ok" if _integrity.get("ok") else "evidence_tampered",
+                detail=_integrity.get("reason"),
+                extra={
+                    "pinned_sha": _integrity.get("pinned_sha"),
+                    "current_sha": _integrity.get("current_sha"),
+                },
+            )
+        except Exception:  # noqa: BLE001 — the audit log must never break verify
+            pass
+    if _integrity is not None and _integrity.get("ok") is False:
+        return _with_outcome({
+            "success": False,
+            "error": (
+                "verify_against_rubric: grading-input integrity failed "
+                f"({_integrity.get('reason')}) — the rubric being graded does not match "
+                "the harness-generated rubric pinned at run start"
+            ),
+            "failure_class": "evidence_tampered",
         }, PrimitiveOutcome.repairable)
 
     # Cache key: rubric + metrics + a content hash of the code dir + the
@@ -9467,6 +9620,304 @@ def consult_skill(
         return {"status": "error", "error": str(exc)[:300]}
 
 
+def _literature_survey_enabled() -> bool:
+    # Same truthy vocabulary as literature_corpus_enabled()/
+    # literature_grounding_enabled() (the repo flag convention) — the three
+    # literature flags must agree so the feature can't half-enable.
+    import os as _os
+
+    return _os.environ.get("OPENRESEARCH_LITERATURE_SURVEY", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _literature_store(ctx: "RunContext"):
+    """Open the global corpus store for this runs root. Caller handles errors."""
+    from backend.services.knowledge.corpus.store import CorpusStore, corpus_root
+
+    store = CorpusStore(corpus_root(ctx.runs_root))
+    store.initialize()
+    return store
+
+
+def _literature_target_id(ctx: "RunContext") -> "str | None":
+    """The target's corpus id from this run's literature spec (fail-soft None).
+
+    Resolution handles campaign width children (``<project_id>_w<k>``), whose
+    spec lives under the campaign parent's run dir.
+    """
+    import json as _json
+
+    try:
+        from backend.services.knowledge.corpus.manifest import resolve_spec_path
+
+        spec_path = resolve_spec_path(ctx.project_dir)
+        if spec_path is not None:
+            return _json.loads(spec_path.read_text(encoding="utf-8"))["target"]["id"]
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def search_literature(
+    query: str = "",
+    dataset: str = "",
+    method: str = "",
+    paper_id: str = "",
+    max_results: int = 5,
+    fetch_id: str = "",
+    web_query: str = "",
+    *,
+    ctx: "RunContext",
+) -> dict:
+    """Bounded retrieval over the related-paper corpus (the 20th primitive).
+
+    Progressive disclosure, mirroring ``consult_skill``:
+      - no args              -> corpus index (this run's ranked related papers)
+      - ``dataset``/``method`` -> deterministic ``lit_results`` lookup (exact,
+        case-insensitive) — "who else reports numbers on X"
+      - ``query``            -> hybrid retrieval (FTS5-BM25 + citation-graph
+        expansion, Lane-A deterministic; see corpus/retrieval.py)
+      - ``paper_id``         -> bounded chunk read of ONE corpus paper
+      - ``web_query``        -> Phase-3 runtime discovery: server-side
+        connector search, bounded metadata out (never page content)
+      - ``fetch_id``         -> Phase-3 runtime expansion: pull ONE arXiv
+        paper into the corpus (<=5 fetches/run, persisted budget)
+
+    The two Phase-3 modes additionally need ``OPENRESEARCH_LITERATURE_WEB``
+    (else ``{"status": "disabled"}`` from web_expand) — and every byte of
+    network I/O stays orchestrator-side behind the existing connectors;
+    sub-agents keep zero web tools.
+
+    Off-state (``OPENRESEARCH_LITERATURE_SURVEY`` unset) -> ``{"status":
+    "disabled"}`` so the registry count stays stable. ADVISORY context only:
+    corpus content is never citable report evidence. Never raises.
+    """
+    if not _literature_survey_enabled():
+        return {"status": "disabled"}
+    try:
+        n = max(1, min(int(max_results or 5), 15))
+        if web_query:
+            from backend.services.knowledge.corpus.web_expand import discover_papers
+
+            return discover_papers(web_query, limit=n)
+        store = _literature_store(ctx)
+        try:
+            if fetch_id:
+                from backend.services.knowledge.corpus.web_expand import fetch_paper
+
+                return fetch_paper(fetch_id, store=store, project_dir=ctx.project_dir)
+            if paper_id:
+                return _literature_paper_read(store, paper_id, n)
+            if dataset or method:
+                return _literature_results_lookup(store, dataset, method, n)
+            if query:
+                from backend.services.knowledge.corpus.retrieval import retrieve
+
+                result = retrieve(
+                    store,
+                    query,
+                    target_id=_literature_target_id(ctx),
+                    top_n=n,
+                    trace_path=ctx.project_dir / "rlm_state" / "literature_query_trace.json",
+                )
+                return {"status": "ok", "kind": "search", "hits": result["hits"]}
+            return _literature_index(ctx, store)
+        finally:
+            store.close()
+    except Exception as exc:  # noqa: BLE001 — a lookup tool must never break the run
+        return {"status": "error", "error": str(exc)[:300]}
+
+
+def _literature_index(ctx: "RunContext", store) -> dict:
+    import json as _json
+
+    papers: list[dict] = []
+    try:
+        from backend.services.knowledge.corpus.manifest import resolve_spec_path
+
+        spec_path = resolve_spec_path(ctx.project_dir)
+        if spec_path is not None:
+            spec = _json.loads(spec_path.read_text(encoding="utf-8"))
+            papers = [
+                {
+                    "id": p.get("id"),
+                    "title": (p.get("title") or "")[:200],
+                    "relation": p.get("relation"),
+                    "year": p.get("year"),
+                }
+                for p in (spec.get("papers") or [])[:25]
+            ]
+    except Exception:  # noqa: BLE001
+        papers = []
+    return {
+        "status": "ok",
+        "kind": "index",
+        "papers": papers,
+        "corpus_papers_total": store.paper_count(),
+        "note": (
+            "Related-paper corpus (ADVISORY — never cite as report evidence). "
+            "search_literature(query=...) for hybrid search; dataset=/method= "
+            "for reported numbers; paper_id= to read one paper."
+        ),
+    }
+
+
+def _literature_results_lookup(store, dataset: str, method: str, n: int) -> dict:
+    clauses, params = [], []
+    if dataset:
+        clauses.append("LOWER(dataset) = LOWER(?)")
+        params.append(dataset.strip())
+    if method:
+        clauses.append("LOWER(method) = LOWER(?)")
+        params.append(method.strip())
+    rows = store.connection.execute(
+        "SELECT paper_id, method, dataset, metric, value, span_quote"
+        f" FROM lit_results WHERE {' AND '.join(clauses)}"
+        " ORDER BY paper_id, metric LIMIT ?",
+        (*params, n),
+    ).fetchall()
+    return {
+        "status": "ok",
+        "kind": "results",
+        "rows": [
+            {
+                "paper_id": r["paper_id"],
+                "method": r["method"],
+                "dataset": r["dataset"],
+                "metric": r["metric"],
+                "value": r["value"],
+                "quote": (r["span_quote"] or "")[:200],
+            }
+            for r in rows
+        ],
+    }
+
+
+def _literature_paper_read(store, paper_id: str, n: int) -> dict:
+    row = store.get_paper(paper_id)
+    if row is None:
+        return {"status": "error", "error": f"unknown corpus paper: {paper_id[:80]}"}
+    chunks = store.connection.execute(
+        "SELECT section, text FROM lit_chunks WHERE paper_id = ? ORDER BY seq LIMIT ?",
+        (paper_id, max(n, 10)),
+    ).fetchall()
+    return {
+        "status": "ok",
+        "kind": "paper",
+        "id": paper_id,
+        "title": (row.get("title") or "")[:200],
+        "chunks": [
+            {"section": c["section"], "text": c["text"][:800]} for c in chunks
+        ],
+        "truncated": len(chunks) >= max(n, 10),
+    }
+
+
+def survey_related_work(question: str, k: int = 5, *, ctx: "RunContext") -> dict:
+    """Map-reduce survey over the related-paper corpus (the 21st primitive).
+
+    Retrieves the top-``k`` most relevant corpus papers for ``question``
+    (hybrid Lane-A retrieval), then fans out ONE bounded LLM sub-call per
+    paper — each sees only that paper's retrieved slices and must answer with
+    short direct quotes — and merges the per-paper answers into a digest
+    capped at ``_SURVEY_DIGEST_MAX`` chars. The fan-out rides the cheap
+    accelerator endpoint when configured, else the planner client.
+
+    ADVISORY output only (Lane B once the LLM has summarized): never cite the
+    digest as report evidence — verify against the paper text via
+    search_literature(paper_id=...). Off-state -> ``{"status": "disabled"}``.
+    Never raises.
+    """
+    if not _literature_survey_enabled():
+        return {"status": "disabled"}
+    try:
+        if not (question or "").strip():
+            return {"status": "error", "error": "question is required"}
+        kk = max(1, min(int(k or 5), 8))
+        store = _literature_store(ctx)
+        try:
+            from backend.services.knowledge.corpus.retrieval import retrieve
+
+            result = retrieve(
+                store, question, target_id=_literature_target_id(ctx), top_n=kk * 4
+            )
+            # Group hits by paper, preserving score order (best paper first).
+            per_paper: dict[str, list[dict]] = {}
+            for hit in result["hits"]:
+                per_paper.setdefault(hit["paper_id"], []).append(hit)
+            papers = list(per_paper.items())[:kk]
+            if not papers:
+                return {"status": "ok", "kind": "survey", "digest": "", "papers": []}
+
+            client, tier = _survey_client(ctx)
+            answers = []
+            for paper_id, hits in papers:
+                answers.append(_survey_one_paper(client, question, paper_id, hits))
+            digest = _merge_survey_digest(question, answers)
+            return {
+                "status": "ok",
+                "kind": "survey",
+                "digest": digest,
+                "papers": [p for p, _ in papers],
+                "llm_tier": tier,
+                "note": "ADVISORY digest — verify quotes via search_literature(paper_id=...).",
+            }
+        finally:
+            store.close()
+    except Exception as exc:  # noqa: BLE001 — a survey tool must never break the run
+        return {"status": "error", "error": str(exc)[:300]}
+
+
+_SURVEY_DIGEST_MAX = 4000
+_SURVEY_ANSWER_MAX = 600
+
+
+def _survey_client(ctx: "RunContext") -> "tuple[Any, str]":
+    """Cheap accelerator endpoint when configured, else the planner client."""
+    import os as _os
+
+    try:
+        from backend.agents.rlm.accelerator import (
+            build_accelerator_client,
+            resolve_accelerator,
+        )
+
+        ep = resolve_accelerator(_os.environ.get("OPENRESEARCH_ACCELERATOR", ""))
+        if ep is not None:
+            return build_accelerator_client(ep), "accelerator"
+    except Exception:  # noqa: BLE001 — accelerator trouble degrades to planner
+        pass
+    return ctx.llm_client, "planner"
+
+
+def _survey_one_paper(client: Any, question: str, paper_id: str, hits: list[dict]) -> dict:
+    excerpts = "\n\n".join(
+        f"[{h['section']}] {h['quote']}" for h in hits[:3]
+    )
+    title = hits[0].get("title") or paper_id
+    try:
+        text = client.complete(
+            system=(
+                "You answer a question about ONE research paper from provided "
+                "excerpts only. Quote directly (<=200 chars per quote), name the "
+                "section, and say 'not addressed' when the excerpts don't answer. "
+                "Max 80 words."
+            ),
+            user=f"Paper: {title}\n\nExcerpts:\n{excerpts}\n\nQuestion: {question}",
+        )
+        return {"paper_id": paper_id, "title": title, "answer": (text or "")[:_SURVEY_ANSWER_MAX]}
+    except Exception as exc:  # noqa: BLE001 — one failed sub-call must not sink the survey
+        return {"paper_id": paper_id, "title": title, "answer": f"(sub-call failed: {str(exc)[:120]})"}
+
+
+def _merge_survey_digest(question: str, answers: list[dict]) -> str:
+    parts = [f"Survey: {question}"]
+    for a in answers:
+        parts.append(f"- {a['title']} ({a['paper_id']}): {a['answer']}")
+    return "\n".join(parts)[:_SURVEY_DIGEST_MAX]
+
+
 PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "understand_section": understand_section,
     "extract_hyperparameters": extract_hyperparameters,
@@ -9487,6 +9938,8 @@ PRIMITIVE_REGISTRY: dict[str, Callable[..., Any]] = {
     "read_context_map": read_context_map,  # PEEK-lite, OPENRESEARCH_CONTEXT_MAP
     "inspect_repository": inspect_repository,  # #62, OPENRESEARCH_USE_AUTHOR_REPO
     "consult_skill": consult_skill,  # skill-library playbooks, OPENRESEARCH_SKILLS
+    "search_literature": search_literature,  # related-paper corpus, OPENRESEARCH_LITERATURE_SURVEY
+    "survey_related_work": survey_related_work,  # per-paper fan-out survey, OPENRESEARCH_LITERATURE_SURVEY
 }
 
 PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
@@ -9599,4 +10052,27 @@ PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
         "name -> {status:'not_found', did_you_mean:[...]}. category=<cat> (no "
         "name) browses that category's skills. Neither arg -> an index of "
         "categories with counts. Returns {status:'disabled'} when the flag is off.",
+    "search_literature": "search_literature(query='', dataset='', method='', "
+        "paper_id='', max_results=5, fetch_id='', web_query='') -> dict — "
+        "ADVISORY related-paper corpus lookup (enabled by "
+        "OPENRESEARCH_LITERATURE_SURVEY). No args -> index of this paper's "
+        "ranked related work. query= -> hybrid search (BM25 + citation-graph "
+        "expansion) returning bounded quotes with paper ids. dataset=/method= "
+        "-> other papers' reported (metric, value) rows for exact entity "
+        "names. paper_id= -> bounded chunk read of one corpus paper. "
+        "web_query= -> discover fetchable papers via server-side connector "
+        "search; fetch_id= -> pull ONE arXiv paper into the corpus (<=5 "
+        "fetches/run) — both need OPENRESEARCH_LITERATURE_WEB too. NEVER cite "
+        "corpus content as report evidence — use it to disambiguate "
+        "protocols/hyperparameters and sanity-check magnitudes. Returns "
+        "{status:'disabled'} when the flag is off.",
+    "survey_related_work": "survey_related_work(question, k=5) -> dict — "
+        "ADVISORY map-reduce survey over the related-paper corpus (enabled by "
+        "OPENRESEARCH_LITERATURE_SURVEY): retrieves the k most relevant papers, "
+        "asks each one your question via a bounded per-paper sub-call, and "
+        "returns a merged quote-grounded digest (<=4000 chars) with per-paper "
+        "attribution. Use for cross-paper questions ('what warmup schedules do "
+        "similar papers use?'). Verify any quote via "
+        "search_literature(paper_id=...) before relying on it. Returns "
+        "{status:'disabled'} when the flag is off.",
 }

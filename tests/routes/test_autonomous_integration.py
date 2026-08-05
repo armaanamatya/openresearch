@@ -19,7 +19,7 @@ override functions directly, in ``_start_python_run``'s own order
 
 CRITICAL CORRECTION vs. the original task-14 brief text: ``autonomous=True``
 forces ``sandbox="gcp"``, NOT the literal ``"gke"``. ``StartRunRequest.sandbox``
-is typed ``Literal["auto", "docker", "local", "runpod", "azure", "gcp"]``
+is typed ``Literal["auto", "docker", "local", "azure", "aws", "gcp"]``
 (``live_runs.py:43``) — "gke" is not a member of that Literal at all (the
 gke->gcp alias lives only in the separate ``backend.agents.execution.SandboxMode``
 enum's ``_missing_`` hook). See ``test_autonomous_profile_override.py``'s
@@ -80,7 +80,7 @@ def test_autonomous_wins_over_deployment_forced_sandbox_and_provider():
     so it must win even when a deployment has forced a different
     sandbox/provider via OPENRESEARCH_FORCE_SANDBOX/_FORCE_LLM_PROVIDER."""
     request = _compose(
-        StartRunRequest(autonomous=True, sandbox="runpod", provider="anthropic", model="sonnet"),
+        StartRunRequest(autonomous=True, sandbox="azure", provider="anthropic", model="sonnet"),
         force_sandbox="docker",
         force_provider="openai",
     )
@@ -113,7 +113,7 @@ def test_autonomous_false_is_the_identity_function_through_the_full_chain():
     touch a request already shaped by the (deployment-level) sandbox/
     provider overrides — the sandbox/model/run_spec are whatever the caller
     (or an earlier override) set; autonomous contributes nothing."""
-    request = StartRunRequest(autonomous=False, sandbox="runpod", provider="anthropic")
+    request = StartRunRequest(autonomous=False, sandbox="azure", provider="anthropic")
     after_deployment_overrides = apply_provider_override(
         apply_sandbox_override(request, "docker"), "openai"
     )
@@ -134,6 +134,6 @@ def test_autonomous_false_with_no_deployment_overrides_is_byte_identical():
     request = StartRunRequest()
     result = _compose(request)
     assert result is request
-    assert result.sandbox == "runpod"  # StartRunRequest's own default, untouched
+    assert result.sandbox == "local"  # StartRunRequest's own default (single coherent local), untouched
     assert result.model == "sonnet"
     assert result.run_spec is None

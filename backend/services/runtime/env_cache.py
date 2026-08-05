@@ -3,7 +3,7 @@
 Part B of full-scope-envs (2026-06-01), extended 2026-06-01 for the agentic
 re-enablement of the SDAR full scope, and refactored 2026-07-01 into a thin
 facade (see
-``docs/superpowers/plans/2026-07-01-phase-1a-1b-provisioning-seam-and-gates.md``).
+``docs/history/plans/2026-07-01-phase-1a-1b-provisioning-seam-and-gates.md``).
 The SDAR paper needs three environments a Search-QA-only run skips:
 **ALFWorld** (a multi-GB one-time ``alfworld-download``), **WebShop** (a single
 indexed server process, or an in-process backend), and a **dense Search-QA

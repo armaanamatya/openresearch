@@ -155,10 +155,11 @@ def test_force_archive_incomplete_completed_run_uses_non_incomplete_suffix(tmp_p
     assert not attempt_dir_name.endswith("_incomplete")
 
 
-def test_maybe_archive_prior_attempt_unchanged_warm_retry_still_skips(tmp_path):
-    """Existing heuristic path is byte-identical: the SAME shaped run dir
-    given to maybe_archive_prior_attempt (not force_archive_incomplete)
-    still skips archiving and keeps code/ in place."""
+def test_maybe_archive_prior_attempt_warm_retry_keeps_code_but_isolates_logs(tmp_path):
+    """The SAME shaped run dir given to maybe_archive_prior_attempt (not
+    force_archive_incomplete) keeps code/ in place for cache reuse, but still
+    isolates event/log files into attempts/ so a resumed attempt's fresh
+    events don't commingle with the interrupted attempt's old ones."""
     run_dir = tmp_path / "proj_b"
     code_dir = run_dir / "code"
     code_dir.mkdir(parents=True)
@@ -168,10 +169,13 @@ def test_maybe_archive_prior_attempt_unchanged_warm_retry_still_skips(tmp_path):
 
     result = maybe_archive_prior_attempt("proj_b", tmp_path)
 
-    assert result is None
+    assert result is not None
+    assert result["reason"] == "warm_retry"
     assert (run_dir / "code" / "commands.json").exists()
     assert (run_dir / "code" / "train.py").exists()
-    assert not (run_dir / "attempts").exists()
+    assert "code/" not in result["moved"]
+    assert not (run_dir / "experiment_runs.jsonl").exists()
+    assert (Path(result["attempt_dir"]) / "experiment_runs.jsonl").exists()
 
 
 def test_force_archive_none_when_no_residue(tmp_path):

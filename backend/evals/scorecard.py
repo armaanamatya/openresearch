@@ -1,6 +1,6 @@
 """The 11-dimension scorecard mapper (Track E Task 6, spec
-``docs/superpowers/specs/2026-07-10-reproduction-eval-framework-design.md``
-§6.1, plan ``docs/superpowers/plans/2026-07-10-track-e-eval-scorecard.md``
+``docs/history/specs/2026-07-10-reproduction-eval-framework-design.md``
+§6.1, plan ``docs/history/plans/2026-07-10-track-e-eval-scorecard.md``
 Task 6).
 
 WHY this exists

@@ -33,12 +33,11 @@ class SandboxMode(str, Enum):
     """Experiment execution backend policy."""
 
     auto = "auto"
+    aws = "aws"
     azure = "azure"
-    brev = "brev"
     docker = "docker"
     gcp = "gcp"
     local = "local"
-    runpod = "runpod"
     simulate = "simulate"
 
     @classmethod
@@ -58,7 +57,9 @@ class SandboxMode(str, Enum):
         return None
 
 
-DEFAULT_SANDBOX_MODE = SandboxMode.runpod
+# auto is a local-dev resolver (docker/local); paid clouds (gcp/azure/aws) are
+# selected EXPLICITLY, never by auto. The single coherent default is `local`.
+DEFAULT_SANDBOX_MODE = SandboxMode.local
 
 
 @dataclass(frozen=True)
@@ -274,39 +275,36 @@ def resolve_sandbox_mode(
     if mode is not SandboxMode.auto:
         return mode
 
-    # WSL safety: docker might not be wired up via Docker Desktop; prefer
-    # local unless we can verify the daemon is reachable.
+    # auto = local dev only. Never select a paid remote backend. GCP/Azure/AWS
+    # are opt-in (--sandbox {gcp,azure,aws}).
     if _is_wsl() and not _docker_reachable():
         logger.info(
-            "resolve_sandbox_mode: WSL detected without reachable docker — "
+            "resolve_sandbox_mode: WSL detected without reachable docker - "
             "preferring 'local' (set OPENRESEARCH_DEFAULT_SANDBOX=docker to override)"
         )
         return SandboxMode.local
-
-    return DEFAULT_SANDBOX_MODE
+    if _docker_reachable():
+        return SandboxMode.docker
+    return SandboxMode.local
 
 
 def ensure_sandbox_mode_available(mode: SandboxMode | str) -> None:
     """Fail fast when a selected sandbox backend is unavailable locally."""
     resolved = SandboxMode(mode)
     if resolved is SandboxMode.auto:
-        resolved = DEFAULT_SANDBOX_MODE
+        resolved = resolve_sandbox_mode(mode, pipeline_mode="auto")
     if resolved is SandboxMode.docker:
         from backend.services.runtime import ensure_local_docker_available
 
         ensure_local_docker_available()
-    elif resolved is SandboxMode.brev:
-        from backend.services.runtime import ensure_brev_available
-
-        ensure_brev_available()
-    elif resolved is SandboxMode.runpod:
-        from backend.services.runtime import ensure_runpod_available
-
-        ensure_runpod_available()
     elif resolved is SandboxMode.azure:
         from backend.services.runtime import ensure_azure_available
 
         ensure_azure_available()
+    elif resolved is SandboxMode.aws:
+        from backend.services.runtime import ensure_aws_available
+
+        ensure_aws_available()
     elif resolved is SandboxMode.gcp:
         from backend.services.runtime import ensure_gcp_available
 

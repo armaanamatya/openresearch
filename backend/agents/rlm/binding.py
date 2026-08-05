@@ -8,7 +8,7 @@ appends a row to `cost_ledger.jsonl`.
 Phase 6 (Task 13) additive wiring: after successful `propose_improvements` and
 `verify_against_rubric` calls, and for `record_candidate_outcome`, emit the three
 additional events described in the handoff spec
-(docs/superpowers/specs/2026-05-21-rlm-phase4-backend-events-handoff.md §3–5).
+(docs/history/specs/2026-05-21-rlm-phase4-backend-events-handoff.md §3–5).
 All new events route through `ctx.emit` (the `make_emit`-produced thread-safe
 closure) — never through `dashboard._emit` directly.
 """
@@ -684,6 +684,14 @@ def wrap_primitive(name: str, fn: Callable[..., Any], ctx: RunContext) -> Callab
                 or result.get("failure_class") == "partial_timeout"
             ):
                 _ledger("partial_timeout")
+            elif failed and isinstance(result, dict) and (
+                result.get("failure_class") == "cell_execution_error"
+            ):
+                # Four-way stamp (2026-07-18): a cell that EXECUTED then errored
+                # after writing real partial metrics gets its own outcome so the
+                # cell-error salvage tier can demand in-process provenance — a
+                # REPL-forged cell_execution_error row cannot mint a session stamp.
+                _ledger("partial_cell_error")
             else:
                 _ledger("failed" if failed else "ok")
             if failed:

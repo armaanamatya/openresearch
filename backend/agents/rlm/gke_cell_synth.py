@@ -16,8 +16,10 @@ to monolithic, it deterministically writes a single-cell ``cells.json`` plus a
 at the entrypoint-provided cell output dir, then routing takes the cell-matrix path with no
 change to the gate itself.
 
-Flag-gated default-OFF (``OPENRESEARCH_GKE_SYNTH_CELL``); a no-op for every other backend,
-so ``local``/``docker``/``runpod`` stay byte-identical.
+Flag-gated default-OFF (``OPENRESEARCH_GKE_SYNTH_CELL`` for GKE and
+``OPENRESEARCH_EKS_SYNTH_CELL`` for EKS); a no-op for every other backend, so
+``local``/``docker``/``runpod`` stay byte-identical.  EKS is intentionally
+cell-only: it must never fall through to the generic monolithic Job path.
 """
 
 from __future__ import annotations
@@ -32,8 +34,8 @@ logger = logging.getLogger(__name__)
 _DEFAULT_EST_VRAM_GB = 40.0  # fits a single A100-80; overridable per run.
 
 
-def _flag_enabled() -> bool:
-    return os.environ.get("OPENRESEARCH_GKE_SYNTH_CELL", "").strip().lower() in (
+def _flag_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in (
         "1",
         "true",
         "yes",
@@ -165,16 +167,21 @@ def _load_commands(code_dir: Path) -> list[str]:
     return [str(c).strip() for c in data if str(c).strip()]
 
 
-def maybe_synthesize_gke_cell(code_path: "str | Path", backend_kind: str) -> dict | None:
-    """Write a single-cell ``cells.json`` + ``train_cell.py`` shim if a gcp run would
-    otherwise fall back to the (broken) monolithic exec path.
+def maybe_synthesize_k8s_cell(code_path: "str | Path", backend_kind: str) -> dict | None:
+    """Write a single-cell manifest when an explicit cloud flag allows it.
 
     Returns the synthesized cell dict when it wrote the files, else ``None`` (a no-op).
-    Surgical + fail-closed on scope: only ``backend_kind == "gcp"`` with the flag on, and
-    only when NEITHER ``cells.json`` NOR ``train_cell.py`` already exists (so a
-    hand-/agent-written cell manifest is never clobbered — e.g. prj_618's workaround).
+    Surgical + fail-closed on scope: only ``backend_kind == "gcp"`` with
+    ``OPENRESEARCH_GKE_SYNTH_CELL`` on or ``backend_kind == "aws"`` with
+    ``OPENRESEARCH_EKS_SYNTH_CELL`` on, and only when NEITHER ``cells.json`` NOR
+    ``train_cell.py`` already exists (so a hand-/agent-written cell manifest is
+    never clobbered — e.g. prj_618's workaround).
     """
-    if not _flag_enabled() or backend_kind != "gcp":
+    flag_name = {
+        "gcp": "OPENRESEARCH_GKE_SYNTH_CELL",
+        "aws": "OPENRESEARCH_EKS_SYNTH_CELL",
+    }.get(backend_kind)
+    if flag_name is None or not _flag_enabled(flag_name):
         return None
 
     code_dir = Path(code_path)
@@ -194,8 +201,8 @@ def maybe_synthesize_gke_cell(code_path: "str | Path", backend_kind: str) -> dic
         "est_vram_gb": _est_vram_gb(),
     }
     manifest = {
-        "_comment": "synthesized by OPENRESEARCH_GKE_SYNTH_CELL — wraps monolithic "
-        "commands.json for the GKE cell-matrix path",
+        "_comment": f"synthesized by {flag_name} — wraps monolithic commands.json "
+        f"for the {backend_kind} cell-matrix path",
         "cells": [cell],
     }
     (code_dir / "cells.json").write_text(
@@ -205,8 +212,13 @@ def maybe_synthesize_gke_cell(code_path: "str | Path", backend_kind: str) -> dic
     (code_dir / "train_cell.py").write_text(shim, encoding="utf-8")
 
     logger.info(
-        "gke_cell_synth: wrapped %d command(s) into a single-cell manifest at %s",
+        "k8s_cell_synth: wrapped %d command(s) into a single-cell manifest at %s",
         len(commands),
         code_dir,
     )
     return cell
+
+
+def maybe_synthesize_gke_cell(code_path: "str | Path", backend_kind: str) -> dict | None:
+    """Backward-compatible GKE-named entry point for existing callers/tests."""
+    return maybe_synthesize_k8s_cell(code_path, backend_kind)

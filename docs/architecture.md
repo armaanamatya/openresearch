@@ -1,9 +1,11 @@
-<!-- doc-meta: status=current; last-verified=2026-06-09 -->
+<!-- doc-meta: status=current; last-verified=2026-07-25 -->
 # Architecture
 
-OpenResearch is a single-user paper-reproduction system: ingest a paper, let an
-RLM root model orchestrate domain primitives, run generated experiments in a
-sandbox, score the output, and write a report.
+OpenResearch is the paper-reproduction engine behind
+[deepinvent.ai](https://deepinvent.ai) (DeepInvent, Austin, TX). The code surface
+here is single-user: ingest a paper, let an RLM root model orchestrate domain
+primitives, run generated experiments in a sandbox, score the output, and write a
+report.
 
 ## Topology
 
@@ -14,7 +16,7 @@ Browser
           -> FastAPI backend (:8000)
               -> long-lived run subprocess
                   -> RLM / RDR controller
-                      -> local, docker, runpod, or azure sandbox
+                      -> local, docker, GCP VM, AKS, or EKS sandbox
 ```
 
 The browser does not call FastAPI directly. The frontend proxy target is
@@ -74,10 +76,11 @@ clusters.
 
 | Sandbox | Status | Behavior |
 |---|---|---|
-| `local` | Implemented | Host subprocess execution; no local Docker build |
+| `local` | Implemented | Host subprocess execution; no local Docker build. On a GCP GPU VM this is the supported remote-GPU path (single-VM: fresh VM + `--sandbox local` + auto-delete). |
 | `docker` | Implemented | Local Docker build and container execution; requires daemon |
-| `runpod` | Implemented | Remote GPU pod over SSH; no local Docker build after 2026-06-09 hardening |
 | `azure` | Partial | AKS GPU backend and Terraform/Helm exist under `infra/azure`, but this is not documented as production-ready |
+| `gcp` / `gke` | Not used | GKE Kubernetes-job backend is disabled by a fail-closed guard (`OPENRESEARCH_ALLOW_GKE` is an inert escape hatch, not a supported path); the GCP GPU route is the single-VM `local` path above |
+| `aws` / `eks` | Experimental | EKS cell-runtime path; keep feature flags off until cloud preflight is green |
 | `auto` | Implemented | Chooses available backend; Docker daemon availability matters |
 
 ## State and Artifacts
@@ -119,4 +122,3 @@ shape.
 Partial or operationally manual: Azure/Kubernetes production readiness, scheduled
 artifact generation, run retention policy, network-hermetic test enforcement,
 and automated restart policy outside the local monitoring scripts.
-

@@ -86,40 +86,6 @@ def test_oom_killed_from_runtime_cause_kind() -> None:
     assert klass == "oom_killed"
 
 
-def test_runpod_capacity() -> None:
-    result = {
-        "success": False,
-        "error": "RUNPOD_CAPACITY_EXHAUSTED: no instances of NVIDIA L40S available",
-    }
-    klass, _ = classify_failure(result)
-    assert klass == "runpod_capacity"
-
-
-def test_runpod_transient_500() -> None:
-    result = {
-        "success": False,
-        "error": "RUNPOD_TRANSIENT_500: Runpod API request failed (HTTP 500)",
-    }
-    klass, _ = classify_failure(result)
-    assert klass == "runpod_transient_500"
-
-
-def test_runpod_ssh_timeout() -> None:
-    result = {
-        "success": False, "error": "RUNPOD_SSH_TIMEOUT: pod never reached READY on a6000",
-    }
-    klass, _ = classify_failure(result)
-    assert klass == "runpod_ssh_timeout"
-
-
-def test_runpod_balance_too_low() -> None:
-    result = {
-        "success": False, "error": "RUNPOD_BALANCE_TOO_LOW: account balance is too low",
-    }
-    klass, _ = classify_failure(result)
-    assert klass == "runpod_balance_too_low"
-
-
 def test_exec_timeout() -> None:
     result = {"success": False, "error": "run_experiment: timed out after 14400 s"}
     klass, _ = classify_failure(result)

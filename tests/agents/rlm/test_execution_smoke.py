@@ -35,6 +35,14 @@ def test_smoke_command_carries_marker_and_entry_script(tmp_path: Path):
     assert "command -v python3 || command -v python" in cmd
 
 
+def test_smoke_command_uses_existing_remote_workdir_without_host_path(tmp_path: Path):
+    code_dir = tmp_path / "code"
+    cmd = execution_smoke.smoke_command(code_dir, uses_sandbox_workdir=True)
+
+    assert f'cd "{code_dir}"' not in cmd
+    assert "train.py" in cmd
+
+
 def test_smoke_command_forces_synchronous_cuda(tmp_path: Path):
     cmd = execution_smoke.smoke_command(tmp_path / "code")
     # CUDA_LAUNCH_BLOCKING=1 is the whole point — surfaces the async device-side assert

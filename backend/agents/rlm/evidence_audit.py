@@ -6,7 +6,7 @@ evidence layer, NEVER the LLM grade (the red line).
 
 Master flag ``OPENRESEARCH_EVIDENCE_AUDIT`` (default OFF) -> dormant -> the
 per-result veto returns None -> byte-identical to today. See
-docs/superpowers/specs/2026-06-20-actor-critic-evidence-critic-redesign-design.md.
+docs/history/specs/2026-06-20-actor-critic-evidence-critic-redesign-design.md.
 """
 from __future__ import annotations
 

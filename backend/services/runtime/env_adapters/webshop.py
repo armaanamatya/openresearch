@@ -1,7 +1,7 @@
 """WebShopAdapter — WebShop server / in-process provisioning (Phase 1a).
 
 Part of the provisioning-seam refactor (see
-``docs/superpowers/plans/2026-07-01-phase-1a-1b-provisioning-seam-and-gates.md``):
+``docs/history/plans/2026-07-01-phase-1a-1b-provisioning-seam-and-gates.md``):
 lifts ``EnvCacheManager.acquire_webshop``/``release_webshop`` and their helper
 functions out of ``env_cache.py`` verbatim, behind the
 :class:`~backend.services.runtime.env_adapters.base.EnvironmentAdapter`

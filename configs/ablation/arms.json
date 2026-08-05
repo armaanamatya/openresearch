@@ -1,0 +1,30 @@
+{
+  "_doc": "Per-feature OFAT ablation arms. Each arm's env = baseline_run_spec.json MERGED with the arm's `flags` below (arm flags win). 'baseline' adds nothing (all 7 test features OFF); 'all_on' adds all 7 (identical to ../combined_features_run_spec.json). Every arm keeps the fixed baseline infra ON so the score is trustworthy and the run does not fail for infra reasons. The driver stamps OPENRESEARCH_AB_ARM=<arm> + OPENRESEARCH_AB_PAIR_ID=<paper>-<seed> so scripts/ab_compare.py can pair each feature arm against 'baseline' at the same paper+seed.",
+  "arms": {
+    "baseline": {},
+
+    "bes":       { "OPENRESEARCH_BES_ENABLED": "1", "OPENRESEARCH_BES_CANDIDATES_PER_CLUSTER": "2", "OPENRESEARCH_BES_SELECT_METRIC": "cluster_score" },
+    "champion":  { "OPENRESEARCH_CHAMPION_ARTIFACT": "1", "OPENRESEARCH_EVIDENCE_FINGERPRINT": "1" },
+    "recipes":   { "OPENRESEARCH_POSITIVE_RECIPES": "1" },
+    "expmem":    { "OPENRESEARCH_EXPERIENCE_MEMORY": "1" },
+    "lessons":   { "OPENRESEARCH_NEGATIVE_LESSONS": "1" },
+    "audit":     { "OPENRESEARCH_EVIDENCE_AUDIT": "1" },
+    "leafgate":  { "OPENRESEARCH_LEAF_EVIDENCE_GATE": "1" },
+
+    "all_on": {
+      "OPENRESEARCH_BES_ENABLED": "1", "OPENRESEARCH_BES_CANDIDATES_PER_CLUSTER": "2", "OPENRESEARCH_BES_SELECT_METRIC": "cluster_score",
+      "OPENRESEARCH_CHAMPION_ARTIFACT": "1", "OPENRESEARCH_EVIDENCE_FINGERPRINT": "1",
+      "OPENRESEARCH_POSITIVE_RECIPES": "1",
+      "OPENRESEARCH_EXPERIENCE_MEMORY": "1",
+      "OPENRESEARCH_NEGATIVE_LESSONS": "1",
+      "OPENRESEARCH_EVIDENCE_AUDIT": "1",
+      "OPENRESEARCH_LEAF_EVIDENCE_GATE": "1"
+    }
+  },
+  "papers": {
+    "allcnn": "1412.6806",
+    "adam": "1412.6980",
+    "resnet": "1512.03385"
+  },
+  "seeds": [1, 2, 3]
+}

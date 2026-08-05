@@ -7,7 +7,7 @@ and a fenced name embedding the stable ``fence_epoch`` so two controller
 generations can never collide. No cloud SDK call of any kind lives here; the
 returned dict is materialised by the caller via ``create_namespaced_job``.
 
-Design: ``docs/superpowers/specs/2026-07-12-cloud-native-durable-and-cpu-lane-design.md`` §3.1.
+Design: ``docs/history/specs/2026-07-12-cloud-native-durable-and-cpu-lane-design.md`` §3.1.
 """
 
 from __future__ import annotations

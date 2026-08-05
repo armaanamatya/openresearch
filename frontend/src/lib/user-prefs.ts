@@ -1,4 +1,4 @@
-import type { DemoAccelerator, DemoGpuParallelism } from "@/lib/demo/demo-run-types";
+import type { DemoAccelerator, DemoGpuParallelism, DemoSandboxMode } from "@/lib/demo/demo-run-types";
 
 const KEY = "openresearch:user-prefs";
 // Provider selection is stored under its own key (D3) so it doesn't
@@ -7,7 +7,7 @@ const PROVIDER_KEY = "reprolab.lab.providerSelection";
 
 export interface UserPrefs {
   model?: string;
-  sandbox?: "auto" | "local" | "docker" | "runpod" | "azure" | "gcp";
+  sandbox?: DemoSandboxMode;
   executionMode?: "efficient" | "max";
   splitRatio?: number;
 }

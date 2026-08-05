@@ -26,10 +26,12 @@ Suite covers:
 """
 from __future__ import annotations
 
+import copy
 import inspect
 import json
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -856,6 +858,31 @@ class TestBudgetTerminal:
         assert results["g8"]["status"] == "error"
         assert "budget_exhausted" in (results["g8"].get("error") or "")
 
+    def test_shared_reservation_ledger_caps_two_staged_runner_invocations(self, tmp_path, monkeypatch):
+        """Candidate reservations leave no fresh GPU/pod cap for phase two."""
+        from backend.agents.resilience.budget import RunBudget
+
+        k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.5})
+        ledger = kjcr._new_budget_reservation_ledger()
+        with kjcr._bind_budget_reservation_ledger(ledger), bind_run_context(
+            run_budget=RunBudget(max_pod_seconds=15), event_sink=lambda *_: None,
+        ):
+            candidates = run_matrix(
+                [{"id": "candidate"}], tmp_path / "train_cell.py",
+                output_root=tmp_path / "staged", per_cell_timeout_s=10,
+            )
+            full = run_matrix(
+                [{"id": "promoted"}], tmp_path / "train_cell.py",
+                output_root=tmp_path / "staged", per_cell_timeout_s=10,
+            )
+
+        assert candidates["candidate"]["status"] == "ok"
+        assert full["promoted"]["status"] == "error"
+        assert "budget_exhausted" in (full["promoted"].get("error") or "")
+        assert len(k8s.batch.created_jobs) == 1
+
 
 class TestStreamFSpotAndGrace:
     """Stream F (2026-06-17): the watcher must not kill a spot reschedule, and the
@@ -1565,6 +1592,206 @@ class TestJobName:
     def test_job_name_starts_with_prefix(self):
         name = kjcr._job_name("c0")
         assert name.startswith("reprolab-cell-")
+
+    def test_full_run_identity_prevents_long_prefix_collision(self, monkeypatch):
+        # Historical names kept only the first 16 run-id characters, so a
+        # controller retry could collide with an old terminal Job.
+        monkeypatch.setenv("OPENRESEARCH_K8S_COLLISION_GUARD", "1")
+        a = kjcr._job_name("monolithic", "prj_resnetgcp12-aaaaaaaa")
+        b = kjcr._job_name("monolithic", "prj_resnetgcp12-bbbbbbbb")
+        assert a != b
+        assert len(a) <= 63 and len(b) <= 63
+
+    def test_collision_guard_off_preserves_legacy_long_prefix_name(self, monkeypatch):
+        """The default-OFF GKE/AKS path must retain legacy identity behavior."""
+        monkeypatch.delenv("OPENRESEARCH_K8S_COLLISION_GUARD", raising=False)
+        with kjcr._bind_settings_prefix("gcp"):
+            a = kjcr._job_name("monolithic", "prj_resnetgcp12-aaaaaaaa")
+            b = kjcr._job_name("monolithic", "prj_resnetgcp12-bbbbbbbb")
+
+        assert a == b
+
+    def test_code_bundle_digest_matches_uploader_repo_exclusion(self, tmp_path):
+        trainer = tmp_path / "train_cell.py"
+        trainer.write_text("print('trainer')\n", encoding="utf-8")
+        repo_file = tmp_path / "repo" / "source.py"
+        repo_file.parent.mkdir()
+        repo_file.write_text("old\n", encoding="utf-8")
+        before = kjcr._code_bundle_digest(tmp_path)
+
+        repo_file.write_text("new\n", encoding="utf-8")
+
+        assert kjcr._code_bundle_digest(tmp_path) == before
+
+
+class _ApiConflict(Exception):
+    status = 409
+
+
+class _ConflictBatch:
+    """First submit collides; the named existing Job is controller-owned."""
+
+    def __init__(self, *, existing: Any, retry_after_failed: bool = False) -> None:
+        self.existing = existing
+        self.retry_after_failed = retry_after_failed
+        self.created_jobs: list[dict] = []
+        self._reads = 0
+
+    def create_namespaced_job(self, namespace: str, body: dict) -> None:
+        self.created_jobs.append(copy.deepcopy(body))
+        if len(self.created_jobs) == 1:
+            annotations = self.existing.metadata.annotations
+            if annotations.get("reprolab.openresearch/config-sha256") == "__from_submit__":
+                annotations["reprolab.openresearch/config-sha256"] = body["metadata"]["annotations"][
+                    "reprolab.openresearch/config-sha256"
+                ]
+            raise _ApiConflict("AlreadyExists")
+
+    def read_namespaced_job_status(self, name: str, namespace: str) -> Any:
+        self._reads += 1
+        if self._reads == 1:
+            return self.existing
+        return SimpleNamespace(status=_FakeJobStatus(conditions=[_FakeJobCondition("Complete")]))
+
+    def delete_namespaced_job(self, name: str, namespace: str, **kwargs: Any) -> None:
+        raise AssertionError("409 recovery must not blindly delete a Job")
+
+
+def _owned_conflict_job_for(*, run_id: str, cell_id: str, terminal: str | None = None) -> Any:
+    conditions = [] if terminal is None else [_FakeJobCondition(terminal)]
+    return SimpleNamespace(
+        metadata=SimpleNamespace(labels={
+            "app": "reprolab-cell",
+            "reprolab/run-sha256": kjcr._k8s_identity_digest(run_id),
+            "reprolab/cell-sha256": kjcr._k8s_identity_digest(cell_id),
+        }, annotations={
+            "reprolab.openresearch/run-id": run_id,
+            "reprolab.openresearch/cell-id": cell_id,
+            "reprolab.openresearch/config-sha256": "__from_submit__",
+        }),
+        status=_FakeJobStatus(conditions=conditions),
+    )
+
+
+class TestConflictRecovery:
+    def _run(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, batch: _ConflictBatch) -> dict:
+        monkeypatch.setenv("OPENRESEARCH_K8S_COLLISION_GUARD", "1")
+        k8s = _K8sClients(batch=batch, core=FakeK8sCore(pods=[_FakePod(exit_code=0)]), watch_cls=None)
+        kjcr._k8s_clients_override = k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.5})
+        return run_matrix(
+            [{"id": "cell-a"}], tmp_path / "train_cell.py", output_root=tmp_path / "outer-run",
+        )
+
+    def test_409_adopts_owned_active_job_without_second_gpu_submit(self, tmp_path, monkeypatch):
+        batch = _ConflictBatch(existing=_owned_conflict_job_for(run_id="outer-run", cell_id="cell-a"))
+        results = self._run(tmp_path, monkeypatch, batch)
+
+        assert results["cell-a"]["status"] == "ok"
+        assert len(batch.created_jobs) == 1
+        metadata = batch.created_jobs[0]["metadata"]
+        assert metadata["labels"]["app"] == "reprolab-cell"
+        annotations = metadata["annotations"]
+        assert annotations["reprolab.openresearch/run-id"] == "outer-run"
+        assert annotations["reprolab.openresearch/cell-id"] == "cell-a"
+        assert len(annotations["reprolab.openresearch/config-sha256"]) == 64
+
+    def test_409_owned_failed_job_fails_closed_without_duplicate_gpu_submit(self, tmp_path, monkeypatch):
+        batch = _ConflictBatch(existing=_owned_conflict_job_for(
+            run_id="outer-run", cell_id="cell-a", terminal="Failed",
+        ))
+        results = self._run(tmp_path, monkeypatch, batch)
+
+        assert results["cell-a"]["status"] == "error"
+        assert "refusing unreserved duplicate GPU retry" in results["cell-a"]["error"]
+        assert len(batch.created_jobs) == 1
+
+    def test_409_owned_failed_job_resubmits_when_resume_armed(self, tmp_path, monkeypatch):
+        """OPENRESEARCH_RESUME_CELLS armed: an owned, authoritatively-Failed
+        Job (not a duplicate-GPU-work risk — it has already terminated) is
+        deleted and resubmitted fresh instead of permanently blocking the
+        cell, closing the documented "failed cell Job isn't cleaned up ->
+        409 on retry" resume gap. Deletion only fires because ownership +
+        terminal-Failed were already verified above — the unarmed default
+        path (previous test) is unaffected."""
+        monkeypatch.setenv("OPENRESEARCH_RESUME_CELLS", "1")
+        batch = _ConflictBatch(existing=_owned_conflict_job_for(
+            run_id="outer-run", cell_id="cell-a", terminal="Failed",
+        ))
+        deleted: list[str] = []
+        batch.delete_namespaced_job = lambda name, namespace, **kw: deleted.append(name)  # type: ignore[method-assign]
+
+        results = self._run(tmp_path, monkeypatch, batch)
+
+        assert len(deleted) == 1, "Job must be deleted exactly once"
+        # The deleted name matches the job the first (conflicting) submit used.
+        assert deleted[0] == batch.created_jobs[0]["metadata"]["name"]
+        assert results["cell-a"]["status"] == "ok"
+        # First create hit the 409; the second is the post-delete resubmit.
+        assert len(batch.created_jobs) == 2
+
+    def test_409_foreign_job_is_never_adopted_or_retried(self, tmp_path, monkeypatch):
+        foreign = _owned_conflict_job_for(run_id="other-run", cell_id="cell-a", terminal="Failed")
+        batch = _ConflictBatch(existing=foreign)
+        results = self._run(tmp_path, monkeypatch, batch)
+
+        assert results["cell-a"]["status"] == "error"
+        assert "different run/cell" in results["cell-a"]["error"]
+        assert len(batch.created_jobs) == 1
+
+    def test_409_matching_short_digests_but_wrong_full_identity_is_rejected(self, tmp_path, monkeypatch):
+        spoofed = _owned_conflict_job_for(run_id="outer-run", cell_id="cell-a")
+        spoofed.metadata.annotations["reprolab.openresearch/run-id"] = "different-full-run"
+        batch = _ConflictBatch(existing=spoofed)
+        results = self._run(tmp_path, monkeypatch, batch)
+
+        assert results["cell-a"]["status"] == "error"
+        assert "different run/cell" in results["cell-a"]["error"]
+        assert len(batch.created_jobs) == 1
+
+    def test_409_changed_configuration_is_never_adopted(self, tmp_path, monkeypatch):
+        stale = _owned_conflict_job_for(run_id="outer-run", cell_id="cell-a")
+        stale.metadata.annotations["reprolab.openresearch/config-sha256"] = "0" * 64
+        batch = _ConflictBatch(existing=stale)
+        results = self._run(tmp_path, monkeypatch, batch)
+
+        assert results["cell-a"]["status"] == "error"
+        assert "different run/cell" in results["cell-a"]["error"]
+        assert len(batch.created_jobs) == 1
+
+    def test_409_missing_controller_app_label_is_never_adopted(self, tmp_path, monkeypatch):
+        foreign = _owned_conflict_job_for(run_id="outer-run", cell_id="cell-a")
+        foreign.metadata.labels.pop("app")
+        batch = _ConflictBatch(existing=foreign)
+        results = self._run(tmp_path, monkeypatch, batch)
+
+        assert results["cell-a"]["status"] == "error"
+        assert "different run/cell" in results["cell-a"]["error"]
+        assert len(batch.created_jobs) == 1
+
+    def test_409_changed_trainer_bytes_with_stable_run_and_cell_are_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENRESEARCH_K8S_COLLISION_GUARD", "1")
+        trainer = tmp_path / "train_cell.py"
+        trainer.write_text("print('old trainer')\n", encoding="utf-8")
+        old_k8s = _make_k8s(job_sequence=_succeeded_job(), pods=[_FakePod(exit_code=0)])
+        kjcr._k8s_clients_override = old_k8s
+        _patch_blob(monkeypatch, metrics={"metric": 0.5})
+        run_matrix([{"id": "cell-a"}], trainer, output_root=tmp_path / "outer-run")
+        old_config = old_k8s.batch.created_jobs[0]["metadata"]["annotations"][
+            "reprolab.openresearch/config-sha256"
+        ]
+
+        trainer.write_text("print('new trainer')\n", encoding="utf-8")
+        existing = _owned_conflict_job_for(run_id="outer-run", cell_id="cell-a")
+        existing.metadata.annotations["reprolab.openresearch/config-sha256"] = old_config
+        batch = _ConflictBatch(existing=existing)
+        k8s = _K8sClients(batch=batch, core=FakeK8sCore(pods=[_FakePod(exit_code=0)]), watch_cls=None)
+        kjcr._k8s_clients_override = k8s
+        results = run_matrix([{"id": "cell-a"}], trainer, output_root=tmp_path / "outer-run")
+
+        assert results["cell-a"]["status"] == "error"
+        assert "different run/cell" in results["cell-a"]["error"]
+        assert len(batch.created_jobs) == 1
 
 
 # ---------------------------------------------------------------------------
