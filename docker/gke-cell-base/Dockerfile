@@ -1,6 +1,6 @@
 # GKE cell base image — CUDA runtime, PyTorch, Google Cloud SDK.
 #
-# Philosophy: mirrors the repo's runpod image choice — cuda-runtime (NOT devel).
+# Philosophy: cuda-runtime (NOT devel).
 # Reproduction code calls pre-built CUDA libs (PyTorch, etc.) and never invokes
 # nvcc or compiles CUDA kernels, so the devel image is ~14 GB of wasted pull time.
 #

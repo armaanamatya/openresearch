@@ -152,31 +152,6 @@ class Settings(BaseSettings):
             "REPROLAB_OPENAI_ADMIN_KEY",
         ),
     )
-    # Optional root-model selection (registry key, e.g. "claude-oauth" /
-    # "gpt-5"): the .env-file counterpart of the OPENRESEARCH_RLM_ROOT_MODEL
-    # process env. models.py::resolve_root_model consults this when neither an
-    # explicit --model nor the process env names a root, BEFORE the layered
-    # key-based default — so a .env-only OAuth setup can't silently fall back
-    # to gpt-5 just because a (possibly dead) OPENAI_API_KEY is present.
-    rlm_root_model: str = Field(
-        default="",
-        validation_alias=AliasChoices(
-            "OPENRESEARCH_RLM_ROOT_MODEL",
-            "REPROLAB_RLM_ROOT_MODEL",
-        ),
-    )
-    # Optional OAuth-root model pin: overrides the model id served by the
-    # `claude-oauth` root (registry default claude-sonnet-4-6) — e.g.
-    # claude-opus-4-8 for reliability on OAuth-only runs. Read by
-    # models.py::resolve_root_model as the .env-file fallback behind the
-    # process-env names of the same spelling.
-    rlm_root_model_name: str = Field(
-        default="",
-        validation_alias=AliasChoices(
-            "OPENRESEARCH_RLM_ROOT_MODEL_NAME",
-            "REPROLAB_RLM_ROOT_MODEL_NAME",
-        ),
-    )
     # Azure OpenAI credentials. Mirrors the openai/anthropic key fields above:
     # read both the bare ``AZURE_OPENAI_*`` names the Azure SDK uses and the
     # Azure portal's "KEY 1" / "KEY 2" labels. Azure issues two interchangeable
@@ -282,20 +257,22 @@ class Settings(BaseSettings):
     environment_build_max_attempts: int = 3
 
     # Default sandbox mode for dashboard requests that omit a sandbox. CLI
-    # defaults remain controlled separately by argparse flags. Local launchers
-    # set this to runpod for GPU-backed dev runs; deployments can set it to
-    # docker or local in env.
+    # defaults remain controlled separately by argparse flags. Deployments can
+    # set this to a cloud (azure/aws/gcp) in env for GPU-backed runs.
     # "gke" is a first-class alias for "gcp" (SandboxMode._missing_ maps it to the
     # gcp member); accepted here so OPENRESEARCH_DEFAULT_SANDBOX=gke boots and the
-    # start.sh gcp/gke preflight branch is reachable.
-    default_sandbox: Literal["auto", "local", "docker", "runpod", "azure", "gcp", "gke"] = "runpod"
+    # start.sh gcp/gke preflight branch is reachable. Note: sandbox=gcp/gke is
+    # PARKED — it raises unless OPENRESEARCH_ALLOW_GKE=1 (see primitives.py).
+    # Default is "local": the single coherent default. Override with
+    # OPENRESEARCH_DEFAULT_SANDBOX.
+    default_sandbox: Literal["auto", "local", "docker", "azure", "aws", "gcp", "gke"] = "local"
 
     # Optional hard override for every run's sandbox mode, regardless of what
     # the client requested. Empty means "honor the request/default_sandbox".
-    # Deployments that must forbid RunPod should set OPENRESEARCH_FORCE_SANDBOX to
-    # "docker" or "local" explicitly; the code default must stay empty so a
-    # missing/commented .env line does not silently rewrite sandbox=runpod.
-    force_sandbox: Literal["", "auto", "local", "docker", "runpod", "azure", "gcp", "gke"] = ""
+    # Deployments that must pin a sandbox set OPENRESEARCH_FORCE_SANDBOX to
+    # "docker"/"local"/a cloud explicitly; the code default stays empty so a
+    # missing/commented .env line does not silently rewrite the sandbox.
+    force_sandbox: Literal["", "auto", "local", "docker", "azure", "aws", "gcp", "gke"] = ""
 
     # Force the LLM provider for every run regardless of what the client
     # requested — analogous to force_sandbox. The UI hard-codes provider=
@@ -310,42 +287,57 @@ class Settings(BaseSettings):
     # POST /runs/upload require a matching X-Demo-Secret header.
     demo_secret: str = ""
 
-    runpod_api_key: str = Field(
-        default="",
-        validation_alias=AliasChoices(
-            "RUNPOD_API_KEY",
-            "OPENRESEARCH_RUNPOD_API_KEY",
-            "REPROLAB_RUNPOD_API_KEY",
-        ),
+    # --- AWS EKS GPU runtime foundation (--sandbox aws) ---
+    # These defaults are intentionally inert.  Merely importing Settings or
+    # selecting any other sandbox neither imports boto3 nor contacts AWS.
+    # EksJobBackend validates the required bucket/cluster only when AWS is
+    # explicitly selected; it never provisions EKS, S3, or IAM resources.
+    aws_region: str = Field(default="us-east-1", description="AWS region for the pre-existing EKS cluster and S3 bucket")
+    aws_eks_cluster: str = Field(default="", description="Name of the pre-existing EKS cluster; required only for --sandbox aws preflight")
+    aws_s3_bucket: str = Field(default="", description="S3 bucket for run-scoped code and artifact transfers; required only for --sandbox aws")
+    aws_namespace: str = Field(default="reprolab", description="Kubernetes namespace for EKS Job submission")
+    aws_service_account: str = Field(default="reprolab-sa", description="EKS Kubernetes ServiceAccount configured with IRSA for S3")
+    aws_base_image: str = Field(default="", description="Pinned ECR/container image for EKS Jobs; empty fails only when AWS is selected")
+    aws_pending_timeout_seconds: int = Field(default=1500, ge=1, description="Seconds before a stuck EKS GPU Job is treated as capacity-exhausted")
+    aws_ttl_seconds_after_finished: int = Field(default=3600, ge=1, description="Kubernetes Job TTL after terminal completion")
+    aws_job_backoff_limit: int = Field(default=0, ge=0, description="EKS Job Pod-level retry limit; keep 0 so runtime accounting remains exact")
+    # EKS does not have a safely-vendored GPU catalog: node labels, VRAM, and
+    # negotiated per-GPU price are deployment facts.  Leave every value inert
+    # by default and reject an AWS cell route until the operator declares all
+    # of them.  A zero price must never silently disable a user-supplied run
+    # dollar cap.
+    aws_per_gpu_vram_gb: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Declared VRAM per GPU for the provisioned EKS pool; 0 blocks AWS cell scheduling",
     )
-    runpod_api_base_url: str = "https://rest.runpod.io/v1"
-    # Reverted from -runtime- back to -devel-: runtime variant lacks CUDA dev
-    # headers, which breaks bitsandbytes / flash-attn / deepspeed at pip-install
-    # time (no precompiled wheel → tries to JIT, fails). SDAR run hit this:
-    # bitsandbytes silently failed under chained `pip install -q ... && python`,
-    # train.py then ModuleNotFoundError'd on transformers. The 14GB cold-start
-    # savings aren't worth the breakage. Override via OPENRESEARCH_RUNPOD_IMAGE
-    # if you have a paper that genuinely doesn't need dev headers.
-    runpod_image: str = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"
-    runpod_gpu_type: str = "NVIDIA GeForce RTX 4090"
-    runpod_gpu_count: int = 1
-    runpod_cloud_type: Literal["SECURE", "COMMUNITY"] = "SECURE"
-    runpod_container_disk_gb: int = 50
-    runpod_volume_gb: int = 20
-    runpod_volume_mount_path: str = "/workspace"
-    runpod_network_volume_id: str = ""
-    runpod_data_center_ids: str = ""
-    runpod_ssh_key_path: str = ""
-    runpod_ssh_public_key: str = ""
-    runpod_ssh_user: str = "root"
-    runpod_boot_timeout_seconds: int = 900
-    runpod_delete_on_destroy: bool = True
-    runpod_bootstrap_command: str = ""
-    # When set, the Runpod backend attaches to this existing pod ID
-    # instead of creating a fresh pod per run. The pod is NEVER deleted
-    # by the backend (the _owned_pod_ids allowlist enforces this even
-    # if delete_on_destroy=true). Useful for persistent shared workers.
-    runpod_pod_id: str = ""
+    aws_gpu_usd_per_hour: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Verified effective per-GPU USD/hour for the EKS pool; 0 blocks AWS cell scheduling",
+    )
+    aws_max_nodes: int = Field(
+        default=0,
+        ge=0,
+        description="Maximum concurrently schedulable EKS GPU nodes; 0 blocks AWS cell scheduling",
+    )
+    aws_gpus_per_node: int = Field(
+        default=0,
+        ge=0,
+        description="Physical GPUs per provisioned EKS GPU node; 0 blocks AWS cell scheduling",
+    )
+    aws_cache_mount_path: str = Field(
+        default="/mnt/reprolab-cache",
+        description="Ephemeral cache mount path inside EKS cell pods",
+    )
+    aws_files_cache_enabled: bool = Field(
+        default=False,
+        description="EKS cell cache is emptyDir by default; do not assume a shared PVC exists",
+    )
+    # Empty by default: the EKS foundation does not invent node-pool labels or
+    # a GPU catalog.  An operator must name only labels actually provisioned
+    # before enabling AWS GPU scheduling.
+    aws_gpu_skus: list[str] = Field(default_factory=list, description="Provisioned EKS GPU node labels (reprolab/sku); empty blocks AWS GPU scheduling")
 
     # --- Azure AKS GPU backend (spec 2026-06-03, --sandbox azure) ---
     # All fields default to empty/sensible stubs so importing Settings never
@@ -705,11 +697,11 @@ class Settings(BaseSettings):
             "OPENRESEARCH_DYNAMIC_GPU_ENABLED",
             "OPENRESEARCH_DYNAMIC_GPU",
         ),
-        description="Wire paper hardware clues to RunPod SKU choice",
+        description="Wire paper hardware clues to cloud GPU SKU choice",
     )
-    force_single_gpu: bool = Field(default=True, description="Cap RunPod GPU count at 1 regardless of paper")
+    force_single_gpu: bool = Field(default=True, description="Cap cloud GPU count at 1 regardless of paper")
     max_gpu_usd_per_hour: float = Field(default=10.0, ge=0.0, description="Per-GPU $/hr cap; 0 disables")
-    max_run_gpu_usd: float = Field(default=10.0, ge=0.0, description="Total RunPod $ per run cap; 0 disables")
+    max_run_gpu_usd: float = Field(default=10.0, ge=0.0, description="Total GPU $ per run cap; 0 disables")
     gpu_count: int | None = Field(
         default=None,
         description=(
@@ -726,7 +718,7 @@ class Settings(BaseSettings):
     # --- BES on RDR (spec 2026-06-07, default OFF) ---
     # Competing candidates extend the RDR controller behind a MASTER gate. When
     # bes_enabled is False every child flag below is inert and run_rdr behaves
-    # bit-for-bit as today. See docs/superpowers/specs/2026-06-07-bes-integration/.
+    # bit-for-bit as today. See docs/history/specs/2026-06-07-bes-integration/.
     bes_enabled: bool = Field(default=False, description="MASTER gate for BES-on-RDR; off => today's RDR path")
     bes_candidates_per_cluster: int = Field(default=1, ge=1, le=8, description="N competing candidates per cluster; 1 = parity")
     bes_select_metric: str = Field(default="cluster_score", description="Candidate SELECT metric (cluster_score | failed_leaves); an unknown value falls back to cluster_score at use-site, so it never aborts the default RDR path")
@@ -749,7 +741,7 @@ class Settings(BaseSettings):
 
     # Budget-awareness prompt for implement_baseline. Tells the baseline-writing
     # agent to scale train.py to fit remaining_s wall-clock.
-    #   "auto"   — inject only on cost-bearing sandboxes (runpod / brev)
+    #   "auto"   — inject only on cost-bearing sandboxes (azure / aws / gcp)
     #   "always" — inject regardless of sandbox
     #   "never"  — skip regardless (paper-faithful epoch counts)
     budget_awareness_mode: str = Field(

@@ -19,11 +19,6 @@ Supported providers (``mode`` arg to :func:`resolve_accelerator`):
                    and probes.  Returns ``None`` when the probe fails (server not
                    up) — for explicit ``"local"`` the caller gets ``None``, not an
                    exception, because the server may simply not be running yet.
-* ``"runpod"``   — scaffold: if ``OPENRESEARCH_ACCELERATOR_BASE_URL`` is already set
-                   to a RunPod proxy URL, uses it; otherwise raises
-                   :class:`AcceleratorError` for explicit mode, or returns
-                   ``None`` for ``"auto"``.  Full auto-provisioning is a future
-                   task (see TODO below).
 * ``"azure"``    — Azure OpenAI endpoint from ``AZURE_OPENAI_API_KEY``,
                    ``AZURE_OPENAI_ENDPOINT``, ``AZURE_OPENAI_DEPLOYMENT``.  Raises
                    :class:`AcceleratorError` when creds are missing in explicit
@@ -89,7 +84,7 @@ class AcceleratorEndpoint:
         API key for the endpoint.  Defaults to ``"local"`` for on-device
         servers that do not require authentication.
     kind:
-        Originating provider: ``"local"``, ``"runpod"``, ``"azure"``,
+        Originating provider: ``"local"``, ``"azure"``,
         ``"foundry"``, or ``"endpoint"``.
     is_azure:
         ``True`` only for Azure OpenAI endpoints.
@@ -237,75 +232,6 @@ def _resolve_local(*, explicit: bool) -> AcceleratorEndpoint | None:
         level,
         "accelerator[local]: probe failed at %s — server not running; returning None",
         base_url,
-    )
-    return None
-
-
-def _resolve_runpod(*, explicit: bool) -> AcceleratorEndpoint | None:
-    """Resolve the RunPod accelerator provider.
-
-    Scaffold implementation.  If ``OPENRESEARCH_ACCELERATOR_BASE_URL`` is already
-    set to a RunPod vLLM proxy URL, validate it with a probe and return the
-    endpoint.  Otherwise:
-
-    * explicit mode  → raise :class:`AcceleratorError` with an actionable
-      message.
-    * auto mode      → return ``None`` (graceful fallback).
-
-    TODO (full auto-provisioning):
-    --------------------------------
-    Full auto-provisioning would call
-    :class:`~backend.services.runtime.runpod_backend.RunpodBackend` to:
-
-    1. Request a GPU pod with a pre-built vLLM image (e.g.
-       ``vllm/vllm-openai:latest``) sized to the model's VRAM requirement.
-    2. Bootstrap the vLLM server on the pod's public IP at port 8001 (or
-       behind a proxy).
-    3. Wait for the ``/v1/models`` probe to return 2xx.
-    4. Return an :class:`AcceleratorEndpoint` with ``base_url=<pod_proxy_url>``,
-       ``kind="runpod"``.
-    5. Register an atexit / context-manager hook to delete the pod on run
-       completion so cost is bounded.
-
-    Hook point: instantiate ``RunpodBackend`` from
-    ``backend.services.runtime.runpod_backend``, call ``create_sandbox`` with a
-    minimal ``SandboxConfig`` whose ``image`` is the vLLM container, then
-    extract the public IP from the returned ``Sandbox`` object and store it in
-    ``OPENRESEARCH_ACCELERATOR_BASE_URL`` for the remainder of the process so
-    subsequent ``_resolve_runpod`` calls hit the existing pod.
-    """
-    proxy_url = os.environ.get("OPENRESEARCH_ACCELERATOR_BASE_URL", "").strip()
-    model = os.environ.get("OPENRESEARCH_ACCELERATOR_MODEL", _DEFAULT_LOCAL_MODEL)
-
-    if proxy_url:
-        if probe_endpoint(proxy_url):
-            return AcceleratorEndpoint(
-                base_url=proxy_url,
-                model=model,
-                api_key=os.environ.get("OPENRESEARCH_ACCELERATOR_API_KEY", "local"),
-                kind="runpod",
-            )
-        _log.warning(
-            "accelerator[runpod]: probe failed at %s — endpoint set but unreachable",
-            proxy_url,
-        )
-        if explicit:
-            raise AcceleratorError(
-                f"RunPod accelerator endpoint set to {proxy_url!r} but probe failed. "
-                "Ensure the vLLM server is running on the pod and the proxy URL is correct."
-            )
-        return None
-
-    # No proxy URL at all.
-    if explicit:
-        raise AcceleratorError(
-            "runpod accelerator auto-provisioning not yet implemented — "
-            "set OPENRESEARCH_ACCELERATOR_BASE_URL to a running RunPod vLLM endpoint, "
-            "or use --accelerator local"
-        )
-    _log.info(
-        "accelerator[runpod]: OPENRESEARCH_ACCELERATOR_BASE_URL not set; "
-        "skipping runpod provider in auto mode"
     )
     return None
 
@@ -473,7 +399,7 @@ def resolve_accelerator(
     Parameters
     ----------
     mode:
-        One of ``"off"``, ``"auto"``, ``"local"``, ``"runpod"``, ``"azure"``,
+        One of ``"off"``, ``"auto"``, ``"local"``, ``"azure"``,
         ``"endpoint"``.
     sandbox_mode:
         The active sandbox mode (a :class:`~backend.agents.execution.SandboxMode`
@@ -507,9 +433,6 @@ def resolve_accelerator(
     if mode_lower == "local":
         return _resolve_local(explicit=True)
 
-    if mode_lower == "runpod":
-        return _resolve_runpod(explicit=True)
-
     if mode_lower == "azure":
         return _resolve_azure(explicit=True)
 
@@ -525,7 +448,7 @@ def resolve_accelerator(
 
     raise ValueError(
         f"Unknown accelerator mode {mode!r}. "
-        "Valid values: off, auto, local, runpod, azure, azure-foundry, endpoint."
+        "Valid values: off, auto, local, azure, azure-foundry, endpoint."
     )
 
 
@@ -534,9 +457,8 @@ def _resolve_auto(*, sandbox_mode: object) -> AcceleratorEndpoint | None:
 
     Priority order:
     1. On-device NVIDIA GPU present AND local endpoint probes OK → ``"local"``.
-    2. Sandbox is RunPod AND ``OPENRESEARCH_ACCELERATOR_BASE_URL`` is set → ``"runpod"``.
-    3. Azure credentials present → ``"azure"``.
-    4. None (caller keeps Sonnet/OAuth path).
+    2. Azure credentials present → ``"azure"``.
+    3. None (caller keeps Sonnet/OAuth path).
 
     Never raises.
     """
@@ -551,18 +473,6 @@ def _resolve_auto(*, sandbox_mode: object) -> AcceleratorEndpoint | None:
                 return ep
     except Exception as exc:  # noqa: BLE001
         _log.debug("accelerator[auto]: GPU check failed: %s", exc)
-
-    # --- 2. RunPod sandbox + published proxy URL ---
-    try:
-        sandbox_str = str(sandbox_mode).lower() if sandbox_mode is not None else ""
-        is_runpod_sandbox = "runpod" in sandbox_str
-        if is_runpod_sandbox:
-            ep = _resolve_runpod(explicit=False)
-            if ep is not None:
-                _log.info("accelerator[auto]: selected runpod (sandbox=runpod + probe OK)")
-                return ep
-    except Exception as exc:  # noqa: BLE001
-        _log.debug("accelerator[auto]: runpod check failed: %s", exc)
 
     # --- 3. Azure credentials ---
     try:

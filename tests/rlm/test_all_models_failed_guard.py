@@ -90,3 +90,60 @@ def test_per_model_not_a_dict_with_flag_on_returns_none(monkeypatch):
 def test_no_metrics_with_flag_on_returns_none(monkeypatch):
     monkeypatch.setenv(_FLAG, "1")
     assert _all_models_failed_violation({}) is None
+
+
+# ---------------------------------------------------------------------------
+# CELLS-ROUTE nesting (2026-08-02 regression): the cells route builds a NESTED
+# per_model — ``per_model[model][env][baseline] = {status, metrics}`` (cell_matrix
+# aggregate_cell_metrics) — so the leaf ``status`` lives 2 levels below the model
+# key, NOT at the model level. The guard must descend to the leaf (mirroring the
+# cells-route any_ok rule), else it FALSE-POSITIVES on every completed cells run
+# (real incident: base_rn ResNet, 11/11 leaf cells status=ok, wrongly flagged
+# all_models_failed → success flipped false → verdict clamped failed).
+# ---------------------------------------------------------------------------
+
+
+def _nested_cells_result(leaf_statuses: dict) -> dict:
+    """per_model[model]['cifar10']['residual'] = {status, test_error_pct}.
+
+    ``leaf_statuses`` maps model_key -> status string.
+    """
+    per_model = {}
+    for model_key, status in leaf_statuses.items():
+        per_model[model_key] = {
+            "cifar10": {"residual": {"status": status, "test_error_pct": 9.5, "cell_id": model_key}}
+        }
+    return {"metrics": {"status": "complete", "per_model": per_model}}
+
+
+def test_nested_all_ok_leaves_with_flag_on_returns_none(monkeypatch):
+    """The base_rn false-positive: nested per_model, every leaf ok → MUST NOT fire."""
+    monkeypatch.setenv(_FLAG, "1")
+    ok = sorted(_OK_STATUSES)[0]
+    result = _nested_cells_result({"plain20": ok, "resnet20": ok, "resnet110": ok})
+    assert _all_models_failed_violation(result) is None
+
+
+def test_nested_all_failed_leaves_with_flag_on_fires(monkeypatch):
+    """Anti-fabrication preserved: nested per_model, every leaf failed → MUST fire."""
+    monkeypatch.setenv(_FLAG, "1")
+    result = _nested_cells_result({"plain20": "failed", "resnet20": "error", "resnet110": "failed"})
+    out = _all_models_failed_violation(result)
+    assert out is not None
+    cls, _msg = out
+    assert cls == "all_models_failed"
+
+
+def test_nested_mixed_one_ok_leaf_with_flag_on_returns_none(monkeypatch):
+    """≥1 ok leaf anywhere in the nested tree → no false positive."""
+    monkeypatch.setenv(_FLAG, "1")
+    ok = sorted(_OK_STATUSES)[0]
+    result = _nested_cells_result({"plain20": "failed", "resnet20": ok, "resnet110": "failed"})
+    assert _all_models_failed_violation(result) is None
+
+
+def test_nested_all_failed_flag_off_returns_none_byte_for_byte(monkeypatch):
+    """OFF stays byte-identical even for the nested shape."""
+    monkeypatch.delenv(_FLAG, raising=False)
+    result = _nested_cells_result({"plain20": "failed", "resnet20": "failed"})
+    assert _all_models_failed_violation(result) is None

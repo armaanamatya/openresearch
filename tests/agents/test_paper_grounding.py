@@ -5,7 +5,6 @@ non-SDAR paper text, while correctly-grounded claims pass.
 """
 from __future__ import annotations
 
-from pathlib import Path
 
 
 from backend.agents.paper_grounding import assert_paper_grounded
@@ -14,12 +13,11 @@ from backend.agents.paper_grounding import assert_paper_grounded
 # VAE paper text fixture
 # ---------------------------------------------------------------------------
 
-_VAE_PAPER_PATH = Path(
-    "/home/abheekp/openresearch/runs/"
-    "_preserved_vae_score_0.6457_prj_03271ba130d423fe/parsed_full_text.txt"
-)
+# Any readable preserved copy of the parsed VAE paper, on any machine/user
+# (see tests/agents/preserved_artifacts.py for the search order).
+_VAE_PAPER_GLOB = "*prj_03271ba130d423fe/parsed_full_text.txt"
 
-# Representative fallback text with Frey Face (used when the actual file is absent)
+# Representative fallback text with Frey Face (used when no readable copy exists)
 _VAE_FALLBACK_TEXT = (
     "Auto-Encoding Variational Bayes. We evaluated our method on two image datasets: "
     "the Frey Face dataset of 1965 images (28x20 pixels each) and the MNIST digits dataset. "
@@ -29,8 +27,14 @@ _VAE_FALLBACK_TEXT = (
 
 
 def _get_vae_paper_text() -> str:
-    if _VAE_PAPER_PATH.exists():
-        return _VAE_PAPER_PATH.read_text(encoding="utf-8", errors="replace")
+    from tests.agents.preserved_artifacts import find_preserved_file
+
+    path = find_preserved_file(_VAE_PAPER_GLOB)
+    if path is not None:
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            pass  # raced/unreadable after probe — the fallback keeps tests deterministic
     return _VAE_FALLBACK_TEXT
 
 

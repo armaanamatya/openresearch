@@ -11,7 +11,7 @@ literature records — the input-side counterpart to
 ``backend/agents/rlm/claim_grounding.py``.
 
 Design contract (house rules — see
-``docs/superpowers/specs/2026-07-05-openscience-skill-library-and-harness-enhancements-design.md``
+``docs/history/specs/2026-07-05-openscience-skill-library-and-harness-enhancements-design.md``
 §6②):
   - Gated at the CALL SITE by ``OPENRESEARCH_LITERATURE_GROUNDING`` — this
     module is always importable; ``.search()``/``.fetch()`` are simply never
@@ -38,7 +38,7 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-_TRUTHY = ("1", "true", "yes")
+_TRUTHY = ("1", "true", "yes", "on")
 
 _DEFAULT_TIMEOUT_S = 10.0
 _USER_AGENT = "openresearch-literature-grounding/0.1 (+https://github.com/lolout1/openresearch)"
@@ -71,6 +71,13 @@ class LiteratureRecord:
     abstract_snippet: str | None = None
     url: str | None = None
     venue: str | None = None
+    # Citation-graph neighbours as plain {"id","title","arxiv_id","doi"} dicts
+    # (plain dicts so a JSON round-trip through literature_cache.jsonl is
+    # lossless). Populated only when the provider returns them — Semantic
+    # Scholar ``fetch()`` today; empty for search hits and other connectors.
+    # Bounded by the producing connector, never unbounded.
+    references: tuple[dict[str, Any], ...] = ()
+    citations: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

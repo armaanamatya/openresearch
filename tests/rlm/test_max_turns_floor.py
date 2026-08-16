@@ -7,7 +7,6 @@ in isolation without touching subprocesses or GPU state.
 """
 from __future__ import annotations
 
-import pytest
 
 from backend.agents.rlm.gpu_cell_runner import (
     _LONG_HORIZON_TURN_FLOORS,

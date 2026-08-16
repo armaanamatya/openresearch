@@ -25,7 +25,7 @@ from backend.utils.io import read_json
 
 logger = logging.getLogger(__name__)
 
-# Repo root — used by _load_paper_override to locate docs/papers/<id>.yaml
+# Repo root — used by _load_paper_override to locate configs/papers/<id>.yaml
 _REPO_ROOT = Path(__file__).parent.parent.parent
 
 # Regex matching bare arXiv IDs in project_id strings (e.g. "2605.15155",
@@ -73,6 +73,7 @@ _HARNESS_CODE_HELPERS: tuple[str, ...] = (
     "webshop_env.py",
     "provenance.py",  # D2: emit_provenance / emit_figure_sidecar — legibility for the grader
     "eval_provenance.py",  # eval-metric provenance producer (record_eval) — verifiable held-out metric sidecar
+    "cell_checkpoint.py",  # 5-field checkpoint contract writer (write_checkpoint) — receipt-ready checkpoints for authority
     "convergence_evidence.py",  # Module A: structured convergence/sweep evidence (rubric_guard consults it)
     "fair_comparison.py",  # Module B: identical-init snapshot + verifiable init fingerprint
     "verl_metrics_adapter.py",  # execute-mode seam: verl-shaped val logs/summary → canonical metrics.json
@@ -558,30 +559,6 @@ _ENGINEERING_STANDARDS_BLOCK = (
     "emitting placeholder metrics is a stub and scores ~0.\n"
 )
 
-_POD_SETUP_BLOCK = (
-    "\n\nRUNPOD SANDBOX — pod env setup (when sandbox=runpod):\n"
-    "On RunPod the pod boots from a GENERIC pytorch image (typically "
-    "runpod/pytorch:*-py3.10-cuda*-ubuntu22.04). Your Dockerfile is NOT used "
-    "to build the pod — it's documentation only.\n"
-    "\n"
-    "DEPENDENCY INSTALLATION IS HANDLED FOR YOU. The backend will automatically\n"
-    "run `python -m pip install --no-cache-dir -r requirements.txt` BEFORE your\n"
-    "commands.json entries fire. You do NOT need to repeat this in commands.json.\n"
-    "Just list requirements.txt with the deps you need (transformers, accelerate,\n"
-    "alfworld, etc., pinned versions).\n"
-    "\n"
-    "commands.json on runpod should contain ONLY the experiment commands —\n"
-    "typically a 1-2 entry list ending in `python train.py`. Example:\n"
-    "  [\"alfworld-download 2>&1 || true\", \"python train.py\"]\n"
-    "(The `|| true` on alfworld-download tolerates the case where the data\n"
-    "is already present from a prior attempt.)\n"
-    "\n"
-    "Special-case packages that need CUDA dev headers (bitsandbytes, flash-attn, "
-    "deepspeed, apex): the default RunPod image is cuda-devel, so dev headers "
-    "ARE available. Prefer pre-built wheels from pypi where they exist.\n"
-)
-
-
 # Lane γ: per_model metrics block
 _PER_MODEL_METRICS_BLOCK_BASE = (
     "\n\nPER-MODEL METRICS — when the paper tests multiple model variants:\n"
@@ -693,7 +670,7 @@ _RUNTIME_DETECTION_BLOCK = (
     "\n\nRUNTIME COMPUTE DETECTION — always-on:\n"
     "Your code MUST detect available compute at runtime and adapt accordingly. "
     "Do NOT hard-code an assumption about GPU availability. The same `train.py` "
-    "should work whether the sandbox is CPU-only docker or a GPU-bearing runpod:\n"
+    "should work whether the sandbox is CPU-only docker or a GPU-bearing cloud VM:\n"
     "  - At startup: `import torch; HAS_GPU = torch.cuda.is_available()` "
     "(or the framework equivalent — `jax.devices('gpu')`, `tf.config.list_physical_devices('GPU')`, etc.)\n"
     "  - `device = 'cuda' if HAS_GPU else 'cpu'` and pass through to every model/tensor\n"
@@ -896,10 +873,10 @@ _RUNTIME_DETECTION_BLOCK = (
 
 # GPU VRAM estimates (approx, in GB) — keyed by canonical GPU model name.
 # Used by every cloud-provider hardware brief resolver. Refresh quarterly
-# when SKU lineup changes.  Multi-vendor (RunPod GPU strings + Azure VM
+# when SKU lineup changes.  Multi-vendor (cloud GPU strings + Azure VM
 # SKUs that embed the GPU model + raw H100/A100/L40S/etc. names).
 _GPU_VRAM_ESTIMATE_GB: dict[str, int] = {
-    # RunPod-style GPU strings
+    # Bare NVIDIA GPU model strings
     "NVIDIA GeForce RTX 4090": 24,
     "NVIDIA RTX 4090": 24,
     "NVIDIA RTX A6000": 48,
@@ -955,20 +932,20 @@ _AZURE_VM_SKU_CATALOG: dict[str, tuple[str, int, int]] = {
 def _resolve_cloud_hardware(sandbox_mode: object) -> dict | None:
     """Resolve concrete hardware specs from whichever cloud the run targets.
 
-    Multi-cloud — works for RunPod (OPENRESEARCH_RUNPOD_*), Azure ML
-    (OPENRESEARCH_AZURE_*), and Brev (OPENRESEARCH_BREV_*).  Returns a normalised
-    dict::
+    Multi-cloud — works for Azure ML (OPENRESEARCH_AZURE_*).  GCP and AWS
+    single-VM / cluster backends resolve their own hardware in the runtime
+    layer, so this brief covers Azure today.  Returns a normalised dict::
 
         {
-          "cloud":          "RunPod" | "Azure ML" | "Brev",
-          "gpu":            "NVIDIA L40S",
+          "cloud":          "Azure ML",
+          "gpu":            "NVIDIA A100 80GB",
           "gpu_count":      1,
-          "tier":           "SECURE" | "<region>" | "",
-          "vram_gb":        48,
-          "image":          "runpod/pytorch:..." | "mcr.microsoft.com/azureml/..." | "",
-          "container_disk_gb": 50,
-          "volume_gb":      20,
-          "volume_mount":   "/workspace",
+          "tier":           "<region>" | "",
+          "vram_gb":        80,
+          "image":          "mcr.microsoft.com/azureml/...",
+          "container_disk_gb": 100,
+          "volume_gb":      0,
+          "volume_mount":   "/mnt/azureml",
           "vram_known":     True,
         }
 
@@ -979,23 +956,6 @@ def _resolve_cloud_hardware(sandbox_mode: object) -> dict | None:
     mode = str(sandbox_mode or "").lower()
     vram_override_str = _os.environ.get("OPENRESEARCH_VRAM_OVERRIDE_GB", "").strip()
     vram_override = int(vram_override_str) if vram_override_str.isdigit() else None
-
-    # --- RunPod ---
-    rp_gpu = _os.environ.get("OPENRESEARCH_RUNPOD_GPU_TYPE", "").strip()
-    if "runpod" in mode and rp_gpu:
-        vram_gb: int | None = vram_override or _GPU_VRAM_ESTIMATE_GB.get(rp_gpu)
-        return {
-            "cloud": "RunPod",
-            "gpu": rp_gpu,
-            "gpu_count": int(_os.environ.get("OPENRESEARCH_RUNPOD_GPU_COUNT", "1") or "1"),
-            "tier": _os.environ.get("OPENRESEARCH_RUNPOD_CLOUD_TYPE", "SECURE").strip(),
-            "vram_gb": vram_gb,
-            "vram_known": vram_gb is not None,
-            "image": _os.environ.get("OPENRESEARCH_RUNPOD_IMAGE", "").strip(),
-            "container_disk_gb": int(_os.environ.get("OPENRESEARCH_RUNPOD_CONTAINER_DISK_GB", "50") or "50"),
-            "volume_gb": int(_os.environ.get("OPENRESEARCH_RUNPOD_VOLUME_GB", "20") or "20"),
-            "volume_mount": _os.environ.get("OPENRESEARCH_RUNPOD_VOLUME_MOUNT_PATH", "/workspace").strip(),
-        }
 
     # --- Azure ML ---
     az_size = _os.environ.get("OPENRESEARCH_AZURE_VM_SIZE", "").strip()
@@ -1022,23 +982,6 @@ def _resolve_cloud_hardware(sandbox_mode: object) -> dict | None:
             "volume_mount": _os.environ.get("OPENRESEARCH_AZURE_DATASTORE_MOUNT", "/mnt/azureml").strip(),
         }
 
-    # --- Brev ---
-    brev_gpu = _os.environ.get("OPENRESEARCH_BREV_GPU_TYPE", "").strip()
-    if "brev" in mode and brev_gpu:
-        vram_gb = vram_override or _GPU_VRAM_ESTIMATE_GB.get(brev_gpu)
-        return {
-            "cloud": "Brev",
-            "gpu": brev_gpu,
-            "gpu_count": int(_os.environ.get("OPENRESEARCH_BREV_GPU_COUNT", "1") or "1"),
-            "tier": _os.environ.get("OPENRESEARCH_BREV_REGION", "").strip(),
-            "vram_gb": vram_gb,
-            "vram_known": vram_gb is not None,
-            "image": _os.environ.get("OPENRESEARCH_BREV_IMAGE", "").strip(),
-            "container_disk_gb": int(_os.environ.get("OPENRESEARCH_BREV_CONTAINER_DISK_GB", "50") or "50"),
-            "volume_gb": 0,
-            "volume_mount": "",
-        }
-
     return None
 
 
@@ -1047,7 +990,7 @@ def _hardware_specs_block(sandbox_mode: object) -> str:
     run against. Saves the agent from having to discover via probes and
     prevents OOM-by-batch-size-guessing.
 
-    Multi-cloud — emits for RunPod, Azure ML, and Brev, dispatching via
+    Multi-cloud — emits for Azure ML, dispatching via
     :func:`_resolve_cloud_hardware`. Returns "" when no cloud-provider
     env is set (e.g. local docker / local process), since there's no
     fixed hardware shape to brief.
@@ -1064,12 +1007,7 @@ def _hardware_specs_block(sandbox_mode: object) -> str:
     )
     tier_part = f" ({spec['tier']})" if spec.get("tier") else ""
     # Per-cloud image guidance — pre-installed packages differ.
-    if spec["cloud"] == "RunPod":
-        image_note = (
-            "    (torch + torchvision + torchaudio + CUDA libs are PRE-INSTALLED — "
-            "do NOT list them in requirements.txt)"
-        )
-    elif spec["cloud"] == "Azure ML":
+    if spec["cloud"] == "Azure ML":
         image_note = (
             "    (Azure ML curated environment — PyTorch + CUDA pre-installed "
             "via mcr.microsoft.com/azureml/curated/acpt-pytorch-*; do NOT "
@@ -1316,7 +1254,7 @@ _RUBRIC_GUARD_BLOCK = (
     "the faster you can repair the gap.\n"
     "\n"
     "Required keys / artifacts come from the paper rubric. Derive them from\n"
-    "context['paper_targets'] / docs/papers/<arxiv_id>.yaml when present, else\n"
+    "context['paper_targets'] / configs/papers/<arxiv_id>.yaml when present, else\n"
     "pick the minimal set the rubric's leaf descriptions explicitly name. Common\n"
     "always-on artifacts: README.md, training_curves.json, config_used.json,\n"
     "fig_*.png. Common always-on keys: every leaf metric the paper headlines\n"
@@ -1422,15 +1360,25 @@ _CELL_CONTRACT_BLOCK = (
     "    The harness nests it at per_model.<model_key>.<env>.<baseline> and aggregates the grid;\n"
     "    do NOT write the per_model nesting yourself in a cell — emit only this cell's leaf.\n"
     "\n"
-    "SPOT-PREEMPTION RESILIENCE — checkpoint + resume: the harness sets\n"
+    "SPOT-PREEMPTION RESILIENCE — receipt-ready 5-field checkpoint + resume: the harness sets\n"
     "  OPENRESEARCH_CELL_CHECKPOINT_DIR (a stable per-cell dir on a persistent disk) and\n"
-    "  OPENRESEARCH_CELL_CHECKPOINT_INTERVAL_S (seconds, default 600).\n"
-    "In train_cell.py: (1) at startup, if OPENRESEARCH_CELL_CHECKPOINT_DIR holds a checkpoint,\n"
-    "  RESUME from the latest (model + optimizer + step/epoch); (2) during training, SAVE a\n"
-    "  checkpoint there at least every OPENRESEARCH_CELL_CHECKPOINT_INTERVAL_S seconds (and/or\n"
-    "  every K steps) — atomically (write to a temp file then rename) so a kill mid-write can't\n"
-    "  corrupt it; (3) keep writing metrics.json as you go (partial-timeout scoring reads whatever\n"
-    "  is flushed). This makes a preemption lose only the steps since the last checkpoint.\n"
+    "  OPENRESEARCH_CELL_CHECKPOINT_INTERVAL_S (seconds, default 600), and ships a stdlib-only\n"
+    "  helper `cell_checkpoint.py` (import it). At ladder/interval boundaries call the ONE\n"
+    "  receipt-ready contract — ALL FIVE components, no more, no fewer:\n"
+    "    cell_checkpoint.write_checkpoint(OPENRESEARCH_CELL_CHECKPOINT_DIR, step,\n"
+    "        model=<serialized model.state_dict()>, optimizer=<serialized optimizer.state_dict()>,\n"
+    "        lr_scheduler=<serialized lr_scheduler.state_dict()>, rng=<serialized RNG state>,\n"
+    "        data_order=<serialized data ordering>)\n"
+    "  (serialize each to bytes with e.g. torch.save into an io.BytesIO buffer; RNG state via\n"
+    "  cell_checkpoint.capture_rng_state()). The harness hashes these five into the receipt.\n"
+    "In train_cell.py: (1) at startup, RESUME from\n"
+    "  cell_checkpoint.latest_checkpoint_dir(OPENRESEARCH_CELL_CHECKPOINT_DIR) when it is not None\n"
+    "  (cell_checkpoint.read_checkpoint(...) returns the five blobs — restore model + optimizer +\n"
+    "  lr_scheduler + rng + data_order + step); (2) during training call write_checkpoint at least\n"
+    "  every OPENRESEARCH_CELL_CHECKPOINT_INTERVAL_S seconds (and/or every K steps) — it writes\n"
+    "  atomically for you, so a kill mid-write can't corrupt it; (3) keep writing metrics.json as\n"
+    "  you go (partial-timeout scoring reads whatever is flushed). This makes a preemption lose only\n"
+    "  the steps since the last checkpoint.\n"
     "\n"
     "cells.json (a top-level file in code/) enumerates EVERY cell — it is the ONLY place the\n"
     "baseline axis is declared (the harness scope is model x dataset x seed, with no baseline\n"
@@ -1556,7 +1504,7 @@ _RL_SCAFFOLD_BLOCK = (
 # SDAR baseline-coverage guidance block (opt-in: OPENRESEARCH_SDAR_BASELINES=1)
 # ---------------------------------------------------------------------------
 # BES Phase 1 — Coverage Completion (spec
-# docs/superpowers/specs/2026-06-07-bes-integration/phase-1-coverage-completion.md).
+# docs/history/specs/2026-06-07-bes-integration/phase-1-coverage-completion.md).
 # A "baseline" is purely agent-side: the generated train.py maps a baseline
 # STRING to two flags (opsd_enabled, gate_type) inside train_one_run(baseline=...),
 # so emitting more baselines is GUIDANCE, not a harness change. The SDAR paper
@@ -1690,8 +1638,8 @@ def _resolve_data_root() -> str:
     """Writable data root for the active sandbox.
 
     ``run.py`` points ``OPENRESEARCH_RUNPOD_VOLUME_MOUNT_PATH`` at a writable shared dir for
-    LOCAL sandboxes (where ``/workspace`` does not exist); RunPod/Docker keep
-    ``/workspace`` (the real pod/container volume). Reading the env var here keeps the
+    LOCAL sandboxes (where ``/workspace`` does not exist); Docker/cloud-VM sandboxes keep
+    ``/workspace`` (the real container/VM volume). Reading the env var here keeps the
     guidance the agent sees identical to where data actually lands at runtime.
     """
     import os
@@ -1701,7 +1649,7 @@ def _resolve_data_root() -> str:
 def _dataset_setup_block(data_root: str = "/workspace") -> str:
     """DATASET SETUP guidance, rooted at the sandbox's writable ``data_root``.
 
-    ``data_root`` is the writable volume-mount root (``/workspace`` on RunPod/Docker, a
+    ``data_root`` is the writable volume-mount root (``/workspace`` on Docker/cloud-VM, a
     writable shared cache dir on local). NEVER hardcode ``/workspace`` here: on a local
     host it is unwritable and every dataset download dies at ``os.makedirs``.
     """
@@ -1785,7 +1733,7 @@ def _dataset_setup_block(data_root: str = "/workspace") -> str:
         "\n"
         "General rules:\n"
         f"  - The writable data root for THIS sandbox is {data_root}. Default ALL data dirs to\n"
-        f"    {data_root}/data/<env>, NEVER to /workspace (RunPod-only), ~, or relative paths.\n"
+        f"    {data_root}/data/<env>, NEVER to a hardcoded /workspace, ~, or relative paths.\n"
         "  - Use the CANONICAL HuggingFace owner/name for every dataset (e.g. 'hotpotqa/hotpot_qa',\n"
         "    'mandarjoshi/trivia_qa') — the modern Hub REJECTS bare short names with HfUriError.\n"
         "  - MODEL IDS: use the EXACT HuggingFace id, which is NOT always the paper's display\n"
@@ -2012,7 +1960,7 @@ def _rubric_checklist_block(project_dir: Path) -> str:
 
 
 def _load_paper_override(arxiv_id: str | None) -> str:
-    """Return a prompt block loaded from ``docs/papers/<arxiv_id>.yaml``.
+    """Return a prompt block loaded from ``configs/papers/<arxiv_id>.yaml``.
 
     The yaml schema is open-ended; the loader formats it as a markdown-style
     prompt block so the agent sees it in a readable format.
@@ -2023,7 +1971,7 @@ def _load_paper_override(arxiv_id: str | None) -> str:
     if not arxiv_id:
         return ""
 
-    yaml_path = _REPO_ROOT / "docs" / "papers" / f"{arxiv_id}.yaml"
+    yaml_path = _REPO_ROOT / "configs" / "papers" / f"{arxiv_id}.yaml"
     if not yaml_path.exists():
         return ""
 
@@ -2044,7 +1992,7 @@ def _load_paper_override(arxiv_id: str | None) -> str:
         formatted = str(data)
 
     return (
-        f"\n\nPAPER-SPECIFIC GUIDANCE (loaded from docs/papers/{arxiv_id}.yaml):\n"
+        f"\n\nPAPER-SPECIFIC GUIDANCE (loaded from configs/papers/{arxiv_id}.yaml):\n"
         + formatted
     )
 
@@ -2475,7 +2423,7 @@ def _compute_constraint_guidance(
     Goal: the baseline agent writes ONE script that works on CPU OR GPU,
     detecting at runtime via torch.cuda.is_available() (or framework equiv)
     and adapting scale. Hard-coding either mode at build time is wrong —
-    the same artifact must run on the local CPU sandbox AND on RunPod GPU.
+    the same artifact must run on the local CPU sandbox AND on a cloud GPU VM.
 
     Policy overlay on top of the always-on runtime detection:
     - gpu_mode=off → user demands CPU-only; emphasize smoke-test mode is
@@ -2488,8 +2436,8 @@ def _compute_constraint_guidance(
       decides at execution time.
 
     Sandbox signals are advisory:
-    - sandbox=runpod → GPU very likely available; agent should still write
-      the detection-branch (some runpod pods are CPU-only).
+    - sandbox=gcp/azure/aws → GPU very likely available; agent should still
+      write the detection-branch (some cloud nodes may be CPU-only).
     - sandbox=docker/local → GPU uncertain; the detection-branch is THE
       protection against assuming wrong.
 
@@ -2502,10 +2450,9 @@ def _compute_constraint_guidance(
     1. _NO_STUB_BLOCK
     1b. _ENGINEERING_STANDARDS_BLOCK (elite-ML-engineer craft + self-verification rail)
     2. _RUNTIME_DETECTION_BLOCK
-    3. _POD_SETUP_BLOCK (only when sandbox=runpod)
-    4. _DATASET_SETUP_BLOCK (always-on)
+    3. _DATASET_SETUP_BLOCK (always-on)
     5. Rubric auto-checklist (when generated_rubric.json exists)
-    6. Per-paper override (when docs/papers/<arxiv_id>.yaml exists)
+    6. Per-paper override (when configs/papers/<arxiv_id>.yaml exists)
     7. OPENRESEARCH_BASELINE_EXTRA_GUIDANCE env-var block
     8. gpu_mode policy overlays (off / max)
     """
@@ -2536,16 +2483,28 @@ def _compute_constraint_guidance(
     # 2.5. PER-MODEL METRICS — multi-scale-paper output shape (Lane γ), follows
     # RUNTIME_DETECTION so the agent understands compute constraints first.
     # Budget block: governed by OPENRESEARCH_BUDGET_AWARENESS_MODE.
-    #   - "auto" (default): include only on cost-bearing sandboxes (runpod /
-    #     brev) where every minute of overrun maps to real $.  Local docker /
+    #   - "auto" (default): include only on cost-bearing sandboxes (the paid
+    #     clouds gcp / azure / aws) where every minute of overrun maps to real $.
+    #     Local docker /
     #     local-process sandboxes pay only with wall-clock; the user can
     #     extend --max-wall-clock if they want paper-faithful epochs.
     #   - "always": include regardless of sandbox.  Useful when the user
     #     wants the agent to scale down even on free local compute.
     #   - "never": skip regardless.  Useful when the user has a big budget
     #     and wants the agent to follow the paper's full epoch counts.
-    _COST_BEARING_SANDBOXES = ("runpod", "brev")
+    _COST_BEARING_SANDBOXES = ("gcp", "azure", "aws")
     _is_cost_bearing = any(s in mode_str for s in _COST_BEARING_SANDBOXES)
+    if not _is_cost_bearing:
+        # The supported paid-GCP path runs `--sandbox local` on a billed VM
+        # (`--billing-sandbox gcp`); the sandbox string alone can't see that.
+        # The campaign driver marks billed GPU time by setting
+        # OPENRESEARCH_MAX_RUN_GPU_USD in the child env (campaign_policy).
+        try:
+            _is_cost_bearing = (
+                float(os.environ.get("OPENRESEARCH_MAX_RUN_GPU_USD", "") or "0") > 0
+            )
+        except ValueError:
+            _is_cost_bearing = False
     from backend.config import get_settings as _get_settings
     _budget_mode = (_get_settings().budget_awareness_mode or "auto").lower()
     if _budget_mode == "never":
@@ -2567,6 +2526,10 @@ def _compute_constraint_guidance(
         guidance += _CELL_CONTRACT_BLOCK
     if _inject_budget:
         guidance += _budget_awareness_block(remaining_s)
+    # Static cloud hardware brief (GPU model / VRAM / image / disk) — saves the
+    # agent probe round-trips and OOM-by-guessing. Returns "" when no
+    # cloud-provider env is set (local docker / local process).
+    guidance += _hardware_specs_block(sandbox_mode)
     # Min-train-steps floor (OPENRESEARCH_MIN_TRAIN_STEPS, default-OFF): overrides any
     # shorter-training suggestion from the budget block when set.  The matching
     # postflight guard (_undertrained_cell_violation) enforces this at execution time.
@@ -2608,15 +2571,8 @@ def _compute_constraint_guidance(
     if minimize_compute:
         guidance += _MINIMIZE_COMPUTE_BLOCK
 
-    # 3. RUNPOD POD SETUP — only when sandbox=runpod.
-    if "runpod" in mode_str:
-        guidance += _POD_SETUP_BLOCK
-        # 3.5. Concrete hardware brief — GPU type, VRAM, image, disk. Lets
-        # the agent size batches without probing or guessing.
-        guidance += _hardware_specs_block(sandbox_mode)
-
     # 4. DATASET SETUP — always-on; tells the agent how to download real data,
-    #    rooted at the sandbox's writable data root (/workspace only on RunPod/Docker;
+    #    rooted at the sandbox's writable data root (/workspace only on Docker/cloud-VM;
     #    a writable shared cache on local — see run._ensure_local_data_root).
     guidance += _dataset_setup_block(_resolve_data_root())
 
@@ -2707,7 +2663,7 @@ def _compute_constraint_guidance(
     if data_recipes:
         guidance += _data_recipes_binding_block(data_recipes)
 
-    # 6. Per-paper YAML override — when docs/papers/<arxiv_id>.yaml exists.
+    # 6. Per-paper YAML override — when configs/papers/<arxiv_id>.yaml exists.
     override = _load_paper_override(arxiv_id)
     if override:
         guidance += override
@@ -2836,7 +2792,7 @@ def _compute_constraint_guidance(
             "CPU branch remains in the code as a safety net for portability + "
             "smoke validation, but is not the primary entrypoint here.\n"
         )
-    # auto/prefer/None or sandbox-runpod: no overlay — runtime detection wins.
+    # auto/prefer/None or a cloud sandbox: no overlay — runtime detection wins.
 
     # 9. Parallelism policy — controls whether generated train.py uses
     #    DDP/FSDP/vLLM-TP (multi) or a single device (single/auto-single).
@@ -2939,7 +2895,7 @@ async def run_with_sdk(
 
     ``arxiv_id`` — when set (threaded from ``RunContext.arxiv_id`` by the RLM
     primitives layer), takes precedence over ``_extract_arxiv_id(project_id)``
-    for the ``docs/papers/<id>.yaml`` override lookup.  This is the P0 fix:
+    for the ``configs/papers/<id>.yaml`` override lookup.  This is the P0 fix:
     arXiv-sourced runs receive hashed project IDs (``prj_<digest>``) that the
     regex cannot parse, so the override was dead code on every real arXiv run.
     """

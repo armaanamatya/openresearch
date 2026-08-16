@@ -9,16 +9,10 @@
 # One path per line, relative to repo root. Blank lines and #-comments ignored.
 
 README.md
-system_overview.md
+ONBOARDING.md
 CLAUDE.md
-docs/reproduction.md
+docs/README.md
 docs/architecture.md
-docs/infra.md
-docs/troubleshooting.md
-docs/policies/documentation.md
-docs/design/rlm-pivot-brief.md
-docs/design/project-rebuild-spec.md
-docs/guides/setup-guide.md
-docs/guides/deployment.md
-docs/runbooks/e2e-testing.md
-docs/runbooks/running-the-project.md
+docs/engineering-guide.md
+docs/operations.md
+docs/policies/artifacts.md

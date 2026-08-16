@@ -145,9 +145,9 @@ class RuntimeBackend(ABC):
         """Return True if the sandbox is reachable RIGHT NOW.
 
         For network-isolated backends (local_process, local_docker) the
-        sandbox is always reachable, so this defaults to True. RunPod
-        overrides to open a FRESH SSH channel (not the wedged execute
-        channel) and run a small probe command.
+        sandbox is always reachable, so this defaults to True. A network-backed
+        backend may override to open a FRESH probe channel (independent of the
+        possibly-wedged execute channel) and run a small probe command.
         """
         return True
 

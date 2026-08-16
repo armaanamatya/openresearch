@@ -13,14 +13,14 @@ from backend.services.events.live_runs import (
 
 def test_no_override_returns_request_unchanged():
     """Empty force_sandbox leaves the request untouched."""
-    request = StartRunRequest(sandbox="runpod")
+    request = StartRunRequest(sandbox="azure")
     result = apply_sandbox_override(request, "")
-    assert result.sandbox == "runpod"
+    assert result.sandbox == "azure"
 
 
 def test_override_replaces_sandbox():
-    """force_sandbox='local' overrides a runpod request to local."""
-    request = StartRunRequest(sandbox="runpod")
+    """force_sandbox='local' overrides an azure request to local."""
+    request = StartRunRequest(sandbox="azure")
     result = apply_sandbox_override(request, "local")
     assert result.sandbox == "local"
 
@@ -34,9 +34,9 @@ def test_override_idempotent():
 
 def test_original_request_not_mutated():
     """The original request object is not mutated by the override."""
-    request = StartRunRequest(sandbox="runpod")
+    request = StartRunRequest(sandbox="azure")
     apply_sandbox_override(request, "local")
-    assert request.sandbox == "runpod"
+    assert request.sandbox == "azure"
 
 
 def test_force_sandbox_default_is_empty():
@@ -46,7 +46,7 @@ def test_force_sandbox_default_is_empty():
     settings = Settings(_env_file=None)
 
     assert settings.force_sandbox == ""
-    assert settings.default_sandbox == "runpod"
+    assert settings.default_sandbox == "local"  # single coherent default
 
 
 # --------------------------------------------------------------------------- #

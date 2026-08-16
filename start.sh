@@ -1,35 +1,29 @@
 #!/usr/bin/env bash
-# Dashboard launcher with Runpod-as-default and robust preflight inputs.
+# Dashboard launcher: local-by-default with a GKE (gcp) preflight and robust
+# dev-stack supervision.
 #
 # Behavior:
-#   1. Defaults dashboard sandbox to "runpod" unless user overrides
-#      OPENRESEARCH_DEFAULT_SANDBOX.
-#   2. Runs scripts/runpod_check.sh only when sandbox is "runpod"
-#      (or START_FORCE_RUNPOD_PREFLIGHT=1).
+#   1. Defaults dashboard sandbox to "local" unless the operator overrides
+#      OPENRESEARCH_DEFAULT_SANDBOX (shell env > .env > local). Paid clouds
+#      (azure/aws) and the GCP single-VM path are opt-in per run; gcp/gke
+#      routes to the PARKED GKE backend (raises unless OPENRESEARCH_ALLOW_GKE=1).
+#   2. Runs scripts/gke_check.sh only when sandbox is "gcp"/"gke" (skippable).
 #   3. Boots the full local dev stack: backend (uvicorn, --reload) + frontend
 #      (Next.js dev server), signal-forwarded and watchdog-linked so either
 #      one dying tears down the other. Mirrors docker/entrypoint.sh's prod
 #      two-process pattern and scripts/dev.sh's dual launcher.
 #
 # Escape hatches:
-#   START_SKIP_PREFLIGHT=1 ./start.sh   # skip runpod preflight when selected
-#   START_FORCE_RUNPOD_PREFLIGHT=1 ./start.sh
-#                                       # run runpod preflight even when
-#                                       # sandbox is not runpod
-#   START_FULL_SMOKE=1 ./start.sh       # also boot a real pod, run nvidia-smi
-#                                       # over SSH, destroy it. COSTS MONEY
-#                                       # (cents-scale on RTX 4090). Use when
-#                                       # you want end-to-end confidence
-#                                       # before kicking off a long pipeline.
-#   OPENRESEARCH_DEFAULT_SANDBOX=local ./start.sh
-#                                       # temporarily force local dashboard default
-#   START_BACKEND_ONLY=1 ./start.sh     # backend only — no Node/frontend needed
-#   START_FRONTEND_ONLY=1 ./start.sh    # frontend only — backend assumed to be
-#                                       # running elsewhere
+#   START_SKIP_PREFLIGHT=1 ./start.sh    # skip the gcp/gke preflight
+#   START_FULL_SMOKE=1 ./start.sh        # also run the (operator-gated) pod smoke
+#   OPENRESEARCH_DEFAULT_SANDBOX=azure ./start.sh
+#                                        # temporarily force a cloud dashboard default
+#   START_BACKEND_ONLY=1 ./start.sh      # backend only — no Node/frontend needed
+#   START_FRONTEND_ONLY=1 ./start.sh     # frontend only — backend assumed to be
+#                                        # running elsewhere
 set -euo pipefail
 cd "$(dirname "$0")"
 
-PREFLIGHT="${1:-${PREFLIGHT_SCRIPT:-scripts/runpod_check.sh}}"
 ENV_FILE=".env"
 
 # Shared dotenv-grammar .env reader (env_value_from_file). Extracted so the
@@ -39,85 +33,22 @@ ENV_FILE=".env"
 # parse (hard ValidationError on Literal fields at boot).
 . scripts/lib/env_file.sh
 
-# 1. Default sandbox for the dashboard: shell env > .env > runpod.
+# 1. Default sandbox for the dashboard: shell env > .env > local.
 # Consulting .env here matters: this export becomes real process env, which
-# pydantic-settings ranks ABOVE the .env file — exporting "runpod"
-# unconditionally would silently shadow a `OPENRESEARCH_DEFAULT_SANDBOX=local`
-# line the operator put in .env.
+# pydantic-settings ranks ABOVE the .env file — exporting a value
+# unconditionally would silently shadow an OPENRESEARCH_DEFAULT_SANDBOX line
+# the operator put in .env.
 if [[ -z "${OPENRESEARCH_DEFAULT_SANDBOX:-}" ]]; then
     OPENRESEARCH_DEFAULT_SANDBOX="$(env_value_from_file OPENRESEARCH_DEFAULT_SANDBOX "${ENV_FILE}" || true)"
 fi
-export OPENRESEARCH_DEFAULT_SANDBOX="${OPENRESEARCH_DEFAULT_SANDBOX:-runpod}"
+export OPENRESEARCH_DEFAULT_SANDBOX="${OPENRESEARCH_DEFAULT_SANDBOX:-local}"
 echo "[start.sh] Dashboard default sandbox: ${OPENRESEARCH_DEFAULT_SANDBOX}"
 
-# If the public key is missing but we have a private key, derive it so
-# preflight/startup remains stable with minimal .env setup.
-if [[ -z "${OPENRESEARCH_RUNPOD_SSH_PUBLIC_KEY:-}" ]]; then
-    if [[ -z "${OPENRESEARCH_RUNPOD_SSH_KEY_PATH:-}" ]]; then
-        OPENRESEARCH_RUNPOD_SSH_KEY_PATH="$(env_value_from_file OPENRESEARCH_RUNPOD_SSH_KEY_PATH "${ENV_FILE}" || true)"
-        export OPENRESEARCH_RUNPOD_SSH_KEY_PATH
-    fi
-    if [[ -n "${OPENRESEARCH_RUNPOD_SSH_KEY_PATH:-}" ]]; then
-        # Parameter expansion, NOT `eval echo`: the value comes from .env and
-        # eval would execute anything shell-special pasted into it.
-        ssh_key_path="${OPENRESEARCH_RUNPOD_SSH_KEY_PATH/#\~/$HOME}"
-        if [[ -f "${ssh_key_path}" ]] && command -v ssh-keygen >/dev/null 2>&1; then
-            derived_pub="$(ssh-keygen -y -f "${ssh_key_path}" 2>/dev/null || true)"
-            if [[ -n "${derived_pub}" ]]; then
-                export OPENRESEARCH_RUNPOD_SSH_PUBLIC_KEY="${derived_pub}"
-                echo "[start.sh] Derived OPENRESEARCH_RUNPOD_SSH_PUBLIC_KEY from ${ssh_key_path}."
-            fi
-        fi
-    fi
-fi
-
-# 2. Runpod preflight (when relevant, and skippable).
-runpod_preflight_needed=0
-if [[ "${OPENRESEARCH_DEFAULT_SANDBOX}" == "runpod" ]]; then
-    runpod_preflight_needed=1
-fi
-if [[ "${START_FORCE_RUNPOD_PREFLIGHT:-0}" == "1" ]]; then
-    runpod_preflight_needed=1
-fi
-if [[ "${START_FULL_SMOKE:-0}" == "1" ]]; then
-    runpod_preflight_needed=1
-fi
-
-if [[ "${runpod_preflight_needed}" == "1" ]]; then
-    if [[ "${START_SKIP_PREFLIGHT:-0}" != "1" ]]; then
-        if [[ -x "${PREFLIGHT}" ]]; then
-            # Default = free preflight (auth + ssh key + env vars).
-            # START_FULL_SMOKE=1 also boots a real pod, runs nvidia-smi, destroys
-            # it — the only definitive proof the configured GPU is bookable from
-            # this account, since the REST v1 API doesn't expose GPU listings.
-            preflight_args=()
-            if [[ "${START_FULL_SMOKE:-0}" == "1" ]]; then
-                echo "[start.sh] START_FULL_SMOKE=1 — running end-to-end pod smoke (this WILL spend money)."
-                preflight_args+=("--start-pod")
-            else
-                echo "[start.sh] Running Runpod preflight (free)..."
-            fi
-            # macOS bash 3.2: ${arr[@]} on an empty array fires "unbound
-            # variable" under `set -u`. The `${arr[@]+...}` form expands to
-            # nothing when the array is empty/unset, sidestepping it.
-            if ! "${PREFLIGHT}" ${preflight_args[@]+"${preflight_args[@]}"}; then
-                echo "[start.sh] Runpod preflight FAILED — refusing to start the dashboard."
-                echo "[start.sh] Fix the issue, or rerun with START_SKIP_PREFLIGHT=1 to bypass."
-                exit 1
-            fi
-        else
-            echo "[start.sh] Preflight script not found at ${PREFLIGHT}; skipping."
-        fi
-    else
-        echo "[start.sh] START_SKIP_PREFLIGHT=1 — skipping Runpod preflight."
-    fi
-else
-    echo "[start.sh] Runpod preflight not required for sandbox=${OPENRESEARCH_DEFAULT_SANDBOX}."
-fi
-
-# 2a. GKE preflight (when sandbox is gcp or gke; skippable). Mirrors the runpod
-# block: free read-only checks by default; START_FULL_SMOKE=1 passes --start-pod
-# (an operator-gated, money-spending stub — exit 6). gke is an alias for gcp.
+# 2. GKE preflight (when sandbox is gcp or gke; skippable). Free read-only
+# checks by default; START_FULL_SMOKE=1 passes --start-pod (an operator-gated,
+# money-spending stub — exit 6). gke is an alias for gcp. Note: the gcp/gke
+# backend is PARKED (raises unless OPENRESEARCH_ALLOW_GKE=1) — the preflight
+# stays available so the path can be exercised once IAM perms land.
 GKE_PREFLIGHT="scripts/gke_check.sh"
 if [[ "${OPENRESEARCH_DEFAULT_SANDBOX}" == "gcp" || "${OPENRESEARCH_DEFAULT_SANDBOX}" == "gke" ]]; then
     if [[ "${START_SKIP_PREFLIGHT:-0}" != "1" && -x "${GKE_PREFLIGHT}" ]]; then
@@ -128,7 +59,7 @@ if [[ "${OPENRESEARCH_DEFAULT_SANDBOX}" == "gcp" || "${OPENRESEARCH_DEFAULT_SAND
         else
             echo "[start.sh] Running GKE preflight (free)..."
         fi
-        # macOS bash 3.2 empty-array guard (see runpod block).
+        # macOS bash 3.2 empty-array guard.
         gke_rc=0
         "${GKE_PREFLIGHT}" ${gke_args[@]+"${gke_args[@]}"} || gke_rc=$?
         if [[ "${gke_rc}" -eq 6 ]]; then
@@ -150,22 +81,21 @@ if [[ "${OPENRESEARCH_DEFAULT_SANDBOX}" == "gcp" || "${OPENRESEARCH_DEFAULT_SAND
 fi
 
 # 2b. Docker daemon preflight. build_environment does a LOCAL `docker build` only
-# for sandbox `docker` and `auto`/unknown (LocalDockerBackend). `local`, `runpod`,
-# and `gcp`/`gke` short-circuit build_environment to a no-op — runpod boots its own
-# pod image over SSH, gcp/gke run a pre-baked Artifact Registry image on the GKE
-# cluster (primitives.build_environment _sb_key=="gcp") — so none needs a local
-# daemon. A down daemon makes only docker/auto runs fail at build_environment with
-# backend_unavailable, so surface it at startup for those modes. Warn (don't
-# refuse): a per-run --sandbox override changes the requirement, and the dashboard
-# can outlive a daemon restart.
-if [[ "${OPENRESEARCH_DEFAULT_SANDBOX}" != "local" && "${OPENRESEARCH_DEFAULT_SANDBOX}" != "runpod" && "${OPENRESEARCH_DEFAULT_SANDBOX}" != "gcp" && "${OPENRESEARCH_DEFAULT_SANDBOX}" != "gke" && "${START_SKIP_PREFLIGHT:-0}" != "1" ]]; then
+# for sandbox `docker` and `auto`/unknown (LocalDockerBackend). `local` and
+# `gcp`/`gke` short-circuit build_environment to a no-op — gcp/gke run a pre-baked
+# Artifact Registry image on the GKE cluster (primitives.build_environment
+# _sb_key=="gcp") — so neither needs a local daemon. A down daemon makes only
+# docker/auto runs fail at build_environment with backend_unavailable, so surface
+# it at startup for those modes. Warn (don't refuse): a per-run --sandbox override
+# changes the requirement, and the dashboard can outlive a daemon restart.
+if [[ "${OPENRESEARCH_DEFAULT_SANDBOX}" != "local" && "${OPENRESEARCH_DEFAULT_SANDBOX}" != "gcp" && "${OPENRESEARCH_DEFAULT_SANDBOX}" != "gke" && "${START_SKIP_PREFLIGHT:-0}" != "1" ]]; then
     if ! command -v docker >/dev/null 2>&1; then
-        echo "[start.sh] WARNING: 'docker' CLI not found — runs with sandbox in {docker,auto} will fail at build_environment. Install OrbStack/Docker, or use --sandbox local/runpod."
+        echo "[start.sh] WARNING: 'docker' CLI not found — runs with sandbox in {docker,auto} will fail at build_environment. Install OrbStack/Docker, or use --sandbox local."
     elif ! docker info >/dev/null 2>&1; then
         echo "[start.sh] WARNING: Docker daemon not reachable (sandbox=${OPENRESEARCH_DEFAULT_SANDBOX})."
         echo "[start.sh]          build_environment runs a LOCAL docker build for sandbox docker/auto —"
         echo "[start.sh]          so those runs will fail with backend_unavailable until it is up."
-        echo "[start.sh]          Start OrbStack/Docker Desktop (verify: 'docker info'), or run with --sandbox local/runpod."
+        echo "[start.sh]          Start OrbStack/Docker Desktop (verify: 'docker info'), or run with --sandbox local."
     else
         echo "[start.sh] Docker daemon reachable."
     fi
@@ -248,12 +178,26 @@ trap 'echo "[start.sh] forwarding shutdown" >&2; \
 
 # 3f. Watchdog: exit (tearing down the survivor) as soon as EITHER child
 # dies, so a crashed backend doesn't leave a zombie frontend serving 502s (or
-# vice versa). The `|| EXIT_CODE=$?` is load-bearing: this file runs under
-# `set -euo pipefail`, so a bare `wait -n`/`wait` returning nonzero would kill
-# this script immediately, skipping the teardown of the surviving process
-# below (matches docker/entrypoint.sh's watchdog).
+# vice versa).
+#
+# PORTABILITY (BUG: macOS): `wait -n` is bash 4.3+, but the default macOS
+# /bin/bash is 3.2 — under `set -euo pipefail` `wait -n` fails INSTANTLY with
+# "wait: -n: invalid option", which the `|| EXIT_CODE=$?` catches as a crash and
+# tears both servers down before they ever serve a request. So block by POLLING
+# both PIDs with `kill -0` (presence check, no signal) until one exits — the same
+# bash-3.2-safe pattern scripts/dev.sh already uses. Then reap the dead child for
+# its real exit code. `kill -0`/`wait` in a loop-condition or `&&/||` chain don't
+# trip `set -e`, so the teardown below always runs.
+EXIT_CODE=0
 if [[ -n "${BACKEND_PID}" && -n "${FRONTEND_PID}" ]]; then
-    wait -n "${BACKEND_PID}" "${FRONTEND_PID}" && EXIT_CODE=0 || EXIT_CODE=$?
+    while kill -0 "${BACKEND_PID}" 2>/dev/null && kill -0 "${FRONTEND_PID}" 2>/dev/null; do
+        sleep 1
+    done
+    if ! kill -0 "${BACKEND_PID}" 2>/dev/null; then
+        wait "${BACKEND_PID}" && EXIT_CODE=0 || EXIT_CODE=$?
+    else
+        wait "${FRONTEND_PID}" && EXIT_CODE=0 || EXIT_CODE=$?
+    fi
     echo "[start.sh] one of (backend=${BACKEND_PID}, frontend=${FRONTEND_PID}) exited with ${EXIT_CODE}; tearing down"
     kill -TERM "${BACKEND_PID}" "${FRONTEND_PID}" 2>/dev/null || true
     wait "${BACKEND_PID}" "${FRONTEND_PID}" 2>/dev/null || true

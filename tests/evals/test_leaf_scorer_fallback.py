@@ -1,6 +1,6 @@
 """T5 grader hardening — in-run cross-provider fallback, never silent-zero.
 
-Spec: docs/superpowers/specs/2026-07-09-eval-integrity-track-a-design.md §4.5.
+Spec: docs/history/specs/2026-07-09-eval-integrity-track-a-design.md §4.5.
 
 Today ``leaf_scorer._grade_batch`` catches any parse/SDK error from the
 grader transport and silently defaults EVERY leaf in the batch to ``0.0``.

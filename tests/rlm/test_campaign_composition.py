@@ -24,6 +24,7 @@ from backend.agents.rlm.attempt_driver import LiveCliDriver, PairedDriver, Unifi
 from backend.agents.rlm.best_attempt import REFERENCE_DIR_NAME, seed_reference_code
 from backend.agents.rlm.campaign_directives import DirectiveContractError
 from backend.agents.rlm.campaign_composition import CampaignOptions, build_campaign
+from backend.agents.rlm.campaign_policy import Decision
 from backend.agents.rlm.reproduction_campaign import (
     CampaignInitError,
     CampaignLedger,
@@ -44,6 +45,16 @@ def _clean_campaign_env(monkeypatch):
         "OPENRESEARCH_EXPERIENCE_MEMORY",
     ):
         monkeypatch.delenv(var, raising=False)
+    # The campaign applies its run-spec profile to os.environ via RAW assignment
+    # (real production behavior — e.g. OPENRESEARCH_EXTERNAL_VALIDATOR from the
+    # profile). monkeypatch does not track those writes, so without a full
+    # snapshot/restore a leaked flag pollutes later tests (observed: the
+    # external-validator / report-validation "disabled_by_default" tests failing
+    # only in full-suite order). Snapshot after the delenvs; restore on teardown.
+    _env_snapshot = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(_env_snapshot)
 
 
 @pytest.fixture()
@@ -344,6 +355,141 @@ def test_plan_attempt_builds_from_decided_next_plan_and_novelty_iterates_arms(tm
     assert planned2["refusal"] is None
     assert planned2["launch_payload"].seed_lineage == "fresh"
     assert planned2["directives_sha256"] != base_fingerprint
+
+
+def test_scheduler_off_plan_is_byte_compatible_and_tree_on_allocates_one_advisory_marker(
+    tmp_path, neutral_profile, monkeypatch
+):
+    opts = _opts(tmp_path, run_spec_path=str(neutral_profile))
+    run_dir = opts.runs_root / "prj_t"
+    (run_dir / "campaign").mkdir(parents=True)
+
+    monkeypatch.delenv("OPENRESEARCH_SCHEDULER_TREE", raising=False)
+    off = cc._plan_attempt_impl(run_dir, opts, "prj_t", _state(next_attempt_n=1), [])
+    assert "branch_type" not in off
+    assert "is_safety_bracket" not in off
+    assert "branch_type" not in off["launch_payload"].to_dict()
+    assert "is_safety_bracket" not in off["launch_payload"].to_dict()
+
+    monkeypatch.setenv("OPENRESEARCH_SCHEDULER_TREE", "1")
+    on = cc._plan_attempt_impl(run_dir, opts, "prj_t", _state(next_attempt_n=1), [])
+    assert on["is_safety_bracket"] is True
+    assert on["launch_payload"].is_safety_bracket is True
+    assert on["launch_payload"].to_dict()["is_safety_bracket"] is True
+
+    launched = {
+        "attempt_n": 1,
+        "status": "launched",
+        "directives_sha256": on["directives_sha256"],
+        "envelope": on["envelope"],
+        "driver": "live",
+        "project_id": "prj_t",
+        "run_dir": str(run_dir),
+        "launched_at": 1.0,
+        "is_safety_bracket": True,
+    }
+    decided = {
+        "attempt_n": 1,
+        "status": "decided",
+        "decision": {
+            "kind": "CONTINUE",
+            "next_plan": {
+                "lineage": "fresh",
+                "seed_attempt_n": None,
+                "seed_pointer": None,
+                "scope_rung": 1,
+                "width": 1,
+            },
+        },
+    }
+    later = cc._plan_attempt_impl(run_dir, opts, "prj_t", _state(next_attempt_n=2), [launched, decided])
+    assert "is_safety_bracket" not in later
+    assert later["launch_payload"].is_safety_bracket is False
+
+
+@pytest.mark.parametrize("branch_type", ("ambiguity", "discovery"))
+def test_tree_never_allocates_safety_marker_to_nonfaithful_branch(tmp_path, neutral_profile, monkeypatch, branch_type):
+    monkeypatch.setenv("OPENRESEARCH_SCHEDULER_TREE", "1")
+    opts = _opts(tmp_path, run_spec_path=str(neutral_profile))
+    run_dir = opts.runs_root / "prj_t"
+    (run_dir / "campaign").mkdir(parents=True)
+    rows = [
+        {
+            "attempt_n": 1,
+            "status": "decided",
+            "decision": {
+                "kind": "CONTINUE",
+                "next_plan": {
+                    "lineage": "fresh",
+                    "seed_attempt_n": None,
+                    "seed_pointer": None,
+                    "scope_rung": 0,
+                    "width": 1,
+                    "branch_type": branch_type,
+                },
+            },
+        }
+    ]
+    planned = cc._plan_attempt_impl(run_dir, opts, "prj_t", _state(next_attempt_n=2), rows)
+    assert planned["launch_payload"].branch_type == branch_type
+    assert planned["launch_payload"].is_safety_bracket is False
+    assert "is_safety_bracket" not in planned
+
+
+def test_dead_in_flight_assessment_uses_durable_launch_metadata_and_prevents_second_slot(
+    tmp_path, neutral_profile, monkeypatch
+):
+    """Resume never trusts mutable directives for a prior safety allocation."""
+    monkeypatch.setenv("OPENRESEARCH_SCHEDULER_TREE", "1")
+    opts = _opts(tmp_path, run_spec_path=str(neutral_profile))
+    run_dir = opts.runs_root / "prj_t"
+    campaign_dir = run_dir / "campaign"
+    campaign_dir.mkdir(parents=True)
+    ledger = CampaignLedger(campaign_dir)
+    ledger.append_row(
+        {
+            "attempt_n": 1,
+            "status": "launched",
+            "directives_sha256": "dsha-1",
+            "envelope": {},
+            "driver": "live",
+            "project_id": "prj_t",
+            "run_dir": str(run_dir),
+            "launched_at": 1.0,
+            "is_safety_bracket": True,
+        }
+    )
+    in_flight = InFlight(
+        attempt_n=1, driver="live", run_dir=str(run_dir), pid=None, lease_ref=None, launched_at=1.0
+    )
+
+    assessment = cc._assess_from_disk_impl(opts, "prj_t", campaign_dir, in_flight)
+    assert assessment["is_safety_bracket"] is True
+    # A maliciously edited directives file cannot remove the launch marker.
+    (campaign_dir / "directives").mkdir()
+    (campaign_dir / "directives" / "1.json").write_text("{}", encoding="utf-8")
+    resumed = cc._assess_from_disk_impl(opts, "prj_t", campaign_dir, in_flight)
+    assert resumed["is_safety_bracket"] is True
+
+    ledger.append_row(
+        {
+            "attempt_n": 1,
+            "status": "decided",
+            "decision": {
+                "kind": "CONTINUE",
+                "next_plan": {
+                    "lineage": "fresh",
+                    "seed_attempt_n": None,
+                    "seed_pointer": None,
+                    "scope_rung": 1,
+                    "width": 1,
+                },
+            },
+        }
+    )
+
+    later = cc._plan_attempt_impl(run_dir, opts, "prj_t", _state(next_attempt_n=2), ledger.read_rows())
+    assert later["launch_payload"].is_safety_bracket is False
 
 
 def test_plan_attempt_refuses_no_novel_plan_when_arms_exhausted(tmp_path, neutral_profile):
@@ -1241,6 +1387,55 @@ def test_decide_impl_gpu_usd_estimate_single_gpu_unchanged(tmp_path, monkeypatch
     cc._decide_impl(run_dir, opts, state, rows=[])
 
     assert captured["est_usd"] == pytest.approx(2.0 * 0.5)
+
+
+@pytest.mark.parametrize("kind", ("REPRODUCED", "CONTRADICTED", "INFEASIBLE", "EXHAUSTED"))
+def test_decide_impl_authority_audit_preserves_terminal_decision_contract(
+    tmp_path, monkeypatch, kind
+):
+    """Exercise the real DECIDE seam, not only the authority helper.
+
+    A terminal base decision must be the exact decision that reaches the
+    controller ledger; authority adds only its durable audit marker before the
+    shadow advisory is considered.
+    """
+    run_dir = tmp_path / "runs" / "prj_t"
+    run_dir.mkdir(parents=True)
+    opts = _opts(tmp_path)
+    state = _state()
+    base = Decision(
+        kind=kind,
+        rule=f"terminal_{kind.lower()}",
+        stop_reason="evidence_terminal",
+        next_plan=None,
+        champion_attempt_n=7,
+    ).to_dict()
+    monkeypatch.setattr(
+        cc,
+        "campaign_decide",
+        lambda *_args, **_kwargs: Decision(
+            kind=kind,
+            rule=f"terminal_{kind.lower()}",
+            stop_reason="evidence_terminal",
+            next_plan=None,
+            champion_attempt_n=7,
+        ),
+    )
+    # Isolate the authority insertion point. The shadow helper has its own
+    # exhaustive tests and is intentionally not a live decision path.
+    monkeypatch.setattr(cc, "_maybe_attach_asha_advisory", lambda *_args, **_kwargs: None)
+    monkeypatch.setenv("OPENRESEARCH_SCHEDULER_TREE", "1")
+    monkeypatch.setenv("OPENRESEARCH_SCHEDULER_AUTHORITATIVE", "yes")
+
+    result = cc._decide_impl(run_dir, opts, state, rows=[])
+
+    assert {key: result[key] for key in base} == base
+    assert result["asha_authority_audit"] == {
+        "enabled": True,
+        "applied": False,
+        "action": "continue",
+        "deterministic_evidence_basis": "base_terminal_precedence",
+    }
 
 
 # --------------------------------------------------------------------------- #

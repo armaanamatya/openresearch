@@ -254,5 +254,5 @@ OIDC works by issuing a short-lived JWT from GitHub's OIDC provider, which Azure
 
 - Bicep L1: `infra/azure/bicep/infra.bicep` + `modules/` — deployed by the `deploy` job.
 - Helm L2: `infra/azure/helm/` — depends on L1 outputs.
-- Design doc: `docs/superpowers/specs/2026-06-03-azure-aks-gpu-backend-design.md`
+- Design doc: `docs/periods/2026-06.md` (consolidated dossier; the original `docs/history/` spec was pruned 2026-07-22)
 - Runbook: `docs/runbooks/2026-06-03-azure-aks-gpu-backend-handoff.md`

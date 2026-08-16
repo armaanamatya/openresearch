@@ -298,25 +298,6 @@ def verify_emitted_code(train_py_path: Path, manifest: dict, code_dir: Path) -> 
     return violations
 
 
-def violations_to_repair_context(violations: list[Violation]) -> dict:
-    """Shape violations as a dict compatible with repair_context.preflight_violations.
-
-    Uses the shape that patch-mode in primitives.py expects:
-    {"preflight_violations": [{"detail": "...", "severity": "...", "kind": "..."}]}
-    """
-    return {
-        "preflight_violations": [
-            {
-                "detail": v.detail,
-                "severity": v.severity.value,
-                "kind": v.kind,
-                "fact_id": v.fact_id,
-            }
-            for v in violations
-        ]
-    }
-
-
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------

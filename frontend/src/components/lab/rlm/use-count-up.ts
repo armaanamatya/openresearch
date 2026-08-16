@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from "react";
  * Returns the currently-displayed value. The tween restarts whenever
  * `target` changes; cancelled if the component unmounts.
  *
- * Spec: docs/superpowers/specs/2026-05-23-rubric-climb-leaderboard.md §4.3.
+ * Spec: docs/history/specs/2026-05-23-rubric-climb-leaderboard.md §4.3.
  */
 export function useCountUp(target: number, durationMs = 400): number {
   // The displayed value. Initialised at `target` so the very first render

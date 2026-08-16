@@ -4,16 +4,16 @@
 
 ## Summary
 
-- **Total distinct flags:** 505
-- **Managed by `config.py` Settings (typed, default known):** 141
-- **Ad-hoc `os.environ` reads (no central default):** 364
-- **Mentioned in `CLAUDE.md`:** 3 (0%)
+- **Total distinct flags:** 515
+- **Managed by `config.py` Settings (typed, default known):** 140
+- **Ad-hoc `os.environ` reads (no central default):** 375
+- **Mentioned in a `CLAUDE.md`:** 146 (28%)
 
-Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **sites** = ad-hoc read count; **default** = literal default at first read site (best effort).
+Legend: **cfg** = typed in `config.py`; **doc** = appears in a `CLAUDE.md`; **sites** = ad-hoc read count; **default** = literal default at first read site (best effort).
 
 ## Config fields bypassed by ad-hoc reads
 
-17 flags are typed in `config.py` **and** still read directly via `os.environ`, so the typed default is dead at those call sites. Review before consolidating — some are call-time reads on purpose (test monkeypatch / per-run toggle).
+11 flags are typed in `config.py` **and** still read directly via `os.environ`, so the typed default is dead at those call sites. Review before consolidating — some are call-time reads on purpose (test monkeypatch / per-run toggle).
 
 | Flag | cfg default | ad-hoc reads |
 |---|---|:--:|
@@ -22,41 +22,35 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | `OPENRESEARCH_AZURE_STORAGE_ACCOUNT` | `Field(...)` | 1 |
 | `OPENRESEARCH_CODEX_CLI_PATH` | `""` | 1 |
 | `OPENRESEARCH_DYNAMIC_GPU_HEADROOM` | `Field(...)` | 1 |
+| `OPENRESEARCH_MAX_RUN_GPU_USD` | `Field(...)` | 1 |
 | `OPENRESEARCH_MINIMAL_VIABLE` | `False` | 1 |
 | `OPENRESEARCH_MIN_RUBRIC_ITERATIONS` | `Field(...)` | 1 |
 | `OPENRESEARCH_REPRODUCTION_MODE` | `"adapt"` | 2 |
 | `OPENRESEARCH_RUBRIC_VERIFIER_MODEL` | `""` | 1 |
-| `OPENRESEARCH_RUNPOD_API_KEY` | `Field(...)` | 5 |
-| `OPENRESEARCH_RUNPOD_CONTAINER_DISK_GB` | `50` | 1 |
-| `OPENRESEARCH_RUNPOD_GPU_COUNT` | `1` | 1 |
-| `OPENRESEARCH_RUNPOD_GPU_TYPE` | `"NVIDIA GeForce RTX 4090"` | 1 |
-| `OPENRESEARCH_RUNPOD_IMAGE` | `"runpod/pytorch:2.1.0-py3.10-cuda11.8.0-` | 1 |
-| `OPENRESEARCH_RUNPOD_VOLUME_GB` | `20` | 1 |
-| `OPENRESEARCH_RUNPOD_VOLUME_MOUNT_PATH` | `"/workspace"` | 5 |
 | `OPENRESEARCH_USE_AUTHOR_REPO` | `False` | 5 |
 
 ### `OPENRESEARCH_AB_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_AB_ARM` |  |  |  | |
-| `OPENRESEARCH_AB_PAIR_ID` |  |  |  | |
+| `OPENRESEARCH_AB_ARM` |  | ✅ |  | |
+| `OPENRESEARCH_AB_PAIR_ID` |  | ✅ |  | |
 
 ### `OPENRESEARCH_ACCELERATOR_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_ACCELERATOR` |  |  | 2 | `""` |
-| `OPENRESEARCH_ACCELERATOR_API_KEY` |  |  | 3 | `"local"` |
-| `OPENRESEARCH_ACCELERATOR_BASE_URL` |  |  | 3 | `_DEFAULT_LOCAL_BASE_URL` |
-| `OPENRESEARCH_ACCELERATOR_MODEL` |  |  | 4 | `_DEFAULT_LOCAL_MODEL` |
-| `OPENRESEARCH_ACCELERATOR_SCOPE` |  |  | 2 | `""` |
+| `OPENRESEARCH_ACCELERATOR` |  | ✅ | 4 | `""` |
+| `OPENRESEARCH_ACCELERATOR_API_KEY` |  | ✅ | 2 | `"local"` |
+| `OPENRESEARCH_ACCELERATOR_BASE_URL` |  | ✅ | 2 | `_DEFAULT_LOCAL_BASE_URL` |
+| `OPENRESEARCH_ACCELERATOR_MODEL` |  | ✅ | 3 | `_DEFAULT_LOCAL_MODEL` |
+| `OPENRESEARCH_ACCELERATOR_SCOPE` |  | ✅ | 2 | `""` |
 
 ### `OPENRESEARCH_ACTION_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_ACTION_CARDS` |  |  | 1 | `""` |
+| `OPENRESEARCH_ACTION_CARDS` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_AGENT_*`
 
@@ -78,6 +72,8 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_ALLOW_GKE` |  | ✅ | 1 | `""` |
+| `OPENRESEARCH_ALLOW_GROK_EXECUTOR` |  |  |  | |
 | `OPENRESEARCH_ALLOW_LOSSY_PAPER_TEXT` | ✅ |  |  | `Field(...)` |
 
 ### `OPENRESEARCH_ANTHROPIC_*`
@@ -107,7 +103,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_ARG_CONTRACTS` |  |  | 1 | `""` |
+| `OPENRESEARCH_ARG_CONTRACTS` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_ARTIFACT_*`
 
@@ -123,11 +119,34 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | `OPENRESEARCH_ASSET_RCLONE_REMOTE` |  |  | 1 | |
 | `OPENRESEARCH_ASSET_RESOLVER_V2` |  |  |  | |
 
+### `OPENRESEARCH_AWS_*`
+
+| Flag | cfg | doc | sites | default |
+|---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_AWS_BASE_IMAGE` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_AWS_CACHE_MOUNT_PATH` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_AWS_EKS_CLUSTER` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_AWS_FILES_CACHE_ENABLED` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_AWS_GPUS_PER_NODE` | ✅ | ✅ |  | `Field(...)` |
+| `OPENRESEARCH_AWS_GPU_SKUS` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_AWS_GPU_USD_PER_HOUR` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_AWS_JOB_BACKOFF_LIMIT` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_AWS_MAX_NODES` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_AWS_NAMESPACE` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_AWS_PENDING_TIMEOUT_SECONDS` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_AWS_PER_GPU_VRAM_GB` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_AWS_PROBE_BUCKET` |  |  |  | |
+| `OPENRESEARCH_AWS_PROBE_KEY` |  |  |  | |
+| `OPENRESEARCH_AWS_REGION` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_AWS_S3_BUCKET` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_AWS_SERVICE_ACCOUNT` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_AWS_TTL_SECONDS_AFTER_FINISHED` | ✅ |  |  | `Field(...)` |
+
 ### `OPENRESEARCH_AZURE_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_AZURE_` |  |  |  | |
+| `OPENRESEARCH_AZURE_` |  | ✅ |  | |
 | `OPENRESEARCH_AZURE_ACR_LOGIN_SERVER` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_AZURE_AKS_CLUSTER` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_AZURE_BASE_IMAGE` | ✅ |  |  | `Field(...)` |
@@ -135,7 +154,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | `OPENRESEARCH_AZURE_BOOTSTRAP_PIP_TIMEOUT_S` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_AZURE_BOOT_TIMEOUT_SECONDS` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_AZURE_CACHE_MOUNT_PATH` | ✅ |  |  | `Field(...)` |
-| `OPENRESEARCH_AZURE_CELL_ROUTE` |  |  | 1 | `"1"` |
+| `OPENRESEARCH_AZURE_CELL_ROUTE` |  | ✅ | 1 | `"1"` |
 | `OPENRESEARCH_AZURE_CONTROLLER_IMAGE` |  |  | 1 | `""` |
 | `OPENRESEARCH_AZURE_CPU_POOL_LABEL` |  |  | 1 | `""` |
 | `OPENRESEARCH_AZURE_DATASTORE_GB` |  |  | 1 | `"0"` |
@@ -177,20 +196,20 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_BASELINE_EXTRA_GUIDANCE` |  |  | 4 | `""` |
+| `OPENRESEARCH_BASELINE_EXTRA_GUIDANCE` |  | ✅ | 4 | `""` |
 | `OPENRESEARCH_BASELINE_SUBPROCESS` |  |  | 1 | `"0"` |
 
 ### `OPENRESEARCH_BES_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_BES_ADAPTIVE` | ✅ |  |  | `Field(...)` |
-| `OPENRESEARCH_BES_ADAPTIVE_SKIP_SCORE` | ✅ |  |  | `Field(...)` |
-| `OPENRESEARCH_BES_CANDIDATES_PER_CLUSTER` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_BES_ADAPTIVE` | ✅ | ✅ |  | `Field(...)` |
+| `OPENRESEARCH_BES_ADAPTIVE_SKIP_SCORE` | ✅ | ✅ |  | `Field(...)` |
+| `OPENRESEARCH_BES_CANDIDATES_PER_CLUSTER` | ✅ | ✅ |  | `Field(...)` |
 | `OPENRESEARCH_BES_CONTINUE_MIN_S` |  |  |  | |
-| `OPENRESEARCH_BES_ENABLED` | ✅ |  |  | `Field(...)` |
-| `OPENRESEARCH_BES_MIN_REMAINING_S` |  |  |  | |
-| `OPENRESEARCH_BES_SELECT_METRIC` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_BES_ENABLED` | ✅ | ✅ |  | `Field(...)` |
+| `OPENRESEARCH_BES_MIN_REMAINING_S` |  | ✅ |  | |
+| `OPENRESEARCH_BES_SELECT_METRIC` | ✅ | ✅ |  | `Field(...)` |
 | `OPENRESEARCH_BES_SELECT_MIN_SPREAD` |  |  |  | |
 | `OPENRESEARCH_BES_SMOKE_SELECT` |  |  |  | |
 | `OPENRESEARCH_BES_SPLICE_ENABLED` | ✅ |  |  | `Field(...)` |
@@ -215,20 +234,6 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | `OPENRESEARCH_BOOTSTRAP_MKDIRS` |  |  |  | |
 | `OPENRESEARCH_BOOTSTRAP_PIP_TIMEOUT_S` |  |  |  | |
 
-### `OPENRESEARCH_BREV_*`
-
-| Flag | cfg | doc | sites | default |
-|---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_BREV_` |  |  |  | |
-| `OPENRESEARCH_BREV_API_KEY` |  |  | 2 | |
-| `OPENRESEARCH_BREV_CONTAINER_DISK_GB` |  |  | 1 | `"50"` |
-| `OPENRESEARCH_BREV_GPU_COUNT` |  |  | 1 | `"1"` |
-| `OPENRESEARCH_BREV_GPU_TYPE` |  |  | 1 | `""` |
-| `OPENRESEARCH_BREV_IMAGE` |  |  | 1 | `""` |
-| `OPENRESEARCH_BREV_INSTANCE_ID` |  |  |  | |
-| `OPENRESEARCH_BREV_REGION` |  |  | 1 | `""` |
-| `OPENRESEARCH_BREV_SSH_KEY_PATH` |  |  | 1 | |
-
 ### `OPENRESEARCH_BUDGET_*`
 
 | Flag | cfg | doc | sites | default |
@@ -245,7 +250,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_CAMPAIGN_` |  |  |  | |
+| `OPENRESEARCH_CAMPAIGN_` |  | ✅ |  | |
 | `OPENRESEARCH_CAMPAIGN_DRIVER` |  |  | 1 | `"live"` |
 | `OPENRESEARCH_CAMPAIGN_MAX_` |  |  |  | |
 | `OPENRESEARCH_CAMPAIGN_MAX_ATTEMPTS` |  |  |  | |
@@ -262,32 +267,35 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_CANONICAL_EVIDENCE_BUNDLE` |  |  | 1 | `""` |
+| `OPENRESEARCH_CANONICAL_EVIDENCE_BUNDLE` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_CELL_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_CELL_BATCH_SCALE` |  |  |  | |
+| `OPENRESEARCH_CELL_BATCH_SCALE` |  | ✅ |  | |
 | `OPENRESEARCH_CELL_CHECKPOINT_DIR` |  |  |  | |
 | `OPENRESEARCH_CELL_CHECKPOINT_GC` |  |  | 1 | `""` |
 | `OPENRESEARCH_CELL_CHECKPOINT_INTERVAL_S` |  |  | 1 | `"600"` |
 | `OPENRESEARCH_CELL_ENV_PASSTHROUGH` |  |  | 3 | `""` |
+| `OPENRESEARCH_CELL_ERROR_SALVAGE` |  | ✅ | 1 | `""` |
 | `OPENRESEARCH_CELL_FENCE_EPOCH` |  |  | 1 | `""` |
 | `OPENRESEARCH_CELL_FINGERPRINT` |  |  |  | |
 | `OPENRESEARCH_CELL_GPU_COUNT` |  |  |  | |
-| `OPENRESEARCH_CELL_GRAD_CHECKPOINT` |  |  |  | |
+| `OPENRESEARCH_CELL_GRAD_CHECKPOINT` |  | ✅ |  | |
 | `OPENRESEARCH_CELL_ID` |  |  | 3 | `SPEC.get("framework", "execute"` |
+| `OPENRESEARCH_CELL_ITER_BUDGET` |  |  | 1 | `""` |
+| `OPENRESEARCH_CELL_ITER_FROM` |  |  |  | |
 | `OPENRESEARCH_CELL_MAX_OOM_RETRIES` |  |  | 1 | |
 | `OPENRESEARCH_CELL_MAX_STEPS` |  |  |  | |
 | `OPENRESEARCH_CELL_MEM_FRACTION` |  |  | 1 | |
 | `OPENRESEARCH_CELL_NOW_ISO` |  |  |  | |
 | `OPENRESEARCH_CELL_OOM_BATCH_SCALE_FLOOR` |  |  |  | |
 | `OPENRESEARCH_CELL_OOM_BATCH_SCALE_STEP1` |  |  |  | |
-| `OPENRESEARCH_CELL_OUTPUT_DIR` |  |  | 3 | `""` |
-| `OPENRESEARCH_CELL_PARAMS` |  |  | 1 | |
+| `OPENRESEARCH_CELL_OUTPUT_DIR` |  | ✅ | 3 | `""` |
+| `OPENRESEARCH_CELL_PARAMS` |  | ✅ | 1 | |
 | `OPENRESEARCH_CELL_PREEMPT_GRACE_S` |  |  |  | |
-| `OPENRESEARCH_CELL_RESUME_AUTO` |  |  | 1 | `""` |
+| `OPENRESEARCH_CELL_RESUME_AUTO` |  | ✅ | 1 | `""` |
 | `OPENRESEARCH_CELL_SMOKE_TIMEOUT_S` |  |  | 1 | `"180"` |
 | `OPENRESEARCH_CELL_TINY_SLICE` |  |  |  | |
 | `OPENRESEARCH_CELL_TRAIN_GPUS` |  |  |  | |
@@ -296,14 +304,14 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_CELLS_ROUTE_RETENTION` |  |  | 1 | `""` |
+| `OPENRESEARCH_CELLS_ROUTE_RETENTION` |  | ✅ | 1 | `""` |
 | `OPENRESEARCH_CELLS_SEED_PATH` |  |  |  | |
 
 ### `OPENRESEARCH_CHAMPION_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_CHAMPION_ARTIFACT` |  |  | 1 | `""` |
+| `OPENRESEARCH_CHAMPION_ARTIFACT` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_CLAUDE_*`
 
@@ -316,7 +324,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_CLOUD_FAILOVER` |  |  | 1 | `""` |
+| `OPENRESEARCH_CLOUD_FAILOVER` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_CODE_*`
 
@@ -341,7 +349,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_CONTEXT_MAP` |  |  | 2 | `""` |
+| `OPENRESEARCH_CONTEXT_MAP` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_CONTROLLER_*`
 
@@ -411,13 +419,13 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_DEFAULT_SANDBOX` |  |  | 1 | `""` |
+| `OPENRESEARCH_DEFAULT_SANDBOX` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_DEGENERATE_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_DEGENERATE_REFUSAL_THRESHOLD` |  |  | 1 | `""` |
+| `OPENRESEARCH_DEGENERATE_REFUSAL_THRESHOLD` |  | ✅ | 1 | `""` |
 | `OPENRESEARCH_DEGENERATE_REWARD_EPSILON` |  |  | 1 | `"1e-6"` |
 | `OPENRESEARCH_DEGENERATE_TRAINING_CHECK` |  |  | 1 | `"1"` |
 
@@ -432,14 +440,14 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_DETERMINISTIC_LEAVES` |  |  | 1 | `""` |
+| `OPENRESEARCH_DETERMINISTIC_LEAVES` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_DISABLE_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_DISABLE_ENV_PIN` |  |  | 1 | `""` |
-| `OPENRESEARCH_DISABLE_TORCHRUN_WRAP` |  |  | 1 | `""` |
+| `OPENRESEARCH_DISABLE_ENV_PIN` |  | ✅ | 1 | `""` |
+| `OPENRESEARCH_DISABLE_TORCHRUN_WRAP` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_DISK_*`
 
@@ -452,7 +460,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_DOOMED_KILL` |  |  |  | |
+| `OPENRESEARCH_DOOMED_KILL` |  | ✅ |  | |
 | `OPENRESEARCH_DOOMED_MARGIN` |  |  |  | |
 | `OPENRESEARCH_DOOMED_MIN_PROGRESS` |  |  |  | |
 | `OPENRESEARCH_DOOMED_POLLS` |  |  |  | |
@@ -467,11 +475,17 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_DYNAMIC_GPU` |  |  |  | |
+| `OPENRESEARCH_DYNAMIC_GPU` |  | ✅ |  | |
 | `OPENRESEARCH_DYNAMIC_GPU_ENABLED` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_DYNAMIC_GPU_FALLBACK_VRAM_GB` | ✅ |  |  | `Field(...)` |
-| `OPENRESEARCH_DYNAMIC_GPU_HEADROOM` | ✅ |  | 1 | `Field(...)` |
-| `OPENRESEARCH_DYNAMIC_GPU_MAX_ESCALATIONS` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_DYNAMIC_GPU_HEADROOM` | ✅ | ✅ | 1 | `Field(...)` |
+| `OPENRESEARCH_DYNAMIC_GPU_MAX_ESCALATIONS` | ✅ | ✅ |  | `Field(...)` |
+
+### `OPENRESEARCH_EKS_*`
+
+| Flag | cfg | doc | sites | default |
+|---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_EKS_SYNTH_CELL` |  | ✅ |  | |
 
 ### `OPENRESEARCH_EMIT_*`
 
@@ -484,7 +498,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_ENV_CACHE_DIR` |  |  | 1 | `""` |
-| `OPENRESEARCH_ENV_LIVENESS_GATE` |  |  | 1 | `""` |
+| `OPENRESEARCH_ENV_LIVENESS_GATE` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_ENVIRONMENT_*`
 
@@ -503,7 +517,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_EVAL_PROVENANCE_GUARD` |  |  | 1 | `""` |
+| `OPENRESEARCH_EVAL_PROVENANCE_GUARD` |  | ✅ | 1 | `""` |
 | `OPENRESEARCH_EVAL_SCORECARD` |  |  |  | |
 
 ### `OPENRESEARCH_EVIDENCE_*`
@@ -511,8 +525,9 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_EVIDENCE_AUDIT` |  |  | 1 | `""` |
-| `OPENRESEARCH_EVIDENCE_FINGERPRINT` |  |  | 1 | `""` |
-| `OPENRESEARCH_EVIDENCE_GATE` |  |  | 1 | `"1"` |
+| `OPENRESEARCH_EVIDENCE_DECISION_LOG` |  | ✅ |  | |
+| `OPENRESEARCH_EVIDENCE_FINGERPRINT` |  | ✅ | 1 | `""` |
+| `OPENRESEARCH_EVIDENCE_GATE` |  | ✅ | 1 | `"1"` |
 | `OPENRESEARCH_EVIDENCE_REPORT_SECTION` |  |  | 1 | `""` |
 
 ### `OPENRESEARCH_EXCLUDE_*`
@@ -533,7 +548,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_EXECUTE_OWNS_DEPS` |  |  | 1 | `""` |
-| `OPENRESEARCH_EXECUTE_SYNTH` |  |  |  | |
+| `OPENRESEARCH_EXECUTE_SYNTH` |  | ✅ |  | |
 | `OPENRESEARCH_EXECUTE_SYNTH_VRAM_GB` |  |  | 1 | `""` |
 
 ### `OPENRESEARCH_EXECUTION_*`
@@ -547,7 +562,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_EXECUTOR` |  |  | 1 | |
+| `OPENRESEARCH_EXECUTOR` |  | ✅ | 2 | |
 | `OPENRESEARCH_EXECUTOR_API_KEY` |  |  | 1 | |
 | `OPENRESEARCH_EXECUTOR_BASE_URL` |  |  | 1 | |
 | `OPENRESEARCH_EXECUTOR_MODEL` |  |  | 1 | |
@@ -556,27 +571,27 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_EXPERIENCE_MEMORY` |  |  |  | |
+| `OPENRESEARCH_EXPERIENCE_MEMORY` |  | ✅ |  | |
 
 ### `OPENRESEARCH_EXPERIMENT_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_EXPERIMENT_GPU_LIVENESS` |  |  |  | |
-| `OPENRESEARCH_EXPERIMENT_STALL_S` |  |  |  | |
+| `OPENRESEARCH_EXPERIMENT_GPU_LIVENESS` |  | ✅ |  | |
+| `OPENRESEARCH_EXPERIMENT_STALL_S` |  | ✅ |  | |
 | `OPENRESEARCH_EXPERIMENT_VENV` |  |  | 1 | |
 
 ### `OPENRESEARCH_EXTERNAL_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_EXTERNAL_VALIDATOR` |  |  | 1 | `""` |
+| `OPENRESEARCH_EXTERNAL_VALIDATOR` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_FAILURE_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_FAILURE_CAPSULES` |  |  |  | |
+| `OPENRESEARCH_FAILURE_CAPSULES` |  | ✅ |  | |
 
 ### `OPENRESEARCH_FIDELITY_*`
 
@@ -585,6 +600,12 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | `OPENRESEARCH_FIDELITY_EVIDENCE` |  |  | 1 | `""` |
 | `OPENRESEARCH_FIDELITY_MUTATION_TIMEOUT_S` |  |  | 1 | `"60"` |
 | `OPENRESEARCH_FIDELITY_TEST_TIMEOUT_S` |  |  | 1 | `"120"` |
+
+### `OPENRESEARCH_FIELD_*`
+
+| Flag | cfg | doc | sites | default |
+|---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_FIELD_PLAUSIBILITY` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_FINALIZE_*`
 
@@ -604,14 +625,14 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_FORCE_LLM_PROVIDER` |  |  |  | |
-| `OPENRESEARCH_FORCE_SANDBOX` |  |  | 1 | `""` |
-| `OPENRESEARCH_FORCE_SINGLE_GPU` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_FORCE_SANDBOX` |  | ✅ | 1 | `""` |
+| `OPENRESEARCH_FORCE_SINGLE_GPU` | ✅ | ✅ |  | `Field(...)` |
 
 ### `OPENRESEARCH_FRAMEWORK_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_FRAMEWORK_IMAGES` |  |  |  | |
+| `OPENRESEARCH_FRAMEWORK_IMAGES` |  | ✅ |  | |
 
 ### `OPENRESEARCH_FSDP_*`
 
@@ -623,27 +644,31 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_GCP_` |  |  |  | |
+| `OPENRESEARCH_GCP_` |  | ✅ |  | |
 | `OPENRESEARCH_GCP_ARTIFACT_REGISTRY` | ✅ |  |  | `Field(...)` |
-| `OPENRESEARCH_GCP_BASE_IMAGE` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_GCP_BASE_IMAGE` | ✅ | ✅ |  | `Field(...)` |
 | `OPENRESEARCH_GCP_BOOTSTRAP_PIP_TIMEOUT_S` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_BOOT_TIMEOUT_SECONDS` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_CACHE_MOUNT_PATH` | ✅ |  |  | `Field(...)` |
-| `OPENRESEARCH_GCP_CELL_ROUTE` |  |  | 1 | `"1"` |
+| `OPENRESEARCH_GCP_CELL_ROUTE` |  | ✅ | 1 | `"1"` |
 | `OPENRESEARCH_GCP_CONTROLLER_IMAGE` |  |  | 1 | `""` |
 | `OPENRESEARCH_GCP_CPU_INSTANCE` |  |  |  | |
+| `OPENRESEARCH_GCP_CPU_MACHINE_TYPE` |  |  |  | |
 | `OPENRESEARCH_GCP_CPU_POOL_LABEL` |  |  | 1 | `""` |
 | `OPENRESEARCH_GCP_CSI_MOUNT_PATH` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_FILESTORE_SHARE` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_FILES_CACHE_ENABLED` | ✅ |  |  | `Field(...)` |
-| `OPENRESEARCH_GCP_FRAMEWORK_IMAGES` |  |  |  | |
+| `OPENRESEARCH_GCP_FRAMEWORK_IMAGES` |  | ✅ |  | |
 | `OPENRESEARCH_GCP_GCS_BUCKET` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_GKE_CLUSTER` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_GPUS_PER_NODE` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_GCP_GPU_MACHINE_TYPE` |  |  |  | |
 | `OPENRESEARCH_GCP_GPU_SKUS` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_GPU_USD_PER_HOUR` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_GCP_IMAGE_FAMILY` |  |  | 1 | `""` |
 | `OPENRESEARCH_GCP_INSTANCE` |  |  |  | |
 | `OPENRESEARCH_GCP_JOB_BACKOFF_LIMIT` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_GCP_MACHINE_IMAGE` |  |  | 1 | `""` |
 | `OPENRESEARCH_GCP_MAX_NODES` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_NAMESPACE` | ✅ |  |  | `Field(...)` |
 | `OPENRESEARCH_GCP_NODE_POOL_NAME` | ✅ |  |  | `Field(...)` |
@@ -666,14 +691,14 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_GKE_SYNTH_CELL` |  | ✅ | 1 | `""` |
+| `OPENRESEARCH_GKE_SYNTH_CELL` |  | ✅ |  | |
 
 ### `OPENRESEARCH_GPU_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_GPU_COUNT` |  |  |  | |
-| `OPENRESEARCH_GPU_DEVICE_IDS` |  |  | 1 | |
+| `OPENRESEARCH_GPU_DEVICE_IDS` |  | ✅ | 1 | |
 | `OPENRESEARCH_GPU_LEDGER` |  |  |  | |
 | `OPENRESEARCH_GPU_MODE` |  |  |  | |
 | `OPENRESEARCH_GPU_PARALLELISM` |  |  | 1 | |
@@ -688,17 +713,18 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_GRADER_` |  |  |  | |
-| `OPENRESEARCH_GRADER_BACKEND` |  |  | 3 | `""` |
-| `OPENRESEARCH_GRADER_DIGEST` |  |  | 1 | `""` |
-| `OPENRESEARCH_GRADER_MODEL` |  |  | 3 | `""` |
-| `OPENRESEARCH_GRADER_SAMPLES` |  |  | 2 | `"1"` |
+| `OPENRESEARCH_GRADER_` |  | ✅ |  | |
+| `OPENRESEARCH_GRADER_BACKEND` |  | ✅ | 3 | `""` |
+| `OPENRESEARCH_GRADER_DIGEST` |  | ✅ | 1 | `""` |
+| `OPENRESEARCH_GRADER_INTEGRITY` |  | ✅ |  | |
+| `OPENRESEARCH_GRADER_MODEL` |  | ✅ | 3 | `""` |
+| `OPENRESEARCH_GRADER_SAMPLES` |  | ✅ | 2 | `"1"` |
 
 ### `OPENRESEARCH_HARDEXIT_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_HARDEXIT_CLEANUP` |  |  | 3 | `""` |
+| `OPENRESEARCH_HARDEXIT_CLEANUP` |  | ✅ | 3 | `""` |
 
 ### `OPENRESEARCH_HF_*`
 
@@ -728,7 +754,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_IMPL_ABANDON_GUARD` |  |  | 1 | `""` |
+| `OPENRESEARCH_IMPL_ABANDON_GUARD` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_INJECT_*`
 
@@ -736,32 +762,41 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_INJECT_STEERING` |  |  | 1 | `""` |
 
+### `OPENRESEARCH_K8S_*`
+
+| Flag | cfg | doc | sites | default |
+|---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_K8S_COLLISION_GUARD` |  | ✅ | 1 | `""` |
+
 ### `OPENRESEARCH_LEAF_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_LEAF_ACTUATE` |  |  |  | |
-| `OPENRESEARCH_LEAF_ACTUATE_MAX_COST` |  |  |  | |
-| `OPENRESEARCH_LEAF_ACTUATE_SEEDS` |  |  |  | |
-| `OPENRESEARCH_LEAF_EVIDENCE_GATE` |  |  | 2 | `""` |
-| `OPENRESEARCH_LEAF_SEED_MAX` |  |  |  | |
-| `OPENRESEARCH_LEAF_TRIAGE` |  |  |  | |
+| `OPENRESEARCH_LEAF_ACTUATE` |  | ✅ |  | |
+| `OPENRESEARCH_LEAF_ACTUATE_MAX_COST` |  | ✅ |  | |
+| `OPENRESEARCH_LEAF_ACTUATE_SEEDS` |  | ✅ |  | |
+| `OPENRESEARCH_LEAF_EVIDENCE_GATE` |  | ✅ | 2 | `""` |
+| `OPENRESEARCH_LEAF_SEED_MAX` |  | ✅ |  | |
+| `OPENRESEARCH_LEAF_TRIAGE` |  | ✅ |  | |
 
 ### `OPENRESEARCH_LIFECYCLE_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_LIFECYCLE_DRIVE` |  |  | 1 | `""` |
-| `OPENRESEARCH_LIFECYCLE_LEDGER` |  |  | 1 | `""` |
+| `OPENRESEARCH_LIFECYCLE_LEDGER` |  | ✅ | 1 | `""` |
 | `OPENRESEARCH_LIFECYCLE_MAX_IMPROVE` |  |  | 1 | `""` |
-| `OPENRESEARCH_LIFECYCLE_PRIMARY` |  |  | 1 | `""` |
+| `OPENRESEARCH_LIFECYCLE_PRIMARY` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_LITERATURE_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_LITERATURE_CLAIM_GATE` |  |  | 1 | `""` |
-| `OPENRESEARCH_LITERATURE_GROUNDING` |  |  | 1 | `""` |
+| `OPENRESEARCH_LITERATURE_CORPUS` |  | ✅ | 1 | `""` |
+| `OPENRESEARCH_LITERATURE_GROUNDING` |  | ✅ | 1 | `""` |
+| `OPENRESEARCH_LITERATURE_SURVEY` |  | ✅ | 2 | `""` |
+| `OPENRESEARCH_LITERATURE_WEB` |  | ✅ | 2 | `""` |
 
 ### `OPENRESEARCH_LLM_*`
 
@@ -774,13 +809,15 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_LOCAL_TORCH_INDEX_URL` |  |  | 1 | `"https://download.pytorch.org/whl/cu121"` |
+| `OPENRESEARCH_LOCAL_TORCH_INDEX_URL` |  | ✅ | 1 | `"https://download.pytorch.org/whl/cu121"` |
 
 ### `OPENRESEARCH_LOG_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_LOG_DIR` |  |  | 1 | |
+| `OPENRESEARCH_LOG_FORMAT` |  | ✅ | 2 | |
+| `OPENRESEARCH_LOG_LEVEL` |  | ✅ | 2 | |
 
 ### `OPENRESEARCH_MATRIX_*`
 
@@ -792,20 +829,20 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_MAX_` |  |  |  | |
-| `OPENRESEARCH_MAX_GPU_USD_PER_HOUR` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_MAX_` |  | ✅ |  | |
+| `OPENRESEARCH_MAX_GPU_USD_PER_HOUR` | ✅ | ✅ |  | `Field(...)` |
 | `OPENRESEARCH_MAX_POD_SECONDS` |  |  | 1 | |
 | `OPENRESEARCH_MAX_RLM_ITERATIONS` |  |  | 2 | `""` |
-| `OPENRESEARCH_MAX_RUN_GPU_USD` | ✅ |  |  | `Field(...)` |
+| `OPENRESEARCH_MAX_RUN_GPU_USD` | ✅ | ✅ | 1 | `Field(...)` |
 | `OPENRESEARCH_MAX_SCOPE_FAILURE_REPEATS` |  |  | 1 | `"2"` |
-| `OPENRESEARCH_MAX_TERMINAL_VERDICT` |  |  |  | |
+| `OPENRESEARCH_MAX_TERMINAL_VERDICT` |  | ✅ |  | |
 | `OPENRESEARCH_MAX_WALL_CLOCK_S` |  |  |  | |
 
 ### `OPENRESEARCH_METRIC_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_METRIC_PROVENANCE` |  |  | 1 | `"true"` |
+| `OPENRESEARCH_METRIC_PROVENANCE` |  | ✅ | 1 | `"true"` |
 | `OPENRESEARCH_METRIC_REALITY_SMOKE` |  |  | 2 | `""` |
 | `OPENRESEARCH_METRIC_SEMANTICS_GUARD` |  |  | 1 | `""` |
 
@@ -813,16 +850,17 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_METRICS_COMPLETENESS_CHECK` |  |  | 1 | `"1"` |
+| `OPENRESEARCH_METRICS_COMPLETENESS_CHECK` |  | ✅ | 1 | `"1"` |
 
 ### `OPENRESEARCH_MIN_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_MIN_DISK_GB` |  |  | 1 | `"10"` |
+| `OPENRESEARCH_MIN_EVAL_N` |  | ✅ | 1 | `"0"` |
 | `OPENRESEARCH_MIN_REAL_TRAIN_STEPS` |  |  | 1 | `"5"` |
-| `OPENRESEARCH_MIN_REPAIR_ITERATIONS` |  |  | 2 | `"2"` |
-| `OPENRESEARCH_MIN_RUBRIC_ITERATIONS` | ✅ |  | 1 | `Field(...)` |
+| `OPENRESEARCH_MIN_REPAIR_ITERATIONS` |  | ✅ | 2 | `"2"` |
+| `OPENRESEARCH_MIN_RUBRIC_ITERATIONS` | ✅ | ✅ | 1 | `Field(...)` |
 | `OPENRESEARCH_MIN_SEEDS_FOR_CONTRADICTION` |  |  | 1 | |
 | `OPENRESEARCH_MIN_TRAIN_STEPS` |  |  | 2 | `"0"` |
 | `OPENRESEARCH_MIN_TRAIN_WALL_S` |  |  | 1 | `"0"` |
@@ -851,13 +889,13 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_NEGATIVE_LESSONS` |  |  | 1 | `""` |
+| `OPENRESEARCH_NEGATIVE_LESSONS` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_NO_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_NO_LEARNING_SIGNAL_GATE` |  |  | 1 | `""` |
+| `OPENRESEARCH_NO_LEARNING_SIGNAL_GATE` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_NOTIFY_*`
 
@@ -869,7 +907,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_OAUTH_AUTODRIVE` |  |  | 1 | `""` |
+| `OPENRESEARCH_OAUTH_AUTODRIVE` |  | ✅ | 1 | `""` |
 | `OPENRESEARCH_OAUTH_FALLBACK_MODEL` |  |  | 1 | `""` |
 
 ### `OPENRESEARCH_OK_*`
@@ -882,7 +920,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_OOM_ENFORCE` |  |  | 1 | `""` |
+| `OPENRESEARCH_OOM_ENFORCE` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_OPENAI_*`
 
@@ -897,7 +935,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_ORPHAN_GUARD` |  |  | 1 | `""` |
+| `OPENRESEARCH_ORPHAN_GUARD` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_PAPER_*`
 
@@ -911,15 +949,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_PER_MODEL_STATUS_GATE` |  |  | 1 | `""` |
-
-### `OPENRESEARCH_POD_*`
-
-| Flag | cfg | doc | sites | default |
-|---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_POD_SWEEP_ENABLED` |  |  | 2 | `"true"` |
-| `OPENRESEARCH_POD_SWEEP_INTERVAL_S` |  |  | 1 | `"1800"` |
-| `OPENRESEARCH_POD_SWEEP_MAX_AGE_S` |  |  | 2 | `"7200"` |
+| `OPENRESEARCH_PER_MODEL_STATUS_GATE` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_PORT_*`
 
@@ -931,7 +961,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_POSITIVE_RECIPES` |  |  | 1 | `""` |
+| `OPENRESEARCH_POSITIVE_RECIPES` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_PRE_*`
 
@@ -944,7 +974,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_PREFLIGHT_SMOKE` |  |  | 1 | `"on"` |
-| `OPENRESEARCH_PREFLIGHT_UNION_SCOPE` |  |  | 1 | `""` |
+| `OPENRESEARCH_PREFLIGHT_UNION_SCOPE` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_PRELOAD_*`
 
@@ -984,22 +1014,20 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_REMOTE_DIR` |  |  |  | |
-| `OPENRESEARCH_REMOTE_STALL_GUARD` |  |  |  | |
-| `OPENRESEARCH_REMOTE_STALL_S` |  |  |  | |
 
 ### `OPENRESEARCH_REPAIR_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_REPAIR_MAX_ITERATIONS` |  |  | 1 | `""` |
+| `OPENRESEARCH_REPAIR_MAX_ITERATIONS` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_REPO_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_REPO_CLONE_LFS` | ✅ |  |  | `False` |
-| `OPENRESEARCH_REPO_CLONE_MAX_MB` | ✅ |  |  | `2048` |
-| `OPENRESEARCH_REPO_CLONE_TIMEOUT_S` | ✅ |  |  | `300` |
+| `OPENRESEARCH_REPO_CLONE_LFS` | ✅ | ✅ |  | `False` |
+| `OPENRESEARCH_REPO_CLONE_MAX_MB` | ✅ | ✅ |  | `2048` |
+| `OPENRESEARCH_REPO_CLONE_TIMEOUT_S` | ✅ | ✅ |  | `300` |
 | `OPENRESEARCH_REPO_COMMIT` | ✅ |  |  | `""` |
 | `OPENRESEARCH_REPO_LOCAL_PATH` | ✅ |  |  | `""` |
 | `OPENRESEARCH_REPO_URL` |  |  | 1 | `""` |
@@ -1020,7 +1048,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_REPRODUCTION_MODE` | ✅ |  | 2 | `"adapt"` |
+| `OPENRESEARCH_REPRODUCTION_MODE` | ✅ | ✅ | 2 | `"adapt"` |
 
 ### `OPENRESEARCH_REQUIRE_*`
 
@@ -1032,14 +1060,14 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_RESUME_CELLS` |  |  | 2 | `""` |
+| `OPENRESEARCH_RESUME_CELLS` |  | ✅ | 2 | `""` |
 | `OPENRESEARCH_RESUME_FORCE_CELLS` |  |  | 1 | `""` |
 
 ### `OPENRESEARCH_REUSE_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_REUSE_RUBRIC` |  |  | 1 | `""` |
+| `OPENRESEARCH_REUSE_RUBRIC` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_RL_*`
 
@@ -1053,7 +1081,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_RLM_CLI_TIMEOUT_S` |  |  | 1 | `""` |
 | `OPENRESEARCH_RLM_EMPTY_TURN_FALLBACK` |  |  | 1 | `"1"` |
-| `OPENRESEARCH_RLM_ROOT_MODEL` |  |  |  | |
+| `OPENRESEARCH_RLM_ROOT_MODEL` |  | ✅ |  | |
 | `OPENRESEARCH_RLM_ROOT_MODEL_NAME` |  |  | 1 | `""` |
 | `OPENRESEARCH_RLM_ROOT_SDK_MAX_RETRIES` |  |  | 1 | `""` |
 | `OPENRESEARCH_RLM_ROOT_SLUG_KIMI` |  |  |  | |
@@ -1067,7 +1095,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_ROLE_MODELS` |  |  | 2 | `""` |
+| `OPENRESEARCH_ROLE_MODELS` |  | ✅ | 2 | `""` |
 
 ### `OPENRESEARCH_ROOT_*`
 
@@ -1079,7 +1107,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_RUBRIC_CANARY` |  |  |  | |
+| `OPENRESEARCH_RUBRIC_CANARY` |  | ✅ |  | |
 | `OPENRESEARCH_RUBRIC_DECLINE_ADVISORY` |  |  | 1 | `""` |
 | `OPENRESEARCH_RUBRIC_MAX_IMPROVEMENT_ITERATIONS` | ✅ |  |  | `2` |
 | `OPENRESEARCH_RUBRIC_PLATEAU_EPSILON` |  |  | 1 | `"0.005"` |
@@ -1100,43 +1128,32 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_RUNPOD_` |  |  |  | |
-| `OPENRESEARCH_RUNPOD_API_BASE_URL` | ✅ |  |  | `"https://rest.runpod.io/v1"` |
-| `OPENRESEARCH_RUNPOD_API_KEY` | ✅ |  | 5 | `Field(...)` |
-| `OPENRESEARCH_RUNPOD_AUTO_FALLBACK` |  |  |  | |
-| `OPENRESEARCH_RUNPOD_BOOTSTRAP_COMMAND` | ✅ |  |  | `""` |
-| `OPENRESEARCH_RUNPOD_BOOT_TIMEOUT_SECONDS` | ✅ |  |  | `900` |
-| `OPENRESEARCH_RUNPOD_CLOUD_TYPE` |  |  | 1 | `"SECURE"` |
-| `OPENRESEARCH_RUNPOD_CONTAINER_DISK_GB` | ✅ |  | 1 | `50` |
-| `OPENRESEARCH_RUNPOD_DATA_CENTER_IDS` | ✅ |  |  | `""` |
-| `OPENRESEARCH_RUNPOD_DELETE_ON_DESTROY` | ✅ |  |  | `True` |
-| `OPENRESEARCH_RUNPOD_GPU_COUNT` | ✅ |  | 1 | `1` |
-| `OPENRESEARCH_RUNPOD_GPU_TYPE` | ✅ |  | 1 | `"NVIDIA GeForce RTX 4090"` |
-| `OPENRESEARCH_RUNPOD_IMAGE` | ✅ |  | 1 | `"runpod/pytorch:2.1.0-py3.10-cuda11.8.0-` |
-| `OPENRESEARCH_RUNPOD_NETWORK_VOLUME_ID` | ✅ |  |  | `""` |
-| `OPENRESEARCH_RUNPOD_POD_ID` | ✅ |  |  | `""` |
-| `OPENRESEARCH_RUNPOD_SKIP_BUILD` |  |  | 1 | `"1"` |
-| `OPENRESEARCH_RUNPOD_SSH_KEY_PATH` | ✅ |  |  | `""` |
-| `OPENRESEARCH_RUNPOD_SSH_PUBLIC_KEY` | ✅ |  |  | `""` |
-| `OPENRESEARCH_RUNPOD_SSH_USER` | ✅ |  |  | `"root"` |
-| `OPENRESEARCH_RUNPOD_STALL_WARN` |  |  | 1 | `"1"` |
-| `OPENRESEARCH_RUNPOD_VOLUME_GB` | ✅ |  | 1 | `20` |
-| `OPENRESEARCH_RUNPOD_VOLUME_MOUNT_PATH` | ✅ |  | 5 | `"/workspace"` |
+| `OPENRESEARCH_RUNPOD_API_KEY` |  |  |  | |
+| `OPENRESEARCH_RUNPOD_BOOTSTRAP_COMMAND` |  |  |  | |
+| `OPENRESEARCH_RUNPOD_NETWORK_VOLUME_ID` |  |  |  | |
+| `OPENRESEARCH_RUNPOD_VOLUME_MOUNT_PATH` |  |  | 4 | `""` |
 
 ### `OPENRESEARCH_RUNS_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_RUNS_DIR` |  |  |  | |
-| `OPENRESEARCH_RUNS_RETENTION_DAYS` |  |  |  | |
+| `OPENRESEARCH_RUNS_RETENTION_DAYS` |  | ✅ |  | |
 | `OPENRESEARCH_RUNS_ROOT` |  |  | 7 | `""` |
+
+### `OPENRESEARCH_SCHEDULER_*`
+
+| Flag | cfg | doc | sites | default |
+|---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_SCHEDULER_AUTHORITATIVE` |  | ✅ | 2 | `""` |
+| `OPENRESEARCH_SCHEDULER_TREE` |  | ✅ | 3 | `""` |
 
 ### `OPENRESEARCH_SCOPE_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_SCOPE_INCLUSION` |  |  |  | |
-| `OPENRESEARCH_SCOPE_INCLUSION_EXCLUDE` |  |  | 1 | `""` |
+| `OPENRESEARCH_SCOPE_INCLUSION` |  | ✅ |  | |
+| `OPENRESEARCH_SCOPE_INCLUSION_EXCLUDE` |  | ✅ | 1 | `""` |
 | `OPENRESEARCH_SCOPE_SPEC_JSON` |  |  | 2 | `""` |
 
 ### `OPENRESEARCH_SDAR_*`
@@ -1170,7 +1187,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_SEED_ALL_MODELS` |  |  | 1 | `""` |
-| `OPENRESEARCH_SEED_BEST_ATTEMPT` |  |  |  | |
+| `OPENRESEARCH_SEED_BEST_ATTEMPT` |  | ✅ |  | |
 | `OPENRESEARCH_SEED_MODELS_MAX` |  |  | 1 | `"1"` |
 | `OPENRESEARCH_SEED_REPLICATION` |  |  | 1 | `""` |
 
@@ -1178,23 +1195,23 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_SELF_EDIT` |  |  |  | |
+| `OPENRESEARCH_SELF_EDIT` |  | ✅ |  | |
 
 ### `OPENRESEARCH_SKILL_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_SKILL_CANDIDATES_MAX` |  |  |  | |
-| `OPENRESEARCH_SKILL_INFRA_SELECT` |  |  |  | |
-| `OPENRESEARCH_SKILL_SELECT` |  |  |  | |
-| `OPENRESEARCH_SKILL_SELECT_DETERMINISTIC` |  |  |  | |
-| `OPENRESEARCH_SKILL_VERIFIER_BODIES` |  |  | 1 | `""` |
+| `OPENRESEARCH_SKILL_CANDIDATES_MAX` |  | ✅ |  | |
+| `OPENRESEARCH_SKILL_INFRA_SELECT` |  | ✅ |  | |
+| `OPENRESEARCH_SKILL_SELECT` |  | ✅ |  | |
+| `OPENRESEARCH_SKILL_SELECT_DETERMINISTIC` |  | ✅ |  | |
+| `OPENRESEARCH_SKILL_VERIFIER_BODIES` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_SKILLS_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_SKILLS` |  |  | 4 | `""` |
+| `OPENRESEARCH_SKILLS` |  | ✅ | 4 | `""` |
 
 ### `OPENRESEARCH_SKIP_*`
 
@@ -1224,13 +1241,19 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_STABLE_RUN_ID` |  |  | 1 | `""` |
+| `OPENRESEARCH_STABLE_RUN_ID` |  | ✅ | 1 | `""` |
+
+### `OPENRESEARCH_STATE_*`
+
+| Flag | cfg | doc | sites | default |
+|---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_STATE_CONTRACTS` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_STUB_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_STUB_METRICS_GUARD` |  |  | 1 | `""` |
+| `OPENRESEARCH_STUB_METRICS_GUARD` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_SUBAGENT_*`
 
@@ -1244,32 +1267,38 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_SUBRLM_OPENAI_TIMEOUT_S` |  |  | 1 | |
+| `OPENRESEARCH_SUBRLM_OPENAI_TIMEOUT_S` |  | ✅ | 1 | |
 
 ### `OPENRESEARCH_SYNTH_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_SYNTH_CELL_VRAM_GB` |  |  | 1 | `""` |
+| `OPENRESEARCH_SYNTH_CELL_VRAM_GB` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_TARGET_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_TARGET_BEST_FLOOR` |  |  |  | |
+| `OPENRESEARCH_TARGET_BEST_FLOOR` |  | ✅ |  | |
+
+### `OPENRESEARCH_TRAIN_*`
+
+| Flag | cfg | doc | sites | default |
+|---|:--:|:--:|:--:|---|
+| `OPENRESEARCH_TRAIN_CHECKPOINT_STEPS` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_TRAINER_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
 | `OPENRESEARCH_TRAINER_GPUS` |  |  | 1 | `'1'` |
-| `OPENRESEARCH_TRAINER_VERSION` |  |  |  | |
+| `OPENRESEARCH_TRAINER_VERSION` |  | ✅ |  | |
 
 ### `OPENRESEARCH_TWO_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_TWO_AXIS_VERDICT` |  |  | 1 | `""` |
+| `OPENRESEARCH_TWO_AXIS_VERDICT` |  | ✅ | 1 | `""` |
 
 ### `OPENRESEARCH_UNIFIED_*`
 
@@ -1287,14 +1316,14 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_USE_AUTHOR_REPO` | ✅ |  | 5 | `False` |
+| `OPENRESEARCH_USE_AUTHOR_REPO` | ✅ | ✅ | 5 | `False` |
 
 ### `OPENRESEARCH_VALIDATOR_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_VALIDATOR_` |  |  |  | |
-| `OPENRESEARCH_VALIDATOR_BACKEND` |  |  | 4 | `""` |
+| `OPENRESEARCH_VALIDATOR_` |  | ✅ |  | |
+| `OPENRESEARCH_VALIDATOR_BACKEND` |  | ✅ | 4 | `""` |
 | `OPENRESEARCH_VALIDATOR_CHECK_REPORT` |  |  | 1 | `""` |
 | `OPENRESEARCH_VALIDATOR_MODEL` |  |  | 7 | `""` |
 | `OPENRESEARCH_VALIDATOR_PANEL_N` |  |  | 1 | `""` |
@@ -1328,7 +1357,7 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_VRAM_OVERRIDE_GB` |  |  | 4 | `""` |
+| `OPENRESEARCH_VRAM_OVERRIDE_GB` |  | ✅ | 4 | `""` |
 
 ### `OPENRESEARCH_WATCHDOG_*`
 
@@ -1345,13 +1374,12 @@ Legend: **cfg** = typed in `config.py`; **doc** = appears in `CLAUDE.md`; **site
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_WEBSHOP_` |  |  |  | |
-| `OPENRESEARCH_WEBSHOP_PYTHON` |  |  | 2 | |
+| `OPENRESEARCH_WEBSHOP_` |  | ✅ |  | |
+| `OPENRESEARCH_WEBSHOP_PYTHON` |  | ✅ | 3 | `""` |
 | `OPENRESEARCH_WEBSHOP_REPO_URL` |  |  | 2 | `"https://github.com/princeton-nlp/WebSho` |
 
 ### `OPENRESEARCH_ZERO_*`
 
 | Flag | cfg | doc | sites | default |
 |---|:--:|:--:|:--:|---|
-| `OPENRESEARCH_ZERO_METRICS_GUARD` |  |  | 1 | `""` |
-
+| `OPENRESEARCH_ZERO_METRICS_GUARD` |  | ✅ | 1 | `""` |

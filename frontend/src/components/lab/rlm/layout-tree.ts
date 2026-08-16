@@ -1,7 +1,7 @@
 /**
  * layoutTree — pure tree-layout function for the RLM exploration canvas.
  *
- * Spec: docs/superpowers/specs/2026-05-21-rlm-phase4-frontend-design.md §8
+ * Spec: docs/history/specs/2026-05-21-rlm-phase4-frontend-design.md §8
  *
  * Algorithm (Reingold-Tilford-lite):
  *   1. Build a parentId → children[] adjacency map (preserving chronological order).

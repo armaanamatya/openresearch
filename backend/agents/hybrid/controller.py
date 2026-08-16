@@ -29,20 +29,6 @@ logger = logging.getLogger(__name__)
 _DEFAULT_REPAIR_TARGET: float = 0.6
 
 
-def _build_workspace_claim_map_from_bundle(bundle: Any, project_id: str) -> dict[str, Any]:
-    """Convert a PaperBenchBundle into the workspace_claim_map shape expected by
-    ``run_pipeline_rlm``.  Used when the hybrid is called with a bundle object.
-
-    If the caller already provides a ``workspace_claim_map``, this is not called.
-    """
-    from backend.services.ingestion.paperbench import bundle_to_workspace_claim_map
-
-    claim_map = bundle_to_workspace_claim_map(bundle)
-    claim_map["project_id"] = project_id
-    claim_map["rubric_spec"] = bundle.rubric()
-    return claim_map
-
-
 def _extract_weak_clusters(
     phase1_report_path: str,
     repair_target: float,

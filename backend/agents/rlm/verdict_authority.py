@@ -1,6 +1,6 @@
 """verdict_authority.py — the single, last, grade-free reproduction-verdict
 decision (Track A, closes findings #1/#4/#5/#10/#11; design
-``docs/superpowers/specs/2026-07-09-eval-integrity-track-a-design.md`` §4.3).
+``docs/history/specs/2026-07-09-eval-integrity-track-a-design.md`` §4.3).
 
 The north-star invariant this module exists to protect: the reproduction
 verdict is keyed on the **deterministic evidence layer**, never the LLM

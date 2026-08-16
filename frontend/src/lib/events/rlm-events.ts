@@ -1,5 +1,5 @@
 // RLM dashboard event types — the 8 event shapes consumed by the RLM lab UI.
-// Spec: docs/superpowers/specs/2026-05-21-rlm-phase4-frontend-design.md §4.
+// Spec: docs/history/specs/2026-05-21-rlm-phase4-frontend-design.md §4.
 // This file is the foundation every other Phase 4 task imports.
 // contract.ts (the legacy 14-stage event types) is left untouched; this is a
 // separate file. Removal of contract.ts is Phase 6.

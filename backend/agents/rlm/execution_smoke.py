@@ -69,11 +69,13 @@ def smoke_command(
     entry_script: str = "train.py",
     steps: int = 1,
     timeout_s: int = 300,
+    uses_sandbox_workdir: bool = False,
 ) -> str:
     """Return the sandbox command that runs the 1-step execution smoke (carries :data:`MARKER`).
 
     The command:
-      * ``cd``s into ``code_dir``,
+      * ``cd``s into ``code_dir`` unless the runtime already guarantees its
+        sandbox work directory (the RunPod remote path),
       * resolves a working interpreter at run time (``python3`` then ``python``) so the
         step is robust across the runpod image and the local per-run venv,
       * exports ``OPENRESEARCH_SMOKE_STEPS=<steps>`` (cap the run to N steps on tiny data)
@@ -85,9 +87,9 @@ def smoke_command(
     out (not honored → soft pass, skip); any other non-zero → a REAL crash of the entry
     script (e.g. the device-side assert) → blocking.
     """
-    code = str(code_dir)
+    change_dir = "" if uses_sandbox_workdir else f'cd "{code_dir}" && '
     return (
-        f'sh -c \'cd "{code}" && P=$(command -v python3 || command -v python) && '
+        f"sh -c '{change_dir}P=$(command -v python3 || command -v python) && "
         f'{SMOKE_STEPS_ENV}={int(steps)} CUDA_LAUNCH_BLOCKING=1 '
         f'timeout {int(timeout_s)} "$P" {entry_script}\'  {MARKER}'
     )

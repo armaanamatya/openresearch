@@ -101,32 +101,12 @@ class TestResolveByName:
         assert m.rlm_backend == "anthropic"
 
 
-def _stub_settings_no_root(monkeypatch) -> None:
-    """Isolate resolve_root_model(None) from the developer's real .env.
-
-    resolve_root_model now consults Settings (rlm_root_model) between the
-    process env and the key-based layered default, so a .env that pins the
-    root (the OAuth-only recipe does) would otherwise leak into these tests.
-    """
-    from types import SimpleNamespace
-
-    import backend.config as _cfg
-
-    monkeypatch.setattr(
-        _cfg, "get_settings",
-        lambda _force_reload=False: SimpleNamespace(
-            rlm_root_model="", rlm_root_model_name="",
-        ),
-    )
-
-
 class TestLayeredDefault:
-    """None resolves via env var, then Settings, then the OPENAI_API_KEY-based fallback."""
+    """None resolves via env var then via the OPENAI_API_KEY-based fallback."""
 
     def test_default_with_openai_key(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.delenv("OPENRESEARCH_RLM_ROOT_MODEL", raising=False)
-        _stub_settings_no_root(monkeypatch)
         # Re-import so ROOT_MODELS is fresh; resolve_root_model reads env at call time.
         mod = _reload_models()
         result = mod.resolve_root_model(None)
@@ -137,7 +117,6 @@ class TestLayeredDefault:
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
         monkeypatch.delenv("OPENRESEARCH_RLM_ROOT_MODEL", raising=False)
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")  # qwen3-coder default needs it (A1-H1)
-        _stub_settings_no_root(monkeypatch)
         # Patch OAuth so this test is deterministic regardless of local claude login.
         monkeypatch.setattr(
             "backend.agents.runtime.factory.has_provider_credentials",

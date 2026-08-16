@@ -1046,7 +1046,7 @@ def _check_paper_invariants(
     arxiv_id: str | None,
     out: list[PreFlightViolation],
 ) -> None:
-    """Lane X — pre-flight checks driven by ``docs/papers/<arxiv_id>.yaml``.
+    """Lane X — pre-flight checks driven by ``configs/papers/<arxiv_id>.yaml``.
 
     The paper-hint yaml may declare ``algorithm_invariants.stop_gradient_on_gate``,
     ``algorithm_invariants.real_model_required``, and ``models_in_paper:
@@ -1501,7 +1501,7 @@ def validate_code_pre_flight(
     except Exception:  # noqa: BLE001
         pass
 
-    # Lane X — per-paper invariants. The yaml at docs/papers/<arxiv_id>.yaml
+    # Lane X — per-paper invariants. The yaml at configs/papers/<arxiv_id>.yaml
     # declares stop_gradient variables + canonical model paths; this dispatcher
     # turns those into AST checks. Generic across papers — adding new yaml
     # entries unlocks the checks for new papers without any code change.

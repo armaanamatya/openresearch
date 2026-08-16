@@ -1,3 +1,5 @@
+"use client";
+
 import Link from "next/link";
 import type { LeaderboardRow } from "@/lib/leaderboard/types";
 import styles from "./recent-runs-panel.module.css";
@@ -18,11 +20,13 @@ function StatusDot({ status }: { status: string }) {
 
 interface RecentRunsPanelProps {
   rows: LeaderboardRow[];
+  interruptedRows?: LeaderboardRow[];
   error?: string | null;
   limit?: number;
+  onResume?: (projectId: string) => void;
 }
 
-export function RecentRunsPanel({ rows, error = null }: RecentRunsPanelProps) {
+export function RecentRunsPanel({ rows, interruptedRows = [], error = null, onResume }: RecentRunsPanelProps) {
   return (
     <section className={styles.panel}>
       <div className={styles.header}>
@@ -32,8 +36,34 @@ export function RecentRunsPanel({ rows, error = null }: RecentRunsPanelProps) {
         </Link>
       </div>
 
+      {interruptedRows.length > 0 && onResume && (
+        <ul className={styles.list} role="list" aria-label="Interrupted runs">
+          {interruptedRows.map((r) => (
+            <li key={r.project_id} className={styles.row}>
+              <div className={styles.rowMain}>
+                <div className={styles.rowTop}>
+                  <span className={styles.paperLink}>{r.paper_title ?? r.paper_id}</span>
+                  <span className={styles.modeBadge}>interrupted</span>
+                </div>
+              </div>
+              <div className={styles.rowRight}>
+                <button
+                  type="button"
+                  className={styles.replayLink}
+                  onClick={() => onResume(r.project_id)}
+                  aria-label={`Resume run for ${r.paper_title ?? r.paper_id}`}
+                  title="Restarts this run under the same project — implementation work may be reused, the reasoning loop starts over."
+                >
+                  Resume
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
       {error ? (
-        <p className={styles.empty} role="status">Recent runs are unavailable right now.</p>
+        <p className={styles.empty} role="status">{error}</p>
       ) : rows.length === 0 ? (
         <p className={styles.empty}>No runs yet — start one above.</p>
       ) : (

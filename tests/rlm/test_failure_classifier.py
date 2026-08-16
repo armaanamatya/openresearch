@@ -86,40 +86,6 @@ def test_oom_killed_from_runtime_cause_kind() -> None:
     assert klass == "oom_killed"
 
 
-def test_runpod_capacity() -> None:
-    result = {
-        "success": False,
-        "error": "RUNPOD_CAPACITY_EXHAUSTED: no instances of NVIDIA L40S available",
-    }
-    klass, _ = classify_failure(result)
-    assert klass == "runpod_capacity"
-
-
-def test_runpod_transient_500() -> None:
-    result = {
-        "success": False,
-        "error": "RUNPOD_TRANSIENT_500: Runpod API request failed (HTTP 500)",
-    }
-    klass, _ = classify_failure(result)
-    assert klass == "runpod_transient_500"
-
-
-def test_runpod_ssh_timeout() -> None:
-    result = {
-        "success": False, "error": "RUNPOD_SSH_TIMEOUT: pod never reached READY on a6000",
-    }
-    klass, _ = classify_failure(result)
-    assert klass == "runpod_ssh_timeout"
-
-
-def test_runpod_balance_too_low() -> None:
-    result = {
-        "success": False, "error": "RUNPOD_BALANCE_TOO_LOW: account balance is too low",
-    }
-    klass, _ = classify_failure(result)
-    assert klass == "runpod_balance_too_low"
-
-
 def test_exec_timeout() -> None:
     result = {"success": False, "error": "run_experiment: timed out after 14400 s"}
     klass, _ = classify_failure(result)
@@ -287,51 +253,3 @@ def test_guard_stamped_classes_carry_distinct_nonempty_fixes() -> None:
         assert "classifier didn't recognise" not in fix
         seen_fixes.add(fix)
     assert len(seen_fixes) == len(cases), "fixes must be class-specific, not a shared fallback"
-
-
-# --- training_divergence (2026-07-03) ------------------------------------------
-# prj_e2d9aebb05d4340f: the agent's own nan-guard aborted train.py with
-# "RuntimeError: train_loss=nan at epoch=1, lr=0.100000 — abort" (exit 1, twice)
-# and the classifier returned `unknown` — no repair hint, so the oauth root gave
-# up into a FINAL_VAR refusal loop. A diverged loss is a recognisable, repairable
-# shape (lower lr / warmup / grad-clip).
-
-
-def test_training_divergence_nan_loss() -> None:
-    klass, fix = classify_failure({
-        "success": False,
-        "logs": "RuntimeError: train_loss=nan at epoch=1, lr=0.100000 — abort",
-    })
-    assert klass == "training_divergence"
-    assert "learning rate" in fix or "diverg" in fix
-
-
-def test_training_divergence_loss_is_nan_variant() -> None:
-    klass, _ = classify_failure(
-        {"success": False, "logs": "Loss is NaN after step 40, stopping"}
-    )
-    assert klass == "training_divergence"
-
-
-def test_training_divergence_inf_variant() -> None:
-    klass, _ = classify_failure(
-        {"success": False, "stderr": "ValueError: loss = inf encountered"}
-    )
-    assert klass == "training_divergence"
-
-
-def test_word_nan_alone_does_not_classify_divergence() -> None:
-    # "banana" contains "nan" — the detector must be anchored to loss context.
-    klass, _ = classify_failure(
-        {"success": False, "logs": "KeyError: 'banana' — dataset banana-split not found"}
-    )
-    assert klass != "training_divergence"
-
-
-def test_training_divergence_in_failure_classes() -> None:
-    assert "training_divergence" in FAILURE_CLASSES
-
-
-def test_training_divergence_is_repairable() -> None:
-    from backend.agents.rlm.primitives import _RUN_EXPERIMENT_REPAIRABLE_FAILURES
-    assert "training_divergence" in _RUN_EXPERIMENT_REPAIRABLE_FAILURES

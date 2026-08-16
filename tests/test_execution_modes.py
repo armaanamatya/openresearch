@@ -64,15 +64,10 @@ def test_execution_profile_gpu_modes_set_resource_intent() -> None:
     assert max_gpu.sandbox_environment["OPENRESEARCH_GPU_MODE"] == "max"
 
 
-def test_sandbox_mode_auto_defaults_to_runpod_for_all_user_modes() -> None:
-    assert DEFAULT_SANDBOX_MODE is SandboxMode.runpod
-    assert resolve_sandbox_mode("auto", pipeline_mode="rlm") is SandboxMode.runpod
-    assert resolve_sandbox_mode("auto", pipeline_mode="rdr") is SandboxMode.runpod
+def test_sandbox_mode_default_is_local() -> None:
+    # local is the single coherent default — paid clouds (aws/azure/gcp) are opt-in only.
+    assert DEFAULT_SANDBOX_MODE is SandboxMode.local
 
 
 def test_sandbox_mode_preserves_explicit_simulation_request() -> None:
     assert resolve_sandbox_mode("simulate", pipeline_mode="rlm") is SandboxMode.simulate
-
-
-def test_sandbox_mode_preserves_explicit_runpod_request() -> None:
-    assert resolve_sandbox_mode("runpod", pipeline_mode="rlm") is SandboxMode.runpod

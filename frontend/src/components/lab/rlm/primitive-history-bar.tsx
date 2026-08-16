@@ -11,7 +11,7 @@ interface PrimitiveHistoryBarProps {
 /**
  * PrimitiveHistoryBar — collapsible bottom strip listing primitive calls.
  *
- * Spec: docs/superpowers/specs/2026-05-21-rlm-phase4-frontend-design.md §7
+ * Spec: docs/history/specs/2026-05-21-rlm-phase4-frontend-design.md §7
  *
  * Collapsed (default): a single bar showing the call count summary.
  * Expanded: a reverse-chronological list (newest first), one row per call.

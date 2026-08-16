@@ -12,6 +12,8 @@ EXPECTED = {
     "read_context_map",  # PEEK-lite intra-run context map, OPENRESEARCH_CONTEXT_MAP
     "inspect_repository",  # repo-first reproduction (#62), OPENRESEARCH_USE_AUTHOR_REPO
     "consult_skill",  # skill-library playbooks (Release-1 5.C), OPENRESEARCH_SKILLS
+    "search_literature",  # related-paper corpus lookup, OPENRESEARCH_LITERATURE_SURVEY
+    "survey_related_work",  # per-paper fan-out survey, OPENRESEARCH_LITERATURE_SURVEY
 }
 
 

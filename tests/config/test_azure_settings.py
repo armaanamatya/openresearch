@@ -156,11 +156,11 @@ def test_azure_env_var_overrides(monkeypatch):
 
 def test_existing_literal_values_still_valid(clean_azure_env):
     """Regression: the existing Literal values for default_sandbox + force_sandbox still work."""
-    for val in ("auto", "local", "docker", "runpod"):
+    for val in ("auto", "local", "docker", "aws", "gcp"):
         s = Settings(_env_file=None, default_sandbox=val)
         assert s.default_sandbox == val
 
-    for val in ("", "auto", "local", "docker", "runpod"):
+    for val in ("", "auto", "local", "docker", "aws", "gcp"):
         s = Settings(_env_file=None, force_sandbox=val)
         assert s.force_sandbox == val
 

@@ -1,11 +1,26 @@
 #!/usr/bin/env bash
 # Launch the SDAR (arXiv 2605.15155) reproduction on the GCP A100 VM.
 #
+# >>> SDAR-ONLY. For ANY OTHER PAPER use `scripts/vm_paper_run.sh` (the generic
+# >>> single-VM launcher, 2026-08-03) — it implements this same validated flow
+# >>> (env-file sourcing, outer-timeout backstop, self_stop + GCS upload, exit
+# >>> trap, plus the venv torch check) parameterized by paper/project-id/models/
+# >>> money caps. This script stays SDAR-pinned ON PURPOSE: it is the exact
+# >>> VM-side entry `VmComputeProvider.launch()` invokes (golden-argv tests in
+# >>> tests/services/runtime/test_vm_compute_provider.py assert the name), and
+# >>> its pinned behaviors — the CLAUDE_CODE_OAUTH_TOKEN .env lift, `env -u
+# >>> ANTHROPIC_API_KEY`, the `runs/sdar_gcp_run.out` upload name, the no-args
+# >>> `runs/.cache/run_spec.json` auto-discovery, and the SDAR guidance/scope/
+# >>> repo-url defaults below — are what "preserve current behavior" means, so
+# >>> it is NOT a thin wrapper over the generic script. SDAR-specific here:
+# >>> the hardcoded paper id 2605.15155, PROJECT_ID default, guidance heredoc,
+# >>> scope-spec default, repo URL, and OPENRESEARCH_SDAR_* knob names.
+#
 # Self-contained and idempotent-friendly: it sources the env file that
 # `gcp_sdar_preflight.sh prepare` wrote, pins the Azure Foundry deployment as
 # every role (OAuth-free), requests the paper's full 3-model scope (the 7B
 # sharded over 2 cards), and execs the reproduction. Run it on the VM from the
-# repo root, or — the intended path — let `gcp_sdar_preflight.sh launch` start
+# repo root, or - the intended path - let `gcp_sdar_preflight.sh launch` start
 # it detached. The launch is fully driven by env + flags, so a fresh session
 # re-runs it with one command and no edits.
 set -euo pipefail
@@ -19,11 +34,11 @@ rm -f "${REPO_DIR}/.sdar_run_exited" 2>/dev/null || true
 
 ENV_FILE="runs/.cache/sdar_gcp.env"
 if [ ! -f "$ENV_FILE" ]; then
-  echo "ERROR: $ENV_FILE missing — run 'gcp_sdar_preflight.sh prepare' to [GREEN] first" >&2
+  echo "ERROR: $ENV_FILE missing - run 'gcp_sdar_preflight.sh prepare' to [GREEN] first" >&2
   exit 1
 fi
 if [ ! -x .venv/bin/python ]; then
-  echo "ERROR: .venv/bin/python missing — run 'gcp_sdar_preflight.sh prepare' to [GREEN] first" >&2
+  echo "ERROR: .venv/bin/python missing - run 'gcp_sdar_preflight.sh prepare' to [GREEN] first" >&2
   exit 1
 fi
 # Shell wins over .env in the harness, so these exports pin the run.
@@ -65,7 +80,7 @@ PROJECT_ID="${OPENRESEARCH_SDAR_PROJECT_ID:-sdar_gcp_20260618}"
 # finish_reason=stop, reasoning_tokens=0, no refusal). The earlier "chat
 # deployments REFUSE to drive the loop" conclusion was a misdiagnosed max_tokens
 # 400: gpt-chat-latest is a reasoning-class model requiring max_completion_tokens
-# + default temperature. That is now handled on every role — _is_reasoning_model
+# + default temperature. That is now handled on every role - _is_reasoning_model
 # (primitives + grader/verifier transport) and null-param omission (rlms root
 # loop + executor Agents SDK both omit max_tokens/temperature when unset).
 # Override the deployment via AZURE_FOUNDRY_DEPLOYMENT (e.g. =grok-4.3, =Kimi-K2.6).
@@ -80,7 +95,12 @@ export OPENRESEARCH_SDAR_NO_AUTOSTOP="${OPENRESEARCH_SDAR_NO_AUTOSTOP:-0}"
 # orchestrator itself wedges past the harness's own --max-wall-clock 86400.
 export OPENRESEARCH_SDAR_OUTER_WALL_S="${OPENRESEARCH_SDAR_OUTER_WALL_S:-90000}"
 export OPENRESEARCH_GRADER_SAMPLES="${OPENRESEARCH_GRADER_SAMPLES:-3}"
-export OPENRESEARCH_BASELINE_EXTRA_GUIDANCE="${OPENRESEARCH_BASELINE_EXTRA_GUIDANCE:-$(cat <<'SDAR_GUIDANCE_EOF'
+# NOTE: the heredoc default is read into its own var via `read -r -d ''` rather
+# than inlined as "${VAR:-$(cat <<'EOF' ... )}". macOS bash 3.2 mis-parses a
+# heredoc wrapped in $()/ ${:-...} (fixed in bash 4.x); `read` takes the heredoc
+# directly with no command substitution, so it parses everywhere. `|| true`
+# absorbs read's expected non-zero exit at the delimiter-less EOF.
+IFS='' read -r -d '' _SDAR_GUIDANCE_DEFAULT <<'SDAR_GUIDANCE_EOF' || true
 REAL REPRODUCTION - NO FABRICATION. The harness now DETECTS and REJECTS stub models, random
 log-probs, hardcoded metrics, and zero-VRAM "training" (at preflight AND at run time):
 - Load the REAL models with AutoModelForCausalLM.from_pretrained: Qwen/Qwen3-1.7B,
@@ -114,11 +134,11 @@ PRIORITY if time-constrained: REAL training of the SDAR method on the full 3x3 m
 hyperparameters + gap logging FIRST (a real partial beats a fabricated whole), then add
 baselines/retrieval/sweeps. Do NOT fake any result to increase coverage.
 SDAR_GUIDANCE_EOF
-)}"
+export OPENRESEARCH_BASELINE_EXTRA_GUIDANCE="${OPENRESEARCH_BASELINE_EXTRA_GUIDANCE:-$_SDAR_GUIDANCE_DEFAULT}"
 
 # Per-role models. Default: pure foundry (OAuth-free, matches the root alias).
 # "foundry" is the neutral token; the actual model is AZURE_FOUNDRY_DEPLOYMENT.
-# To put a reliable ChatGPT/gpt-5 grader+verifier behind the foundry agent, set —
+# To put a reliable ChatGPT/gpt-5 grader+verifier behind the foundry agent, set -
 # REQUIRES a LIVE OPENAI_API_KEY in .env (the bundled one is currently dead):
 #   OPENRESEARCH_SDAR_MODELS=executor=foundry,grader=gpt-5,verifier=gpt-5
 export OPENRESEARCH_SDAR_MODELS="${OPENRESEARCH_SDAR_MODELS:-executor=foundry,grader=foundry,verifier=foundry}"
@@ -128,7 +148,7 @@ export OPENRESEARCH_SDAR_MODELS="${OPENRESEARCH_SDAR_MODELS:-executor=foundry,gr
 # this ON for the SDAR run: the harness clones it into runs/<id>/repo/, exposes
 # the manifest as the root's repo_files, and seeds code/ from it (adapt mode) so
 # the agent reproduces FROM the authors' real code instead of from scratch. The
-# clone is host-only (never uploaded to the GPU layer — only the adapted code/
+# clone is host-only (never uploaded to the GPU layer - only the adapted code/
 # ships); size/timeout/LFS caps apply (OPENRESEARCH_REPO_CLONE_*). The detailed
 # BASELINE_EXTRA_GUIDANCE above still applies on top of the seeded code.
 # Override OPENRESEARCH_USE_AUTHOR_REPO=0 to reproduce from scratch (prior path);
@@ -146,8 +166,8 @@ self_stop() {
   local reason="$1"
   _SELF_STOP_DONE=1   # prevent the EXIT trap from double-calling self_stop
   echo "[sdar_gcp_run] self_stop triggered: $reason"
-  # Upload the report + key diagnostics to GCS FIRST — before ANY early return
-  # (NO_AUTOSTOP / fast-crash) — so the result is retrievable laptop-independently
+  # Upload the report + key diagnostics to GCS FIRST - before ANY early return
+  # (NO_AUTOSTOP / fast-crash) - so the result is retrievable laptop-independently
   # even if the local watcher died. The old placement (after the NO_AUTOSTOP check)
   # meant NO_AUTOSTOP=1 skipped the upload entirely and stranded the report on the
   # boot disk, which is why prior runs needed a manual SSH-tar recovery.
@@ -168,7 +188,7 @@ self_stop() {
     return 0
   fi
   # Fast-crash policy (reconciled with the operator's GPU-spend-efficiency priority):
-  # BY DEFAULT a fast error STILL self-stops — never leave a 4xA100 burning after a crash.
+  # BY DEFAULT a fast error STILL self-stops - never leave a 4xA100 burning after a crash.
   # The boot disk + GCS report persist for debugging, and you can flip to a CPU machine
   # type to inspect without GPU charges. Set OPENRESEARCH_SDAR_FASTCRASH_STAY_UP=1 (e.g.
   # during an ATTENDED smoke/debug session) to instead HOLD the VM up on a <FASTCRASH_S
@@ -179,7 +199,7 @@ self_stop() {
   if [[ "${OPENRESEARCH_SDAR_FASTCRASH_STAY_UP:-0}" == "1" ]] \
        && [[ "$reason" == error* || "$reason" == exit_trap* ]] \
        && (( SECONDS < ${OPENRESEARCH_SDAR_FASTCRASH_S:-600} )); then
-    echo "[sdar_gcp_run] FAST CRASH after ${SECONDS}s (< ${OPENRESEARCH_SDAR_FASTCRASH_S:-600}s) and FASTCRASH_STAY_UP=1 — leaving VM UP to hold capacity; stop it manually ('down') once inspected"
+    echo "[sdar_gcp_run] FAST CRASH after ${SECONDS}s (< ${OPENRESEARCH_SDAR_FASTCRASH_S:-600}s) and FASTCRASH_STAY_UP=1 - leaving VM UP to hold capacity; stop it manually ('down') once inspected"
     return 0
   fi
   echo "[sdar_gcp_run] halting GPU billing via shutdown; boot disk persists; flip to CPU machine type to debug without GPU charges"
@@ -198,11 +218,11 @@ _exit_trap() {
   local _ec=$?
   # Sentinel: always write so the watchdog detects a dead run quickly.
   touch "${REPO_DIR}/.sdar_run_exited" 2>/dev/null || true
-  echo "[sdar_gcp_run] exit (rc=${_ec}) — sentinel written at ${REPO_DIR}/.sdar_run_exited"
+  echo "[sdar_gcp_run] exit (rc=${_ec}) - sentinel written at ${REPO_DIR}/.sdar_run_exited"
   # Only call self_stop when the explicit bottom-of-script calls were skipped
   # (unexpected early exit). _SELF_STOP_DONE=1 suppresses a double-call.
   if [[ "$_SELF_STOP_DONE" == "0" ]]; then
-    echo "[sdar_gcp_run] exit trap: unexpected early exit — calling self_stop"
+    echo "[sdar_gcp_run] exit trap: unexpected early exit - calling self_stop"
     self_stop "exit_trap rc=${_ec}"
   fi
 }
@@ -222,7 +242,7 @@ _SDAR_SCOPE_SPEC="${OPENRESEARCH_SDAR_SCOPE_SPEC:-}"
 # defaults (backend/cli.py::_load_run_spec) so the intended guard suite
 # (env-liveness / zero-metrics / per-model-status / no-learning-signal / evidence
 # gate / metrics-completeness) + REPORT_GCS + env paths actually activate on the VM.
-# Without this, those flags — present only in run_spec.json — stayed silently OFF
+# Without this, those flags - present only in run_spec.json - stayed silently OFF
 # (default-off in code), which is why prior runs had no env_health.jsonl. The
 # explicit --scope-spec/--model flags above still WIN over spec values.
 _RUN_SPEC_ARGS=("$@")

@@ -1,6 +1,6 @@
 """Typed ``EvaluationReport`` adapter + ``ScorecardRow`` model (Track E Task 5,
-spec ``docs/superpowers/specs/2026-07-10-reproduction-eval-framework-design.md``
-§6.1/§6.3, plan ``docs/superpowers/plans/2026-07-10-track-e-eval-scorecard.md``
+spec ``docs/history/specs/2026-07-10-reproduction-eval-framework-design.md``
+§6.1/§6.3, plan ``docs/history/plans/2026-07-10-track-e-eval-scorecard.md``
 Task 5).
 
 WHY this exists

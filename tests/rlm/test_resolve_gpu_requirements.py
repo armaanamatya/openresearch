@@ -79,7 +79,7 @@ def test_low_confidence_returns_fallback_source(ctx):
     payload = {"estimated_vram_gb": 80, "paper_gpu_string": None, "paper_gpu_count": None, "reasoning": "", "confidence": 0.2}
     out = resolve_gpu_requirements(payload, ctx=ctx)
     assert out["source"] == "fallback"
-    assert out["short_name"] == "rtx4090"
+    assert out["short_name"] == "gcp_a100_40"
 
 
 def test_malformed_payload_raises_value_error(ctx):

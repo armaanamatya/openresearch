@@ -20,7 +20,10 @@ Design:
     Scans cell-level ``metrics.json`` files under the ``outputs/`` subtree,
     checks that each result-claiming rate metric is backed by a verifiable
     ``eval_provenance.json``, and vetoes if the recomputed mean disagrees with
-    the reported value (tolerance: 1e-3).
+    the reported value (tolerance: 1e-3).  The records-free AGGREGATE schema
+    (``verl_metrics_adapter``) is accepted only when the run's resolved
+    ``rlm_state/repo_spec.json`` mode is ``"execute"`` — fail-closed for
+    adapt-mode / mode-unknown runs, which must persist per-example records.
   - Flag default-OFF: ``OPENRESEARCH_EVAL_PROVENANCE_GUARD``.
   - Fail-soft everywhere: any exception → safe fallback.
 """
@@ -65,6 +68,22 @@ def eval_provenance_guard_enabled() -> bool:
     return os.environ.get(
         "OPENRESEARCH_EVAL_PROVENANCE_GUARD", ""
     ).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _min_eval_n() -> int:
+    """Eval-coverage floor from ``OPENRESEARCH_MIN_EVAL_N`` (0 / unset / invalid = off).
+
+    A sub-knob of the eval-provenance guard: only consulted when that guard is
+    enabled (coverage needs the ``eval_provenance.json`` sidecar the guard
+    enforces). When > 0, a success cell whose ``n_eval`` is below the floor is
+    vetoed — a mean that is correct but computed over too few held-out examples
+    is not a substantiated benchmark result.
+    """
+    try:
+        v = int(os.environ.get("OPENRESEARCH_MIN_EVAL_N", "0").strip() or "0")
+    except (TypeError, ValueError):
+        return 0
+    return v if v > 0 else 0
 
 
 # ---------------------------------------------------------------------------
@@ -175,10 +194,15 @@ def record_eval(
         }
 
         # Persist train_ids for the disjointness check (omit key when not supplied).
+        # The FULL id set is kept deliberately — unlike the heavy per-example
+        # ``records`` (capped for sidecar size), the disjointness/leakage guard
+        # reads this list to detect an eval example overlapping a TRAIN task, so
+        # truncating it would silently blind the guard to leakage past the cap.
+        # Task ids are short strings, so the full set is cheap to persist.
         try:
             if train_ids is not None:
                 all_train_ids = list(train_ids)
-                payload["train_ids"] = [str(tid) for tid in all_train_ids[:_RECORDS_SAMPLE_CAP]]
+                payload["train_ids"] = [str(tid) for tid in all_train_ids]
                 payload["n_train"] = len(all_train_ids)
         except Exception:  # noqa: BLE001 — fail-soft
             pass
@@ -199,6 +223,26 @@ def record_eval(
 # ---------------------------------------------------------------------------
 # Guard API  (harness-facing; disk-based)
 # ---------------------------------------------------------------------------
+
+def _resolved_repro_mode(code_dir: Path) -> str | None:
+    """Resolved reproduction mode from ``rlm_state/repo_spec.json`` (the
+    sibling of ``code_dir`` under ``runs/<project_id>/``), or None when the
+    file is absent/unreadable/mode-less.
+
+    Consumers treat None as NOT-execute (fail-closed): the aggregate
+    provenance schema below is only legal for execute-mode runs (the
+    verl_metrics_adapter only exists to bridge the authors' own pipeline),
+    and an unknown mode must never widen acceptance — an adapt-mode cell
+    must persist per-example records.
+    """
+    try:
+        spec_path = Path(code_dir).parent / "rlm_state" / "repo_spec.json"
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+        mode = spec.get("mode") if isinstance(spec, dict) else None
+        return mode if isinstance(mode, str) and mode.strip() else None
+    except Exception:  # noqa: BLE001 — fail-soft to "unknown" (treated as not-execute)
+        return None
+
 
 def _find_rate_metric(m: dict[str, Any]) -> tuple[str, float] | None:
     """Return (key, value) for the first top-level rate-metric key with a
@@ -244,6 +288,10 @@ def eval_provenance_should_veto(code_dir: str | Path) -> tuple[bool, str | None]
 
     _SUCCESS_STATUSES = frozenset({"ok", "success", "succeeded", "completed"})
     violations: list[str] = []
+
+    # Resolved once per call: the aggregate-provenance branch below is gated on
+    # the run's resolved reproduction mode (execute-only; None = fail-closed).
+    repro_mode = _resolved_repro_mode(code_dir)
 
     try:
         for metrics_path in code_dir.rglob("metrics.json"):
@@ -314,16 +362,59 @@ def eval_provenance_should_veto(code_dir: str | Path) -> tuple[bool, str | None]
                         break
                     continue
 
+                # Eval-coverage floor (OPENRESEARCH_MIN_EVAL_N, default 0=off): the
+                # checks below verify the reported metric IS the mean of real
+                # outcomes; this verifies ENOUGH held-out examples backed it (a
+                # correct mean over 3 examples is not a benchmark result).
+                # Conservative: skips when the sidecar carries no numeric n_eval.
+                floor = _min_eval_n()
+                if floor > 0:
+                    sc_n = sc.get("n_eval")
+                    if (
+                        isinstance(sc_n, (int, float))
+                        and not isinstance(sc_n, bool)
+                        and sc_n < floor
+                    ):
+                        violations.append(
+                            f"{cell_label}: n_eval={int(sc_n)} <"
+                            f" OPENRESEARCH_MIN_EVAL_N={floor} — too few held-out examples"
+                            f" to substantiate {rate_key}={reported:.4f}"
+                        )
+                        if len(violations) >= 3:
+                            break
+                        continue
+
                 # Aggregate-provenance schema (execute-mode verl adapter): a
                 # value-preservingly copied aggregate metric with NO per-example
                 # records (verl exposes only an aggregate — synthesizing fake
                 # per-example records would violate the no-fabrication red
                 # line). Verified by a value-preserving cross-check against
                 # metrics.json instead of a records-recompute.
+                #
+                # EXECUTE-MODE-ONLY (fail-closed): the aggregate schema is
+                # accepted ONLY when the run's resolved
+                # ``rlm_state/repo_spec.json`` mode is "execute" — the one mode
+                # where the authors' own pipeline is the metric producer and
+                # per-example records genuinely do not exist. An adapt-mode (or
+                # mode-unknown) cell carrying an aggregate marker is vetoed:
+                # adapt-mode trainers are harness-guided and MUST persist
+                # per-example records via record_eval.
                 if (
                     sc.get("provenance_kind") == "aggregate"
                     or sc.get("adapter") == "verl_metrics_adapter"
                 ):
+                    if repro_mode != "execute":
+                        violations.append(
+                            f"{cell_label}: aggregate eval_provenance is only"
+                            f" accepted for execute-mode runs"
+                            f" (rlm_state/repo_spec.json mode="
+                            f"{repro_mode or 'unknown'}) — adapt-mode cells must"
+                            f" persist per-example records via record_eval"
+                        )
+                        if len(violations) >= 3:
+                            break
+                        continue
+
                     try:
                         mv = float(sc.get("metric_value"))
                         if not math.isfinite(mv):

@@ -1,9 +1,8 @@
-<!-- doc-meta: status=current; last-verified=2026-07-07 -->
+<!-- doc-meta: status=current; last-verified=2026-07-25 -->
 # CLAUDE.md
 
-> **Tier-2 day-to-day reference.** The "why" lives in `system_overview.md` +
-> `docs/design/rlm-pivot-brief.md` — read those before non-trivial architecture changes.
-> Doc policy: [`docs/policies/documentation.md`](docs/policies/documentation.md).
+> **Tier-2 day-to-day reference.** Read `docs/architecture.md` before
+> non-trivial architecture changes.
 >
 > **This root is deliberately lean.** Subsystem detail lives in nested `CLAUDE.md` files that
 > load automatically when you work in that subtree — `backend/agents/rlm/` (orchestrator,
@@ -19,7 +18,8 @@ implement and run a baseline, score it against an auto-generated rubric, and exp
 
 - **Today — autonomous reproduction.** A bare arXiv ID or PDF runs the full pipeline unattended;
   the `campaign` loop repeats until reproduced/exhausted. This is the reproduction engine behind
-  **deepinvent.ai** (the product surface).
+  **deepinvent.ai** (the product surface) — DeepInvent (Austin, TX; founded by Dr. Marcus Weller),
+  which hired the team that built it at a hackathon.
 - **Next — experiment ideation.** The same evidence-grounded harness is the substrate for a
   research-ideation layer: propose and test *new* experiments, not only replicate existing ones.
 
@@ -46,7 +46,10 @@ python -m backend.cli campaign <paper> --max-llm-usd X --max-gpu-usd Y --max-gpu
 ```
 
 Common flags: `--mode {rlm(default),rdr,rlm-pure}`, `--provider`, `--sandbox
-{auto,local,docker,runpod,gke,gcp}`, `--model`, `--models role=token,…`, `--vram-gb`, `--max-usd`.
+{auto,docker,local,aws,azure,gcp}` (default `local`; `aws`=EKS, `azure`=AKS are the primary
+clouds; `gcp`/`gke` is NOT USED and fail-closes unless the inert `OPENRESEARCH_ALLOW_GKE=1`
+escape hatch is set (not a supported path); auto = docker/local
+only, never a paid remote), `--model`, `--models role=token,…`, `--vram-gb`, `--max-usd`.
 Root-model vocabulary, the two auth surfaces, per-role selection, Foundry/Grok, and the full flag
 catalog live in **`backend/agents/rlm/CLAUDE.md`**; sandbox/GPU knobs in
 **`backend/services/runtime/CLAUDE.md`**.
@@ -55,7 +58,7 @@ catalog live in **`backend/agents/rlm/CLAUDE.md`**; sandbox/GPU knobs in
 
 - **RLM orchestrator** (`backend/agents/rlm/run.py`) builds `rlm.RLM(...)` and calls `.completion()`
   on a worker thread. The paper is offloaded as the REPL `context` variable — the root sees only
-  constant-size metadata, never the corpus. The root writes Python calling the **19 bound
+  constant-size metadata, never the corpus. The root writes Python calling the **21 bound
   primitives** (`primitives.py`) and terminates via `FINAL_VAR(<var>)`.
 - **File-backed run state** (`runs/<project_id>/`, not a service — each run is a long-lived
   subprocess): `demo_status.json`, `rlm_state/` (resume-safe checkpoints), `dashboard_events.jsonl`
@@ -94,20 +97,30 @@ Load-bearing invariants; the owning nested file/spec carries the full rule + inc
   developer's `~/.claude`. → `backend/agents/rlm/CLAUDE.md`
 - **Two LLM auth surfaces, billed separately** (root model vs Sonnet sub-agents). A no-credit
   `ANTHROPIC_API_KEY` does **not** fall back to OAuth; a stale shell export shadows `.env`.
-  → `backend/agents/rlm/CLAUDE.md`
-- **Cost visibility.** `cost_ledger.jsonl`/`demo_status.json` are **blind** to Foundry-routed LLM
-  spend and idle GPU-node time — a `$0` there is not proof of $0. Verify real cost via
-  `tokens_total.json` + `kubectl get nodes` (stray A100s), never the ledger alone. → `learn.md`
-- **GKE runs go through the cell-matrix.** The monolithic `k8s_job_backend.exec` path never
+  **⛔ NEVER USE OAuth (operator directive 2026-08-01)** — no `claude-oauth`/`CLAUDE_CODE_OAUTH_TOKEN`/
+  `claude login`, ever; API keys only (`sonnet-foundry` or funded `ANTHROPIC_API_KEY`).
+  → `backend/agents/rlm/CLAUDE.md`, `docs/runbooks/2026-08-01-remote-run-llm-auth.md`
+- **Cost visibility.** Foundry-routed **LLM** spend is ledger-visible from 2026-08-03 forward:
+  Claude-on-Foundry prices at Anthropic rates (`pricing.py` aliases + the root usage drain), and
+  unknown-rate models (grok etc.) write explicit `"unpriced": true` rows surfaced by
+  `demo_status.cost_summary` / `final_report.cost` / `tokens_total.json` (`cost_confidence:
+  "partial"` ⇒ real spend exceeds the priced total). Still **blind**: idle GPU-node time, and
+  every run predating this change — there a `$0` is not proof of $0; verify via
+  `tokens_total.json` + `kubectl get nodes` (stray A100s), never the ledger alone.
+- **GKE is not used** (fail-closed guard). **GKE runs go through the cell-matrix.** The monolithic `k8s_job_backend.exec` path never
   stages code into the pod; on gcp/gke, training routes via `cells.json`+`train_cell.py` (or the
-  `OPENRESEARCH_GKE_SYNTH_CELL` synthesis). → `backend/services/runtime/CLAUDE.md` · `learn.md`
+  `OPENRESEARCH_GKE_SYNTH_CELL` synthesis). → `backend/services/runtime/CLAUDE.md`
 - **Delegation.** The session's lead model owns design + reviews **every diff**; delegate
   mechanical impl + wide recon to Sonnet/`Explore` sub-agents against a tight spec. → memory.
 - **Docker daemon** is a prerequisite only for the `docker`/`auto` sandboxes; `build_environment` is
-  a no-op for `local`/`runpod`/`azure`. → `backend/services/runtime/CLAUDE.md`
+  a no-op for `local`/`azure`/`aws`/`gcp`. → `backend/services/runtime/CLAUDE.md`
 - **New feature flags** use `os.environ.get("FLAG","").strip().lower() in ("1","true","yes")`,
   default-OFF and byte-identical when off; a default-flip needs ≥3 paired A/B runs + the grader-σ
   gate. → `backend/agents/rlm/CLAUDE.md`
+- **`OPENRESEARCH_SCHEDULER_AUTHORITATIVE`** is default-OFF and requires
+  `OPENRESEARCH_SCHEDULER_TREE`; it may never adopt an LLM grade or bypass a
+  deterministic terminal evidence decision. Its A/B gate is evidence for operator
+  review, never an automatic default flip. → `backend/agents/rlm/CLAUDE.md`
 - **Git.** Branch off `main`; no Conventional-Commit prefixes; descriptive present-tense headline;
   **no `Co-Authored-By`/AI-attribution trailer**; author = local config; commit at milestones;
   commit/push only when asked, to the operator-designated remote.
@@ -121,14 +134,8 @@ header (`hmac.compare_digest`). Empty/unset disables the gate — local-dev beha
 ## Doc map
 - **Nested `CLAUDE.md` (load on-demand):** `backend/agents/rlm/` · `backend/services/runtime/` ·
   `frontend/` · `tests/`.
-- **Tier-1 "why":** `system_overview.md`, `docs/design/rlm-pivot-brief.md`,
-  `docs/design/project-rebuild-spec.md`.
-- **Specs / runbooks:** `docs/superpowers/specs/` (design specs, cited from the nested files),
-  `docs/runbooks/` (setup, ops, dated handoffs).
-- **Reliability rules:** [`learn.md`](learn.md) — active cross-cutting *Rule/How/Why* log
-  (pre-2026-06 postmortems archived at `docs/archive/learn.md`).
-- **Baseline test paper:** SDAR (arXiv 2605.15155) — the canonical stress test; full command +
-  scope in `docs/runbooks/2026-05-23-sdar-baseline-handoff.md`.
+- **Current docs:** `README.md`, `docs/architecture.md`, and `docs/operations.md`.
+- **Baseline test paper:** SDAR (arXiv 2605.15155) — the canonical stress test.
 
 ## Context-mode routing
 Inherits context-mode MCP routing from the parent `CLAUDE.md`: use
@@ -140,5 +147,5 @@ blocked-vs-redirected table.
 Root stays lean — orientation + always-on rules + pointers. When you add a primitive, SSE event,
 sandbox, or flag, update the **nested** `CLAUDE.md` that owns it, not this file. Fidelity anchors
 kept current here + guarded by `tests/test_claude_md_fidelity.py` (which reads the root **and**
-nested set): the bound primitive count is **19**, and the RunPod cloud-type default is `SECURE`.
-`system_overview.md` = the "why"; this = the day-to-day.
+nested set): the bound primitive count is **21**, and the default sandbox is `local`.
+`docs/architecture.md` = the system map; this = the day-to-day.

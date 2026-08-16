@@ -27,7 +27,7 @@ This module is read-only w.r.t. ``failure_classifier`` (imports
 to a conservative low-confidence ``method`` attribution rather than
 aborting the caller.
 
-See ``docs/superpowers/plans/2026-07-01-phase-1e-experience-memory.md``,
+See ``docs/history/plans/2026-07-01-phase-1e-experience-memory.md``,
 Unit A.
 """
 

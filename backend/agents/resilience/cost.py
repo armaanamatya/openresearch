@@ -52,12 +52,20 @@ class CostLedgerEntry:
         data["cost_usd"] = self.estimated_usd or 0.0
         data["tokens_in"] = self.input_tokens
         data["tokens_out"] = self.output_tokens
+        if self.estimated_usd is None:
+            # Explicit unpriced marker (cost-visibility, 2026-08-03): the model
+            # had no resolvable per-token rate, so ``cost_usd: 0.0`` here means
+            # "unknown", NOT "$0 spent". Aggregators (cost_visibility.audit_cost_ledger,
+            # _compute_cost_summary, tokens_total) surface these rows instead of
+            # silently summing them into a misleading $0 total. Priced rows are
+            # byte-identical (the key is only present when unpriced).
+            data["unpriced"] = True
         return data
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> "CostLedgerEntry":
         payload = dict(data)
-        for alias in ("primitive", "cost_usd", "tokens_in", "tokens_out"):
+        for alias in ("primitive", "cost_usd", "tokens_in", "tokens_out", "unpriced"):
             payload.pop(alias, None)
         ts = payload.get("timestamp")
         if isinstance(ts, str):
@@ -213,6 +221,18 @@ class RunCostLedger:
             1
             for entry in self.entries[self._seeded_len :]
             if entry.agent_id == agent_id and entry.outcome == "partial_timeout"
+        )
+
+    def session_partial_cell_error_count(self, agent_id: str) -> int:
+        """In-process entries stamped ``partial_cell_error`` by the orchestrator
+        (a real run_experiment call executed a cell that ERRORED after emitting
+        real partial metrics). The cell-error salvage tier requires >=1 of these
+        — a REPL-forged cell_execution_error row (forgeable via open()) no longer
+        reaches that tier. Mirrors ``session_partial_timeout_count``."""
+        return sum(
+            1
+            for entry in self.entries[self._seeded_len :]
+            if entry.agent_id == agent_id and entry.outcome == "partial_cell_error"
         )
 
     def total_by_provider(self) -> dict[ProviderName, ProviderTotals]:

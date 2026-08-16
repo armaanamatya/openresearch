@@ -20,6 +20,7 @@ def test_mark_killed_writes_killed_with_reason(tmp_path):
     cli._mark_demo_status_killed(tmp_path, "p", kill_reason="Process terminated (SIGTERM)")
     data = json.loads((tmp_path / "p" / "demo_status.json").read_text())
     assert data["status"] == "killed"
+    assert data["process_status"] == "completed"
     assert data["killReason"] == "Process terminated (SIGTERM)"
     assert "completedAt" in data
 
@@ -36,6 +37,16 @@ def test_stopped_and_failed_do_not_overwrite_killed(tmp_path):
     assert json.loads((tmp_path / "p" / "demo_status.json").read_text())["status"] == "killed"
     cli._mark_demo_status_failed(tmp_path, "p")
     assert json.loads((tmp_path / "p" / "demo_status.json").read_text())["status"] == "killed"
+
+
+def test_mark_stopped_closes_process_lifecycle(tmp_path):
+    _write_status(tmp_path / "p" / "demo_status.json", "running")
+
+    cli._mark_demo_status_stopped(tmp_path, "p")
+
+    data = json.loads((tmp_path / "p" / "demo_status.json").read_text())
+    assert data["status"] == "stopped"
+    assert data["process_status"] == "completed"
 
 
 def test_install_handlers_registers_sigterm_and_marks_active(tmp_path, monkeypatch):

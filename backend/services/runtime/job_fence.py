@@ -1,7 +1,7 @@
 """Pure GKE Job-fencing helpers for durable, generation-fenced orchestration.
 
 WS3 (durable cloud-native orchestration) design's fencing scheme
-(``docs/superpowers/specs/2026-07-10-durable-cloud-native-orchestration-ws3-design.md``
+(``docs/history/specs/2026-07-10-durable-cloud-native-orchestration-ws3-design.md``
 §4.2): every unit of GPU work is named/addressed by the tuple ``(run_id,
 cell_id, generation)`` where ``generation`` is the fence token minted by
 :class:`backend.services.runtime.blob_lease.BlobLease` (its

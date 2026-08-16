@@ -643,7 +643,20 @@ class UnifiedRunDriver(AttemptDriver):
         # EnforcementPlan.vm_ceiling_s (post co-tightening) — NEVER
         # envelope.vm_ceiling_s — mirrors campaign_composition's own
         # _enforcement_mapping docstring precedent.
-        vm_spec = VmSpec(max_run_duration_s=int(vm_ceiling_s) if vm_ceiling_s is not None else None)
+        # The GCP single-VM path (VmComputeProvider) can only build its
+        # ``instances create`` argv when the VmSpec carries a boot source —
+        # either a pre-baked ``machine_image`` or an ``image`` family. There is
+        # no env fallback inside the provider, so thread them here from env
+        # (default-empty ⇒ byte-identical to a non-GCP / unconfigured run, which
+        # never reaches the create path). Without this a `--billing-sandbox gcp`
+        # campaign aborts before `acquire_gpu` with "VmSpec must set either
+        # machine_image or image".
+        import os as _os
+        vm_spec = VmSpec(
+            max_run_duration_s=int(vm_ceiling_s) if vm_ceiling_s is not None else None,
+            machine_image=_os.environ.get("OPENRESEARCH_GCP_MACHINE_IMAGE", "").strip(),
+            image=_os.environ.get("OPENRESEARCH_GCP_IMAGE_FAMILY", "").strip(),
+        )
 
         build_run = self._build_run or build_reproduction_run
         run_obj = build_run(

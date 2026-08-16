@@ -1,7 +1,7 @@
 """Cloud-agnostic single-writer generation-CAS lease for durable run ownership.
 
 WS3 (durable cloud-native orchestration) design §4.1:
-``docs/superpowers/specs/2026-07-10-durable-cloud-native-orchestration-ws3-design.md``.
+``docs/history/specs/2026-07-10-durable-cloud-native-orchestration-ws3-design.md``.
 
 Exactly one driver may own a given ``run_id`` at a time. Ownership is a
 compare-and-swap lease on a single small object,

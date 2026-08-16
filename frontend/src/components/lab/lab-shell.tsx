@@ -39,6 +39,7 @@ type LabShellProps = {
   serverDefaultSandbox?: DemoSandboxMode;
   presentationMode?: PresentationMode;
   initialLeaderboardRows?: LeaderboardRow[];
+  interruptedLeaderboardRows?: LeaderboardRow[];
   initialLeaderboardError?: string | null;
 };
 
@@ -155,6 +156,7 @@ export function LabShell({
   serverDefaultSandbox,
   presentationMode = "internal",
   initialLeaderboardRows = [],
+  interruptedLeaderboardRows = [],
   initialLeaderboardError = null,
 }: LabShellProps) {
   const [arxiv, setArxiv] = useState("");
@@ -242,7 +244,8 @@ export function LabShell({
     setRunMode,
     startFixtureRun,
     startUploadedRun,
-    startArxivRun
+    startArxivRun,
+    resumeRun
   } = useRun(initialRun, {
     rootProvider,
     subagentAuth,
@@ -283,7 +286,9 @@ export function LabShell({
             <div className={recentRunsStyles.panelWrap}>
               <RecentRunsPanel
                 rows={initialLeaderboardRows}
+                interruptedRows={interruptedLeaderboardRows}
                 error={initialLeaderboardError}
+                onResume={(projectId) => { void resumeRun(projectId); }}
               />
             </div>
             <UploadView

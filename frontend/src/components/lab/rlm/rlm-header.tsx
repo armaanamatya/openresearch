@@ -4,7 +4,6 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import type { DemoSandboxMode } from "../../../lib/demo/demo-run-types";
 import type { PrimitiveCallView, RunWarning } from "../../../hooks/use-rlm-run";
-import { RunpodStatusChip } from "./runpod-status-chip";
 import styles from "./rlm-header.module.css";
 
 export type RlmRunStatus = "queued" | "running" | "completed" | "partial" | "failed";
@@ -72,8 +71,6 @@ export function RlmHeader({
   onRerun,
   rerunBusy = false,
   inFlightPrimitive = null,
-  sandboxMode = null,
-  primitiveCalls = [],
 }: RlmHeaderProps) {
   const tone = statusTone(status);
   const latestWarning = warnings.length > 0 ? warnings[warnings.length - 1] : null;
@@ -137,14 +134,6 @@ export function RlmHeader({
             />
             {status}
           </span>
-
-          <RunpodStatusChip
-            projectId={projectId}
-            sandboxMode={sandboxMode}
-            status={status}
-            primitiveCalls={primitiveCalls}
-            nowMs={heartbeatNowMs}
-          />
 
           {noSignalSecs !== null && (
             inFlightPrimitive !== null ? (

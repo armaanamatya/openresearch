@@ -1,5 +1,9 @@
 # reprolab-gke-cell-base
 
+> ⛔ **GKE is NOT USED** (operator directive 2026-07-22). This image is retained for the inert
+> GKE cell path only — do not build/push for production. Supported paths: GCP single-VM,
+> Azure/AKS, AWS/EKS.
+
 Base Docker image for ReproLab GKE single-cell training Jobs.
 
 ## Overview

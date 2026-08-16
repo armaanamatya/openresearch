@@ -29,6 +29,7 @@ dependencies = [
     "azure-identity>=1.16,<2",
     "azure-storage-blob>=12.19,<13",
     "kubernetes>=29,<32",
+    "boto3>=1.34,<2",
     "deepeval>=2.0",
     "scipy>=1.12",
     "numpy>=1.26",
@@ -46,6 +47,10 @@ azure = [
     "azure-storage-blob>=12.19,<13",
     "kubernetes>=29,<32",
 ]
+aws = [
+    "boto3>=1.34,<2",
+    "kubernetes>=29,<32",
+]
 # NOTE: hermes-agent is deliberately NOT an extra. Its exact pins
 # (openai==2.24.0, pillow==12.2.0) conflict with this project's constraints,
 # so it cannot live in the universal uv.lock. Install it the way
@@ -56,6 +61,16 @@ semantic = [
 ]
 websearch = [
     "tavily-python>=0.5",
+]
+# Literature-corpus graph analytics (pure-python; PageRank/PPR/communities).
+graph = [
+    "networkx>=3.0",
+]
+# Dense vectors inside runs/_corpus/corpus.db via the sqlite-vec loadable
+# extension. Pin 0.1.x stable — the 0.1.10-alpha ANN line is pre-release and
+# the project warns of breaking changes before v1.
+kg = [
+    "sqlite-vec>=0.1.9,<0.2",
 ]
 evals = [
     "deepeval>=2.0",
@@ -101,6 +116,11 @@ select = ["E4", "E7", "E9", "F"]
 # live_runs.py and other service files with conditional/deferred imports.
 "backend/services/events/live_runs.py" = ["E402"]
 "backend/agents/rlm/claude_oauth_client.py" = ["E402"]
+# Vendored skill-library playbooks (examples/scripts/templates shipped to the
+# agent, not production code): illustrative snippets reference helpers the
+# reader writes (F821) and keep tutorial-style laxness (bare except, unused
+# imports/vars). Syntax-level E4/E7/E9 checks still apply.
+"backend/agents/rlm/skills/**" = ["F401", "F541", "F821", "F841", "E722", "E731"]
 "backend/agents/runtime/claude_runtime.py" = ["E402"]
 "backend/agents/schemas.py" = ["E402"]
 "backend/services/runtime/brev_backend.py" = ["E402"]

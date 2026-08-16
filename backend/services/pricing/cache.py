@@ -3,7 +3,7 @@
 Files land under `runs_root/_estimates/{sha8}_{recipe_mode}_{cat_v}_{cal_v}.json`.
 Schema-version mismatch on either catalog or calibration → cache miss (invariant 8).
 
-Spec: docs/superpowers/specs/2026-05-25-budget-estimation-design.md §Cache
+Spec: docs/history/specs/2026-05-25-budget-estimation-design.md §Cache
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 """
 Regression + wiring tests for --sandbox azure routing.
 
-Guards (a) local/runpod/docker still use gpu_cell_runner unchanged,
+Guards (a) local/docker still use gpu_cell_runner unchanged,
 (b) azure uses k8s_job_cell_runner with identical kwargs,
 (c) SandboxMode.azure and ensure_sandbox_mode_available wiring,
 (d) build_environment azure short-circuit returns no-op success,
@@ -90,20 +90,6 @@ def test_ensure_sandbox_mode_available_azure_calls_ensure_azure_available():
         mock_ensure.assert_called_once()
 
 
-def test_ensure_sandbox_mode_available_runpod_not_affected(monkeypatch):
-    """Regression: runpod path still calls ensure_runpod_available, not ensure_azure_available."""
-    monkeypatch.setenv("OPENRESEARCH_RUNPOD_API_KEY", "fake-key")
-    with (
-        patch("backend.services.runtime.ensure_runpod_available") as mock_runpod,
-        patch("backend.services.runtime.ensure_azure_available") as mock_azure,
-    ):
-        from backend.agents.execution import ensure_sandbox_mode_available
-
-        ensure_sandbox_mode_available(SandboxMode.runpod)
-        mock_runpod.assert_called_once()
-        mock_azure.assert_not_called()
-
-
 # ---------------------------------------------------------------------------
 # (d) build_environment azure short-circuit
 # ---------------------------------------------------------------------------
@@ -137,7 +123,7 @@ def test_build_environment_local_short_circuit_unchanged():
 
 
 # ---------------------------------------------------------------------------
-# (a) Regression: local/runpod/docker use gpu_cell_runner unchanged
+# (a) Regression: local/docker use gpu_cell_runner unchanged
 # (b) Azure uses k8s_job_cell_runner with identical kwargs
 # ---------------------------------------------------------------------------
 
@@ -174,9 +160,9 @@ def _stub_cell_matrix_helpers():
     }
 
 
-@pytest.mark.parametrize("mode", [SandboxMode.local, SandboxMode.docker, SandboxMode.runpod])
+@pytest.mark.parametrize("mode", [SandboxMode.local, SandboxMode.docker])
 def test_non_azure_modes_use_gpu_cell_runner(tmp_path, mode):
-    """Regression guard: local/docker/runpod must call gpu_cell_runner.run_matrix,
+    """Regression guard: local/docker must call gpu_cell_runner.run_matrix,
     NOT k8s_job_cell_runner.run_matrix.
 
     Because these imports are lazy (inside _execute_cell_matrix), we patch the
@@ -391,29 +377,27 @@ def test_resolve_gpu_requirements_azure_mode_calls_resolve_with_azure_provider(t
     )
 
 
-def test_resolve_gpu_requirements_runpod_mode_uses_runpod_provider(tmp_path, monkeypatch):
-    """Regression: resolve_gpu_requirements with sandbox_mode=runpod must NOT pass provider='azure'."""
+def test_resolve_gpu_requirements_local_mode_uses_gcp_provider(tmp_path, monkeypatch):
+    """local sandbox_mode resolves an informational plan against provider='gcp' (not azure)."""
     from unittest.mock import MagicMock
 
     ctx = SimpleNamespace(
-        sandbox_mode=SandboxMode.runpod,
+        sandbox_mode=SandboxMode.local,
         project_dir=tmp_path,
         vram_override=None,
     )
-
     captured: list[dict] = []
-
     fake_plan = SimpleNamespace(
-        short_name="rtx4090",
+        short_name="gcp_l4_24",
         gpu_count=1,
-        source="paper",
+        source="fallback",
         model_dump=lambda mode=None: _make_valid_gpu_plan_dict(
-            short_name="rtx4090", runpod_id="NVIDIA GeForce RTX 4090",
-            vram_gb=24, cloud_type="COMMUNITY", sku_usd_per_hr=0.34,
+            short_name="gcp_l4_24", runpod_id="g2-standard-8",
+            vram_gb=24, cloud_type="ONDEMAND", sku_usd_per_hr=0.85,
         ),
     )
 
-    def _fake_resolve(req, *, provider="runpod", cloud_types=("COMMUNITY",), provisioned_skus=None, **kw):
+    def _fake_resolve(req, *, provider="gcp", cloud_types=("ONDEMAND",), provisioned_skus=None, **kw):
         captured.append({"provider": provider, "cloud_types": cloud_types, "provisioned_skus": provisioned_skus})
         return fake_plan
 
@@ -424,59 +408,6 @@ def test_resolve_gpu_requirements_runpod_mode_uses_runpod_provider(tmp_path, mon
     fake_settings.max_gpu_usd_per_hour = None
     fake_settings.dynamic_gpu_headroom = 1.25
     fake_settings.dynamic_gpu_fallback_vram_gb = 16
-    fake_settings.runpod_cloud_type = "COMMUNITY"
-    monkeypatch.setattr("backend.config.get_settings", lambda: fake_settings)
-
-    from backend.agents.rlm.primitives import resolve_gpu_requirements
-    from backend.agents.schemas import GpuRequirements
-
-    req = GpuRequirements(estimated_vram_gb=20, confidence=0.8, reasoning="small GPU")
-    resolve_gpu_requirements(req, ctx=ctx)
-
-    assert len(captured) == 1
-    assert captured[0]["provider"] == "runpod", (
-        f"Regression: expected provider='runpod' for runpod mode, got {captured[0]['provider']!r}"
-    )
-    assert captured[0]["provisioned_skus"] is None, (
-        f"Regression: runpod path must pass provisioned_skus=None, got {captured[0]['provisioned_skus']!r}"
-    )
-    assert "azure" not in str(captured[0]["cloud_types"]).lower(), (
-        f"Regression: runpod path must not use ONDEMAND cloud_types, got {captured[0]['cloud_types']!r}"
-    )
-
-
-def test_resolve_gpu_requirements_local_mode_uses_runpod_provider(tmp_path, monkeypatch):
-    """Regression: local sandbox_mode must use provider='runpod' (not azure)."""
-    from unittest.mock import MagicMock
-
-    ctx = SimpleNamespace(
-        sandbox_mode=SandboxMode.local,
-        project_dir=tmp_path,
-        vram_override=None,
-    )
-    captured: list[dict] = []
-    fake_plan = SimpleNamespace(
-        short_name="rtx4090",
-        gpu_count=1,
-        source="paper",
-        model_dump=lambda mode=None: _make_valid_gpu_plan_dict(
-            short_name="rtx4090", runpod_id="NVIDIA GeForce RTX 4090",
-            vram_gb=24, cloud_type="COMMUNITY", sku_usd_per_hr=0.34,
-        ),
-    )
-
-    def _fake_resolve(req, *, provider="runpod", cloud_types=("COMMUNITY",), **kw):
-        captured.append({"provider": provider})
-        return fake_plan
-
-    monkeypatch.setattr("backend.services.runtime.gpu_resolver.resolve", _fake_resolve)
-    fake_settings = MagicMock()
-    fake_settings.dynamic_gpu_enabled = True
-    fake_settings.force_single_gpu = True
-    fake_settings.max_gpu_usd_per_hour = None
-    fake_settings.dynamic_gpu_headroom = 1.25
-    fake_settings.dynamic_gpu_fallback_vram_gb = 16
-    fake_settings.runpod_cloud_type = "COMMUNITY"
     monkeypatch.setattr("backend.config.get_settings", lambda: fake_settings)
 
     from backend.agents.rlm.primitives import resolve_gpu_requirements
@@ -485,7 +416,8 @@ def test_resolve_gpu_requirements_local_mode_uses_runpod_provider(tmp_path, monk
     req = GpuRequirements(estimated_vram_gb=16, confidence=0.7, reasoning="local run")
     resolve_gpu_requirements(req, ctx=ctx)
 
-    assert captured[0]["provider"] == "runpod"
+    assert captured[0]["provider"] == "gcp"
+    assert captured[0]["provisioned_skus"] is None
 
 
 # ---------------------------------------------------------------------------

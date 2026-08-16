@@ -38,7 +38,7 @@ all persisted/streamed outputs is asserted after the run — proving the
 ``sanitize_iteration`` chokepoint works across the full pipeline.
 
 Design spec: §14 (test plan) of
-  docs/superpowers/specs/2026-05-21-rlm-phase3-orchestrator-design.md.
+  docs/history/specs/2026-05-21-rlm-phase3-orchestrator-design.md.
 """
 
 from __future__ import annotations

@@ -1,5 +1,12 @@
 # Coworker Access — Foundry Models + GCP
 
+> ⛔ **Never use OAuth** (operator directive 2026-08-01): no `--model claude-oauth`, no
+> `CLAUDE_CODE_OAUTH_TOKEN`, no `claude login`. API keys only — Azure Foundry
+> (`sonnet-foundry`) or a funded `ANTHROPIC_API_KEY`. Details:
+> `docs/runbooks/2026-08-01-remote-run-llm-auth.md`.
+> **GKE is NOT USED** (fail-closed guard since 2026-07-22) — the GKE spin-up/down notes below
+> are historical; the live GCP path is the single-VM campaign route.
+
 Two systems, two auth models:
 
 - **Foundry models** → work from the `.env` **alone**. Paste the key, done.
@@ -80,20 +87,20 @@ Save the file (e.g. `~/.gcp/gcp-key.json`) and point `.env` at it:
 GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/gcp-key.json
 ```
 
-Then activate for `gcloud` + `kubectl`:
+Then activate for `gcloud` (the `kubectl` lines below are ⛔ legacy-GKE — skip them; GKE is NOT USED):
 
 ```bash
 gcloud auth activate-service-account --key-file="$GOOGLE_APPLICATION_CREDENTIALS"
 gcloud config set project deepinvent-ext-ut
 
-# only when a GKE cluster is running (see caveat):
-gcloud container clusters list --project deepinvent-ext-ut          # get the name
-gcloud container clusters get-credentials <name> --region us-central1 --project deepinvent-ext-ut
+# ⛔ legacy GKE only — SKIP on the live single-VM path (GKE is NOT USED):
+# gcloud container clusters list --project deepinvent-ext-ut          # get the name
+# gcloud container clusters get-credentials <name> --region us-central1 --project deepinvent-ext-ut
 ```
 
 The `GOOGLE_APPLICATION_CREDENTIALS` line covers the Python SDK path automatically.
 
-> **Caveat:** the GKE cluster is spun up/down to save cost. If `clusters list` is empty, none is running — the owner brings it up via `infra/gcp/envs/deepinvent` before GPU runs.
+> **Caveat (historical, pre-2026-07-22):** the GKE cluster used to be spun up/down to save cost. GKE is NOT USED now — GPU runs go through the single-VM campaign route; no cluster is needed.
 
 ---
 

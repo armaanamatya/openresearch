@@ -72,7 +72,7 @@ def create_eval_job(
 
     try:
         subprocess.run(cmd, check=True)
-    except subprocess.CalledProcessError as exc:
+    except subprocess.CalledProcessError:
         print("hf jobs command failed", file=sys.stderr)
         raise
 

@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 RunMode = Literal["rlm", "rdr", "rlm-pure"]
 Provider = Literal["anthropic", "openai"]
 ExecutionMode = Literal["efficient", "max"]
-SandboxMode = Literal["auto", "docker", "local", "runpod", "azure", "gcp"]
+SandboxMode = Literal["auto", "docker", "local", "azure", "aws", "gcp"]
 GpuMode = Literal["off", "auto", "prefer", "max"]
 ModelChoice = str
 RunStatus = Literal[
@@ -178,7 +178,7 @@ class StartRunRequest(BaseModel):
     provider: Provider = "anthropic"
     verificationProvider: Provider | None = None
     executionMode: ExecutionMode = "max"
-    sandbox: SandboxMode = "runpod"
+    sandbox: SandboxMode = "local"  # single coherent default; azure/aws primary clouds, gcp/gke parked
     gpuMode: GpuMode = "auto"
     model: ModelChoice = "sonnet"
     # rdr-specific: PaperBench bundle paper_id (directory name under
@@ -195,7 +195,7 @@ class StartRunRequest(BaseModel):
     dynamic_gpu: bool | None = None
     force_single_gpu: bool | None = None
     gpu_parallelism: str | None = None  # "auto" (default) | "single" | "multi" — controls multi-GPU vs single in generated train.py
-    accelerator: str | None = None  # off|auto|local|runpod|azure|endpoint
+    accelerator: str | None = None  # off|auto|local|azure|endpoint
     max_gpu_usd_per_hour: float | None = None
     vram_gb: int | None = None
     # User-selectable GPU count. None => existing auto-resolution (gpu_resolver
@@ -233,6 +233,13 @@ class StartRunRequest(BaseModel):
     # autonomous profile override when autonomous=True and unset; not a
     # client-supplied field on StartArxivRunRequest or the upload form.
     run_spec: str | None = None
+
+
+# Single source of truth for "what executionMode means when unspecified" —
+# read off the StartRunRequest field default so a future default-flip (like
+# the 2026-0x efficient→max change) can't silently re-drift the fallbacks
+# below out of sync with the field they're supposed to mirror.
+_DEFAULT_EXECUTION_MODE: str = StartRunRequest.model_fields["executionMode"].default
 
 
 class TelemetryRecordPublic(BaseModel):
@@ -550,7 +557,7 @@ def apply_autonomous_profile_override(request: StartRunRequest) -> StartRunReque
 
     ``sandbox="gcp"`` (deliberately NOT the literal ``"gke"``) is the
     canonical in-Literal GKE selector: ``StartRunRequest.sandbox`` is typed
-    ``Literal["auto","docker","local","runpod","azure","gcp"]`` — "gke" is
+    ``Literal["auto","docker","local","azure","aws","gcp"]`` — "gke" is
     not a member of that Literal (the gke->gcp alias lives only in the
     unrelated ``backend.agents.execution.SandboxMode`` enum, whose
     ``_missing_`` hook remaps it). "gcp" is already in the Literal and
@@ -691,8 +698,8 @@ class FileLiveRunService:
 
         # Load .env file if present (subprocess doesn't inherit dotenv).
         # OPENRESEARCH_* keys in .env are always authoritative: a stale shell
-        # export from a previous login (e.g. OPENRESEARCH_RUNPOD_SSH_KEY_PATH
-        # pointing to a different user's home) must not override the
+        # export from a previous login (e.g. OPENRESEARCH_GCP_SSH_USER
+        # pointing to a different user) must not override the
         # project-level .env which reflects the operator's deliberate config.
         # Non-REPROLAB keys (API keys, PATH tweaks, etc.) respect the
         # standard precedence: shell export > .env.
@@ -790,14 +797,23 @@ class FileLiveRunService:
     ) -> LiveRunState | None:
         """Re-spawn an orchestrator subprocess for an existing project_id.
 
-        The orchestrator's ``run(resume=True)`` is the default and auto-
-        resumes from the persisted pipeline_state.json checkpoint, so the
-        subprocess picks up at the last completed stage rather than
-        restarting from scratch. The original run config is read back from
-        the existing demo_status.json; ``request_overrides`` lets callers
-        bump knobs like ``executionMode=max`` to push past whatever caused
-        the original failure (e.g. a wall-clock timeout on baseline-
-        implementation).
+        For RDR-mode runs this is a real checkpoint resume: the orchestrator
+        reads back the persisted ``pipeline_state.json`` and picks up at the
+        last completed stage. For the default RLM mode there is NO such
+        checkpoint — `rlms`'s ``RLM.completion()`` takes no message history
+        and always starts a fresh root loop — so this restarts the RLM
+        reasoning loop from iteration 0 under the SAME ``project_id``. It is
+        still a genuine "warm start" in three narrower ways: (1) prior
+        ``code/`` is preserved (not archived) so `implement_baseline` can
+        cache-hit instead of re-running the ~5-min sub-agent, per
+        ``attempt_isolation.maybe_archive_prior_attempt``'s warm-retry path;
+        (2) cell-level resume (``OPENRESEARCH_CELL_RESUME_AUTO``/
+        ``OPENRESEARCH_RESUME_CELLS``) can skip already-completed GPU cells;
+        (3) prior-attempt lessons/recipes get injected into the new attempt's
+        prompt. The original run config is read back from the existing
+        demo_status.json; ``request_overrides`` lets callers bump knobs like
+        ``executionMode=max`` to push past whatever caused the original
+        failure (e.g. a wall-clock timeout on baseline-implementation).
 
         Returns None if the project doesn't exist. Refuses to re-spawn
         if the original process is still alive.
@@ -814,7 +830,7 @@ class FileLiveRunService:
             "mode": status.get("runMode", "rlm"),
             "provider": status.get("llmProvider", "anthropic"),
             "verificationProvider": status.get("verificationProvider"),
-            "executionMode": status.get("executionMode", "efficient"),
+            "executionMode": status.get("executionMode", _DEFAULT_EXECUTION_MODE),
             "sandbox": status.get("sandboxMode", get_settings().default_sandbox),
             "gpuMode": status.get("gpuMode", "auto"),
             "model": status.get("model", "sonnet"),
@@ -1002,7 +1018,7 @@ class FileLiveRunService:
     def _should_use_durable_controller(self, request: StartRunRequest) -> bool:
         """Pure decision: durable-controller cluster submit vs. local Popen.
 
-        WS3 seam (docs/superpowers/specs/2026-07-10-durable-cloud-native-
+        WS3 seam (docs/history/specs/2026-07-10-durable-cloud-native-
         orchestration-ws3-design.md §4.4). True only when
         ``OPENRESEARCH_DURABLE_CONTROLLER`` is enabled AND the request targets
         GCP or Azure in the campaign-backed RLM mode. ``request.sandbox`` (post the override
@@ -1470,9 +1486,9 @@ class FileLiveRunService:
                 continue
             if provider and (status.get("llmProvider") or _provider_from_project_id(status_path.parent.name)) != provider:
                 continue
-            if execution_mode and (status.get("executionMode") or "efficient") != execution_mode:
+            if execution_mode and (status.get("executionMode") or _DEFAULT_EXECUTION_MODE) != execution_mode:
                 continue
-            if sandbox and (status.get("sandboxMode") or "runpod") != sandbox:
+            if sandbox and (status.get("sandboxMode") or "local") != sandbox:
                 continue
             if verification_provider and status.get("verificationProvider") != verification_provider:
                 continue
@@ -2705,7 +2721,7 @@ try:
             )
     # 2026-05-23: write "completed" BEFORE finalize_benchmark so a downstream
     # hang (claude-agent-sdk atexit subprocess.wait on WSL2 — Defect 2 in
-    # docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md) cannot
+    # docs/history/specs/2026-05-22-sdk-aclose-investigation.md) cannot
     # leave the UI stuck on "running" with a fully-written final_report.json
     # already on disk. The prj_6b9acbfd8afcd789 bug: pipeline returned cleanly,
     # rubric 0.244, but demo_status stayed "running" because finalize_benchmark

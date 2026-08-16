@@ -557,3 +557,222 @@ class TestAzureFoundrySubrole:
         monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "dummy")
         for tok in ("kimi", "kimi-k2.6", "kimi-k2-6"):
             assert resolve_root_model(tok).key == "azure-foundry"
+
+
+# ---------------------------------------------------------------------------
+# Grok execution-role guard (2026-08-03): grok is NOT a validated executor —
+# it emits no commands.json manifest, so the evidence gate structurally fails
+# the run. A grok pick on executor/verifier/grader must fail LOUD at launch
+# (docs/open-issues.md 2026-07-22); grok stays valid as the ROOT model.
+# ---------------------------------------------------------------------------
+
+
+class TestGrokExecutionRoleGuard:
+    """Pure-checker contract: check_grok_execution_roles."""
+
+    def _sel(self, **kw):
+        from backend.agents.rlm.role_models import resolve_role_models
+
+        return resolve_role_models(**kw)
+
+    # -- (a) executor=grok raises with the expected, actionable message -------
+    @pytest.mark.parametrize("token", ["grok", "grok-4.3"])
+    def test_executor_grok_raises_with_actionable_message(self, token):
+        from backend.agents.rlm.role_models import (
+            GrokExecutionRoleError,
+            check_grok_execution_roles,
+        )
+
+        sel = self._sel(planner_token="sonnet-foundry", cli_models=f"executor={token}")
+        with pytest.raises(GrokExecutionRoleError) as exc:
+            check_grok_execution_roles(sel)
+        msg = str(exc.value)
+        assert "executor" in msg
+        assert "commands.json" in msg           # names the structural reason
+        assert "evidence gate" in msg
+        assert "executor=sonnet-foundry" in msg  # names the sanctioned fix
+        assert "OPENRESEARCH_ALLOW_GROK_EXECUTOR" in msg  # names the escape hatch
+
+    @pytest.mark.parametrize("role", ["executor", "verifier", "grader"])
+    def test_all_three_guarded_roles_raise(self, role):
+        from backend.agents.rlm.role_models import (
+            GrokExecutionRoleError,
+            check_grok_execution_roles,
+        )
+
+        sel = self._sel(planner_token="sonnet-foundry", cli_models=f"{role}=grok")
+        with pytest.raises(GrokExecutionRoleError, match=role):
+            check_grok_execution_roles(sel)
+
+    def test_generic_foundry_token_with_grok_deployment_raises(self):
+        # The token never says "grok", but the deployment it would serve does —
+        # this is the pick that actually runs grok.
+        from backend.agents.rlm.role_models import (
+            GrokExecutionRoleError,
+            check_grok_execution_roles,
+        )
+
+        sel = self._sel(planner_token="sonnet-foundry", cli_models="executor=azure-foundry")
+        with pytest.raises(GrokExecutionRoleError, match="grok-4.3"):
+            check_grok_execution_roles(sel, foundry_deployment="grok-4.3")
+
+    def test_legacy_executor_env_grok_deployment_raises(self):
+        # The July 6 SDAR shape: --model grok + OPENRESEARCH_EXECUTOR=azure-foundry
+        # (creds complete, deployment grok-4.3) — no explicit executor role at all.
+        from backend.agents.rlm.role_models import (
+            GrokExecutionRoleError,
+            check_grok_execution_roles,
+        )
+
+        sel = self._sel(planner_token="azure-foundry")  # grok root, no sub-roles
+        with pytest.raises(GrokExecutionRoleError, match="OPENRESEARCH_EXECUTOR"):
+            check_grok_execution_roles(
+                sel,
+                legacy_executor_mode="azure-foundry",
+                foundry_deployment="grok-4.3",
+            )
+
+    # -- (b) grok root + sanctioned sonnet-foundry executor passes ------------
+    def test_grok_root_with_sonnet_foundry_executor_passes(self):
+        from backend.agents.rlm.role_models import check_grok_execution_roles
+
+        sel = self._sel(
+            planner_token="azure-foundry",  # the resolved root key for --model grok
+            cli_models="executor=sonnet-foundry",
+        )
+        assert check_grok_execution_roles(sel, foundry_deployment="grok-4.3") == []
+
+    def test_grok_root_alone_passes(self):
+        # Grok stays fully valid as the ROOT model (planner is not guarded).
+        from backend.agents.rlm.role_models import check_grok_execution_roles
+
+        sel = self._sel(planner_token="azure-foundry")
+        assert check_grok_execution_roles(sel, foundry_deployment="grok-4.3") == []
+
+    def test_kimi_on_foundry_is_not_grok(self):
+        # Same provider, different served model — must not fire.
+        from backend.agents.rlm.role_models import check_grok_execution_roles
+
+        sel = self._sel(planner_token="sonnet-foundry", cli_models="executor=kimi")
+        assert check_grok_execution_roles(sel, foundry_deployment="Kimi-K2.6") == []
+
+    def test_legacy_executor_inactive_stays_silent(self):
+        # legacy_executor_mode=None models the graceful-fallback case (incomplete
+        # AZURE_FOUNDRY_* creds → Sonnet executor): no grok runs, no guard.
+        from backend.agents.rlm.role_models import check_grok_execution_roles
+
+        sel = self._sel(planner_token="azure-foundry")
+        assert check_grok_execution_roles(
+            sel, legacy_executor_mode=None, foundry_deployment="grok-4.3"
+        ) == []
+
+    # -- (c) escape hatch downgrades to loud warnings, never raises -----------
+    def test_allow_flag_downgrades_to_warning_messages(self):
+        from backend.agents.rlm.role_models import check_grok_execution_roles
+
+        sel = self._sel(planner_token="sonnet-foundry", cli_models="executor=grok")
+        msgs = check_grok_execution_roles(sel, allow=True)
+        assert len(msgs) == 1
+        assert "executor" in msgs[0]
+        assert "commands.json" in msgs[0]
+        assert "sonnet-foundry" in msgs[0]
+
+    def test_allow_flag_one_message_per_offending_role(self):
+        from backend.agents.rlm.role_models import check_grok_execution_roles
+
+        sel = self._sel(
+            planner_token="sonnet-foundry",
+            cli_models="executor=grok,verifier=grok,grader=grok",
+        )
+        msgs = check_grok_execution_roles(sel, allow=True)
+        assert len(msgs) == 3
+        joined = " ".join(msgs)
+        for role in ("executor", "verifier", "grader"):
+            assert role in joined
+
+    def test_error_is_a_role_model_error_subclass(self):
+        from backend.agents.rlm.role_models import (
+            GrokExecutionRoleError,
+            RoleModelError,
+        )
+
+        assert issubclass(GrokExecutionRoleError, RoleModelError)
+
+
+class TestGrokExecutorGuardRunWiring:
+    """run.py::_enforce_grok_executor_guard — env reads + emit wiring."""
+
+    def _foundry_env(self, monkeypatch, deployment="grok-4.3"):
+        monkeypatch.setenv(
+            "AZURE_FOUNDRY_ENDPOINT", "https://x.services.ai.azure.com/openai/v1"
+        )
+        monkeypatch.setenv("AZURE_FOUNDRY_DEPLOYMENT", deployment)
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "dummy")
+
+    def test_legacy_env_combination_fails_fast(self, monkeypatch):
+        # --model grok + OPENRESEARCH_EXECUTOR=azure-foundry (full creds):
+        # the exact July 6 misconfiguration must now raise at launch.
+        from backend.agents.rlm.role_models import (
+            GrokExecutionRoleError,
+            resolve_role_models,
+        )
+        from backend.agents.rlm.run import _enforce_grok_executor_guard
+
+        self._foundry_env(monkeypatch)
+        monkeypatch.setenv("OPENRESEARCH_EXECUTOR", "azure-foundry")
+        monkeypatch.delenv("OPENRESEARCH_ALLOW_GROK_EXECUTOR", raising=False)
+        sel = resolve_role_models(planner_token="azure-foundry")
+        events: list[dict] = []
+        with pytest.raises(GrokExecutionRoleError):
+            _enforce_grok_executor_guard(sel, events.append)
+        assert events == []  # fail-fast path emits nothing
+
+    def test_escape_hatch_emits_run_warning_instead(self, monkeypatch):
+        from backend.agents.rlm.role_models import resolve_role_models
+        from backend.agents.rlm.run import _enforce_grok_executor_guard
+
+        self._foundry_env(monkeypatch)
+        monkeypatch.setenv("OPENRESEARCH_EXECUTOR", "azure-foundry")
+        monkeypatch.setenv("OPENRESEARCH_ALLOW_GROK_EXECUTOR", "1")
+        sel = resolve_role_models(planner_token="azure-foundry")
+        events: list[dict] = []
+        _enforce_grok_executor_guard(sel, events.append)  # must not raise
+        assert len(events) == 1
+        assert events[0]["event"] == "run_warning"
+        assert events[0]["code"] == "grok_executor_unvalidated"
+        assert "commands.json" in events[0]["message"]
+
+    def test_incomplete_foundry_creds_keep_graceful_fallback(self, monkeypatch):
+        # OPENRESEARCH_EXECUTOR=azure-foundry with an incomplete cred triple
+        # degrades to the Sonnet executor (executor.py contract) — no grok runs,
+        # so the guard must not fire.
+        from backend.agents.rlm.role_models import resolve_role_models
+        from backend.agents.rlm.run import _enforce_grok_executor_guard
+
+        for var in (
+            "AZURE_FOUNDRY_ENDPOINT",
+            "AZURE_FOUNDRY_DEPLOYMENT",
+            "AZURE_FOUNDRY_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("OPENRESEARCH_EXECUTOR", "azure-foundry")
+        monkeypatch.delenv("OPENRESEARCH_ALLOW_GROK_EXECUTOR", raising=False)
+        sel = resolve_role_models(planner_token="azure-foundry")
+        events: list[dict] = []
+        _enforce_grok_executor_guard(sel, events.append)  # silent, no raise
+        assert events == []
+
+    def test_sanctioned_configuration_is_silent(self, monkeypatch):
+        # grok root + sonnet-foundry executor: the documented good config.
+        from backend.agents.rlm.role_models import resolve_role_models
+        from backend.agents.rlm.run import _enforce_grok_executor_guard
+
+        self._foundry_env(monkeypatch)
+        monkeypatch.delenv("OPENRESEARCH_EXECUTOR", raising=False)
+        monkeypatch.delenv("OPENRESEARCH_ALLOW_GROK_EXECUTOR", raising=False)
+        sel = resolve_role_models(
+            planner_token="azure-foundry", cli_models="executor=sonnet-foundry"
+        )
+        events: list[dict] = []
+        _enforce_grok_executor_guard(sel, events.append)
+        assert events == []

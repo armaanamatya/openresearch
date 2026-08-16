@@ -1,6 +1,6 @@
 """HTTP-level tests for POST /paper/estimate.
 
-Spec: docs/superpowers/specs/2026-05-25-budget-estimation-design.md §HTTP API
+Spec: docs/history/specs/2026-05-25-budget-estimation-design.md §HTTP API
 Invariant 7: handler never spawns a subprocess.
 Invariant 10: on failure returns 200 + error field (not 500).
 """

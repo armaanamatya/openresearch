@@ -1,6 +1,6 @@
 """Tests for backfill_timing.py — the historical timing.json populator.
 
-Spec: docs/superpowers/specs/2026-05-25-three-source-budget-estimator-design.md §ε.1
+Spec: docs/history/specs/2026-05-25-three-source-budget-estimator-design.md §ε.1
 """
 
 from __future__ import annotations

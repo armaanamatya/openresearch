@@ -37,13 +37,13 @@ def _make_ctx(tmp_path: Path):
     (code_dir / "commands.json").write_text(json.dumps(["python train.py"]))
 
     plan = GpuPlan(
-        runpod_id="NVIDIA A100 40GB PCIe",
-        short_name="a100_40",
+        runpod_id="a2-highgpu-1g",
+        short_name="gcp_a100_40",
         vram_gb=40,
         gpu_count=1,
-        cloud_type="COMMUNITY",
-        sku_usd_per_hr=1.19,
-        total_usd_per_hr=1.19,
+        cloud_type="ONDEMAND",
+        sku_usd_per_hr=2.93,
+        total_usd_per_hr=2.93,
         container_disk_gb=50,
         volume_gb=20,
         source="paper",
@@ -54,7 +54,7 @@ def _make_ctx(tmp_path: Path):
             reasoning="",
             confidence=0.9,
         ),
-        ladder_remaining=("a100_80", "h100_80"),
+        ladder_remaining=("gcp_a100_80", "gcp_h100_80"),
         resolved_at="2026-05-23T00:00:00+00:00",
     )
     (rlm_state / "gpu_plan.json").write_text(json.dumps(plan.model_dump(mode="json")))
@@ -195,13 +195,13 @@ def test_escalation_count_accumulates_across_calls(tmp_path, monkeypatch):
     # Reload the gpu_plan (would normally be updated on disk) so second call still has a ladder.
     from backend.agents.schemas import GpuPlan, GpuRequirements
     plan2 = GpuPlan(
-        runpod_id="NVIDIA A100 80GB PCIe",
-        short_name="a100_80",
+        runpod_id="a2-ultragpu-1g",
+        short_name="gcp_a100_80",
         vram_gb=80,
         gpu_count=1,
-        cloud_type="COMMUNITY",
-        sku_usd_per_hr=2.0,
-        total_usd_per_hr=2.0,
+        cloud_type="ONDEMAND",
+        sku_usd_per_hr=3.93,
+        total_usd_per_hr=3.93,
         container_disk_gb=80,
         volume_gb=20,
         source="paper",
@@ -209,7 +209,7 @@ def test_escalation_count_accumulates_across_calls(tmp_path, monkeypatch):
             estimated_vram_gb=70, paper_gpu_string="A100 80GB", paper_gpu_count=1,
             reasoning="", confidence=0.9,
         ),
-        ladder_remaining=("h100_80",),
+        ladder_remaining=("gcp_h100_80",),
         resolved_at="2026-05-23T00:00:00+00:00",
     )
     (ctx.project_dir / "rlm_state" / "gpu_plan.json").write_text(

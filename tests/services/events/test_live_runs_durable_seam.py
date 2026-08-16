@@ -30,7 +30,7 @@ from backend.services.events.live_runs import FileLiveRunService, LiveRunState, 
 # exits cleanly on its first liveness check rather than polling forever.
 _FAKE_PID = 99999999
 
-_ALL_SANDBOXES: tuple[str, ...] = ("gcp", "local", "runpod", "azure", "docker", "auto")
+_ALL_SANDBOXES: tuple[str, ...] = ("gcp", "local", "aws", "azure", "docker", "auto")
 
 
 def _reset_settings_cache() -> None:
@@ -121,7 +121,7 @@ def test_predicate_true_for_both_primary_clouds_when_flag_on(monkeypatch, tmp_pa
 
     assert service._should_use_durable_controller(StartRunRequest(sandbox="gcp")) is True
     assert service._should_use_durable_controller(StartRunRequest(sandbox="azure")) is True
-    for sandbox in ("local", "runpod", "docker", "auto"):
+    for sandbox in ("local", "aws", "docker", "auto"):
         request = StartRunRequest(sandbox=sandbox)
         assert service._should_use_durable_controller(request) is False, sandbox
 

@@ -1,7 +1,7 @@
 """AssetCache — generalized crash-safe, fcntl-locked keyed state store.
 
 Phase 1a of the provisioning-seam refactor (see
-``docs/superpowers/plans/2026-07-01-phase-1a-1b-provisioning-seam-and-gates.md``):
+``docs/history/plans/2026-07-01-phase-1a-1b-provisioning-seam-and-gates.md``):
 this module lifts the crash-safe state-file substrate out of
 ``backend/services/runtime/env_cache.py``'s ``EnvCacheManager`` so it can back
 ANY :class:`~backend.services.runtime.env_adapters.base.EnvironmentAdapter`,

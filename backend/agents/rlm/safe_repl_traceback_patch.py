@@ -14,7 +14,7 @@ applied at module import time via the same pattern as forced_iteration.py.
 If the upstream signature changes, the guard ``_PATCHED_ATTR`` prevents
 double-patching and a log warning surfaces instead of a crash.
 
-Design spec: docs/superpowers/specs/2026-05-28-rlm-stability-remediation-design.md
+Design spec: docs/history/specs/2026-05-28-rlm-stability-remediation-design.md
 Upstream-merge note: file a PR against rlms to include traceback.format_exc()
 in the stderr capture by default, and to remove globals/locals from the
 _SAFE_BUILTINS blocklist. Until accepted, this monkey-patch is permanent.

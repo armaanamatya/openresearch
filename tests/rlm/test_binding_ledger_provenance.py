@@ -83,3 +83,27 @@ def test_contract_guard_rejection_stamps_failed(make_context, tmp_path):
     assert result["failure_class"] == "contract_guard"
     assert _last_row(ctx).outcome == "failed"
     assert ctx.cost_ledger.session_success_compatible_count("run_experiment") == 0
+
+
+def test_cell_execution_error_stamps_partial_cell_error(make_context, tmp_path):
+    """A failed run_experiment whose failure_class is 'cell_execution_error' (a cell
+    that EXECUTED then errored) is stamped 'partial_cell_error', not plain 'failed',
+    so the cell-error salvage tier can demand in-process provenance."""
+    ctx = make_context(tmp_path)
+    wrapped = wrap_primitive(
+        "run_experiment",
+        lambda code_path, *, ctx: {
+            "success": False,
+            "failure_class": "cell_execution_error",
+            "metrics": {"per_model": {"resnet18": {"status": "error"}}},
+        },
+        ctx,
+    )
+
+    wrapped("code/")
+
+    assert _last_row(ctx).outcome == "partial_cell_error"
+    # Still NOT success-compatible — it cannot back a success verdict.
+    assert ctx.cost_ledger.session_success_compatible_count("run_experiment") == 0
+    # ...but it IS counted for the cell-error salvage tier (session-scoped).
+    assert ctx.cost_ledger.session_partial_cell_error_count("run_experiment") == 1

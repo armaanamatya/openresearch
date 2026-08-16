@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Single-shot health snapshot for an in-flight RLM/RDR run.
 # Used by the agent monitoring loop (see
-# docs/superpowers/specs/2026-05-23-e2e-rlmpaper-localhost-run-design.md §
+# docs/history/specs/2026-05-23-e2e-rlmpaper-localhost-run-design.md §
 # "Monitoring loop"). Cheap, idempotent, prints a compact one-block summary
 # and exits non-zero only on hard "wedged" signal.
 #

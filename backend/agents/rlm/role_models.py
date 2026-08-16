@@ -606,3 +606,124 @@ def resolve_role_models(
         validator=validator,
         spec_validator=spec_validator,
     )
+
+
+# ---------------------------------------------------------------------------
+# Grok execution-role guard (2026-08-03) — fail LOUD at launch, not on evidence
+# ---------------------------------------------------------------------------
+#
+# Decision (docs/open-issues.md, 2026-07-22 row): grok is NOT validated as a
+# production executor and we are not validating it — it emits no commands.json
+# cell/commands manifest, so the deterministic evidence gate STRUCTURALLY fails
+# any run it executes (the July 6 SDAR run used grok as both root and executor
+# and could not pass the gate by construction). Rather than letting that
+# misconfiguration burn hours of LLM/GPU spend before failing on evidence, a
+# grok pick for the executor / verifier / grader ROLE raises here, at
+# resolution time — before any client, runtime, or sandbox is built. Grok
+# stays fully VALID as the root model (`--model grok`).
+#
+# Escape hatch: OPENRESEARCH_ALLOW_GROK_EXECUTOR (standard default-OFF flag
+# parse, read by the caller — this module stays env-free/pure). When truthy the
+# error downgrades to loud messages the caller emits as `run_warning`s.
+
+GROK_EXECUTOR_ALLOW_FLAG = "OPENRESEARCH_ALLOW_GROK_EXECUTOR"
+
+# The roles whose output feeds the deterministic evidence layer. Planner
+# (root) is deliberately absent — grok is a supported root model.
+_GROK_GUARDED_ROLES: tuple[str, ...] = ("executor", "verifier", "grader")
+
+# Legacy OPENRESEARCH_EXECUTOR mode vocabulary that routes onto the Foundry
+# endpoint (mirrors foundry_endpoint.FOUNDRY_MODE_ALIASES; duplicated as a
+# literal so this module keeps its no-heavy-imports invariant).
+_FOUNDRY_EXECUTOR_MODES: frozenset[str] = frozenset(
+    {"azure-foundry", "foundry", "grok", "grok-4.3"}
+)
+
+_GROK_EXECUTOR_REASON = (
+    "grok is NOT a validated executor: it emits no commands.json cell/commands "
+    "manifest, so the deterministic evidence gate structurally fails the run "
+    "hours after launch (July 6 SDAR run; docs/open-issues.md 2026-07-22). "
+    "grok remains valid as the ROOT model (--model grok); the sanctioned "
+    "executor is sonnet-foundry (--models executor=sonnet-foundry)."
+)
+
+
+class GrokExecutionRoleError(RoleModelError):
+    """A grok model was assigned to the executor/verifier/grader role."""
+
+
+def _names_grok(*candidates: str | None) -> bool:
+    return any("grok" in (c or "").strip().lower() for c in candidates)
+
+
+def check_grok_execution_roles(
+    selection: RoleSelection,
+    *,
+    legacy_executor_mode: str | None = None,
+    foundry_deployment: str | None = None,
+    allow: bool = False,
+) -> list[str]:
+    """Refuse (or loudly warn about) grok on an execution-evidence role.
+
+    Pure — no ``os.environ`` reads; the one caller (``run.py``) threads in:
+
+    * ``legacy_executor_mode`` — the ``OPENRESEARCH_EXECUTOR`` value, but ONLY
+      when the Foundry executor would actually activate (mode is a Foundry
+      alias AND the ``AZURE_FOUNDRY_*`` cred triple is complete). Incomplete
+      creds keep the legacy path's documented graceful fallback to the default
+      Sonnet executor, so no grok ever runs and this guard must stay silent.
+    * ``foundry_deployment`` — the resolved ``AZURE_FOUNDRY_DEPLOYMENT``. A
+      generic Foundry token (``azure-foundry``/``foundry``) serves whatever the
+      deployment names, so a ``grok-4.3`` deployment is a grok pick even when
+      the token never says "grok" (the July 6 failure shape:
+      ``--model grok`` + ``OPENRESEARCH_EXECUTOR=azure-foundry``).
+    * ``allow`` — the parsed ``OPENRESEARCH_ALLOW_GROK_EXECUTOR`` flag.
+
+    Returns ``[]`` when clean. When a grok pick lands on executor/verifier/
+    grader: raises :class:`GrokExecutionRoleError` (``allow=False``, the
+    default) or returns the offending messages for the caller to emit as
+    ``run_warning`` events (``allow=True``).
+    """
+    offenders: list[tuple[str, str]] = []
+    dep = (foundry_deployment or "").strip()
+
+    # Unified surface: any explicit executor/verifier/grader pick that lands on
+    # the Foundry provider AND names grok (via its token, its concrete model,
+    # or the live deployment the generic token would serve).
+    for role in _GROK_GUARDED_ROLES:
+        spec = selection.get(role)
+        if spec is None or spec.provider != PROVIDER_AZURE_FOUNDRY:
+            continue
+        if _names_grok(spec.token, spec.model, dep):
+            detail = f"--models {role}={spec.token}"
+            if dep and _names_grok(dep):
+                detail += f" with AZURE_FOUNDRY_DEPLOYMENT={dep!r}"
+            offenders.append((role, detail))
+
+    # Legacy OPENRESEARCH_EXECUTOR path (the July 6 combination): an active
+    # Foundry executor mode whose mode string or served deployment names grok.
+    mode = (legacy_executor_mode or "").strip().lower()
+    if (
+        mode in _FOUNDRY_EXECUTOR_MODES
+        and _names_grok(mode, dep)
+        and not any(role == "executor" for role, _ in offenders)
+    ):
+        detail = f"OPENRESEARCH_EXECUTOR={mode!r}"
+        if dep:
+            detail += f" with AZURE_FOUNDRY_DEPLOYMENT={dep!r}"
+        offenders.append(("executor", detail))
+
+    if not offenders:
+        return []
+    messages = [
+        f"role '{role}' resolves to grok ({detail}) — {_GROK_EXECUTOR_REASON}"
+        for role, detail in offenders
+    ]
+    if allow:
+        return messages
+    raise GrokExecutionRoleError(
+        "\n".join(messages)
+        + f"\nSet {GROK_EXECUTOR_ALLOW_FLAG}=1 to override (downgrades this "
+        "launch-time error to a loud run_warning; the run is still expected "
+        "to fail the evidence gate)."
+    )

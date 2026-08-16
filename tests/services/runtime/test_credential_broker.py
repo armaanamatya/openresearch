@@ -1,6 +1,6 @@
 """Unit tests for the hermetic secret resolver + redaction (Phase 1d, Unit A).
 
-Verbatim from ``docs/superpowers/plans/2026-07-01-phase-1d-credentials-assets-cpu-tier.md``
+Verbatim from ``docs/history/plans/2026-07-01-phase-1d-credentials-assets-cpu-tier.md``
 (Unit A). Hermetic: ``env``/``settings_getter`` are injected fakes, never real
 ``os.environ`` or real Settings.
 """

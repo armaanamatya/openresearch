@@ -74,6 +74,26 @@ PRICING: dict[str, ModelPricing] = {
     ),
 }
 
+# Foundry role aliases: the ledger records these bare role ids (see
+# backend.agents.rlm.role_models opus-foundry/sonnet-foundry). Map them to their
+# priced Claude siblings so estimate_cost_usd no longer returns $0 for every
+# Foundry-routed row. Rates mirror the siblings (see the PRICING note above);
+# Foundry billing is separately reconciled via Azure Cost Management.
+FOUNDRY_ALIASES: dict[str, str] = {
+    "opus-foundry": "claude-opus-4-8",
+    "sonnet-foundry": "claude-sonnet-5",
+}
+
+
+# Foundry role-token aliases → their bare Claude PRICING keys. The ledger records
+# these hyphenated role tokens on some Foundry sub-role paths (grader/executor via
+# role_models); `_resolve_pricing`'s ``provider.``-dot stripping does not match a
+# hyphen, so without this map they resolve to None and price at $0.
+_FOUNDRY_ALIASES: dict[str, str] = {
+    "opus-foundry": "claude-opus-4-8",
+    "sonnet-foundry": "claude-sonnet-5",
+}
+
 
 def _resolve_pricing(model: str) -> ModelPricing | None:
     """Resolve a ModelPricing entry for *model*.
@@ -96,6 +116,12 @@ def _resolve_pricing(model: str) -> ModelPricing | None:
     entry = PRICING.get(model)
     if entry is not None:
         return entry
+    # 1b. Foundry role alias -> priced sibling.
+    alias = FOUNDRY_ALIASES.get(model)
+    if alias is not None:
+        entry = PRICING.get(alias)
+        if entry is not None:
+            return entry
     # 2. Match model against suffixes of PRICING keys (strip ``provider.`` prefix).
     for key, entry in PRICING.items():
         dot = key.find(".")
@@ -108,6 +134,10 @@ def _resolve_pricing(model: str) -> ModelPricing | None:
         entry = PRICING.get(bare)
         if entry is not None:
             return entry
+    # 4. Foundry role-token alias (hyphenated — not a ``provider.``-dot prefix).
+    alias = _FOUNDRY_ALIASES.get(model)
+    if alias is not None:
+        return PRICING.get(alias)
     return None
 
 
@@ -189,6 +219,7 @@ __all__ = [
     "ModelPricing",
     "PRICING",
     "PRICING_UPDATED_AT",
+    "FOUNDRY_ALIASES",
     "_resolve_pricing",
     "estimate_cost_usd",
     "equivalent_cost_usd",

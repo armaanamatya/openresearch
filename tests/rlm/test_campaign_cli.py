@@ -110,6 +110,7 @@ def test_campaign_parser_defaults():
     assert args.require_cpu_tier is False
     assert args.resume is False
     assert args.root_model is None
+    assert args.project_id is None
 
 
 def test_campaign_accepts_root_model():
@@ -184,6 +185,17 @@ def test_campaign_project_id_defaults_to_none():
     assert args.project_id is None
 
 
+@pytest.mark.parametrize("command", ["campaign", "reproduce"])
+def test_cli_accepts_explicit_aws_sandbox(command):
+    if command == "campaign":
+        args = cli._build_parser().parse_args(_campaign_argv("--sandbox", "aws"))
+    else:
+        args = cli._build_parser().parse_args(
+            ["reproduce", "2605.15155", "--sandbox", "aws"]
+    )
+    assert args.sandbox == "aws"
+
+
 # --------------------------------------------------------------------------- #
 # cmd_campaign wiring                                                          #
 # --------------------------------------------------------------------------- #
@@ -201,8 +213,8 @@ class _FakeIntake:
         self.fetched: list = []
 
     def register_project(self, cmd, project_id_override=None):
-        self.registered.append(cmd)
-        return self._project_id
+        self.registered.append((cmd, project_id_override))
+        return project_id_override or self._project_id
 
     def fetch_paper(self, cmd):
         self.fetched.append(cmd)
@@ -301,9 +313,25 @@ def test_cmd_campaign_wires_options(tmp_path, monkeypatch):
     assert opts.gpu_mode == "prefer"
     assert opts.minimize_compute is True
     # Full ingest chain ran, in order, on the fakes.
-    assert len(intake.registered) == 1 and len(intake.fetched) == 1
+    assert len(intake.registered) == 1 and intake.registered[0][1] is None
+    assert len(intake.fetched) == 1
     for step in (parser_svc, discovery, indexer, workspace):
         assert len(step.calls) == 1
+
+
+def test_campaign_project_id_creates_an_independent_lineage(tmp_path, monkeypatch):
+    intake, *_ = _install_fakes(monkeypatch)
+    captured = _install_fake_campaign(
+        monkeypatch, {"kind": "EXHAUSTED", "rule": "r", "stop_reason": None,
+                      "champion_attempt_n": None, "spent": {}}
+    )
+
+    args = cli._build_parser().parse_args(
+        _campaign_argv("--project-id", "sdar_scheduler_shadow_01", runs_root=str(tmp_path / "runs"))
+    )
+    assert cli.cmd_campaign(args) == 0
+    assert intake.registered[0][1] == "sdar_scheduler_shadow_01"
+    assert captured["project_id"] == "sdar_scheduler_shadow_01"
 
 
 def test_cmd_campaign_scope_ladder_resolution(tmp_path, monkeypatch):
@@ -445,20 +473,19 @@ def test_cmd_campaign_project_id_override_is_none_when_omitted(tmp_path, monkeyp
     assert captured == [None]
 
 
-def test_cmd_campaign_project_id_mismatch_is_rejected(tmp_path, monkeypatch, capsys):
-    # Mirrors cmd_reproduce's mismatch guard: an override that does not equal
-    # what register_project resolves to (here the fake's fixed "prj_fake")
-    # must fail loudly (exit 1) rather than silently diverging and dying
-    # later at fetch_paper with an opaque UnknownProject.
-    _install_fakes(monkeypatch, project_id="prj_fake")
-    built: list = []
-    monkeypatch.setattr(cli, "build_campaign", lambda pid, opts: built.append(pid))
+def test_cmd_campaign_independent_project_id_is_allowed(tmp_path, monkeypatch):
+    # A paired A/B arm needs its own EventStore aggregate even when it shares
+    # the source paper. Registration must therefore retain the override.
+    intake, *_ = _install_fakes(monkeypatch, project_id="prj_fake")
+    _install_fake_campaign(
+        monkeypatch, {"kind": "EXHAUSTED", "rule": "r", "stop_reason": None,
+                      "champion_attempt_n": None, "spent": {}}
+    )
 
     args = cli._build_parser().parse_args(
         _campaign_argv("--project-id", "prj_other", runs_root=str(tmp_path / "runs"))
     )
     rc = cli.cmd_campaign(args)
 
-    assert rc == 1
-    assert not built
-    assert "prj_other" in capsys.readouterr().err
+    assert rc == 0
+    assert intake.registered[0][1] == "prj_other"

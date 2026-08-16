@@ -1,7 +1,7 @@
 """Tests for the SDK thread-isolation helper in ``backend/agents/rdr/agent.py``.
 
 Covers Workaround B from
-docs/superpowers/specs/2026-05-22-sdk-aclose-investigation.md.
+docs/history/specs/2026-05-22-sdk-aclose-investigation.md.
 """
 
 from __future__ import annotations

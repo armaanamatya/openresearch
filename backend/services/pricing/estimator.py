@@ -4,7 +4,7 @@ Single public entry point: `estimate_paper_budget(source, *, recipe_mode, ...)`.
 Makes one Sonnet LLM call to estimate training workload, then computes GPU cost
 and API cost across all supported providers.
 
-Spec: docs/superpowers/specs/2026-05-25-budget-estimation-design.md §estimator.py
+Spec: docs/history/specs/2026-05-25-budget-estimation-design.md §estimator.py
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ class PdfPathNotAllowedError(ValueError):
     allowed root.
 
     Security-review fix: this is a REJECTION, not an estimator failure.
-    Invariant 10 (docs/superpowers/specs/2026-05-25-budget-estimation-design.md
+    Invariant 10 (docs/history/specs/2026-05-25-budget-estimation-design.md
     §HTTP API) says estimator FAILURES return HTTP 200 + error_message so the
     UI can offer "skip estimate" -- but a path-containment violation is an
     attempted arbitrary-file-read, not a failure to estimate. The HTTP layer
@@ -479,13 +479,7 @@ async def estimate_paper_budget(
         confidence=0.5,
     )
     try:
-        from backend.config import get_settings as _gs
-        _settings = _gs()
-        _cloud_types: tuple[str, ...] = (
-            ("COMMUNITY", "SECURE")
-            if getattr(_settings, "runpod_cloud_type", "COMMUNITY") == "SECURE"
-            else ("COMMUNITY",)
-        )
+        _cloud_types: tuple[str, ...] = ("ONDEMAND",)
         gpu_plan = _resolve_gpu(
             default_req,
             dynamic_gpu_enabled=True,
@@ -498,9 +492,9 @@ async def estimate_paper_budget(
         sku_id = gpu_plan.short_name
         usd_per_hour = gpu_plan.sku_usd_per_hr
     except Exception as exc:  # noqa: BLE001
-        logger.warning("estimator: GPU resolution failed (%s), using rtx4090 fallback", exc)
-        sku_id = "rtx4090"
-        usd_per_hour = GPU_PRICING["rtx4090"].usd_per_hour
+        logger.warning("estimator: GPU resolution failed (%s), using gcp_l4_24 fallback", exc)
+        sku_id = "gcp_l4_24"
+        usd_per_hour = GPU_PRICING["gcp_l4_24"].usd_per_hour
 
     # Codex I6 fix: derive label from the resolved SKU's cloud_type instead
     # of hardcoded "COMMUNITY".

@@ -2,9 +2,9 @@
 
 Every recent failure mode this session falls into a small set of
 recognisable shapes — ``ModuleNotFoundError``, ``CUDA out of memory``,
-RunPod 500 ``RUNPOD_CAPACITY_EXHAUSTED``, the 755 MB torch wheel that
-truncated mid-stream, requirements.txt missing, attempt_isolation
-PermissionError, etc.  Classifying them programmatically and surfacing
+the 755 MB torch wheel that truncated mid-stream, requirements.txt
+missing, attempt_isolation PermissionError, etc.  Classifying them
+programmatically and surfacing
 the class + a concrete suggested fix in the ``experiment_completed``
 event makes the next iteration's ``repair_context`` actionable instead
 of an opaque traceback the agent has to re-diagnose every time.
@@ -35,10 +35,6 @@ FAILURE_CLASSES: Final[tuple[str, ...]] = (
     "cuda_oom",                  # torch.cuda.OutOfMemoryError or similar
     "cuda_device_assert",        # CUDA device-side assert (out-of-range index / BCE input)
     "oom_killed",                # process/container SIGKILL from memory pressure
-    "runpod_capacity",           # RUNPOD_CAPACITY_EXHAUSTED / no instances
-    "runpod_transient_500",      # Bare RunPod 500 (treated as escalation trigger)
-    "runpod_ssh_timeout",        # Pod created but never reachable via SSH
-    "runpod_balance_too_low",    # Funding exhausted
     "requirements_not_found",    # pip CWD vs requirements.txt path mismatch
     "missing_dataset",           # HuggingFace datasets URI failure / dataset 404
     "exec_timeout",              # Per-command 4h cap hit
@@ -61,7 +57,6 @@ FAILURE_CLASSES: Final[tuple[str, ...]] = (
     "cell_smoke_failed",         # pre-grid smoke of the smallest cell failed before the grid ran
     "nccl_timeout",              # distributed collective (NCCL) hang — a rank desynced/died
     "cuda_shlib_load",           # a CUDA runtime lib (libcupti/libcudart/…) couldn't dlopen
-    "training_divergence",       # loss went NaN/Inf — unstable config (lr too high), not harness
     "unknown",                   # falls-through
 )
 
@@ -75,7 +70,7 @@ def _suggest(klass: str, *, extra: str = "") -> str:
             "verify the Dockerfile parsed cleanly",
         "torch_redundancy":
             "remove torch / torchvision / torchaudio from requirements.txt — the "
-            "runpod/pytorch base image already provides them",
+            "base image already provides them",
         "network_flake":
             "transient — the next attempt should succeed; consider mounting a "
             "persistent pip cache via OPENRESEARCH_RUNPOD_NETWORK_VOLUME_ID",
@@ -94,17 +89,6 @@ def _suggest(klass: str, *, extra: str = "") -> str:
         "oom_killed":
             "process was killed by the host/container OOM killer; reduce memory use, "
             "lower batch size, or raise the Docker/container memory floor",
-        "runpod_capacity":
-            "RunPod has no available instances of the requested SKU — escalator "
-            "advances the ladder automatically; ensure OPENRESEARCH_DYNAMIC_GPU_MAX_ESCALATIONS "
-            "is high enough or switch tier (SECURE has better availability than COMMUNITY)",
-        "runpod_transient_500":
-            "bare 500 from RunPod — automatic ladder advance; if the next SKU also "
-            "500s, RunPod itself may be experiencing an outage",
-        "runpod_ssh_timeout":
-            "pod created but SSH never reached READY — the ladder advances automatically",
-        "runpod_balance_too_low":
-            "add funds at https://runpod.io/console/user/billing — non-retryable until fixed",
         "requirements_not_found":
             "auto-derive should have written requirements.txt to code/; check that "
             "the Dockerfile exists at runs/<id>/Dockerfile and parses cleanly",
@@ -210,12 +194,6 @@ def _suggest(klass: str, *, extra: str = "") -> str:
             "install, leaving an incoherent CUDA stack. Remove the torch / torchvision / "
             "torchaudio pins from requirements.txt (let the harness own them) and do NOT "
             "set an exotic CUDA index — the harness installs a matching, loadable stack",
-        "training_divergence":
-            "training diverged to a non-finite loss (NaN/Inf) — an unstable config, not a "
-            "harness fault: lower the learning rate (e.g. 10×), add LR warmup and/or "
-            "gradient clipping (clip_grad_norm_), and verify input normalization + loss "
-            "scaling, then re-run the same cell. Keep the nan-guard abort so divergence "
-            "stays loud instead of training to garbage",
         "unknown":
             "classifier didn't recognise the failure shape; logs_tail will have the trace",
     }
@@ -278,15 +256,6 @@ def classify_failure(result: dict) -> tuple[str, str]:
         ):
             return ("oom_killed", _suggest("oom_killed"))
 
-        # RunPod-specific sentinels (from runpod_backend exceptions)
-        if "runpod_capacity_exhausted" in haystack:
-            return ("runpod_capacity", _suggest("runpod_capacity"))
-        if "runpod_transient_500" in haystack:
-            return ("runpod_transient_500", _suggest("runpod_transient_500"))
-        if "runpod_ssh_timeout" in haystack:
-            return ("runpod_ssh_timeout", _suggest("runpod_ssh_timeout"))
-        if "runpod_balance_too_low" in haystack or "balance is too low" in haystack:
-            return ("runpod_balance_too_low", _suggest("runpod_balance_too_low"))
 
         # Timeout sentinels
         if "timed out after" in haystack and "run_experiment" in haystack:
@@ -314,26 +283,6 @@ def classify_failure(result: dict) -> tuple[str, str]:
             or "cublas_status_alloc_failed" in haystack
         ):
             return ("cuda_oom", _suggest("cuda_oom"))
-
-        # Training divergence — the loss went NaN/Inf and the trainer (correctly)
-        # aborted. prj_e2d9aebb05d4340f died here twice ("train_loss=nan at
-        # epoch=1, lr=0.100000") and classified `unknown`, so the root got no
-        # repair hint and gave up into a FINAL_VAR refusal loop. Anchored to a
-        # loss context (never a bare "nan" substring — "banana" must not match).
-        # Checked AFTER the CUDA blocks: an OOM/assert that also printed a nan
-        # keeps its more-specific hardware class.
-        import re as _re_div
-        if (
-            _re_div.search(r"loss[\w\.\)\]]*\s*(?:=|:)\s*[+-]?(?:nan|inf)\b", haystack)
-            or "loss is nan" in haystack
-            or "loss became nan" in haystack
-            or "loss went nan" in haystack
-            or "nan loss" in haystack
-            or "loss diverged" in haystack
-            or "non-finite loss" in haystack
-            or "nan detected in loss" in haystack
-        ):
-            return ("training_divergence", _suggest("training_divergence"))
 
         # Network flake during a torch wheel download — distinguish from generic
         # network because the fix is "strip torch from requirements" not "retry"

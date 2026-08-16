@@ -648,14 +648,3 @@ def build_worker_report_failed_event(report: dict[str, Any]) -> dict[str, Any]:
         "source": report.get("source"),
         "blockers": report.get("blockers", [])[:5],
     }
-
-
-def build_worker_blocker_recorded_event(
-    worker_id: str, blocker: dict[str, Any]
-) -> dict[str, Any]:
-    return {
-        "event": "worker_blocker_recorded",
-        "timestamp": _now_iso(),
-        "worker_id": worker_id,
-        "blocker": blocker,
-    }

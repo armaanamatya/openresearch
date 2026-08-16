@@ -1,7 +1,7 @@
 """Tests for the swallowed-backward-OOM pre-flight check.
 
 Covers ``preflight_ast._check_swallowed_backward_oom`` (BES Phase 2 Component C,
-spec ``docs/superpowers/specs/2026-06-07-bes-integration/phase-2-preflight-retry-reduction.md``
+spec ``docs/history/specs/2026-06-07-bes-integration/phase-2-preflight-retry-reduction.md``
 §4) and its wiring into the public ``scan_code_dir`` API.
 
 The anti-pattern: a training step wraps ``loss.backward()`` / ``optimizer.step()``

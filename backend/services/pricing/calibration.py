@@ -8,7 +8,7 @@ to `backend/`).
 Hooked into `write_final_report_rlm` post-marker write so each successful run
 tightens the next estimate.
 
-Spec: docs/superpowers/specs/2026-05-25-budget-estimation-design.md §calibration.py
+Spec: docs/history/specs/2026-05-25-budget-estimation-design.md §calibration.py
 """
 
 from __future__ import annotations

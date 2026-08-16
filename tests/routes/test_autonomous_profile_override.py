@@ -6,7 +6,7 @@ identity function, mirroring `apply_sandbox_override`/`apply_provider_override`.
 
 Grounded override vs. the original task brief: the brief's snippet used
 `sandbox="gke"`, but `StartRunRequest.sandbox` is typed
-`Literal["auto","docker","local","runpod","azure","gcp"]` — "gke" is not a
+`Literal["auto","docker","local","azure","aws","gcp"]` — "gke" is not a
 member of that Literal. The gke->gcp alias lives only in the separate
 `backend.agents.execution` enum. "gcp" IS in the Literal and is exactly what
 already selects `GkeJobBackend` byte-for-byte, so the override sets the
@@ -27,7 +27,7 @@ _CONFIG_PATH = pathlib.Path("configs/autonomous_reproduction_run_spec.json")
 
 
 def test_override_off_is_identity():
-    r = StartRunRequest(sandbox="runpod", model="sonnet")
+    r = StartRunRequest(sandbox="azure", model="sonnet")
     assert apply_autonomous_profile_override(r) is r or apply_autonomous_profile_override(r) == r
 
 

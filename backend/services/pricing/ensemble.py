@@ -9,7 +9,7 @@ combined sigma, using inverse-variance weighting:
 
 `EPSILON` prevents a zero-sigma estimate from dominating by infinite weight.
 
-Spec: docs/superpowers/specs/2026-05-25-three-source-budget-estimator-design.md §ensemble
+Spec: docs/history/specs/2026-05-25-three-source-budget-estimator-design.md §ensemble
 """
 
 from __future__ import annotations

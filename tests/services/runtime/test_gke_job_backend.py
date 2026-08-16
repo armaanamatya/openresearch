@@ -235,12 +235,13 @@ def test_safe_name_empty():
 
 def test_blob_code_prefix():
     prefix = _blob_code_prefix("proj-123", "run-abc")
-    assert prefix.startswith("runs/")
+    assert prefix.startswith("runs/run-abc/")
     assert "code" in prefix
 
 
 def test_blob_artifact_key():
     key = _blob_artifact_key("proj-123", "run-abc", "/code/output.json")
+    assert key.startswith("runs/run-abc/")
     assert "artifacts" in key
     assert "run" in key
 
@@ -1372,7 +1373,7 @@ async def test_create_sandbox_pool_api_permission_denied_degrades_to_warning(
 # WS2 guard — fail-loud refusal of code-dependent commands on the unstaged
 # monolithic exec path (Phase-3 durable-controller fan-out). Flag-gated on
 # OPENRESEARCH_DURABLE_CONTROLLER (default OFF), gcp-only. See
-# `.superpowers/sdd/phase3-owner2-job_backend-ws2guard.md`.
+# `.history/sdd/phase3-owner2-job_backend-ws2guard.md`.
 # ---------------------------------------------------------------------------
 
 from backend.services.runtime.k8s_job_backend import _command_needs_staged_code  # noqa: E402

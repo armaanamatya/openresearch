@@ -14,7 +14,7 @@ interface SparklineProps {
  * Y axis is [0, 1] (rubric scores); X axis is series index (0..N-1).
  * Empty series renders nothing. One point renders a small circle.
  *
- * Spec: docs/superpowers/specs/2026-05-23-rubric-climb-leaderboard.md §4.1.
+ * Spec: docs/history/specs/2026-05-23-rubric-climb-leaderboard.md §4.1.
  */
 export function Sparkline({ series, width = 120, height = 28 }: SparklineProps) {
   if (series.length === 0) return null;

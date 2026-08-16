@@ -2,7 +2,7 @@
 
 Pure deterministic tests — no LLM, no network, no filesystem beyond the
 tmp_path fixtures ``freeze_contract`` exercises. See
-docs/superpowers/specs/2026-07-09-eval-integrity-track-a-design.md §4.3 for
+docs/history/specs/2026-07-09-eval-integrity-track-a-design.md §4.3 for
 the locked taxonomy precedence this locks down: a genuinely-primary claim
 that FAILS always wins (``contradicted``), an unmeasured-but-genuine primary
 is ``partial``, and only an all-pass primary set WITH a satisfied evidence

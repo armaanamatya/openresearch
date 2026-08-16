@@ -19,7 +19,7 @@ Auth posture:
     (``gcloud auth application-default login``) to upload code and download
     artifacts, and the operator's kubeconfig to submit and watch Jobs.
 
-Design reference: ``docs/superpowers/specs/2026-06-16-gcp-gke-execution-backend-design.md``
+Design reference: ``docs/history/specs/2026-06-16-gcp-gke-execution-backend-design.md``
 """
 
 from __future__ import annotations
@@ -31,10 +31,15 @@ from backend.services.runtime.interface import (
     RuntimeCauseKind,
     SandboxRuntimeError,
 )
+from backend.services.runtime.gpu_resolver import (
+    GpuSkuConfigError as GpuSkuConfigError,  # re-export for callers
+    validate_configured_skus,
+)
 from backend.services.runtime.k8s_job_backend import (
     _KubernetesJobBackend,
     _settings_get,
     _load_kubeconfig,
+    _load_kubernetes_core_api,
     GcsStore,
     CloudSpec,
 )
@@ -52,6 +57,78 @@ def _make_gcs_store(settings: Any, client: Any) -> GcsStore:
     bucket = _settings_get(settings, "gcp_gcs_bucket", "") or ""
     project = _settings_get(settings, "gcp_project", None) or None
     return GcsStore(bucket, project, client)
+
+
+# ---------------------------------------------------------------------------
+# SKU preflight helper
+# ---------------------------------------------------------------------------
+
+
+def validate_gcp_skus_against_cluster(
+    configured: list[str],
+    *,
+    core_api: object | None = None,
+) -> None:
+    """Best-effort preflight: verify configured gcp_gpu_skus overlap with live nodes.
+
+    Enumerates ``reprolab/sku`` labels on cluster nodes and compares them against
+    ``configured``.  The check is best-effort on the *query*:
+
+    - If the Kubernetes client can't be built or ``list_node`` raises for any
+      reason → log a warning and return (do NOT raise).
+    - If no nodes carry a ``reprolab/sku`` label (empty cluster, unlabelled
+      nodes, etc.) → can't confirm a mismatch → log info and return.
+
+    But if the query SUCCEEDS and the intersection is empty, raise
+    ``GpuSkuConfigError`` with an actionable message (via
+    ``validate_configured_skus`` from ``gpu_resolver``).
+
+    Args:
+        configured: List of catalog short_names from ``settings.gcp_gpu_skus``.
+        core_api:   Optional pre-built ``CoreV1Api`` (or a test double).  When
+                    ``None``, the real Kubernetes CoreV1Api is built lazily via
+                    ``_load_kubernetes_core_api()`` — any failure there is caught
+                    and treated as best-effort (warn + return).
+    """
+    # Build the real CoreV1Api lazily if no test double was injected.
+    if core_api is None:
+        try:
+            core_api = _load_kubernetes_core_api()
+        except Exception:
+            _log.warning(
+                "could not enumerate cluster GPU SKUs; skipping preflight SKU check"
+            )
+            return
+
+    # Enumerate nodes with the reprolab/sku label selector.
+    try:
+        nodes = core_api.list_node(label_selector="reprolab/sku")
+    except Exception:
+        _log.warning(
+            "could not enumerate cluster GPU SKUs; skipping preflight SKU check"
+        )
+        return
+
+    # Collect unique, non-empty SKU label values.
+    available = sorted(
+        {
+            n.metadata.labels.get("reprolab/sku")
+            for n in nodes.items
+            if getattr(n, "metadata", None)
+            and n.metadata.labels
+            and n.metadata.labels.get("reprolab/sku")
+        }
+    )
+
+    if not available:
+        _log.info(
+            "No reprolab/sku-labelled nodes found on cluster; "
+            "skipping preflight SKU check (best-effort)."
+        )
+        return
+
+    # Raises GpuSkuConfigError on a confirmed zero-overlap mismatch.
+    validate_configured_skus(configured=configured, available=available)
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +232,14 @@ def ensure_gcp_available() -> None:
             f"Details: {exc}",
         ) from exc
 
+    # 7. SKU preflight — best-effort check that at least one configured SKU
+    #    is present as a reprolab/sku node label.  Fails LOUD on a confirmed
+    #    zero-overlap mismatch; silently passes when the node query itself fails
+    #    (no connectivity, no kubernetes package, etc.).
+    validate_gcp_skus_against_cluster(
+        configured=list(_settings_get(s, "gcp_gpu_skus", []) or [])
+    )
+
 
 _GCP_CLOUD = CloudSpec(
     provider="gcp",
@@ -204,4 +289,4 @@ class GkeJobBackend(_KubernetesJobBackend):
         super().__init__(_GCP_CLOUD, **kw)
 
 
-__all__ = ["GkeJobBackend", "ensure_gcp_available"]
+__all__ = ["GkeJobBackend", "ensure_gcp_available", "validate_gcp_skus_against_cluster"]

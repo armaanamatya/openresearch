@@ -1012,6 +1012,7 @@ def main(
     gcs_client: Any | None = None,
     subprocess_runner: Any | None = None,
     _preempt_upload_fn: Any | None = None,
+    bucket_name_override: str | None = None,
 ) -> int:
     """Run the full cell entrypoint.
 
@@ -1024,6 +1025,10 @@ def main(
         _preempt_upload_fn: Injectable replacement for the metrics-upload callable
                             used inside the SIGTERM preemption handler (tests only;
                             production leaves this None to use _upload_metrics).
+        bucket_name_override: Artifact-bucket name for a provider adapter.  GKE
+                            leaves this None and reads OPENRESEARCH_GCP_GCS_BUCKET;
+                            the EKS S3 adapter passes its bucket without mutating
+                            GCP-named process environment.
 
     Returns:
         The integer exit code to pass to sys.exit.
@@ -1039,7 +1044,7 @@ def main(
     # Config from environment (injected by k8s_job_cell_runner)
     # -----------------------------------------------------------------------
     cell_id = os.environ.get("OPENRESEARCH_CELL_ID", "unknown")
-    bucket_name = os.environ.get("OPENRESEARCH_GCP_GCS_BUCKET", "")
+    bucket_name = bucket_name_override or os.environ.get("OPENRESEARCH_GCP_GCS_BUCKET", "")
     # Optional: google.cloud.storage.Client infers the project from Application
     # Default Credentials / the GKE metadata server (Workload Identity).  The
     # manifest does NOT inject this; honour it only when explicitly present.

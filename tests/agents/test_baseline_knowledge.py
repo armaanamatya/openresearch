@@ -264,10 +264,13 @@ class TestSeverityStrict:
 # 9. Regression fixture: three observed train.py files fail postflight
 # ---------------------------------------------------------------------------
 
-OBSERVED_TRAIN_PY_PATHS = [
-    Path("/home/abheekp/openresearch/runs/prj_03271ba130d423fe/code/train.py"),
-    Path("/home/abheekp/openresearch/runs/prj_3080fe2a02c20164/code/train.py"),
-    Path("/home/abheekp/openresearch/runs/prj_db45c0304ce455a6/code/train.py"),
+# Observed train.py files from three preserved runs — discovered on any
+# machine/user via preserved_artifacts (readable copies only), so the
+# regression runs wherever the artifacts live instead of one hardcoded home.
+OBSERVED_TRAIN_PY_GLOBS = [
+    "*prj_03271ba130d423fe/code/train.py",
+    "*prj_3080fe2a02c20164/code/train.py",
+    "*prj_db45c0304ce455a6/code/train.py",
 ]
 
 
@@ -275,14 +278,21 @@ class TestObservedTrainPyFailPostflight:
     def test_three_observed_train_py_all_fail_postflight(self, tmp_path):
         """At least one of the three observed train.py files must produce a
         banned_literal violation for the Frey Face NYU URL."""
+        from tests.agents.preserved_artifacts import find_preserved_file
+
         fact = _make_frey_fact()
         manifest = write_curated_artifacts(tmp_path, [fact])
 
-        present_files = [p for p in OBSERVED_TRAIN_PY_PATHS if p.exists()]
+        present_files = [
+            p
+            for p in (find_preserved_file(g) for g in OBSERVED_TRAIN_PY_GLOBS)
+            if p is not None
+        ]
         if not present_files:
             pytest.skip(
-                "None of the three observed train.py files are present — "
-                "run this test on a machine with the preserved run directories"
+                "No readable copy of the three observed train.py files on this "
+                "machine — runs on any host with the preserved run directories "
+                "(see tests/agents/preserved_artifacts.py for the search order)"
             )
 
         any_flagged = False

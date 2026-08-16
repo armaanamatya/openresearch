@@ -23,11 +23,9 @@ class TransientClass(str, Enum):
     unknown = "unknown"
 
 
-# RunPod-specific funding / auth failures — user must add credit or fix key.
+# Funding / auth failures — user must add credit or fix key.
 _FATAL_MARKERS: tuple[str, ...] = (
-    "RUNPOD_BALANCE_TOO_LOW",
     "balance_too_low",
-    "RUNPOD_AUTH_FAILED",
     "auth_failed",
     "Unauthorized",
     "quota_exceeded",
@@ -43,9 +41,6 @@ _TRANSIENT_MARKERS: tuple[str, ...] = (
     "502 Bad Gateway",
     "503 Service Unavailable",
     "NO_CAPACITY_AVAILABLE",
-    "RUNPOD_CAPACITY_EXHAUSTED",
-    "RUNPOD_SSH_TIMEOUT",
-    "RUNPOD_TRANSIENT_500",
     "network is unreachable",
     "Operation timed out",
 )

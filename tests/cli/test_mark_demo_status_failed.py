@@ -37,6 +37,7 @@ def test_flips_running_to_failed(tmp_path: Path) -> None:
 
     status = _read_status(project_dir)
     assert status["status"] == "failed"
+    assert status["process_status"] == "completed"
     assert status["error"] == "boom"
     assert "completedAt" in status
     # Preserved fields survive the rewrite.

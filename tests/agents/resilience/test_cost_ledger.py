@@ -162,6 +162,67 @@ def test_custom_batch_size(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Foundry cost visibility (2026-08-03): priced Foundry rows + explicit
+# ``unpriced`` marker for unknown-rate models.
+# ---------------------------------------------------------------------------
+
+_USAGE = {"input_tokens": 100_000, "output_tokens": 20_000}
+
+
+def _from_usage(model: str, provider: str = "anthropic") -> CostLedgerEntry:
+    return CostLedgerEntry.from_usage(
+        agent_id="rlm_root",
+        attempt_index=0,
+        provider=provider,  # type: ignore[arg-type]
+        model=model,
+        usage=_USAGE,
+    )
+
+
+def test_foundry_claude_row_is_priced_not_marked_unpriced() -> None:
+    """A Foundry-Claude call (sonnet-foundry alias) prices at Anthropic rates."""
+    entry = _from_usage("sonnet-foundry")
+    assert entry.estimated_usd is not None
+    assert entry.estimated_usd > 0.0
+    row = entry.to_json()
+    assert row["cost_usd"] == entry.estimated_usd
+    assert "unpriced" not in row  # priced rows are byte-identical to before
+
+
+def test_unknown_foundry_model_row_is_marked_unpriced() -> None:
+    """An unknown-rate model (e.g. a grok deployment) must ledger its tokens
+    and carry an EXPLICIT unpriced marker — cost_usd 0.0 means unknown, not $0."""
+    entry = _from_usage("grok-4.3", provider="openai")
+    assert entry.estimated_usd is None
+    row = entry.to_json()
+    assert row["unpriced"] is True
+    assert row["cost_usd"] == 0.0
+    assert row["input_tokens"] == 100_000  # tokens never vanish
+    assert row["output_tokens"] == 20_000
+
+
+def test_unpriced_marker_round_trips_through_from_json() -> None:
+    entry = _from_usage("grok-4.3", provider="openai")
+    restored = CostLedgerEntry.from_json(json.loads(json.dumps(entry.to_json())))
+    assert restored.model == "grok-4.3"
+    assert restored.estimated_usd is None
+    assert restored.input_tokens == 100_000
+
+
+def test_non_foundry_pricing_unchanged() -> None:
+    """Existing non-Foundry behaviour: priced Anthropic-direct model, and the
+    $0-priced (not unpriced) claude-oauth subscription row."""
+    direct = _from_usage("claude-sonnet-4-6")
+    assert direct.estimated_usd is not None and direct.estimated_usd > 0.0
+    assert "unpriced" not in direct.to_json()
+
+    oauth = _from_usage("claude-oauth")
+    # OAuth is genuinely $0 (a real price), NOT unknown — no unpriced marker.
+    assert oauth.estimated_usd == 0.0
+    assert "unpriced" not in oauth.to_json()
+
+
+# ---------------------------------------------------------------------------
 # T6 – subsequent flushes are additive (append-mode check)
 # ---------------------------------------------------------------------------
 

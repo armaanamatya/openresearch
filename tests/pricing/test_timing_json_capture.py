@@ -1,6 +1,6 @@
 """Tests for timing.py — wall-clock capture from preserved run artifacts.
 
-Spec: docs/superpowers/specs/2026-05-25-three-source-budget-estimator-design.md §timing
+Spec: docs/history/specs/2026-05-25-three-source-budget-estimator-design.md §timing
 """
 
 from __future__ import annotations

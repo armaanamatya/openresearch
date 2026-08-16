@@ -35,48 +35,13 @@ A deterministic leaf carries two extra keys on the leaf dict::
     }
 
 * ``deterministic:hparam`` — ``assertion`` is
-  ``{"field": <str>, "op": <op>, "value": <scalar>, "tolerance": <float?>,
-     "on_missing": <"fail"|"llm">?}``
+  ``{"field": <str>, "op": <op>, "value": <scalar>, "tolerance": <float?>}``
   where ``op`` ∈ ``{"==", "!=", ">=", "<=", "~="}`` (``~=`` compares with an
   absolute ``tolerance``, default ``1e-9``). ``field`` is looked up in
   ``provenance.json`` — first at the manifest top level, then inside each
   ``experiments[*]`` record (where the agent's emitter actually writes
   ``epochs`` / ``batch_size`` / ``seed`` / ``per_optimizer.*``). A dotted
-  ``field`` (``"per_optimizer.adam.lr"``) traverses nested dicts; a BARE field
-  (``"lr"``) additionally falls back to a bounded recursive key search *inside
-  each experiment record*, so it resolves against the agent emitter's real
-  ``per_optimizer: {"adam": {"lr": …}}`` shape and not only the cell route's
-  flat ``lr``.
-
-  **Any-match semantics.** A run that searched a hyperparameter grid writes one
-  experiment record per candidate. The check is satisfied when **any** record's
-  value satisfies the assertion (for ``!=``, when **every** record does — a
-  prohibition is universal, an equality is existential). Grading "the first
-  record that happens to carry the field" would fail a faithful run whose
-  paper-valued cell simply is not first (the lr-search false negative).
-
-  **The ``coefficients.*`` namespace (paper-declared algorithmic constants).**
-  A ``field`` of ``"coefficients.<name>"`` addresses the section
-  ``provenance.emit_provenance(..., coefficients={"beta": 10, "lambda": 0.1})``
-  writes — SDAR's ``g_t = σ(β·Δ_t)`` sharpening constant, its ``λ`` distillation
-  weight, a temperature, a clip ε. These are the algorithmic invariants a
-  surrogate gets wrong, which is exactly why they are worth checking
-  mechanically. Nothing new is needed to resolve them: the dotted traversal
-  above already searches the manifest top level (where a run-global coefficient
-  lives) and then each ``experiments[*]`` record (where a cell that OVERRIDES one
-  — an ablation sweeping λ — puts its own), and any-match then does the right
-  thing: an ablation cell carrying ``alpha=0.0`` alongside the paper cell's
-  ``alpha=1.0`` satisfies an ``alpha=1.0`` assertion rather than failing it.
-
-  Because the field is DOTTED it never reaches the bare-field recursive search,
-  so ``coefficients.beta`` can never accidentally bind to Adam's
-  ``per_optimizer.adam.betas``. That separation is the point: the namespace
-  encodes the coefficient's ROLE (a constant the *paper* declared), and a value
-  is only ever compared against what the paper declared for that leaf. NOTHING
-  here range-checks a coefficient — ``0.0`` (an ablation) and ``10`` are equally
-  legitimate values, and a guard that keyed on the ambiguous NAME ``alpha``
-  instead of its role once hard-blocked a faithful ``alpha=0.0`` ablation
-  (learn.md 2026-07-07). Do not reintroduce that.
+  ``field`` (``"per_optimizer.lr"``) traverses nested dicts.
 
 * ``deterministic:artifact`` — ``assertion`` is ``{"glob": <str | [str]>}``
   (alias ``"globs"``). Existence is checked under ``run_dir`` **and**
@@ -85,42 +50,12 @@ A deterministic leaf carries two extra keys on the leaf dict::
 
 * ``deterministic:numeric`` — ``assertion`` is
   ``{"metric_key": <str>, "target": <float>, "tolerance": <float?>,
-     "direction": <dir>, "on_missing": <"fail"|"llm">?}`` where ``dir`` ∈
-  ``{"higher_better", "lower_better", "trend_up", "trend_down", "within"}``.
-  The value is read from the freshest results-bearing ``metrics.json`` (top
-  level → dotted path → recursive key search → first numeric ``metric``
-  leaf). Graded on **trend / threshold satisfaction, not exact magnitude**
-  (e.g. ``higher_better``: ``value >= target - tolerance`` → ``1.0``).
-
-``on_missing`` — the false-negative valve (the load-bearing knob for auto-annotation)
---------------------------------------------------------------------------------------
-``"fail"`` (**the default** — unchanged, so every hand-authored annotation and
-every existing test keeps today's semantics): well-formed assertion + missing
-evidence → a graded ``0.0``.
-
-``"llm"``: missing *evidence* → ``None`` (route to LLM) instead of ``0.0``.
-This exists because an **auto-generated** annotation is written at rubric-gen
-time — BEFORE the run — so it can only *predict* the artifact namespace. Two
-cases make the strict ``0.0`` unsound for a predicted assertion:
-
-* ``provenance.json`` is absent. The agent's ``emit_provenance`` call is
-  explicitly **fail-soft and optional** (see ``baseline_implementation``'s
-  provenance block: "Wrap both calls in try/except"). A faithful run that
-  merely skipped the manifest would have EVERY hyperparameter leaf zeroed —
-  strictly worse than the LLM, which can read ``lr=1e-4`` straight out of
-  ``train.py``.
-* ``metrics.json`` exists with real measured cells, but carries no key by the
-  predicted NAME (the canonical shape is ``per_model[m][env][baseline] =
-  {"metric": …}``, not ``{"top1_accuracy": …}``). That is a *naming* mismatch,
-  not an absence of evidence — and "no evidence" is the only thing a ``0.0``
-  is entitled to assert.
-
-A wrong-value check still fails deterministically under ``"llm"``: the valve
-fires only when the value cannot be *located*, never when it is located and
-misses. Fabrication is not let through either — an LLM-credited result leaf
-with no on-disk cell is independently vetoed by the A7 evidence gate
-(``leaf_scorer._result_leaf_substantiated``), which is precisely the layer
-that owns that direction.
+     "direction": <dir>}`` where ``dir`` ∈ ``{"higher_better",
+  "lower_better", "trend_up", "trend_down", "within"}``. The value is read
+  from the freshest results-bearing ``metrics.json`` (top level → dotted
+  path → recursive key search → first numeric ``metric`` leaf). Graded on
+  **trend / threshold satisfaction, not exact magnitude** (e.g.
+  ``higher_better``: ``value >= target - tolerance`` → ``1.0``).
 
 Return shape (uniform with the LLM grader's per-leaf record)
 ------------------------------------------------------------
@@ -157,6 +92,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -164,8 +100,8 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["check_leaf", "DETERMINISTIC_CHECK_KINDS", "COEFFICIENTS_KEY"]
 
-# The three recognized check kinds. A leaf whose ``check_kind`` is not in this
-# set falls through to the LLM (returns None).
+# The three always-on recognized check kinds. A leaf whose ``check_kind`` is not
+# in this set falls through to the LLM (returns None).
 CHECK_HPARAM = "deterministic:hparam"
 CHECK_ARTIFACT = "deterministic:artifact"
 CHECK_NUMERIC = "deterministic:numeric"
@@ -178,6 +114,19 @@ DETERMINISTIC_CHECK_KINDS = frozenset({CHECK_HPARAM, CHECK_ARTIFACT, CHECK_NUMER
 # assertions that resolve to nothing.
 from backend.agents.rlm.provenance import COEFFICIENTS_KEY  # noqa: E402
 
+# W2 (GroundEval): trace-coherence state contracts. A SEPARATE kind gated by its
+# own default-OFF flag — off ⇒ the kind is unrecognized ⇒ routed to the LLM,
+# byte-identical to an un-annotated leaf regardless of any annotation present.
+CHECK_STATE_CONTRACT = "deterministic:state_contract"
+
+
+def _state_contracts_enabled() -> bool:
+    """True iff ``OPENRESEARCH_STATE_CONTRACTS`` is in {'1','true','yes'} (the
+    project-canonical flag vocabulary — matches grading_input_integrity._flag_on)."""
+    return os.environ.get(
+        "OPENRESEARCH_STATE_CONTRACTS", ""
+    ).strip().lower() in ("1", "true", "yes")
+
 # hparam comparison operators.
 _HPARAM_OPS = frozenset({"==", "!=", ">=", "<=", "~="})
 # numeric direction vocabulary.
@@ -186,17 +135,6 @@ _NUMERIC_DIRECTIONS = frozenset(
 )
 # default absolute tolerance for ~= / numeric "within" when none supplied.
 _DEFAULT_TOLERANCE = 1e-9
-
-# ``on_missing`` vocabulary. "fail" (default) = today's semantics: a well-formed
-# assertion whose evidence is absent grades 0.0. "llm" = route to the LLM instead
-# — the valve an auto-generated (pre-run, therefore *predicted*) annotation uses so
-# it can never false-fail a faithful run. See the module docstring.
-_ON_MISSING_LLM = "llm"
-
-
-def _routes_to_llm_on_missing(assertion: dict) -> bool:
-    """True iff this assertion asked to fall through to the LLM on missing evidence."""
-    return str(assertion.get("on_missing", "fail")).strip().lower() == _ON_MISSING_LLM
 
 
 # --------------------------------------------------------------------------- #
@@ -243,55 +181,47 @@ def _dotted_get(obj: Any, dotted: str) -> tuple[bool, Any]:
     return (True, cur)
 
 
-def _collect_provenance_values(prov: Any, field: str) -> list[Any]:
-    """Collect EVERY value of ``field`` in a provenance manifest, fail-soft.
+def _find_provenance_values(prov: Any, field: str) -> list[Any]:
+    """Every value of ``field`` locatable in a provenance manifest (existential).
 
-    Search (all hits, not first):
-      1. manifest top level (dotted-aware) — e.g. ``run_id``.
-      2. each ``experiments[*]`` record (dotted-aware) — where the agent's
-         emitter writes ``epochs``/``batch_size``/``seed``/``per_optimizer.*``.
-      3. per record, for a BARE (un-dotted) field only: a bounded recursive key
-         search *within that record*. This is what makes ``field="lr"`` resolve
-         against the agent emitter's documented shape
-         ``per_optimizer: {"adam": {"lr": 1e-4}}`` — the cell route writes a flat
-         top-level ``lr`` (``provenance._PROVENANCE_PARAM_KEYS``) but the agent
-         route nests it, and a bare-``lr`` assertion must not be a coin flip on
-         which route produced the manifest. Scoped to inside a record (never the
-         whole manifest) so it cannot reach unrelated structures like
-         ``lr_search.grid``.
+    Searches the manifest top level and each ``experiments[*]`` record
+    (dotted-aware), and — for a bare (un-dotted) field — one level into
+    ``per_optimizer.<opt>.<field>`` (the agent emitter nests optimizer hparams
+    there while the cell route writes them flat, so a bare ``lr`` must resolve
+    against both). Returns ALL matches so the caller can apply existential
+    (any-satisfies) or universal (``!=``, all-satisfy) semantics; an empty list
+    means the field could not be located.
 
-    Returning ALL values (rather than the first) is what lets the caller apply
-    any-match semantics — a hyperparameter SEARCH writes one record per candidate,
-    and grading whichever record happens to be first is a false-negative machine.
+    A hyperparameter SEARCH writes one record per candidate, so grading only the
+    first located value would fail a faithful run whose paper-valued cell is not
+    first — hence "collect all", not "first hit wins".
     """
+    values: list[Any] = []
     if not isinstance(prov, dict):
-        return []
-    out: list[Any] = []
+        return values
 
-    # 1. top level.
-    found, val = _dotted_get(prov, field)
-    if found:
-        out.append(val)
-
-    # 2/3. inside experiments.
-    exps = prov.get("experiments")
-    if isinstance(exps, dict):
-        records = list(exps.values())
-    elif isinstance(exps, list):
-        records = list(exps)
-    else:
-        records = []
-
-    bare = "." not in field
-    for exp in records:
-        found, val = _dotted_get(exp, field)
+    def _collect(node: Any) -> None:
+        found, val = _dotted_get(node, field)
         if found:
-            out.append(val)
-        elif bare:
-            found, val = _recursive_key_search(exp, field)
-            if found:
-                out.append(val)
-    return out
+            values.append(val)
+        # bare field → also descend one level into per_optimizer.<opt>.<field>.
+        if "." not in field and isinstance(node, dict):
+            per_opt = node.get("per_optimizer")
+            if isinstance(per_opt, dict):
+                for opt in per_opt.values():
+                    f2, v2 = _dotted_get(opt, field)
+                    if f2:
+                        values.append(v2)
+
+    _collect(prov)  # 1. top level (+ its per_optimizer).
+    exps = prov.get("experiments")  # 2. each experiment record.
+    if isinstance(exps, dict):
+        for exp in exps.values():
+            _collect(exp)
+    elif isinstance(exps, list):
+        for exp in exps:
+            _collect(exp)
+    return values
 
 
 def _provenance_paths(run_dir: Path) -> list[Path]:
@@ -457,6 +387,25 @@ def _result(leaf_id: str, kind: str, score: float, justification: str) -> dict[s
     }
 
 
+def _route_or_zero(
+    leaf_id: str, kind: str, assertion: dict, justification: str
+) -> dict[str, Any] | None:
+    """Cannot-LOCATE the evidence: route to the LLM when the (auto-generated)
+    assertion carries the ``on_missing: "llm"`` valve, else fail closed to a
+    deterministic 0.0.
+
+    The valve exists because ``emit_provenance`` is fail-soft and OPTIONAL: a
+    faithful run that simply skipped the manifest must fall through to the LLM,
+    not be auto-zeroed — the "route to the LLM on missing evidence, never
+    auto-zero" red line. It fires ONLY on a genuine cannot-locate; a located
+    value that mismatches is still a real, deterministic 0.0 (handled by the
+    caller, not here). Absent the valve, the default is unchanged: 0.0.
+    """
+    if assertion.get("on_missing") == "llm":
+        return None
+    return _result(leaf_id, kind, 0.0, justification)
+
+
 # --------------------------------------------------------------------------- #
 # the three kind-specific checkers.
 # --------------------------------------------------------------------------- #
@@ -472,49 +421,53 @@ def _check_hparam(leaf_id: str, assertion: dict, run_dir: Path) -> dict[str, Any
     if tol is None:
         tol = _DEFAULT_TOLERANCE
 
-    # Missing evidence: 0.0 by default, or route-to-LLM when the annotation asked
-    # for the valve (a pre-run *predicted* assertion — see the module docstring).
-    def _missing() -> dict[str, Any] | None:
-        if _routes_to_llm_on_missing(assertion):
-            logger.debug(
-                "deterministic_leaf_checker: leaf %r — provenance field %r absent, "
-                "on_missing=llm → routing to LLM (not a 0.0)", leaf_id, field,
-            )
-            return None
-        return _result(leaf_id, CHECK_HPARAM, 0.0, f"provenance_missing:{field}")
-
     prov_paths = _provenance_paths(run_dir)
     if not prov_paths:
-        return _missing()
+        return _route_or_zero(
+            leaf_id, CHECK_HPARAM, assertion, f"provenance_missing:{field}")
 
-    # Read newest-first; the first manifest that *contains* the field wins, and
-    # within it EVERY record's value for that field is a candidate.
+    # Read newest-first; the first manifest that *contains* the field wins, but
+    # collect ALL of that manifest's located values (a search writes one record
+    # per candidate; the emitter nests optimizer hparams under per_optimizer).
     values: list[Any] = []
     for p in prov_paths:
         prov = _load_json(p)
         if prov is None:
             continue
-        values = _collect_provenance_values(prov, field)
-        if values:
+        found = _find_provenance_values(prov, field)
+        if found:
+            values = found
             break
     if not values:
-        return _missing()
+        return _route_or_zero(
+            leaf_id, CHECK_HPARAM, assertion, f"provenance_missing:{field}")
 
-    # Any-match for an existential op; all-match for the universal "!=".
     if op == "!=":
-        ok = all(_compare(v, op, expected, tol) for v in values)
-    else:
-        ok = any(_compare(v, op, expected, tol) for v in values)
-
-    seen = values[0] if len(values) == 1 else values
-    if ok:
+        # PROHIBITION — universal: it must hold for EVERY located record, else a
+        # search grid could satisfy it trivially with one compliant cell.
+        offending = [v for v in values if not _compare(v, op, expected, tol)]
+        if offending:
+            return _result(
+                leaf_id, CHECK_HPARAM, 0.0,
+                f"provenance {field}={offending[0]!r} fails {op} {expected!r}",
+            )
         return _result(
             leaf_id, CHECK_HPARAM, 1.0,
-            f"provenance {field}={seen!r} satisfies {op} {expected!r}",
+            f"provenance {field} satisfies {op} {expected!r} "
+            f"for all {len(values)} record(s)",
         )
+
+    # existential — any located record that satisfies the assertion passes (the
+    # paper-valued cell in a search grid need not be first).
+    for v in values:
+        if _compare(v, op, expected, tol):
+            return _result(
+                leaf_id, CHECK_HPARAM, 1.0,
+                f"provenance {field}={v!r} satisfies {op} {expected!r}",
+            )
     return _result(
         leaf_id, CHECK_HPARAM, 0.0,
-        f"provenance {field}={seen!r} fails {op} {expected!r}",
+        f"provenance {field}={values[0]!r} fails {op} {expected!r}",
     )
 
 
@@ -614,39 +567,25 @@ def _check_numeric(leaf_id: str, assertion: dict, run_dir: Path) -> dict[str, An
     if direction in {"higher_better", "lower_better", "within"} and target is None:
         return None  # malformed (threshold direction with no numeric target).
 
-    # Missing/unlocatable metric: 0.0 by default, or route-to-LLM under the valve.
-    # NB this fires only when the value cannot be LOCATED — a located value that
-    # misses its target still fails deterministically.
-    def _missing(detail: str = "") -> dict[str, Any] | None:
-        if _routes_to_llm_on_missing(assertion):
-            logger.debug(
-                "deterministic_leaf_checker: leaf %r — metric %r unresolvable%s, "
-                "on_missing=llm → routing to LLM (not a 0.0)",
-                leaf_id, metric_key, f" ({detail})" if detail else "",
-            )
-            return None
-        suffix = f" ({detail})" if detail else ""
-        return _result(
-            leaf_id, CHECK_NUMERIC, 0.0, f"metric_missing:{metric_key}{suffix}"
-        )
-
     metrics = _latest_metrics(run_dir)
     if metrics is None:
-        return _missing()
+        return _route_or_zero(
+            leaf_id, CHECK_NUMERIC, assertion, f"metric_missing:{metric_key}")
 
     found, raw_val = _find_metric_value(metrics, metric_key)
     if not found:
-        return _missing()
+        return _route_or_zero(
+            leaf_id, CHECK_NUMERIC, assertion, f"metric_missing:{metric_key}")
 
     if direction in {"trend_up", "trend_down"}:
-        endpoints = _series_endpoints(raw_val)
-        if endpoints is None:
-            return _missing(f"no usable series for {direction}")
         return _grade_trend(leaf_id, metric_key, direction, raw_val)
 
     value = _coerce_number(raw_val)
     if value is None:
-        return _missing(f"non-numeric value {raw_val!r}")
+        return _result(
+            leaf_id, CHECK_NUMERIC, 0.0,
+            f"metric_missing:{metric_key} (non-numeric value {raw_val!r})",
+        )
     return _grade_threshold(leaf_id, metric_key, direction, value, target, tol)
 
 
@@ -700,6 +639,85 @@ def _grade_trend(
 
 
 # --------------------------------------------------------------------------- #
+# W2 state-contract checker (trace coherence over eval_provenance.json).
+# --------------------------------------------------------------------------- #
+def _eval_provenance_sidecars(run_dir: Path) -> list[dict]:
+    """Every parseable ``eval_provenance.json`` under ``run_dir/code``, fail-soft."""
+    code_dir = run_dir / "code"
+    if not code_dir.exists():
+        return []
+    out: list[dict] = []
+    try:
+        for p in code_dir.rglob("eval_provenance.json"):
+            d = _load_json(p)
+            if isinstance(d, dict):
+                out.append(d)
+    except Exception:  # noqa: BLE001 — a bad tree just yields no sidecars.
+        return out
+    return out
+
+
+def _sidecar_n_eval(sc: dict) -> int:
+    """Non-negative ``n_eval`` from a sidecar, else 0. Rounds (not truncates) a
+    JSON float so ``n_eval: 100.0`` compares equal to an integer floor of 100."""
+    v = sc.get("n_eval")
+    if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0:
+        return round(v)
+    return 0
+
+
+def _check_state_contract(
+    leaf_id: str, assertion: dict, run_dir: Path
+) -> dict[str, Any] | None:
+    """``deterministic:state_contract`` — trace-coherence predicates grounded in
+    ``eval_provenance.json``. Recognized predicate keys:
+
+    * ``min_eval_n`` (number) — the best cell's ``n_eval`` must be ≥ this (catches a
+      benchmark claim backed by a handful of eval examples).
+    * ``require_held_out`` (truthy) — no cell may report ``held_out == False``.
+
+    No recognized key → ``None`` (malformed → LLM). A well-formed assertion with
+    no ``eval_provenance.json`` on disk → graded ``0.0`` (missing evidence), the
+    module's existing missing-evidence contract.
+    """
+    has_min = "min_eval_n" in assertion
+    # A falsy ``require_held_out`` (absent / false / 0) is a no-op predicate, not
+    # an active one — so it does not, on its own, make the leaf deterministically
+    # gradeable. Only a truthy value counts as a recognized predicate.
+    has_held = bool(assertion.get("require_held_out"))
+    if not (has_min or has_held):
+        return None  # no recognized predicate → cannot interpret → LLM.
+
+    sidecars = _eval_provenance_sidecars(run_dir)
+    if not sidecars:
+        return _result(
+            leaf_id, CHECK_STATE_CONTRACT, 0.0,
+            "eval_provenance_missing: no eval_provenance.json to verify the state contract",
+        )
+
+    if has_min:
+        target = _coerce_number(assertion.get("min_eval_n"))
+        if target is None:
+            return None  # malformed numeric target → LLM.
+        best_n = max((_sidecar_n_eval(sc) for sc in sidecars), default=0)
+        if best_n < target:
+            return _result(
+                leaf_id, CHECK_STATE_CONTRACT, 0.0,
+                f"eval_coverage: n_eval={best_n} < min_eval_n={target:g} "
+                f"(insufficient held-out evaluation for the claimed result)",
+            )
+
+    if has_held:  # truthy require_held_out (see has_held above)
+        if any(sc.get("held_out") is False for sc in sidecars):
+            return _result(
+                leaf_id, CHECK_STATE_CONTRACT, 0.0,
+                "held_out: a cell reports held_out=False (in-sample, not held-out)",
+            )
+
+    return _result(leaf_id, CHECK_STATE_CONTRACT, 1.0, "state contract satisfied")
+
+
+# --------------------------------------------------------------------------- #
 # public entrypoint.
 # --------------------------------------------------------------------------- #
 def check_leaf(leaf: dict, run_dir: Path) -> dict[str, Any] | None:
@@ -718,6 +736,15 @@ def check_leaf(leaf: dict, run_dir: Path) -> dict[str, Any] | None:
         if not isinstance(leaf, dict):
             return None
         kind = leaf.get("check_kind")
+        # W2 state contracts: a separate, flag-gated kind. Off → unrecognized →
+        # LLM (byte-identical); on → evaluate the trace-coherence predicates.
+        if kind == CHECK_STATE_CONTRACT:
+            if not _state_contracts_enabled():
+                return None
+            assertion = leaf.get("assertion")
+            if not isinstance(assertion, dict) or not assertion:
+                return None
+            return _check_state_contract(leaf.get("id", ""), assertion, Path(run_dir))
         if kind not in DETERMINISTIC_CHECK_KINDS:
             return None  # no/unknown annotation → LLM (backwards-compat path).
         assertion = leaf.get("assertion")

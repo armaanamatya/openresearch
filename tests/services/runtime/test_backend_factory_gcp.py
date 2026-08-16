@@ -3,12 +3,14 @@ Factory-dispatch tests for --sandbox gcp.
 
 Guards that _backend_for_sandbox_mode(SandboxMode.gcp) constructs a GkeJobBackend,
 that ensure_gcp_available is called, and that gpu_plan is threaded through correctly.
-Regression guards for other modes are in test_azure_wiring.py / test_runpod_wiring.py.
+Regression guards for other modes are in test_azure_wiring.py.
 """
 
 from __future__ import annotations
 
 from unittest.mock import patch
+
+import pytest
 
 from backend.agents.execution import SandboxMode
 
@@ -19,8 +21,33 @@ def test_sandbox_mode_gcp_member_exists():
     assert SandboxMode.gcp.value == "gcp"
 
 
-def test_backend_for_sandbox_mode_gcp_returns_gke_backend():
-    """sandbox_mode='gcp' must construct GkeJobBackend, not LocalDockerBackend."""
+def test_backend_for_sandbox_mode_gcp_not_used_raises_without_flag(monkeypatch):
+    """NOT USED: sandbox=gcp raises a clear RuntimeError unless the inert
+    operator-only OPENRESEARCH_ALLOW_GKE escape hatch is set."""
+    monkeypatch.delenv("OPENRESEARCH_ALLOW_GKE", raising=False)
+    from backend.agents.rlm.primitives import _backend_for_sandbox_mode
+
+    with pytest.raises(RuntimeError, match="not used"):
+        _backend_for_sandbox_mode(SandboxMode.gcp, run_budget=None)
+
+
+def test_gcp_fail_closed_message_recommends_live_driver(monkeypatch):
+    """The redirect guidance must name the `live` campaign driver — `unified`
+    does not forward enforcement["env"] (e.g. OPENRESEARCH_CELL_ITER_BUDGET)
+    to child processes, so recommending it would break rung capping
+    (2026-08-04 Tree-B root cause)."""
+    monkeypatch.delenv("OPENRESEARCH_ALLOW_GKE", raising=False)
+    from backend.agents.rlm.primitives import _backend_for_sandbox_mode
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _backend_for_sandbox_mode(SandboxMode.gcp, run_budget=None)
+    assert "--campaign-driver live" in str(excinfo.value)
+    assert "--campaign-driver unified" not in str(excinfo.value)
+
+
+def test_backend_for_sandbox_mode_gcp_returns_gke_backend(monkeypatch):
+    """With OPENRESEARCH_ALLOW_GKE=1, sandbox_mode='gcp' constructs GkeJobBackend."""
+    monkeypatch.setenv("OPENRESEARCH_ALLOW_GKE", "1")
     with patch("backend.services.runtime.ensure_gcp_available", lambda: None):
         from backend.agents.rlm.primitives import _backend_for_sandbox_mode
         from backend.services.runtime.gke_job_backend import GkeJobBackend
@@ -31,10 +58,11 @@ def test_backend_for_sandbox_mode_gcp_returns_gke_backend():
         )
 
 
-def test_backend_for_sandbox_mode_gcp_threads_gpu_plan():
-    """sandbox_mode='gcp' with a gpu_plan must pass it into GkeJobBackend._gpu_plan."""
+def test_backend_for_sandbox_mode_gcp_threads_gpu_plan(monkeypatch):
+    """sandbox_mode='gcp' with a gpu_plan must pass it into GkeJobBackend._gpu_plan (flag on)."""
     from types import SimpleNamespace
 
+    monkeypatch.setenv("OPENRESEARCH_ALLOW_GKE", "1")
     plan = SimpleNamespace(short_name="gcp_a100_80", gpu_count=1)
 
     with patch("backend.services.runtime.ensure_gcp_available", lambda: None):
@@ -47,8 +75,9 @@ def test_backend_for_sandbox_mode_gcp_threads_gpu_plan():
     assert backend._gpu_plan is plan
 
 
-def test_backend_for_sandbox_mode_gcp_no_gpu_plan_still_works():
-    """sandbox_mode='gcp' with gpu_plan=None constructs GkeJobBackend without error."""
+def test_backend_for_sandbox_mode_gcp_no_gpu_plan_still_works(monkeypatch):
+    """sandbox_mode='gcp' with gpu_plan=None constructs GkeJobBackend without error (flag on)."""
+    monkeypatch.setenv("OPENRESEARCH_ALLOW_GKE", "1")
     with patch("backend.services.runtime.ensure_gcp_available", lambda: None):
         from backend.agents.rlm.primitives import _backend_for_sandbox_mode
         from backend.services.runtime.gke_job_backend import GkeJobBackend
